@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AIChatVN2</string>
+    <string name="tab_chat">Trò chuyện</string>
+    <string name="tab_camera">Camera</string>
+    <string name="tab_training">Huấn luyện</string>
+    <string name="tab_diagnostics">Chẩn đoán</string>
+    <string name="tab_settings">Cài đặt</string>
+    <string name="save">Lưu</string>
+    <string name="cancel">Hủy</string>
+    <string name="delete">Xóa</string>
+    <string name="edit">Sửa</string>
+    <string name="add">Thêm</string>
+    <string name="search">Tìm kiếm</string>
+    <string name="loading">Đang tải...</string>
+    <string name="error">Lỗi</string>
+    <string name="success">Thành công</string>
+    <string name="chat_input_placeholder">Nhập tin nhắn...</string>
+    <string name="chat_ai_thinking">Đang suy nghĩ...</string>
+    <string name="groq_api_key">Groq API Key</string>
+    <string name="gmail_settings">Cài đặt Gmail</string>
+    <string name="smart_mode">Chế độ thông minh (15 phút)</string>
+    <string name="dark_mode">Chế độ tối</string>
+</resources>
