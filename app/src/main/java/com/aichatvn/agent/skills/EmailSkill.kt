@@ -2,6 +2,7 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.BuildConfig
+import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential
 import com.google.api.client.http.javanet.NetHttpTransport
@@ -72,21 +73,24 @@ class EmailSkill @Inject constructor(
         subject: String,
         body: String,
         imageBytes: ByteArray? = null
-    ): Boolean {
+    ): AgentResponse {
         return withContext(Dispatchers.IO) {
             try {
-                val gmail = gmailService ?: return@withContext false
+                val gmail = gmailService ?: return@withContext AgentResponse(
+                    success = false,
+                    error = "Gmail service not available"
+                )
                 
                 val mimeMessage = createMimeMessage(to, subject, body, imageBytes)
                 val message = Message()
                 message.raw = encodeMimeMessage(mimeMessage)
                 
                 gmail.users().messages().send("me", message).execute()
-                true
+                AgentResponse(success = true, data = "Email sent")
                 
             } catch (e: Exception) {
                 e.printStackTrace()
-                false
+                AgentResponse(success = false, error = e.message ?: "Failed to send email")
             }
         }
     }
@@ -117,10 +121,10 @@ class EmailSkill @Inject constructor(
         imageBytes?.let {
             val imagePart = MimeBodyPart().apply {
                 val dataSource = object : DataSource {
-                    override fun getInputStream() = it.inputStream()
-                    override fun getOutputStream() = ByteArrayOutputStream()
-                    override fun getContentType() = "image/jpeg"
-                    override fun getName() = "evidence.jpg"
+                    override fun getInputStream(): java.io.InputStream = it.inputStream()
+                    override fun getOutputStream(): ByteArrayOutputStream = ByteArrayOutputStream()
+                    override fun getContentType(): String = "image/jpeg"
+                    override fun getName(): String = "evidence.jpg"
                 }
                 dataHandler = DataHandler(dataSource)
                 setFileName("evidence.jpg")
