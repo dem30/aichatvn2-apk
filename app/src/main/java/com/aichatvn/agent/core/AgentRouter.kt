@@ -25,7 +25,7 @@ class AgentRouter @Inject constructor(
     
     suspend fun route(request: AgentRequest): AgentResponse {
         return try {
-            val result = when (request.intent) {
+            val result: AgentResponse = when (request.intent) {
                 IntentType.CHAT_QUERY -> {
                     val message = request.payload["message"] as? String ?: ""
                     val context = request.payload["context"] as? String ?: ""
