@@ -37,4 +37,4 @@ jobs:
           echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" >> gradle.properties
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: bash gradlew assembleDebug
