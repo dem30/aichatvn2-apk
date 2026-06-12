@@ -258,7 +258,7 @@ class CameraSkill @Inject constructor(
                 return mapOf(
                     "cameraId" to camera.id,
                     "success" to false,
-                    "error" to e.message
+                    "error" to (e.message ?: "Unknown error")
                 )
             }
         }
@@ -290,7 +290,7 @@ class CameraSkill @Inject constructor(
             mapOf(
                 "cameraId" to camera.id,
                 "success" to false,
-                "error" to e.message
+                "error" to (e.message ?: "Unknown error")
             )
         }
     }
