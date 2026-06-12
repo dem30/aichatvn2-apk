@@ -81,7 +81,7 @@ fun CameraScreen(
                             isAdmin = isAdmin,
                             onEdit = { selectedCamera = camera },
                             onDelete = { viewModel.deleteCamera(camera.id) },
-                            onToggleActive = { viewModel.toggleCameraActive(camera.id, !camera.isOnline) },
+                            onToggleActive = { viewModel.toggleCameraActive(camera.id, camera.isOnline != 1) },
                             onTest = { viewModel.testCamera(camera.id) }
                         )
                     }
