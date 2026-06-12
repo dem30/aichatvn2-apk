@@ -65,7 +65,11 @@ android {
                 "META-INF/LICENSE-notice.md",
                 "META-INF/NOTICE",
                 "META-INF/NOTICE.txt",
-                "META-INF/*.kotlin_module"
+                "META-INF/NOTICE.md",
+                "META-INF/*.md",
+                "META-INF/*.kotlin_module",
+                "META-INF/INDEX.LIST",
+                "META-INF/io.netty.versions.properties"
             )
         }
     }
