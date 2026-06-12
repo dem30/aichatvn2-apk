@@ -98,6 +98,7 @@ class AgentRouter @Inject constructor(
                     val title = request.payload["title"] as? String ?: ""
                     val message = request.payload["message"] as? String ?: ""
                     notificationSkill.sendNotification(title, message)
+                    AgentResponse(success = true, data = "Notification sent")
                 }
                 
                 IntentType.GET_DIAGNOSTICS -> {
