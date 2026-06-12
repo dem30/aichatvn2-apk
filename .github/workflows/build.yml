@@ -17,9 +17,17 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # Sử dụng gradle trực tiếp (của hệ thống) thay vì gọi wrapper bị lỗi
+    - name: Fix gradlew
+      run: |
+        chmod +x gradlew
+        # Đảm bảo gradle-wrapper.properties trỏ đúng phiên bản
+        # Nếu vẫn lỗi, bước này đảm bảo quyền thực thi được cấp lại
+
     - name: Build Debug APK
-      run: gradle assembleDebug
+      # Thay vì dùng 'gradle', chúng ta gọi './gradlew'
+      # Nó sẽ tự đọc file 'gradle/wrapper/gradle-wrapper.properties'
+      # để tải đúng phiên bản Gradle dự án bạn cần
+      run: ./gradlew assembleDebug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
