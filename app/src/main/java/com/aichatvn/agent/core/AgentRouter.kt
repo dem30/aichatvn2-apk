@@ -5,6 +5,7 @@ import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.skills.NotificationSkill
 import com.aichatvn.agent.skills.EmailSkill
+import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import javax.inject.Inject
@@ -18,6 +19,7 @@ class AgentRouter @Inject constructor(
     private val notificationSkill: NotificationSkill,
     private val emailSkill: EmailSkill,
     private val commandDispatcher: CommandDispatcher
+    , private val logger: Logger
 ) {
     
     private val _responses = MutableSharedFlow<AgentResponse>()
@@ -162,6 +164,7 @@ class AgentRouter @Inject constructor(
             result
             
         } catch (e: Exception) {
+            logger.e("AgentRouter", "Lỗi xử lý ${request.intent}: ${e.message}", e)
             val errorResponse = AgentResponse(
                 success = false,
                 error = e.message ?: "Unknown error occurred"

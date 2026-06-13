@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.aichatvn.agent.BuildConfig
+import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -26,7 +27,8 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "se
 
 @Singleton
 class GroqClientTool @Inject constructor(
-    private val context: Context
+    private val context: Context,
+    private val logger: Logger
 ) {
     
     private val client = OkHttpClient.Builder()
@@ -43,12 +45,8 @@ class GroqClientTool @Inject constructor(
     private val lastCallTime = AtomicLong(0L)
     private val minCallInterval = 6000L
     
-    private var cachedApiKey: String? = null
-    
     private suspend fun getApiKey(): String {
-        cachedApiKey?.let { return it }
-        
-        val key = try {
+        return try {
             val GROQ_API_KEY = stringPreferencesKey("groq_api_key")
             val keyFromStore = context.dataStore.data.first()[GROQ_API_KEY]
             if (!keyFromStore.isNullOrBlank()) {
@@ -59,9 +57,6 @@ class GroqClientTool @Inject constructor(
         } catch (e: Exception) {
             BuildConfig.GROQ_API_KEY
         }
-        
-        cachedApiKey = key
-        return key
     }
     
     suspend fun chat(
@@ -134,6 +129,7 @@ class GroqClientTool @Inject constructor(
             val responseBody = response.body?.string() ?: ""
             
             if (!response.isSuccessful) {
+                logger.e("GroqClientTool", "Lỗi API: ${response.code} - ${response.message} - $responseBody")
                 return@withContext "Lỗi API: ${response.code} - ${response.message}"
             }
             
@@ -146,6 +142,7 @@ class GroqClientTool @Inject constructor(
             }
             
         } catch (e: Exception) {
+            logger.e("GroqClientTool", "Lỗi kết nối Groq API: ${e.message}", e)
             "Lỗi kết nối Groq API: ${e.message}"
         }
     }

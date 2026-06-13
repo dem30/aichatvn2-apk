@@ -238,6 +238,87 @@ fun CameraDialog(
                 OutlinedTextField(value = customerEmail, onValueChange = { customerEmail = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = snapshotUrl, onValueChange = { snapshotUrl = it }, label = { Text("URL ảnh chụp") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = landInfo, onValueChange = { landInfo = it }, label = { Text("Thông tin thửa đất") }, modifier = Modifier.fillMaxWidth())
+
+                val context = LocalContext.current
+                var locationError by remember { mutableStateOf<String?>(null) }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            locationError = null
+                            try {
+                                val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
+                                val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(
+                                    context, android.Manifest.permission.ACCESS_FINE_LOCATION
+                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                if (!hasFine) {
+                                    locationError = "Chưa cấp quyền vị trí (Location)"
+                                    return@OutlinedButton
+                                }
+                                val providers = lm.getProviders(true)
+                                var bestLocation: android.location.Location? = null
+                                for (provider in providers) {
+                                    val l = lm.getLastKnownLocation(provider) ?: continue
+                                    if (bestLocation == null || l.accuracy < bestLocation!!.accuracy) {
+                                        bestLocation = l
+                                    }
+                                }
+                                if (bestLocation != null) {
+                                    val lat = bestLocation!!.latitude
+                                    val lng = bestLocation!!.longitude
+                                    val coordText = "$lat,$lng"
+                                    landInfo = if (landInfo.isBlank()) {
+                                        coordText
+                                    } else {
+                                        "$landInfo\nVị trí: $coordText"
+                                    }
+                                } else {
+                                    locationError = "Không lấy được vị trí (GPS chưa có dữ liệu, hãy mở Google Maps 1 lần rồi thử lại)"
+                                }
+                            } catch (e: Exception) {
+                                locationError = "Lỗi lấy vị trí: ${e.message}"
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("📍 Lấy vị trí")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            locationError = null
+                            val coordRegex = Regex("(-?\\d{1,3}\\.\\d+)\\s*,\\s*(-?\\d{1,3}\\.\\d+)")
+                            val match = coordRegex.find(landInfo)
+                            if (match != null) {
+                                val lat = match.groupValues[1]
+                                val lng = match.groupValues[2]
+                                try {
+                                    val uri = android.net.Uri.parse("geo:$lat,$lng?q=$lat,$lng")
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    locationError = "Không mở được bản đồ: ${e.message}"
+                                }
+                            } else {
+                                locationError = "Chưa có tọa độ trong ô 'Thông tin thửa đất'. Hãy bấm 'Lấy vị trí' trước."
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("🗺️ Mở bản đồ")
+                    }
+                }
+
+                if (locationError != null) {
+                    Text(
+                        text = locationError ?: "",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
         },
         confirmButton = {

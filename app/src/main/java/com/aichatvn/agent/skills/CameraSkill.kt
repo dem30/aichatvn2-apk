@@ -572,17 +572,24 @@ class CameraSkill @Inject constructor(
     
     suspend fun saveCameraConfig(config: Map<String, Any>): AgentResponse {
         return try {
+            val id = config["id"] as? String ?: return AgentResponse(success = false, error = "Missing camera id")
+            val existing = database.cameraDao().getCameraById(id)
+
             val camera = CameraConfigEntity(
-                id = config["id"] as? String ?: return AgentResponse(success = false, error = "Missing camera id"),
-                customerId = config["customerId"] as? String ?: "",
-                customername = config["customername"] as? String ?: "",
-                customeremail = config["customeremail"] as? String ?: "",
-                snapshoturl = config["snapshoturl"] as? String ?: "",
-                landinfo = config["landinfo"] as? String,
+                id = id,
+                customerId = config["customerId"] as? String ?: existing?.customerId ?: "",
+                customername = config["customername"] as? String ?: existing?.customername ?: "",
+                customeremail = config["customeremail"] as? String ?: existing?.customeremail ?: "",
+                snapshoturl = config["snapshoturl"] as? String ?: existing?.snapshoturl ?: "",
+                landinfo = config["landinfo"] as? String ?: existing?.landinfo,
+                snapshotPath = existing?.snapshotPath,
                 timestamp = System.currentTimeMillis(),
-                aiPrompt = config["aiPrompt"] as? String ?: "",
-                aiPositiveKeywords = config["aiPositiveKeywords"] as? String ?: "",
-                aiNegativeKeywords = config["aiNegativeKeywords"] as? String ?: ""
+                status = config["status"] as? String ?: existing?.status ?: "online",
+                isOnline = (config["isOnline"] as? Int) ?: (config["isOnline"] as? Number)?.toInt() ?: existing?.isOnline ?: 1,
+                manualOff = (config["manualOff"] as? Int) ?: (config["manualOff"] as? Number)?.toInt() ?: existing?.manualOff ?: 0,
+                aiPrompt = config["aiPrompt"] as? String ?: existing?.aiPrompt ?: "",
+                aiPositiveKeywords = config["aiPositiveKeywords"] as? String ?: existing?.aiPositiveKeywords ?: "",
+                aiNegativeKeywords = config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: ""
             )
             
             database.cameraDao().insertCamera(camera)
@@ -607,6 +614,7 @@ class CameraSkill @Inject constructor(
             AgentResponse(success = true, data = "Camera saved")
             
         } catch (e: Exception) {
+            logger.e("CameraSkill", "saveCameraConfig error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
