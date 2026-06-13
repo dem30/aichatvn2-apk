@@ -4,6 +4,7 @@ import android.content.Context
 import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.data.database.AppDatabase
 import com.aichatvn.agent.data.model.ChatMessageEntity
+import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,10 +15,17 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class ChatMode {
+    GROQ,       // Chỉ dùng Groq AI
+    QA,         // Chỉ dùng Q&A từ database
+    COMBINED    // Kết hợp: tìm QA trước, nếu không có thì gọi Groq
+}
+
 @Singleton
 class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val groqClient: GroqClientTool
+    private val groqClient: GroqClientTool,
+    private val trainingSkill: TrainingSkill
 ) : BaseAgentSkill {
     
     override val skillName = "ChatSkill"
@@ -25,15 +33,20 @@ class ChatSkill @Inject constructor(
     private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
     val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()
     
+    private val _chatMode = MutableStateFlow(ChatMode.GROQ)
+    val chatMode: StateFlow<ChatMode> = _chatMode.asStateFlow()
+    
     private val database by lazy { AppDatabase.getDatabase(context) }
+    private val username = "default_user"
     
     override suspend fun initialize() {
-        // Load messages from database
-        _messages.value = database.chatMessageDao().getMessages("default_user", 500)
+        _messages.value = database.chatMessageDao().getMessages(username, 500)
     }
     
-    override suspend fun shutdown() {
-        // Cleanup if needed
+    override suspend fun shutdown() { }
+    
+    fun setChatMode(mode: ChatMode) {
+        _chatMode.value = mode
     }
     
     suspend fun processQuery(
@@ -57,20 +70,80 @@ class ChatSkill @Inject constructor(
             )
             database.chatMessageDao().insertMessage(userMessage)
             
-            // Update state
             val currentMessages = _messages.value.toMutableList()
             currentMessages.add(userMessage)
             _messages.value = currentMessages
             
-            // Call Groq API
-            val response = groqClient.chat(
-                message = message,
-                context = context,
-                history = _messages.value.takeLast(10).map { 
-                    mapOf("role" to it.role, "content" to it.content) 
-                },
-                imageUrl = fileUrl
-            )
+            // Process based on chat mode
+            val currentMode = _chatMode.value
+            val response: String
+            
+            when (currentMode) {
+                ChatMode.QA -> {
+                    // Chế độ QA: chỉ tìm trong database
+                    val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
+                    if (qaResult.success && qaResult.data != null) {
+                        @Suppress("UNCHECKED_CAST")
+                        val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
+                        if (matches.isNotEmpty()) {
+                            val bestMatch = matches.first()
+                            val qa = bestMatch["qa"] as? QAEntity
+                            response = qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
+                        } else {
+                            response = "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này trong cơ sở dữ liệu Q&A."
+                        }
+                    } else {
+                        response = "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này trong cơ sở dữ liệu Q&A."
+                    }
+                }
+                
+                ChatMode.COMBINED -> {
+                    // Chế độ kết hợp: tìm QA trước, nếu có thì dùng làm context cho Groq
+                    var qaContext = ""
+                    var foundQA = false
+                    
+                    val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
+                    if (qaResult.success && qaResult.data != null) {
+                        @Suppress("UNCHECKED_CAST")
+                        val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
+                        if (matches.isNotEmpty()) {
+                            val bestMatch = matches.first()
+                            val qa = bestMatch["qa"] as? QAEntity
+                            if (qa != null) {
+                                foundQA = true
+                                qaContext = "Dữ liệu từ hệ thống Q&A:\nCÂU HỎI: ${qa.question}\nCÂU TRẢ LỜI THAM KHẢO: ${qa.answer}\n\n"
+                            }
+                        }
+                    }
+                    
+                    val groqContext = if (foundQA) {
+                        "$qaContext\nCâu hỏi của người dùng: $message\nHãy sử dụng thông tin từ Q&A làm cơ sở để trả lời, bổ sung thêm nếu cần."
+                    } else {
+                        message
+                    }
+                    
+                    response = groqClient.chat(
+                        message = groqContext,
+                        context = context,
+                        history = _messages.value.takeLast(10).map { 
+                            mapOf("role" to it.role, "content" to it.content) 
+                        },
+                        imageUrl = fileUrl
+                    )
+                }
+                
+                ChatMode.GROQ -> {
+                    // Chế độ Groq thuần
+                    response = groqClient.chat(
+                        message = message,
+                        context = context,
+                        history = _messages.value.takeLast(10).map { 
+                            mapOf("role" to it.role, "content" to it.content) 
+                        },
+                        imageUrl = fileUrl
+                    )
+                }
+            }
             
             // Save assistant message
             val assistantMessageId = UUID.randomUUID().toString()
@@ -85,13 +158,12 @@ class ChatSkill @Inject constructor(
             )
             database.chatMessageDao().insertMessage(assistantMessage)
             
-            // Update state
             currentMessages.add(assistantMessage)
             _messages.value = currentMessages
             
             AgentResponse(
                 success = true,
-                data = mapOf("response" to response, "messageId" to assistantMessageId)
+                data = mapOf("response" to response, "messageId" to assistantMessageId, "mode" to currentMode.name)
             )
             
         } catch (e: Exception) {

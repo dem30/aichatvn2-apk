@@ -9,11 +9,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -65,11 +65,11 @@ fun DiagnosticsScreen(
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text("Camera: $cameraId", style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(6.dp))
-                            StatRow("Mẫu học", "${cameraStats["samples"]}")
-                            StatRow("Sự kiện thật", "${cameraStats["realEvents"]}")
-                            StatRow("Ngưỡng delta", "${cameraStats["deltaTrigger"]}")
-                            StatRow("Ngưỡng diff", "${cameraStats["absDiffTrigger"]}")
-                            StatRow("Baseline size", "${cameraStats["baselineSize"]}")
+                            StatRow("Mẫu học", "${cameraStats["samples"] ?: 0}")
+                            StatRow("Sự kiện thật", "${cameraStats["realEvents"] ?: 0}")
+                            StatRow("Ngưỡng delta", "${cameraStats["deltaTrigger"] ?: 10}")
+                            StatRow("Ngưỡng diff", "${cameraStats["absDiffTrigger"] ?: 18}")
+                            StatRow("Baseline size", "${cameraStats["baselineSize"] ?: 0}")
                             val inCooldown = cameraStats["inCooldown"] as? Boolean ?: false
                             if (inCooldown) {
                                 Surface(

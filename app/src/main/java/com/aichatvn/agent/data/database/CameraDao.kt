@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface CameraDao {
     
-    // Camera operations
     @Query("SELECT * FROM cameras ORDER BY timestamp DESC")
     fun getAllCamerasFlow(): Flow<List<CameraConfigEntity>>
     
@@ -30,7 +29,8 @@ interface CameraDao {
     @Query("DELETE FROM cameras WHERE customerId = :customerId")
     suspend fun deleteCamerasByCustomer(customerId: String)
     
-    @Query("SELECT * FROM cameras WHERE isOnline = 1 AND manualOff = 0")
+    // FIXED: Bỏ điều kiện isOnline = 1 để worker có thể retry camera offline
+    @Query("SELECT * FROM cameras WHERE manualOff = 0")
     suspend fun getActiveCameras(): List<CameraConfigEntity>
     
     // Customer settings operations

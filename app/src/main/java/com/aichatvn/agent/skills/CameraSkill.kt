@@ -2,6 +2,8 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.core.AgentResponse
+import com.aichatvn.agent.core.Event
+import com.aichatvn.agent.core.EventBus
 import com.aichatvn.agent.data.database.AppDatabase
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
@@ -9,17 +11,19 @@ import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.UUID
-import dagger.hilt.android.qualifiers.ApplicationContext
+import java.text.SimpleDateFormat
+import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,7 +34,8 @@ class CameraSkill @Inject constructor(
     private val imageHashTool: ImageHashTool,
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
-    private val notificationSkill: NotificationSkill
+    private val notificationSkill: NotificationSkill,
+    private val eventBus: EventBus
 ) : BaseAgentSkill {
     
     override val skillName = "CameraSkill"
@@ -39,7 +44,7 @@ class CameraSkill @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cameraMutex = Mutex()
     
-    // Learning state per camera
+    // ==================== HỌC TẬP THÍCH NGHI ====================
     private data class CameraLearningState(
         var lastPhash: String = "",
         var lastDiff: Int = 0,
@@ -52,22 +57,244 @@ class CameraSkill @Inject constructor(
         var cooldownUntil: Long = 0L
     )
     
+    // ==================== CIRCUIT BREAKER (MỚI) ====================
+    private data class CircuitBreakerState(
+        var offlineCount: Int = 0,
+        var offlineSince: Long = 0L,
+        var isOpen: Boolean = false
+    )
+    
+    // ==================== PENDING RESET (MỚI) ====================
+    private data class PendingResetState(
+        var diff: Int = 0,
+        var timestamp: Long = 0L
+    )
+    
+    // ==================== DAILY EVENT SUMMARY (MỚI) ====================
+    private data class DailyEvent(
+        val timestamp: Long,
+        val comment: String,
+        val imageBytes: ByteArray?
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as DailyEvent
+            return timestamp == other.timestamp && comment == other.comment
+        }
+        override fun hashCode(): Int {
+            var result = timestamp.hashCode()
+            result = 31 * result + comment.hashCode()
+            return result
+        }
+    }
+    
     private val learningStates = mutableMapOf<String, CameraLearningState>()
+    private val circuitBreakers = mutableMapOf<String, CircuitBreakerState>()
+    private val pendingResets = mutableMapOf<String, PendingResetState>()
+    private val dailyEvents = mutableMapOf<String, MutableList<DailyEvent>>()
     
     private val _diagnostics = MutableStateFlow<Map<String, Any>>(emptyMap())
     val diagnostics: StateFlow<Map<String, Any>> = _diagnostics.asStateFlow()
     
+    companion object {
+        private const val DEFAULT_AI_PROMPT = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả."
+        private val DEFAULT_POSITIVE_KEYWORDS = listOf("cảnh báo")
+        private val DEFAULT_NEGATIVE_KEYWORDS = listOf("bình thường")
+        private const val COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000L // 3 hours
+        private const val CIRCUIT_BREAKER_THRESHOLD = 3
+        private const val CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000L // 30 phút
+        private const val DAILY_REPORT_HOUR = 20 // 8 PM
+    }
+    
     override suspend fun initialize() {
-        // Load existing cameras and initialize states
         val cameras = database.cameraDao().getActiveCameras()
         cameras.forEach { camera ->
             learningStates[camera.id] = CameraLearningState()
+            circuitBreakers[camera.id] = CircuitBreakerState()
         }
         updateDiagnostics()
+        
+        // Schedule daily report
+        scheduleDailyReport()
+    }
+    
+    private fun scheduleDailyReport() {
+        scope.launch {
+            while (true) {
+                val now = System.currentTimeMillis()
+                val calendar = Calendar.getInstance().apply {
+                    timeInMillis = now
+                    set(Calendar.HOUR_OF_DAY, DAILY_REPORT_HOUR)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                
+                var nextRun = calendar.timeInMillis
+                if (nextRun <= now) {
+                    nextRun += 24 * 60 * 60 * 1000L
+                }
+                
+                val delay = nextRun - now
+                kotlinx.coroutines.delay(delay)
+                sendDailyReports()
+            }
+        }
+    }
+    
+    private suspend fun sendDailyReports() {
+        try {
+            val customers = database.cameraDao().getActiveCameras()
+                .groupBy { it.customerId }
+            
+            for ((customerId, cameras) in customers) {
+                val events = mutableListOf<Map<String, Any>>()
+                for (camera in cameras) {
+                    val dailyEventsList = dailyEvents[camera.id] ?: continue
+                    if (dailyEventsList.isNotEmpty()) {
+                        events.add(mapOf(
+                            "cameraId" to camera.id,
+                            "cameraName" to camera.customername,
+                            "landInfo" to (camera.landinfo ?: "N/A"),
+                            "events" to dailyEventsList.map { event ->
+                                mapOf(
+                                    "time" to SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(event.timestamp)),
+                                    "comment" to event.comment
+                                )
+                            },
+                            "hasImage" to dailyEventsList.any { it.imageBytes != null }
+                        ))
+                        // Clear daily events after sending
+                        dailyEvents[camera.id]?.clear()
+                    }
+                }
+                
+                if (events.isNotEmpty()) {
+                    val customerSetting = database.cameraDao().getCustomerSetting(customerId)
+                    val customerEmail = cameras.firstOrNull()?.customeremail
+                    
+                    if (customerEmail != null && customerSetting?.isActive == 1) {
+                        sendDailySummaryEmail(customerEmail, customerId, events)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("CameraSkill", "Error sending daily reports: ${e.message}", e)
+        }
+    }
+    
+    private suspend fun sendDailySummaryEmail(to: String, customerId: String, events: List<Map<String, Any>>) {
+        val subject = "📋 BÁO CÁO GIÁM SÁT ĐẤT ĐAI ĐỊNH KỲ - $customerId - ${SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())}"
+        
+        val body = buildString {
+            append("<html><body style='font-family: Arial, sans-serif;'>")
+            append("<h2>BÁO CÁO GIÁM SÁT ĐẤT ĐAI</h2>")
+            append("<p>Xin chào Quý khách hàng <b>$customerId</b>,</p>")
+            append("<p>Hệ thống gửi báo cáo hôm nay (${events.size} camera có sự kiện):</p>")
+            
+            for (event in events) {
+                append("<div style='margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; border-radius: 5px;'>")
+                append("<h3>📷 Camera: ${event["cameraName"]} - ${event["landInfo"]}</h3>")
+                
+                @Suppress("UNCHECKED_CAST")
+                val eventList = event["events"] as? List<Map<String, String>> ?: emptyList()
+                if (eventList.isNotEmpty()) {
+                    append("<div style='background: #fff3cd; padding: 10px; border-left: 4px solid #ffc107;'>")
+                    append("<strong>⚠️ NHẬT KÝ BIẾN CỐ:</strong><br>")
+                    for (ev in eventList) {
+                        append("• <b>[${ev["time"]}]</b>: ${ev["comment"]}<br>")
+                    }
+                    append("</div>")
+                }
+                append("</div>")
+            }
+            
+            append("<p style='font-size: 12px; color: #666;'>Hệ thống camera giám sát AI tự động — AIChatVN2</p>")
+            append("</body></html>")
+        }
+        
+        emailSkill.sendEmail(to, subject, body, null)
     }
     
     override suspend fun shutdown() {
-        // Save any pending states if needed
+        scope.cancel()
+    }
+    
+    private fun isCircuitBreakerOpen(cameraId: String): Boolean {
+        val cb = circuitBreakers[cameraId] ?: return false
+        if (!cb.isOpen) return false
+        
+        // Tự reset sau 30 phút
+        if (System.currentTimeMillis() - cb.offlineSince > CIRCUIT_BREAKER_RESET_MS) {
+            circuitBreakers[cameraId] = CircuitBreakerState()
+            return false
+        }
+        return true
+    }
+    
+    private fun recordOffline(cameraId: String) {
+        val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
+        cb.offlineCount++
+        if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD) {
+            cb.isOpen = true
+            cb.offlineSince = System.currentTimeMillis()
+            android.util.Log.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $cameraId (offline ${cb.offlineCount} times)")
+        }
+    }
+    
+    private fun recordOnline(cameraId: String) {
+        circuitBreakers[cameraId] = CircuitBreakerState()
+    }
+    
+    private fun checkPendingReset(cameraId: String, currentDiff: Int, absDiffTrigger: Int): Boolean {
+        val pending = pendingResets[cameraId]
+        if (pending == null) return false
+        
+        val diffChange = kotlin.math.abs(currentDiff - pending.diff)
+        val timeSince = System.currentTimeMillis() - pending.timestamp
+        
+        // Nếu sau 2 chu kỳ (khoảng 60 phút) mà diff vẫn lớn, reset learning
+        if (timeSince > 60 * 60 * 1000L && diffChange <= 5 && currentDiff >= absDiffTrigger / 2) {
+            android.util.Log.w("CameraSkill", "🔄 Pending Reset triggered for camera $cameraId - resetting learning state")
+            pendingResets.remove(cameraId)
+            return true
+        }
+        
+        // Nếu diff giảm xuống, clear pending
+        if (currentDiff < absDiffTrigger / 2) {
+            pendingResets.remove(cameraId)
+        }
+        
+        return false
+    }
+    
+    private suspend fun sendAdminAlert(camera: CameraConfigEntity, reason: String) {
+        val subject = "🚨 [HỆ THỐNG] LỖI CAMERA: ${camera.customername} (${camera.id})"
+        val body = """
+            <html>
+            <body>
+                <h2 style="color: #dc2626;">🚨 CẢNH BÁO SỰ CỐ VẬN HÀNH CAMERA</h2>
+                <p>Hệ thống phát hiện sự cố tại thiết bị camera giám sát thửa đất:</p>
+                <table>
+                    <tr><td><strong>Tên Camera:</strong></td><td>${camera.customername}</td></tr>
+                    <tr><td><strong>Mã Camera:</strong></td><td>${camera.id}</td></tr>
+                    <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(Date())}</td></tr>
+                </table>
+                <div style="background: #fef2f2; padding: 10px; border-left: 4px solid #dc2626;">
+                    <strong>Chi tiết lỗi:</strong><br>$reason
+                </div>
+                <p>Vui lòng kiểm tra hạ tầng đường truyền camera.</p>
+            </body>
+            </html>
+        """.trimIndent()
+        
+        // TODO: Lấy admin email từ config
+        val adminEmail = "admin@aichatvn.com"
+        if (adminEmail.isNotBlank()) {
+            emailSkill.sendEmail(adminEmail, subject, body, null)
+        }
     }
     
     suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): AgentResponse {
@@ -81,7 +308,12 @@ class CameraSkill @Inject constructor(
             val results = mutableListOf<Map<String, Any>>()
             
             for (camera in cameras) {
-                // Check if customer is active
+                // Check circuit breaker
+                if (!isDailyReport && isCircuitBreakerOpen(camera.id)) {
+                    android.util.Log.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera ${camera.id}")
+                    continue
+                }
+                
                 val customerSetting = database.cameraDao().getCustomerSetting(camera.customerId)
                 if (customerSetting?.isActive != 1) {
                     continue
@@ -117,10 +349,10 @@ class CameraSkill @Inject constructor(
             val now = System.currentTimeMillis()
             
             try {
-                // Fetch snapshot
                 val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
                 if (imageBytes == null) {
                     handleOfflineCamera(camera)
+                    recordOffline(camera.id)
                     return mapOf(
                         "cameraId" to camera.id,
                         "success" to false,
@@ -128,23 +360,22 @@ class CameraSkill @Inject constructor(
                     )
                 }
                 
-                // Calculate phash
+                // Reset circuit breaker on successful fetch
+                recordOnline(camera.id)
+                
                 val currentPhash = imageHashTool.calculatePhash(imageBytes)
                 val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
                 
-                // Calculate diff
                 var currentDiff = 0
                 if (state.lastPhash.isNotEmpty()) {
                     currentDiff = imageHashTool.calculateHammingDistance(state.lastPhash, currentPhash)
                 }
                 
-                // Adaptive threshold logic (from camera_worker.py)
                 val delta = kotlin.math.abs(currentDiff - state.lastDiff)
                 val deltaTrigger = state.deltaTrigger
                 val absDiffTrigger = state.absDiffTrigger
                 val driftTrigger = 12
                 
-                // Calculate baseline drift
                 val baselineDiff = if (state.baselineWindow.isNotEmpty()) {
                     state.baselineWindow.average().toInt()
                 } else {
@@ -158,7 +389,22 @@ class CameraSkill @Inject constructor(
                 
                 val isMature = state.baselineWindow.size >= 3
                 
-                // Determine if we need to call AI
+                // Check pending reset
+                val shouldReset = checkPendingReset(camera.id, currentDiff, absDiffTrigger)
+                if (shouldReset) {
+                    // Reset learning state
+                    learningStates[camera.id] = CameraLearningState(
+                        lastPhash = currentPhash,
+                        lastDiff = currentDiff
+                    )
+                    return mapOf(
+                        "cameraId" to camera.id,
+                        "success" to true,
+                        "hasChange" to false,
+                        "message" to "Learning reset due to stable scene change"
+                    )
+                }
+                
                 val shouldCallAi = isSuddenChange && isSmartMode && now >= state.cooldownUntil
                 
                 var aiComment: String? = null
@@ -188,7 +434,11 @@ class CameraSkill @Inject constructor(
                         state.realEvents++
                         state.cooldownUntil = now + COOLDOWN_DURATION_MS
                         
-                        // Send email alert
+                        // Ghi nhận sự kiện hàng ngày
+                        dailyEvents.getOrPut(camera.id) { mutableListOf() }.add(
+                            DailyEvent(now, aiComment, optimizedBytes)
+                        )
+                        
                         val customerEmail = camera.customeremail
                         if (customerEmail.isNotEmpty()) {
                             emailSkill.sendEmail(
@@ -199,11 +449,18 @@ class CameraSkill @Inject constructor(
                             )
                         }
                         
-                        // Send notification
                         notificationSkill.sendNotification(
                             title = "Cảnh Báo Camera ${camera.customername}",
                             message = aiComment.take(100)
                         )
+                        
+                        eventBus.emit(Event.AlertDetected(camera.id, aiComment, optimizedBytes))
+                    } else {
+                        // Nếu AI nói bình thường nhưng diff lớn, đánh dấu pending reset
+                        if (isMature && isSuddenChange) {
+                            pendingResets[camera.id] = PendingResetState(currentDiff, now)
+                            android.util.Log.i("CameraSkill", "⚠️ Pending reset for camera ${camera.id} - monitoring next cycle")
+                        }
                     }
                 }
                 
@@ -214,11 +471,15 @@ class CameraSkill @Inject constructor(
                         state.baselineWindow.removeAt(0)
                     }
                     
-                    if (!shouldCallAi && isMature && isSuddenChange) {
-                        // Pending reset - monitor next cycle
+                    if (isSuddenChange && !isSuspicious) {
+                        state.falseDeltas.add(delta)
+                        state.falseDiffs.add(currentDiff)
+                        if (state.falseDeltas.size > 100) {
+                            state.falseDeltas.removeAt(0)
+                            state.falseDiffs.removeAt(0)
+                        }
                     }
                     
-                    // Update triggers
                     if (state.falseDeltas.size >= 3) {
                         val recentDeltas = state.falseDeltas.takeLast(30).sorted()
                         val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
@@ -230,15 +491,14 @@ class CameraSkill @Inject constructor(
                     }
                 }
                 
-                // Update state
                 state.lastPhash = currentPhash
                 state.lastDiff = currentDiff
                 
-                // Update camera online status
                 if (camera.isOnline != 1) {
                     database.cameraDao().updateCamera(camera.copy(isOnline = 1, status = "online"))
                 }
                 
+                eventBus.emit(Event.CameraScanned(camera.id, isSuddenChange, aiComment))
                 updateDiagnostics()
                 
                 return mapOf(
@@ -255,6 +515,7 @@ class CameraSkill @Inject constructor(
                 )
                 
             } catch (e: Exception) {
+                android.util.Log.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
                 return mapOf(
                     "cameraId" to camera.id,
                     "success" to false,
@@ -302,6 +563,8 @@ class CameraSkill @Inject constructor(
                 title = "Camera ${camera.customername} mất kết nối",
                 message = "Không thể kết nối đến camera. Vui lòng kiểm tra!"
             )
+            // Gửi cảnh báo admin
+            sendAdminAlert(camera, "Không thể kết nối đến camera. Vui lòng kiểm tra đường truyền!")
         }
     }
     
@@ -322,7 +585,6 @@ class CameraSkill @Inject constructor(
             
             database.cameraDao().insertCamera(camera)
             
-            // Ensure customer setting exists
             val existingSetting = database.cameraDao().getCustomerSetting(camera.customerId)
             if (existingSetting == null && camera.customerId.isNotEmpty()) {
                 val setting = CustomerSettingEntity(
@@ -335,9 +597,9 @@ class CameraSkill @Inject constructor(
                 database.cameraDao().insertCustomerSetting(setting)
             }
             
-            // Initialize learning state for new camera
             if (!learningStates.containsKey(camera.id)) {
                 learningStates[camera.id] = CameraLearningState()
+                circuitBreakers[camera.id] = CircuitBreakerState()
             }
             
             AgentResponse(success = true, data = "Camera saved")
@@ -351,6 +613,9 @@ class CameraSkill @Inject constructor(
         return try {
             database.cameraDao().deleteCamera(cameraId)
             learningStates.remove(cameraId)
+            circuitBreakers.remove(cameraId)
+            pendingResets.remove(cameraId)
+            dailyEvents.remove(cameraId)
             AgentResponse(success = true, data = "Camera deleted")
         } catch (e: Exception) {
             AgentResponse(success = false, error = e.message)
@@ -359,12 +624,16 @@ class CameraSkill @Inject constructor(
     
     suspend fun deleteCustomer(customerId: String): AgentResponse {
         return try {
+            val cameras = database.cameraDao().getCamerasByCustomer(customerId)
             database.cameraDao().deleteCamerasByCustomer(customerId)
             database.cameraDao().deleteCustomerSetting(customerId)
             
-            // Remove learning states for deleted cameras
-            val camerasToRemove = learningStates.keys.filter { it.startsWith(customerId) }
-            camerasToRemove.forEach { learningStates.remove(it) }
+            cameras.forEach { camera ->
+                learningStates.remove(camera.id)
+                circuitBreakers.remove(camera.id)
+                pendingResets.remove(camera.id)
+                dailyEvents.remove(camera.id)
+            }
             
             AgentResponse(success = true, data = "Customer deleted")
         } catch (e: Exception) {
@@ -415,14 +684,18 @@ class CameraSkill @Inject constructor(
     
     private fun updateDiagnostics() {
         scope.launch {
-            val stats = learningStates.mapValues { (_, state) ->
+            val stats = learningStates.mapValues { (cameraId, state) ->
+                val cb = circuitBreakers[cameraId]
                 mapOf(
                     "samples" to state.falseDeltas.size,
                     "realEvents" to state.realEvents,
                     "deltaTrigger" to state.deltaTrigger,
                     "absDiffTrigger" to state.absDiffTrigger,
                     "baselineSize" to state.baselineWindow.size,
-                    "inCooldown" to (state.cooldownUntil > System.currentTimeMillis())
+                    "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
+                    "circuitBreakerOpen" to (cb?.isOpen ?: false),
+                    "offlineCount" to (cb?.offlineCount ?: 0),
+                    "pendingReset" to pendingResets.containsKey(cameraId)
                 )
             }
             _diagnostics.value = stats
@@ -437,7 +710,7 @@ class CameraSkill @Inject constructor(
                 <p>Hệ thống phát hiện biến động bất thường tại camera <strong>${camera.customername}</strong></p>
                 <table style="margin: 15px 0;">
                     <tr><td><strong>Vị trí:</strong></td><td>${camera.landinfo ?: "Không xác định"}</td></tr>
-                    <tr><td><strong>Thời gian:</strong></td><td>${java.text.SimpleDateFormat("HH:mm:ss dd/MM/yyyy").format(System.currentTimeMillis())}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(System.currentTimeMillis())}</td></tr>
                 </table>
                 <div style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107;">
                     <strong>🤖 Phân tích AI:</strong><br>
@@ -447,12 +720,5 @@ class CameraSkill @Inject constructor(
             </body>
             </html>
         """.trimIndent()
-    }
-    
-    companion object {
-        private const val DEFAULT_AI_PROMPT = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả."
-        private val DEFAULT_POSITIVE_KEYWORDS = listOf("cảnh báo")
-        private val DEFAULT_NEGATIVE_KEYWORDS = listOf("bình thường")
-        private const val COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000L // 3 hours
     }
 }

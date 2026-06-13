@@ -8,6 +8,8 @@ import com.aichatvn.agent.skills.base.BaseAgentSkill
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -29,12 +31,78 @@ class TrainingSkill @Inject constructor(
         refreshQAList("default_user")
     }
     
-    override suspend fun shutdown() {
-        // Cleanup
-    }
+    override suspend fun shutdown() { }
     
     suspend fun refreshQAList(username: String) {
         _qaList.value = database.qaDao().getAllQAs(username)
+    }
+    
+    suspend fun getQAsPaginated(page: Int, pageSize: Int, username: String): AgentResponse {
+        return try {
+            val allQAs = database.qaDao().getAllQAs(username)
+            val start = (page - 1) * pageSize
+            val end = minOf(start + pageSize, allQAs.size)
+            val paginated = if (start < allQAs.size) allQAs.subList(start, end) else emptyList()
+            
+            AgentResponse(
+                success = true,
+                data = mapOf(
+                    "qas" to paginated,
+                    "total" to allQAs.size,
+                    "page" to page,
+                    "pageSize" to pageSize
+                )
+            )
+        } catch (e: Exception) {
+            AgentResponse(success = false, error = e.message)
+        }
+    }
+    
+    suspend fun exportQAs(username: String): AgentResponse {
+        return try {
+            val allQAs = database.qaDao().getAllQAs(username)
+            val jsonArray = JSONArray()
+            for (qa in allQAs) {
+                val obj = JSONObject().apply {
+                    put("id", qa.id)
+                    put("question", qa.question)
+                    put("answer", qa.answer)
+                    put("category", qa.category)
+                    put("createdBy", qa.createdBy)
+                    put("createdAt", qa.createdAt)
+                    put("timestamp", qa.timestamp)
+                }
+                jsonArray.put(obj)
+            }
+            AgentResponse(success = true, data = jsonArray.toString(2))
+        } catch (e: Exception) {
+            AgentResponse(success = false, error = e.message)
+        }
+    }
+    
+    suspend fun importQAs(jsonString: String, username: String): AgentResponse {
+        return try {
+            val jsonArray = JSONArray(jsonString)
+            var imported = 0
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+                val qa = QAEntity(
+                    id = UUID.randomUUID().toString(),
+                    question = obj.getString("question"),
+                    answer = obj.getString("answer"),
+                    category = obj.optString("category", "chat"),
+                    createdBy = username,
+                    createdAt = System.currentTimeMillis(),
+                    timestamp = System.currentTimeMillis()
+                )
+                database.qaDao().insertQA(qa)
+                imported++
+            }
+            refreshQAList(username)
+            AgentResponse(success = true, data = "Imported $imported Q&As")
+        } catch (e: Exception) {
+            AgentResponse(success = false, error = e.message)
+        }
     }
     
     suspend fun addQA(question: String, answer: String, category: String, username: String): AgentResponse {
@@ -87,20 +155,20 @@ class TrainingSkill @Inject constructor(
         }
     }
     
-    suspend fun searchQAs(query: String, username: String): AgentResponse {
-        return try {
-            val results = database.qaDao().searchQAs(query, username)
-            AgentResponse(success = true, data = results)
-        } catch (e: Exception) {
-            AgentResponse(success = false, error = e.message)
-        }
-    }
-    
     suspend fun deleteAllQAs(username: String): AgentResponse {
         return try {
             database.qaDao().deleteAllQAs(username)
             refreshQAList(username)
             AgentResponse(success = true, data = "All QAs deleted")
+        } catch (e: Exception) {
+            AgentResponse(success = false, error = e.message)
+        }
+    }
+    
+    suspend fun searchQAs(query: String, username: String): AgentResponse {
+        return try {
+            val results = database.qaDao().searchQAs(query, username)
+            AgentResponse(success = true, data = results)
         } catch (e: Exception) {
             AgentResponse(success = false, error = e.message)
         }
@@ -129,13 +197,9 @@ class TrainingSkill @Inject constructor(
     
     private fun calculateSimilarity(s1: String, s2: String): Float {
         if (s1.isEmpty() || s2.isEmpty()) return 0f
-        
         val longer = if (s1.length > s2.length) s1 else s2
         val shorter = if (s1.length > s2.length) s2 else s1
-        
         if (longer.contains(shorter)) return 1f
-        
-        // Simple Levenshtein ratio
         val distance = levenshteinDistance(s1, s2)
         return 1f - (distance.toFloat() / maxOf(s1.length, s2.length))
     }

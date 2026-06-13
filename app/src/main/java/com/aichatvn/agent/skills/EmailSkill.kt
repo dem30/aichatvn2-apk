@@ -1,7 +1,10 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
-import com.aichatvn.agent.BuildConfig
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
 import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential
@@ -10,11 +13,14 @@ import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.gmail.Gmail
 import com.google.api.services.gmail.model.Message
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayDataSource
 import java.io.ByteArrayOutputStream
 import java.util.*
 import javax.activation.DataHandler
-import javax.activation.DataSource
 import javax.mail.Multipart
 import javax.mail.Session
 import javax.mail.internet.InternetAddress
@@ -24,6 +30,8 @@ import javax.mail.internet.MimeMultipart
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+
+val Context.emailDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
 @Singleton
 class EmailSkill @Inject constructor(
@@ -35,33 +43,58 @@ class EmailSkill @Inject constructor(
     private val httpTransport = NetHttpTransport()
     private val jsonFactory = GsonFactory.getDefaultInstance()
     
-    private val credentials: GoogleCredential? by lazy {
-        try {
-            GoogleCredential.Builder()
-                .setTransport(httpTransport)
-                .setJsonFactory(jsonFactory)
-                .setClientSecrets(BuildConfig.GMAIL_CLIENT_ID, BuildConfig.GMAIL_CLIENT_SECRET)
-                .build()
-                .setRefreshToken(BuildConfig.GMAIL_REFRESH_TOKEN)
-                .apply {
-                    refreshToken()
-                }
-        } catch (e: Exception) {
-            null
+    private var gmailService: Gmail? = null
+    private val credentialsMutex = Mutex()
+    
+    private suspend fun getGmailService(): Gmail? {
+        return credentialsMutex.withLock {
+            // Refresh nếu service null hoặc credentials hết hạn
+            if (gmailService == null || needsRefresh()) {
+                refreshCredentials()
+            }
+            gmailService
         }
     }
     
-    private val gmailService: Gmail? by lazy {
-        credentials?.let {
-            Gmail.Builder(httpTransport, jsonFactory, it)
+    private suspend fun refreshCredentials() {
+        try {
+            val prefs = context.emailDataStore.data.first()
+            val clientId = prefs[stringPreferencesKey("gmail_client_id")] ?: ""
+            val clientSecret = prefs[stringPreferencesKey("gmail_client_secret")] ?: ""
+            val refreshToken = prefs[stringPreferencesKey("gmail_refresh_token")] ?: ""
+            val senderEmail = prefs[stringPreferencesKey("gmail_sender")] ?: ""
+            
+            if (clientId.isBlank() || clientSecret.isBlank() || refreshToken.isBlank() || senderEmail.isBlank()) {
+                return
+            }
+            
+            val credential = GoogleCredential.Builder()
+                .setTransport(httpTransport)
+                .setJsonFactory(jsonFactory)
+                .setClientSecrets(clientId, clientSecret)
+                .build()
+                .setRefreshToken(refreshToken)
+            
+            // Refresh token
+            credential.refreshToken()
+            
+            gmailService = Gmail.Builder(httpTransport, jsonFactory, credential)
                 .setApplicationName("AIChatVN2")
                 .build()
+                
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
+    }
+    
+    private suspend fun needsRefresh(): Boolean {
+        // Simple check - attempt to refresh every time to be safe
+        // In production, you'd check token expiry
+        return true
     }
     
     override suspend fun initialize() {
-        // Pre-warm credentials
-        credentials?.refreshToken()
+        refreshCredentials()
     }
     
     override suspend fun shutdown() {
@@ -76,12 +109,26 @@ class EmailSkill @Inject constructor(
     ): AgentResponse {
         return withContext(Dispatchers.IO) {
             try {
-                val gmail = gmailService ?: return@withContext AgentResponse(
-                    success = false,
-                    error = "Gmail service not available"
-                )
+                // Get fresh credentials before each send
+                refreshCredentials()
                 
-                val mimeMessage = createMimeMessage(to, subject, body, imageBytes)
+                val gmail = gmailService
+                if (gmail == null) {
+                    return@withContext AgentResponse(
+                        success = false,
+                        error = "Gmail service not available. Vui lòng cấu hình Gmail trong Settings."
+                    )
+                }
+                
+                val senderEmail = context.emailDataStore.data.first()[stringPreferencesKey("gmail_sender")] ?: ""
+                if (senderEmail.isBlank()) {
+                    return@withContext AgentResponse(
+                        success = false,
+                        error = "Chưa cấu hình email gửi. Vui lòng vào Settings để cập nhật."
+                    )
+                }
+                
+                val mimeMessage = createMimeMessage(senderEmail, to, subject, body, imageBytes)
                 val message = Message()
                 message.raw = encodeMimeMessage(mimeMessage)
                 
@@ -90,12 +137,32 @@ class EmailSkill @Inject constructor(
                 
             } catch (e: Exception) {
                 e.printStackTrace()
+                
+                // Nếu lỗi 401, thử refresh credentials một lần nữa
+                if (e.message?.contains("401") == true) {
+                    try {
+                        refreshCredentials()
+                        val gmail = gmailService
+                        if (gmail != null) {
+                            val senderEmail = context.emailDataStore.data.first()[stringPreferencesKey("gmail_sender")] ?: ""
+                            val mimeMessage = createMimeMessage(senderEmail, to, subject, body, imageBytes)
+                            val message = Message()
+                            message.raw = encodeMimeMessage(mimeMessage)
+                            gmail.users().messages().send("me", message).execute()
+                            return@withContext AgentResponse(success = true, data = "Email sent after retry")
+                        }
+                    } catch (retryError: Exception) {
+                        retryError.printStackTrace()
+                    }
+                }
+                
                 AgentResponse(success = false, error = e.message ?: "Failed to send email")
             }
         }
     }
     
     private fun createMimeMessage(
+        from: String,
         to: String,
         subject: String,
         body: String,
@@ -105,27 +172,21 @@ class EmailSkill @Inject constructor(
         val session = Session.getDefaultInstance(props, null)
         val mimeMessage = MimeMessage(session)
         
-        mimeMessage.setFrom(InternetAddress(BuildConfig.GMAIL_SENDER))
+        mimeMessage.setFrom(InternetAddress(from))
         mimeMessage.addRecipient(javax.mail.Message.RecipientType.TO, InternetAddress(to))
         mimeMessage.subject = subject
         
         val multipart = MimeMultipart("mixed")
         
-        // HTML body part
         val htmlPart = MimeBodyPart().apply {
             setContent(body, "text/html; charset=utf-8")
         }
         multipart.addBodyPart(htmlPart)
         
-        // Image attachment
         imageBytes?.let {
             val imagePart = MimeBodyPart().apply {
-                val dataSource = object : DataSource {
-                    override fun getInputStream(): java.io.InputStream = it.inputStream()
-                    override fun getOutputStream(): ByteArrayOutputStream = ByteArrayOutputStream()
-                    override fun getContentType(): String = "image/jpeg"
-                    override fun getName(): String = "evidence.jpg"
-                }
+                // FIXED: Sử dụng ByteArrayDataSource thay vì anonymous DataSource
+                val dataSource = ByteArrayDataSource(it, "image/jpeg")
                 dataHandler = DataHandler(dataSource)
                 setFileName("evidence.jpg")
                 addHeader("Content-ID", "<evidence_img>")

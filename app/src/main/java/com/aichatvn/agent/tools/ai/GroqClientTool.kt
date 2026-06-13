@@ -1,8 +1,14 @@
 package com.aichatvn.agent.tools.ai
 
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
 import com.aichatvn.agent.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -12,11 +18,16 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+
 @Singleton
-class GroqClientTool @Inject constructor() {
+class GroqClientTool @Inject constructor(
+    private val context: Context
+) {
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -25,13 +36,33 @@ class GroqClientTool @Inject constructor() {
         .build()
     
     private val baseUrl = "https://api.groq.com/openai/v1"
-    private val apiKey = BuildConfig.GROQ_API_KEY
     
     private val textModel = "llama-3.3-70b-versatile"
     private val visionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     
-    private var lastCallTime = 0L
-    private val minCallInterval = 6000L // 6 seconds between calls
+    private val lastCallTime = AtomicLong(0L)
+    private val minCallInterval = 6000L
+    
+    private var cachedApiKey: String? = null
+    
+    private suspend fun getApiKey(): String {
+        cachedApiKey?.let { return it }
+        
+        val key = try {
+            val GROQ_API_KEY = stringPreferencesKey("groq_api_key")
+            val keyFromStore = context.dataStore.data.first()[GROQ_API_KEY]
+            if (!keyFromStore.isNullOrBlank()) {
+                keyFromStore
+            } else {
+                BuildConfig.GROQ_API_KEY
+            }
+        } catch (e: Exception) {
+            BuildConfig.GROQ_API_KEY
+        }
+        
+        cachedApiKey = key
+        return key
+    }
     
     suspend fun chat(
         message: String,
@@ -40,17 +71,21 @@ class GroqClientTool @Inject constructor() {
         imageUrl: String? = null
     ): String = withContext(Dispatchers.IO) {
         
-        // Rate limiting
         val now = System.currentTimeMillis()
-        val timeSinceLastCall = now - lastCallTime
-        if (timeSinceLastCall < minCallInterval) {
-            delay(minCallInterval - timeSinceLastCall)
+        var lastCall = lastCallTime.get()
+        while (now - lastCall < minCallInterval) {
+            delay(minCallInterval - (now - lastCall))
+            lastCall = lastCallTime.get()
         }
-        lastCallTime = System.currentTimeMillis()
+        lastCallTime.set(now)
+        
+        val apiKey = getApiKey()
+        if (apiKey.isBlank()) {
+            return@withContext "Lỗi: Chưa cấu hình Groq API Key. Vui lòng vào Settings để cập nhật."
+        }
         
         val messages = JSONArray()
         
-        // System prompt
         val systemPrompt = """
             Bạn là Groq, trợ lý hữu ích. Trả lời chính xác, ngắn gọn bằng tiếng Việt.
             Ưu tiên thông tin cụ thể từ ngữ cảnh cung cấp.
@@ -59,21 +94,17 @@ class GroqClientTool @Inject constructor() {
         """.trimIndent()
         messages.put(JSONObject().put("role", "system").put("content", systemPrompt))
         
-        // Add context if provided
         if (context.isNotEmpty()) {
             messages.put(JSONObject().put("role", "assistant").put("content", "Context: $context"))
         }
         
-        // Add chat history
         history.forEach { msg ->
             messages.put(JSONObject().put("role", msg["role"]).put("content", msg["content"]))
         }
         
-        // Build user message content
         val contentArray = JSONArray()
         contentArray.put(JSONObject().put("type", "text").put("text", message))
         
-        // Add image if provided
         if (imageUrl != null) {
             contentArray.put(
                 JSONObject().put("type", "image_url").put(
@@ -122,6 +153,7 @@ class GroqClientTool @Inject constructor() {
     suspend fun analyzeImage(imageBytes: ByteArray, prompt: String): String = withContext(Dispatchers.IO) {
         val base64Image = Base64.getEncoder().encodeToString(imageBytes)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
-        chat(message = "Phân tích hình ảnh này", context = prompt, imageUrl = dataUrl)
+        // FIXED: Thêm return@withContext
+        return@withContext chat(message = "Phân tích hình ảnh này", context = prompt, imageUrl = dataUrl)
     }
 }

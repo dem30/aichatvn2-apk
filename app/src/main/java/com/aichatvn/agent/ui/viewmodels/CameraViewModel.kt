@@ -1,5 +1,6 @@
 package com.aichatvn.agent.ui.viewmodels
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentRequest
@@ -9,6 +10,7 @@ import com.aichatvn.agent.data.database.AppDatabase
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,7 +21,8 @@ import javax.inject.Inject
 class CameraViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
     private val agentRouter: AgentRouter,
-    private val database: AppDatabase
+    private val database: AppDatabase,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _cameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
@@ -28,7 +31,7 @@ class CameraViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _isAdmin = MutableStateFlow(true) // Default admin for standalone app
+    private val _isAdmin = MutableStateFlow(true)
     val isAdmin: StateFlow<Boolean> = _isAdmin.asStateFlow()
 
     fun loadCameras() {
@@ -59,14 +62,27 @@ class CameraViewModel @Inject constructor(
         }
     }
 
+    // FIXED: Sửa logic toggle active
     fun toggleCameraActive(cameraId: String, active: Boolean) {
         viewModelScope.launch {
-            val cameras = database.cameraDao().getActiveCameras()
-            val camera = cameras.find { it.id == cameraId } ?: return@launch
-            database.cameraDao().updateCamera(
-                camera.copy(manualOff = if (!active) 1 else 0)
+            _isLoading.value = true
+            // active = true nghĩa là bật theo dõi -> manualOff = 0
+            // active = false nghĩa là tắt theo dõi -> manualOff = 1
+            val manualOff = if (active) 0 else 1
+            agentRouter.route(
+                AgentRequest(
+                    intent = IntentType.CAMERA_UPDATE,
+                    payload = mapOf(
+                        "config" to mapOf(
+                            "id" to cameraId,
+                            "manualOff" to manualOff
+                        )
+                    ),
+                    username = "default_user"
+                )
             )
             loadCameras()
+            _isLoading.value = false
         }
     }
 
@@ -79,6 +95,17 @@ class CameraViewModel @Inject constructor(
     }
 
     fun syncFromCloud() {
-        // Optional cloud sync — no-op in offline mode
+        viewModelScope.launch {
+            _isLoading.value = true
+            agentRouter.route(
+                AgentRequest(
+                    intent = IntentType.SYNC_CLOUD,
+                    payload = emptyMap(),
+                    username = "default_user"
+                )
+            )
+            loadCameras()
+            _isLoading.value = false
+        }
     }
 }
