@@ -1,8 +1,10 @@
 package com.aichatvn.agent.ui.screens
 
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -42,11 +45,9 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     
-    // Typing effect state
     var typingMessage by remember { mutableStateOf("") }
     var isTyping by remember { mutableStateOf(false) }
     
-    // Image picker launcher
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -56,7 +57,6 @@ fun ChatScreen(
         }
     }
     
-    // Auto-scroll to bottom
     LaunchedEffect(messages.size, typingMessage) {
         if (messages.isNotEmpty() || typingMessage.isNotEmpty()) {
             listState.animateScrollToItem(
@@ -65,7 +65,6 @@ fun ChatScreen(
         }
     }
     
-    // Typing effect for AI response
     LaunchedEffect(isLoading) {
         if (isLoading) {
             isTyping = true
@@ -82,7 +81,6 @@ fun ChatScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Top bar with mode selector
         TopAppBar(
             title = { Text("Trò chuyện với AI") },
             actions = {
@@ -149,7 +147,6 @@ fun ChatScreen(
             }
         )
         
-        // Mode indicator
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.primaryContainer
@@ -166,7 +163,6 @@ fun ChatScreen(
             )
         }
         
-        // Message list
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -180,7 +176,6 @@ fun ChatScreen(
                 ChatBubble(message = message)
             }
             
-            // Typing effect indicator
             if (isTyping) {
                 item {
                     Box(
@@ -215,7 +210,6 @@ fun ChatScreen(
             }
         }
         
-        // Image preview if selected
         if (selectedImageUri != null) {
             Card(
                 modifier = Modifier
@@ -244,7 +238,6 @@ fun ChatScreen(
         
         HorizontalDivider()
         
-        // Input area
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -252,7 +245,6 @@ fun ChatScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Image picker button
             IconButton(
                 onClick = { imagePickerLauncher.launch("image/*") },
                 enabled = !isLoading
@@ -293,6 +285,7 @@ fun ChatScreen(
 @Composable
 fun ChatBubble(message: ChatMessageEntity) {
     val isUser = message.role == "user"
+    val context = LocalContext.current
     
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -316,17 +309,28 @@ fun ChatBubble(message: ChatMessageEntity) {
             Column(
                 modifier = Modifier.padding(12.dp)
             ) {
-                // Hiển thị ảnh nếu có
                 if (message.type == "image" && message.fileUrl != null) {
-                    // Sử dụng Coil hoặc Glide để load ảnh
-                    androidx.compose.foundation.Image(
-                        painter = androidx.compose.ui.graphics.painter.Painter(),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(150.dp)
-                    )
-                    Spacer(Modifier.height(4.dp))
+                    val bitmap = remember(message.fileUrl) {
+                        try {
+                            val file = java.io.File(message.fileUrl)
+                            if (file.exists()) {
+                                BitmapFactory.decodeFile(message.fileUrl)
+                            } else null
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                    
+                    if (bitmap != null) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp)
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
                 }
                 
                 Text(

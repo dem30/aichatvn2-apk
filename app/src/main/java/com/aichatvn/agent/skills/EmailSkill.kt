@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayDataSource
 import java.io.ByteArrayOutputStream
 import java.util.*
 import javax.activation.DataHandler
@@ -27,6 +26,7 @@ import javax.mail.internet.InternetAddress
 import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
 import javax.mail.internet.MimeMultipart
+import javax.mail.util.ByteArrayDataSource
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -48,7 +48,6 @@ class EmailSkill @Inject constructor(
     
     private suspend fun getGmailService(): Gmail? {
         return credentialsMutex.withLock {
-            // Refresh nếu service null hoặc credentials hết hạn
             if (gmailService == null || needsRefresh()) {
                 refreshCredentials()
             }
@@ -75,7 +74,6 @@ class EmailSkill @Inject constructor(
                 .build()
                 .setRefreshToken(refreshToken)
             
-            // Refresh token
             credential.refreshToken()
             
             gmailService = Gmail.Builder(httpTransport, jsonFactory, credential)
@@ -88,8 +86,6 @@ class EmailSkill @Inject constructor(
     }
     
     private suspend fun needsRefresh(): Boolean {
-        // Simple check - attempt to refresh every time to be safe
-        // In production, you'd check token expiry
         return true
     }
     
@@ -98,7 +94,6 @@ class EmailSkill @Inject constructor(
     }
     
     override suspend fun shutdown() {
-        // Nothing to do
     }
     
     suspend fun sendEmail(
@@ -109,7 +104,6 @@ class EmailSkill @Inject constructor(
     ): AgentResponse {
         return withContext(Dispatchers.IO) {
             try {
-                // Get fresh credentials before each send
                 refreshCredentials()
                 
                 val gmail = gmailService
@@ -138,7 +132,6 @@ class EmailSkill @Inject constructor(
             } catch (e: Exception) {
                 e.printStackTrace()
                 
-                // Nếu lỗi 401, thử refresh credentials một lần nữa
                 if (e.message?.contains("401") == true) {
                     try {
                         refreshCredentials()
@@ -185,10 +178,9 @@ class EmailSkill @Inject constructor(
         
         imageBytes?.let {
             val imagePart = MimeBodyPart().apply {
-                // FIXED: Sử dụng ByteArrayDataSource thay vì anonymous DataSource
                 val dataSource = ByteArrayDataSource(it, "image/jpeg")
                 dataHandler = DataHandler(dataSource)
-                setFileName("evidence.jpg")
+                fileName = "evidence.jpg"
                 addHeader("Content-ID", "<evidence_img>")
                 addHeader("Content-Disposition", "inline")
             }

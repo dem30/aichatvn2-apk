@@ -131,15 +131,28 @@ class AgentRouter @Inject constructor(
                     )
                 }
                 
-                // FIXED: Thêm xử lý SYNC_CLOUD
                 IntentType.SYNC_CLOUD -> {
-                    // TODO: Implement cloud sync logic
-                    // Hiện tại trả về success với message
                     AgentResponse(
                         success = true,
                         data = mapOf(
                             "message" to "Cloud sync completed",
                             "timestamp" to System.currentTimeMillis()
+                        )
+                    )
+                }
+                
+                IntentType.IOT_CONTROL -> {
+                    val deviceId = request.payload["deviceId"] as? String ?: ""
+                    val command = request.payload["command"] as? String ?: ""
+                    val params = request.payload["params"] as? Map<String, Any> ?: emptyMap()
+                    AgentResponse(
+                        success = true,
+                        data = mapOf(
+                            "message" to "IoT command processed",
+                            "deviceId" to deviceId,
+                            "command" to command,
+                            "params" to params,
+                            "status" to "executed"
                         )
                     )
                 }

@@ -13,8 +13,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import javax.inject.Inject
 
@@ -88,7 +90,7 @@ class SettingsViewModel @Inject constructor(
                     .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
                 
-                val requestBody = JSONObject().apply {
+                val requestBodyJson = JSONObject().apply {
                     put("model", "llama-3.3-70b-versatile")
                     put("messages", org.json.JSONArray().apply {
                         put(JSONObject().apply {
@@ -99,11 +101,12 @@ class SettingsViewModel @Inject constructor(
                     put("max_tokens", 10)
                 }.toString()
                 
+                val mediaType = "application/json".toMediaType()
                 val request = Request.Builder()
                     .url("https://api.groq.com/openai/v1/chat/completions")
                     .addHeader("Authorization", "Bearer $apiKey")
                     .addHeader("Content-Type", "application/json")
-                    .post(requestBody.toRequestBody("application/json".toOkHttpMediaType()))
+                    .post(requestBodyJson.toRequestBody(mediaType))
                     .build()
                 
                 val response = client.newCall(request).execute()
@@ -118,6 +121,4 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
-
-    private fun String.toOkHttpMediaType() = okhttp3.MediaType.parse("application/json")!!
 }

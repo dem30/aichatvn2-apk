@@ -10,9 +10,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -20,12 +20,12 @@ fun SettingsScreen(
     navController: NavController,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val groqApiKey by viewModel.groqApiKey.collectAsStateWithLifecycle()
-    val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
-    val gmailClientId by viewModel.gmailClientId.collectAsStateWithLifecycle()
-    val gmailClientSecret by viewModel.gmailClientSecret.collectAsStateWithLifecycle()
-    val gmailRefreshToken by viewModel.gmailRefreshToken.collectAsStateWithLifecycle()
-    val gmailSender by viewModel.gmailSender.collectAsStateWithLifecycle()
+    val groqApiKey by viewModel.groqApiKey.collectAsState()
+    val darkMode by viewModel.darkMode.collectAsState()
+    val gmailClientId by viewModel.gmailClientId.collectAsState()
+    val gmailClientSecret by viewModel.gmailClientSecret.collectAsState()
+    val gmailRefreshToken by viewModel.gmailRefreshToken.collectAsState()
+    val gmailSender by viewModel.gmailSender.collectAsState()
 
     var groqKeyInput by remember(groqApiKey) { mutableStateOf(groqApiKey) }
     var gmailClientIdInput by remember(gmailClientId) { mutableStateOf(gmailClientId) }
@@ -44,8 +44,8 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Groq API
             Text("🤖 Groq API", style = MaterialTheme.typography.titleMedium)
+            
             OutlinedTextField(
                 value = groqKeyInput,
                 onValueChange = { groqKeyInput = it },
@@ -56,7 +56,6 @@ fun SettingsScreen(
                 isError = errorMessage != null
             )
 
-            // Test Connection button
             Button(
                 onClick = {
                     viewModel.testGroqConnection(groqKeyInput) { success, message ->
@@ -78,42 +77,44 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Gmail
             Text("📧 Gmail API", style = MaterialTheme.typography.titleMedium)
+            
             OutlinedTextField(
-                value = gmailClientIdInput, 
+                value = gmailClientIdInput,
                 onValueChange = { gmailClientIdInput = it },
-                label = { Text("Client ID") }, 
-                modifier = Modifier.fillMaxWidth(), 
+                label = { Text("Client ID") },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            
             OutlinedTextField(
-                value = gmailClientSecretInput, 
+                value = gmailClientSecretInput,
                 onValueChange = { gmailClientSecretInput = it },
-                label = { Text("Client Secret") }, 
+                label = { Text("Client Secret") },
                 modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(), 
+                visualTransformation = PasswordVisualTransformation(),
                 singleLine = true
             )
+            
             OutlinedTextField(
-                value = gmailRefreshTokenInput, 
+                value = gmailRefreshTokenInput,
                 onValueChange = { gmailRefreshTokenInput = it },
-                label = { Text("Refresh Token") }, 
+                label = { Text("Refresh Token") },
                 modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(), 
+                visualTransformation = PasswordVisualTransformation(),
                 singleLine = true
             )
+            
             OutlinedTextField(
-                value = gmailSenderInput, 
+                value = gmailSenderInput,
                 onValueChange = { gmailSenderInput = it },
-                label = { Text("Email gửi") }, 
-                modifier = Modifier.fillMaxWidth(), 
+                label = { Text("Email gửi") },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
 
             HorizontalDivider()
 
-            // Dark mode
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -125,14 +126,13 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // Save button
             Button(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
                     viewModel.saveGmailSettings(
-                        gmailClientIdInput, 
-                        gmailClientSecretInput, 
-                        gmailRefreshTokenInput, 
+                        gmailClientIdInput,
+                        gmailClientSecretInput,
+                        gmailRefreshTokenInput,
                         gmailSenderInput
                     )
                     showSaved = true
@@ -145,19 +145,25 @@ fun SettingsScreen(
 
             if (errorMessage != null) {
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                    Text("❌ $errorMessage", modifier = Modifier.padding(12.dp),
-                        color = MaterialTheme.colorScheme.onErrorContainer)
+                    Text(
+                        text = "❌ $errorMessage",
+                        modifier = Modifier.padding(12.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
                 }
             }
 
             if (showSaved) {
                 LaunchedEffect(Unit) {
-                    kotlinx.coroutines.delay(2000)
+                    delay(2000)
                     showSaved = false
                 }
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                    Text("✅ Đã lưu!", modifier = Modifier.padding(12.dp),
-                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text(
+                        text = "✅ Đã lưu!",
+                        modifier = Modifier.padding(12.dp),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 }
             }
         }
