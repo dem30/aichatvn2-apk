@@ -6,6 +6,7 @@
     <string name="tab_training">Huấn luyện</string>
     <string name="tab_diagnostics">Chẩn đoán</string>
     <string name="tab_settings">Cài đặt</string>
+    <string name="tab_logs">Logs</string>
     <string name="save">Lưu</string>
     <string name="cancel">Hủy</string>
     <string name="delete">Xóa</string>

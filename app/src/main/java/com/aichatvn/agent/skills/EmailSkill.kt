@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.utils.Logger
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
@@ -36,6 +37,7 @@ val Context.emailDataStore: DataStore<Preferences> by preferencesDataStore(name 
 @Singleton
 class EmailSkill @Inject constructor(
     @ApplicationContext private val context: Context
+    , private val logger: Logger
 ) : BaseAgentSkill {
     
     override val skillName = "EmailSkill"
@@ -81,7 +83,7 @@ class EmailSkill @Inject constructor(
                 .build()
                 
         } catch (e: Exception) {
-            e.printStackTrace()
+            logger.e("EmailSkill", "Error: ${e.message}", e)
         }
     }
     
@@ -130,7 +132,7 @@ class EmailSkill @Inject constructor(
                 AgentResponse(success = true, data = "Email sent")
                 
             } catch (e: Exception) {
-                e.printStackTrace()
+                logger.e("EmailSkill", "Error: ${e.message}", e)
                 
                 if (e.message?.contains("401") == true) {
                     try {

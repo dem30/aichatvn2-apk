@@ -22,6 +22,7 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
     object Camera     : Screen("camera",      R.string.tab_camera,      Icons.Default.Videocam)
     object Training   : Screen("training",    R.string.tab_training,    Icons.Default.School)
     object Diagnostics: Screen("diagnostics", R.string.tab_diagnostics, Icons.Default.MonitorHeart)
+    object Logs       : Screen("logs",       R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",   R.string.tab_settings,    Icons.Default.Settings)
 }
 
@@ -67,6 +68,7 @@ fun AppNavigator() {
             composable(Screen.Camera.route)      { CameraScreen(navController) }
             composable(Screen.Training.route)    { TrainingScreen(navController) }
             composable(Screen.Diagnostics.route) { DiagnosticsScreen(navController) }
+            composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
         }
     }

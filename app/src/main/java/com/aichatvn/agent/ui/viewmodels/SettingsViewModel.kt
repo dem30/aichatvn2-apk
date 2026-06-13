@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
@@ -25,6 +26,7 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "se
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context
+    , private val logger: Logger
 ) : ViewModel() {
 
     companion object {
@@ -117,6 +119,7 @@ class SettingsViewModel @Inject constructor(
                 }
                 response.close()
             } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Lỗi kết nối: ${e.message}", e)
                 onResult(false, "Lỗi kết nối: ${e.message}")
             }
         }

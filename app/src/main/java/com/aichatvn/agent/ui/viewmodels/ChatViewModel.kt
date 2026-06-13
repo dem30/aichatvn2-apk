@@ -20,12 +20,14 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 import javax.inject.Inject
+import com.aichatvn.agent.utils.Logger
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
     private val agentRouter: AgentRouter,
     @ApplicationContext private val context: Context
+    , private val logger: Logger
 ) : ViewModel() {
 
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
@@ -65,7 +67,7 @@ class ChatViewModel @Inject constructor(
                     }
                     fileUrl = tempFile.absolutePath
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    logger.e("ChatViewModel", "Lỗi xử lý ảnh: ${e.message}", e)
                 }
             }
             

@@ -84,6 +84,9 @@ fun ChatScreen(
         TopAppBar(
             title = { Text("Trò chuyện với AI") },
             actions = {
+                IconButton(onClick = { navController.navigate("logs") }) {
+                    Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
+                }
                 IconButton(onClick = { viewModel.clearHistory() }) {
                     Icon(Icons.Default.Delete, contentDescription = "Xóa lịch sử")
                 }

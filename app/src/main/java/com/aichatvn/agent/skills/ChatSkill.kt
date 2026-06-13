@@ -6,6 +6,7 @@ import com.aichatvn.agent.data.database.AppDatabase
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +27,7 @@ class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val groqClient: GroqClientTool,
     private val trainingSkill: TrainingSkill
+    , private val logger: Logger
 ) : BaseAgentSkill {
     
     override val skillName = "ChatSkill"
@@ -167,6 +169,7 @@ class ChatSkill @Inject constructor(
             )
             
         } catch (e: Exception) {
+            logger.e("ChatSkill", "Error: ${e.message}", e)
             AgentResponse(
                 success = false,
                 error = e.message ?: "Failed to process query"
@@ -180,6 +183,7 @@ class ChatSkill @Inject constructor(
             _messages.value = emptyList()
             AgentResponse(success = true, data = "History cleared")
         } catch (e: Exception) {
+            logger.e("ChatSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -189,6 +193,7 @@ class ChatSkill @Inject constructor(
             val history = database.chatMessageDao().getMessages(username, limit)
             AgentResponse(success = true, data = history)
         } catch (e: Exception) {
+            logger.e("ChatSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }

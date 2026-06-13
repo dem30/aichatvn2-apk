@@ -11,6 +11,7 @@ import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
+import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,8 @@ class CameraSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
-    private val eventBus: EventBus
+    private val eventBus: EventBus,
+    private val logger: Logger
 ) : BaseAgentSkill {
     
     override val skillName = "CameraSkill"
@@ -180,7 +182,7 @@ class CameraSkill @Inject constructor(
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("CameraSkill", "Error sending daily reports: ${e.message}", e)
+            logger.e("CameraSkill", "Error sending daily reports: ${e.message}", e)
         }
     }
     
@@ -239,7 +241,7 @@ class CameraSkill @Inject constructor(
         if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
-            android.util.Log.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $cameraId (offline ${cb.offlineCount} times)")
+            logger.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $cameraId (offline ${cb.offlineCount} times)")
         }
     }
     
@@ -256,7 +258,7 @@ class CameraSkill @Inject constructor(
         
         // Nếu sau 2 chu kỳ (khoảng 60 phút) mà diff vẫn lớn, reset learning
         if (timeSince > 60 * 60 * 1000L && diffChange <= 5 && currentDiff >= absDiffTrigger / 2) {
-            android.util.Log.w("CameraSkill", "🔄 Pending Reset triggered for camera $cameraId - resetting learning state")
+            logger.w("CameraSkill", "🔄 Pending Reset triggered for camera $cameraId - resetting learning state")
             pendingResets.remove(cameraId)
             return true
         }
@@ -310,7 +312,7 @@ class CameraSkill @Inject constructor(
             for (camera in cameras) {
                 // Check circuit breaker
                 if (!isDailyReport && isCircuitBreakerOpen(camera.id)) {
-                    android.util.Log.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera ${camera.id}")
+                    logger.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera ${camera.id}")
                     continue
                 }
                 
@@ -459,7 +461,7 @@ class CameraSkill @Inject constructor(
                         // Nếu AI nói bình thường nhưng diff lớn, đánh dấu pending reset
                         if (isMature && isSuddenChange) {
                             pendingResets[camera.id] = PendingResetState(currentDiff, now)
-                            android.util.Log.i("CameraSkill", "⚠️ Pending reset for camera ${camera.id} - monitoring next cycle")
+                            logger.i("CameraSkill", "⚠️ Pending reset for camera ${camera.id} - monitoring next cycle")
                         }
                     }
                 }
@@ -515,7 +517,7 @@ class CameraSkill @Inject constructor(
                 )
                 
             } catch (e: Exception) {
-                android.util.Log.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
+                logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
                 return mapOf(
                     "cameraId" to camera.id,
                     "success" to false,

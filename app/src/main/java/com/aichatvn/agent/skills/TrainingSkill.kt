@@ -5,6 +5,7 @@ import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.data.database.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +19,7 @@ import javax.inject.Singleton
 @Singleton
 class TrainingSkill @Inject constructor(
     @ApplicationContext private val context: Context
+    , private val logger: Logger
 ) : BaseAgentSkill {
     
     override val skillName = "TrainingSkill"
@@ -54,6 +56,7 @@ class TrainingSkill @Inject constructor(
                 )
             )
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -76,6 +79,7 @@ class TrainingSkill @Inject constructor(
             }
             AgentResponse(success = true, data = jsonArray.toString(2))
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -101,6 +105,7 @@ class TrainingSkill @Inject constructor(
             refreshQAList(username)
             AgentResponse(success = true, data = "Imported $imported Q&As")
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -120,6 +125,7 @@ class TrainingSkill @Inject constructor(
             refreshQAList(username)
             AgentResponse(success = true, data = qa)
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -141,6 +147,7 @@ class TrainingSkill @Inject constructor(
             refreshQAList(username)
             AgentResponse(success = true, data = updated)
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -151,6 +158,7 @@ class TrainingSkill @Inject constructor(
             refreshQAList(username)
             AgentResponse(success = true, data = "QA deleted")
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -161,6 +169,7 @@ class TrainingSkill @Inject constructor(
             refreshQAList(username)
             AgentResponse(success = true, data = "All QAs deleted")
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -170,6 +179,7 @@ class TrainingSkill @Inject constructor(
             val results = database.qaDao().searchQAs(query, username)
             AgentResponse(success = true, data = results)
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
@@ -191,6 +201,7 @@ class TrainingSkill @Inject constructor(
                 data = matches.map { mapOf("qa" to it.first, "similarity" to it.second) }
             )
         } catch (e: Exception) {
+            logger.e("TrainingSkill", "Error: ${e.message}", e)
             AgentResponse(success = false, error = e.message)
         }
     }
