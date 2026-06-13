@@ -50,7 +50,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     val groqApiKey: StateFlow<String> = context.dataStore.data
-        .map { it[GROQ_API_KEY] ?: "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" }
+        .map { it[GROQ_API_KEY] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     val darkMode: StateFlow<Boolean> = context.dataStore.data
