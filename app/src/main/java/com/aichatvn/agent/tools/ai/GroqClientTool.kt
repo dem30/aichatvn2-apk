@@ -59,7 +59,7 @@ class GroqClientTool @Inject constructor(
 
     suspend fun chat(
         message: String,
-        context: String = "",
+        extraContext: String = "",
         history: List<Map<String, String>> = emptyList(),
         imageUrl: String? = null
     ): String = withContext(Dispatchers.IO) {
@@ -87,8 +87,8 @@ class GroqClientTool @Inject constructor(
         """.trimIndent()
         messages.put(JSONObject().put("role", "system").put("content", systemPrompt))
 
-        if (context.isNotEmpty()) {
-            messages.put(JSONObject().put("role", "assistant").put("content", "Context: $context"))
+        if (extraContext.isNotEmpty()) {
+            messages.put(JSONObject().put("role", "assistant").put("content", "Context: $extraContext"))
         }
 
         history.forEach { msg ->
@@ -96,15 +96,17 @@ class GroqClientTool @Inject constructor(
         }
 
         val contentArray = JSONArray()
-        contentArray.put(JSONObject().put("type", "text").put("text", message))
 
+        // Groq/Llama-4 yêu cầu image_url đứng TRƯỚC text
         if (imageUrl != null) {
             contentArray.put(
-                JSONObject().put("type", "image_url").put(
-                    "image_url", JSONObject().put("url", imageUrl)
-                )
+                JSONObject()
+                    .put("type", "image_url")
+                    .put("image_url", JSONObject().put("url", imageUrl))
             )
         }
+
+        contentArray.put(JSONObject().put("type", "text").put("text", message))
 
         messages.put(JSONObject().put("role", "user").put("content", contentArray))
 
@@ -148,6 +150,6 @@ class GroqClientTool @Inject constructor(
     suspend fun analyzeImage(imageBytes: ByteArray, prompt: String): String = withContext(Dispatchers.IO) {
         val base64Image = Base64.getEncoder().encodeToString(imageBytes)
         val dataUrl = "data:image/jpeg;base64,$base64Image"
-        return@withContext chat(message = "Phân tích hình ảnh này", context = prompt, imageUrl = dataUrl)
+        return@withContext chat(message = prompt, imageUrl = dataUrl)
     }
 }
