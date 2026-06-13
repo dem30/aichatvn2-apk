@@ -1,16 +1,14 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.utils.Logger
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential
 import com.google.api.client.http.javanet.NetHttpTransport
@@ -32,12 +30,10 @@ import javax.mail.Session
 import javax.mail.internet.InternetAddress
 import javax.mail.internet.MimeMessage
 
-val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
-
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    @ApplicationContext private val context: Context
-    , private val logger: Logger
+    @ApplicationContext private val context: Context,
+    private val logger: Logger
 ) : ViewModel() {
 
     companion object {
@@ -102,7 +98,7 @@ class SettingsViewModel @Inject constructor(
                 val client = OkHttpClient.Builder()
                     .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
                     .build()
-                
+
                 val requestBodyJson = JSONObject().apply {
                     put("model", "llama-3.3-70b-versatile")
                     put("messages", org.json.JSONArray().apply {
@@ -113,7 +109,7 @@ class SettingsViewModel @Inject constructor(
                     })
                     put("max_tokens", 10)
                 }.toString()
-                
+
                 val mediaType = "application/json".toMediaType()
                 val request = Request.Builder()
                     .url("https://api.groq.com/openai/v1/chat/completions")
@@ -121,7 +117,7 @@ class SettingsViewModel @Inject constructor(
                     .addHeader("Content-Type", "application/json")
                     .post(requestBodyJson.toRequestBody(mediaType))
                     .build()
-                
+
                 val response = client.newCall(request).execute()
                 val responseBody = response.body?.string()
                 if (response.isSuccessful) {
@@ -144,7 +140,7 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
-    
+
     suspend fun testSendEmail(
         to: String,
         clientId: String,
@@ -157,39 +153,39 @@ class SettingsViewModel @Inject constructor(
                 if (clientId.isBlank() || clientSecret.isBlank() || refreshToken.isBlank() || senderEmail.isBlank()) {
                     return@withContext "❌ Vui lòng cấu hình đầy đủ Gmail settings trước"
                 }
-                
+
                 val httpTransport = NetHttpTransport()
                 val jsonFactory = GsonFactory.getDefaultInstance()
-                
+
                 val credential = GoogleCredential.Builder()
                     .setTransport(httpTransport)
                     .setJsonFactory(jsonFactory)
                     .setClientSecrets(clientId, clientSecret)
                     .build()
                     .setRefreshToken(refreshToken)
-                
+
                 credential.refreshToken()
-                
+
                 val gmailService = Gmail.Builder(httpTransport, jsonFactory, credential)
                     .setApplicationName("AIChatVN2")
                     .build()
-                
+
                 val props = Properties()
                 val session = Session.getDefaultInstance(props, null)
                 val mimeMessage = MimeMessage(session)
-                
+
                 mimeMessage.setFrom(InternetAddress(senderEmail))
                 mimeMessage.addRecipient(javax.mail.Message.RecipientType.TO, InternetAddress(to))
                 mimeMessage.subject = "📧 Test email từ AIChatVN2"
                 mimeMessage.setText("Đây là email test từ ứng dụng AIChatVN2.\nThời gian: ${System.currentTimeMillis()}")
-                
+
                 val outputStream = ByteArrayOutputStream()
                 mimeMessage.writeTo(outputStream)
                 val rawMessage = Base64.getUrlEncoder().encodeToString(outputStream.toByteArray())
-                
+
                 val message = Message().setRaw(rawMessage)
                 gmailService.users().messages().send("me", message).execute()
-                
+
                 "✅ Email test đã gửi thành công tới $to"
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Test email error: ${e.message}", e)
