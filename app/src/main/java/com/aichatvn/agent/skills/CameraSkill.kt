@@ -12,11 +12,9 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.di.ApplicationScope
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,13 +35,13 @@ class CameraSkill @Inject constructor(
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
     private val eventBus: EventBus,
-    private val logger: Logger
+    private val logger: Logger,
+    @ApplicationScope private val scope: CoroutineScope
 ) : BaseAgentSkill {
     
     override val skillName = "CameraSkill"
     
     private val database by lazy { AppDatabase.getDatabase(context) }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cameraMutex = Mutex()
     
     // ==================== HỌC TẬP THÍCH NGHI ====================
@@ -220,7 +218,8 @@ class CameraSkill @Inject constructor(
     }
     
     override suspend fun shutdown() {
-        scope.cancel()
+        // ApplicationScope được quản lý bởi Hilt SingletonComponent
+        // Không cancel ở đây để tránh ảnh hưởng các coroutine khác dùng chung scope
     }
     
     private fun isCircuitBreakerOpen(cameraId: String): Boolean {
