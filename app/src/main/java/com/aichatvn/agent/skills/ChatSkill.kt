@@ -55,7 +55,8 @@ class ChatSkill @Inject constructor(
         message: String,
         context: String,
         username: String,
-        fileUrl: String? = null
+        fileUrl: String? = null,
+        imageBase64: String? = null
     ): AgentResponse {
         return try {
             // Save user message
@@ -66,7 +67,7 @@ class ChatSkill @Inject constructor(
                 username = username,
                 content = message,
                 role = "user",
-                type = if (fileUrl != null) "image" else "text",
+                type = if (fileUrl != null || imageBase64 != null) "image" else "text",
                 fileUrl = fileUrl,
                 timestamp = System.currentTimeMillis()
             )
@@ -79,6 +80,22 @@ class ChatSkill @Inject constructor(
             // Process based on chat mode
             val currentMode = _chatMode.value
             val response: String
+            
+            // Tạo dataUrl cho ảnh nếu có
+            val imageDataUrl = if (imageBase64 != null) {
+                "data:image/jpeg;base64,$imageBase64"
+            } else if (fileUrl != null) {
+                try {
+                    val file = java.io.File(fileUrl)
+                    if (file.exists()) {
+                        val bytes = file.readBytes()
+                        val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                        "data:image/jpeg;base64,$base64"
+                    } else null
+                } catch (e: Exception) {
+                    null
+                }
+            } else null
             
             when (currentMode) {
                 ChatMode.QA -> {
@@ -130,7 +147,7 @@ class ChatSkill @Inject constructor(
                         history = _messages.value.takeLast(10).map { 
                             mapOf("role" to it.role, "content" to it.content) 
                         },
-                        imageUrl = fileUrl
+                        imageUrl = imageDataUrl
                     )
                 }
                 
@@ -142,7 +159,7 @@ class ChatSkill @Inject constructor(
                         history = _messages.value.takeLast(10).map { 
                             mapOf("role" to it.role, "content" to it.content) 
                         },
-                        imageUrl = fileUrl
+                        imageUrl = imageDataUrl
                     )
                 }
             }

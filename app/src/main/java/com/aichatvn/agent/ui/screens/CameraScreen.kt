@@ -29,9 +29,20 @@ fun CameraScreen(
     val cameras by viewModel.cameras.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isAdmin by viewModel.isAdmin.collectAsState(initial = false)
+    val testResult by viewModel.testResult.collectAsState()
     
     var showAddDialog by remember { mutableStateOf(false) }
     var selectedCamera by remember { mutableStateOf<CameraConfigEntity?>(null) }
+    
+    // Snackbar for test result
+    val snackbarHostState = remember { SnackbarHostState() }
+    
+    LaunchedEffect(testResult) {
+        testResult?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearTestResult()
+        }
+    }
     
     LaunchedEffect(Unit) {
         viewModel.loadCameras()
@@ -52,7 +63,8 @@ fun CameraScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         Box(
             modifier = Modifier
@@ -81,7 +93,7 @@ fun CameraScreen(
                             isAdmin = isAdmin,
                             onEdit = { selectedCamera = camera },
                             onDelete = { viewModel.deleteCamera(camera.id) },
-                            onToggleActive = { viewModel.toggleCameraActive(camera.id, camera.isOnline != 1) },
+                            onToggleActive = { viewModel.toggleCameraActive(camera.id, camera.manualOff == 0 && camera.isOnline == 1) },
                             onTest = { viewModel.testCamera(camera.id) }
                         )
                     }
@@ -150,7 +162,6 @@ fun CameraCard(
                 }
                 
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    // Status indicator
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = if (isOnline) MaterialTheme.colorScheme.primaryContainer
@@ -176,6 +187,16 @@ fun CameraCard(
                 style = MaterialTheme.typography.bodyMedium
             )
             
+            // Hiển thị AI Prompt preview
+            if (camera.aiPrompt.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "🤖 Prompt: ${camera.aiPrompt.take(50)}${if (camera.aiPrompt.length > 50) "..." else ""}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            
             Spacer(modifier = Modifier.height(8.dp))
             
             if (isAdmin) {
@@ -184,14 +205,13 @@ fun CameraCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Toggle active switch
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text("Theo dõi", style = MaterialTheme.typography.labelSmall)
                         Switch(
-                            checked = isOnline && camera.manualOff == 0,
+                            checked = isOnline,
                             onCheckedChange = { onToggleActive() },
                             modifier = Modifier.height(32.dp)
                         )
@@ -213,6 +233,7 @@ fun CameraCard(
         }
     }
 }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraDialog(
@@ -226,18 +247,87 @@ fun CameraDialog(
     var customerEmail by remember { mutableStateOf(camera?.customeremail ?: "") }
     var snapshotUrl by remember { mutableStateOf(camera?.snapshoturl ?: "") }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
+    var aiPrompt by remember { mutableStateOf(camera?.aiPrompt ?: "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả.") }
+    var aiPositiveKeywords by remember { mutableStateOf(camera?.aiPositiveKeywords ?: "cảnh báo") }
+    var aiNegativeKeywords by remember { mutableStateOf(camera?.aiNegativeKeywords ?: "bình thường") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (camera == null) "Thêm Camera" else "Sửa Camera") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = id, onValueChange = { id = it }, label = { Text("Mã camera") }, modifier = Modifier.fillMaxWidth(), enabled = camera == null)
-                OutlinedTextField(value = customerId, onValueChange = { customerId = it }, label = { Text("Mã khách hàng") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = customerName, onValueChange = { customerName = it }, label = { Text("Tên khách hàng") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = customerEmail, onValueChange = { customerEmail = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = snapshotUrl, onValueChange = { snapshotUrl = it }, label = { Text("URL ảnh chụp") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = landInfo, onValueChange = { landInfo = it }, label = { Text("Thông tin thửa đất") }, modifier = Modifier.fillMaxWidth())
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 500.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                OutlinedTextField(
+                    value = id, 
+                    onValueChange = { id = it }, 
+                    label = { Text("Mã camera") }, 
+                    modifier = Modifier.fillMaxWidth(), 
+                    enabled = camera == null
+                )
+                OutlinedTextField(
+                    value = customerId, 
+                    onValueChange = { customerId = it }, 
+                    label = { Text("Mã khách hàng") }, 
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = customerName, 
+                    onValueChange = { customerName = it }, 
+                    label = { Text("Tên khách hàng") }, 
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = customerEmail, 
+                    onValueChange = { customerEmail = it }, 
+                    label = { Text("Email") }, 
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = snapshotUrl, 
+                    onValueChange = { snapshotUrl = it }, 
+                    label = { Text("URL ảnh chụp") }, 
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = landInfo, 
+                    onValueChange = { landInfo = it }, 
+                    label = { Text("Thông tin thửa đất") }, 
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                // Thêm các field AI Prompt và Keywords
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text("Cài đặt AI", style = MaterialTheme.typography.titleSmall)
+                
+                OutlinedTextField(
+                    value = aiPrompt,
+                    onValueChange = { aiPrompt = it },
+                    label = { Text("AI Prompt") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 4
+                )
+                
+                OutlinedTextField(
+                    value = aiPositiveKeywords,
+                    onValueChange = { aiPositiveKeywords = it },
+                    label = { Text("Từ khóa cảnh báo (cách nhau bằng dấu phẩy)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Ví dụ: cảnh báo, phát hiện, xâm nhập") }
+                )
+                
+                OutlinedTextField(
+                    value = aiNegativeKeywords,
+                    onValueChange = { aiNegativeKeywords = it },
+                    label = { Text("Từ khóa bình thường (cách nhau bằng dấu phẩy)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("Ví dụ: bình thường, không có") }
+                )
 
                 val context = LocalContext.current
                 var locationError by remember { mutableStateOf<String?>(null) }
@@ -325,13 +415,25 @@ fun CameraDialog(
             TextButton(onClick = {
                 if (id.isNotBlank() && snapshotUrl.isNotBlank()) {
                     onSave(mapOf(
-                        "id" to id, "customerId" to customerId,
-                        "customername" to customerName, "customeremail" to customerEmail,
-                        "snapshoturl" to snapshotUrl, "landinfo" to landInfo
+                        "id" to id, 
+                        "customerId" to customerId,
+                        "customername" to customerName, 
+                        "customeremail" to customerEmail,
+                        "snapshoturl" to snapshotUrl, 
+                        "landinfo" to landInfo,
+                        "aiPrompt" to aiPrompt,
+                        "aiPositiveKeywords" to aiPositiveKeywords,
+                        "aiNegativeKeywords" to aiNegativeKeywords
                     ))
                 }
             }) { Text("Lưu") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun rememberScrollState(): androidx.compose.foundation.ScrollState {
+    return androidx.compose.foundation.ScrollState(0)
 }

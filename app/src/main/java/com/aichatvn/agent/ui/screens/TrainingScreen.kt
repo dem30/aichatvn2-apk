@@ -33,16 +33,37 @@ fun TrainingScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val currentPage by viewModel.currentPage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
+    val exportResult by viewModel.exportResult.collectAsState()
+    val importResult by viewModel.importResult.collectAsState()
     
     var showAddDialog by remember { mutableStateOf(false) }
     var editingQA by remember { mutableStateOf<QAEntity?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedQAs by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showExportSnackbar by remember { mutableStateOf(false) }
+    var exportMessage by remember { mutableStateOf("") }
     
     val listState = rememberLazyListState()
     
     val displayList = if (searchQuery.isNotBlank()) searchResults else qaList
+    
+    // Hiển thị kết quả export
+    LaunchedEffect(exportResult) {
+        exportResult?.let {
+            exportMessage = it
+            showExportSnackbar = true
+            viewModel.clearExportResult()
+        }
+    }
+    
+    // Hiển thị kết quả import
+    LaunchedEffect(importResult) {
+        importResult?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            viewModel.clearImportResult()
+        }
+    }
     
     // Load more khi cuộn gần cuối
     LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
@@ -71,6 +92,20 @@ fun TrainingScreen(
                     }
                 }
             )
+        },
+        snackbarHost = {
+            if (showExportSnackbar) {
+                Snackbar(
+                    modifier = Modifier.padding(16.dp),
+                    action = {
+                        TextButton(onClick = { showExportSnackbar = false }) {
+                            Text("Đóng")
+                        }
+                    }
+                ) {
+                    Text(exportMessage.take(100))
+                }
+            }
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
@@ -117,7 +152,7 @@ fun TrainingScreen(
                 }
             }
             
-            if (isLoading) {
+            if (isLoading && displayList.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
@@ -151,7 +186,7 @@ fun TrainingScreen(
                     }
                     
                     // Loading more indicator
-                    if (hasMore && searchQuery.isBlank()) {
+                    if (hasMore && searchQuery.isBlank() && isLoading) {
                         item {
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(16.dp),

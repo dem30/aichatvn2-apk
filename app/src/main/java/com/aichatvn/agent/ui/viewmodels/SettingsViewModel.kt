@@ -12,6 +12,11 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.aichatvn.agent.utils.Logger
+import com.google.api.client.googleapis.auth.oauth2.GoogleCredential
+import com.google.api.client.http.javanet.NetHttpTransport
+import com.google.api.client.json.gson.GsonFactory
+import com.google.api.services.gmail.Gmail
+import com.google.api.services.gmail.model.Message
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -20,7 +25,12 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.util.*
 import javax.inject.Inject
+import javax.mail.Session
+import javax.mail.internet.InternetAddress
+import javax.mail.internet.MimeMessage
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
@@ -40,7 +50,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     val groqApiKey: StateFlow<String> = context.dataStore.data
-        .map { it[GROQ_API_KEY] ?: "" }
+        .map { it[GROQ_API_KEY] ?: "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" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     val darkMode: StateFlow<Boolean> = context.dataStore.data
@@ -131,6 +141,59 @@ class SettingsViewModel @Inject constructor(
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     onResult(false, "Lỗi kết nối: ${e.message}")
                 }
+            }
+        }
+    }
+    
+    suspend fun testSendEmail(
+        to: String,
+        clientId: String,
+        clientSecret: String,
+        refreshToken: String,
+        senderEmail: String
+    ): String {
+        return withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                if (clientId.isBlank() || clientSecret.isBlank() || refreshToken.isBlank() || senderEmail.isBlank()) {
+                    return@withContext "❌ Vui lòng cấu hình đầy đủ Gmail settings trước"
+                }
+                
+                val httpTransport = NetHttpTransport()
+                val jsonFactory = GsonFactory.getDefaultInstance()
+                
+                val credential = GoogleCredential.Builder()
+                    .setTransport(httpTransport)
+                    .setJsonFactory(jsonFactory)
+                    .setClientSecrets(clientId, clientSecret)
+                    .build()
+                    .setRefreshToken(refreshToken)
+                
+                credential.refreshToken()
+                
+                val gmailService = Gmail.Builder(httpTransport, jsonFactory, credential)
+                    .setApplicationName("AIChatVN2")
+                    .build()
+                
+                val props = Properties()
+                val session = Session.getDefaultInstance(props, null)
+                val mimeMessage = MimeMessage(session)
+                
+                mimeMessage.setFrom(InternetAddress(senderEmail))
+                mimeMessage.addRecipient(javax.mail.Message.RecipientType.TO, InternetAddress(to))
+                mimeMessage.subject = "📧 Test email từ AIChatVN2"
+                mimeMessage.setText("Đây là email test từ ứng dụng AIChatVN2.\nThời gian: ${System.currentTimeMillis()}")
+                
+                val outputStream = ByteArrayOutputStream()
+                mimeMessage.writeTo(outputStream)
+                val rawMessage = Base64.getUrlEncoder().encodeToString(outputStream.toByteArray())
+                
+                val message = Message().setRaw(rawMessage)
+                gmailService.users().messages().send("me", message).execute()
+                
+                "✅ Email test đã gửi thành công tới $to"
+            } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Test email error: ${e.message}", e)
+                "❌ Gửi email thất bại: ${e.message}"
             }
         }
     }

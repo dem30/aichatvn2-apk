@@ -21,6 +21,11 @@ import java.io.FileOutputStream
 import java.util.UUID
 import javax.inject.Inject
 import com.aichatvn.agent.utils.Logger
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
@@ -55,29 +60,45 @@ class ChatViewModel @Inject constructor(
             _isLoading.value = true
             
             var fileUrl: String? = null
+            var base64Image: String? = null
             
-            // FIXED: Sử dụng context đã inject thay vì LocalContext.current
             imageUri?.let { uri ->
                 try {
                     val contentResolver = context.contentResolver
                     val inputStream = contentResolver.openInputStream(uri)
-                    val tempFile = File(context.cacheDir, "chat_img_${UUID.randomUUID()}.jpg")
-                    FileOutputStream(tempFile).use { output ->
-                        inputStream?.copyTo(output)
+                    val imageBytes = inputStream?.readBytes()
+                    if (imageBytes != null) {
+                        // Lưu file local để lưu vào message
+                        val tempFile = File(context.cacheDir, "chat_img_${UUID.randomUUID()}.jpg")
+                        FileOutputStream(tempFile).use { output ->
+                            output.write(imageBytes)
+                        }
+                        fileUrl = tempFile.absolutePath
+                        
+                        // Chuyển sang base64 để gửi API
+                        base64Image = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
                     }
-                    fileUrl = tempFile.absolutePath
+                    inputStream?.close()
                 } catch (e: Exception) {
                     logger.e("ChatViewModel", "Lỗi xử lý ảnh: ${e.message}", e)
                 }
+            }
+            
+            // Tạo user message với ảnh
+            val userMessageContent = if (base64Image != null) {
+                if (message.isNotBlank()) "[Hình ảnh] $message" else "[Hình ảnh]"
+            } else {
+                message
             }
             
             agentRouter.route(
                 AgentRequest(
                     intent = IntentType.CHAT_QUERY,
                     payload = mapOf(
-                        "message" to message,
+                        "message" to userMessageContent,
                         "context" to "",
-                        "fileUrl" to (fileUrl ?: "")
+                        "fileUrl" to (fileUrl ?: ""),
+                        "imageBase64" to (base64Image ?: "")
                     ),
                     username = "default_user"
                 )

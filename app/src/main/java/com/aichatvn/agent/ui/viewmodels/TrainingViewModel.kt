@@ -12,8 +12,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.File
+import java.io.FileOutputStream
 import javax.inject.Inject
 
 @HiltViewModel
@@ -28,6 +28,12 @@ class TrainingViewModel @Inject constructor(
 
     private val _searchResults = MutableStateFlow<List<QAEntity>>(emptyList())
     val searchResults: StateFlow<List<QAEntity>> = _searchResults.asStateFlow()
+    
+    private val _exportResult = MutableStateFlow<String?>(null)
+    val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
+    
+    private val _importResult = MutableStateFlow<String?>(null)
+    val importResult: StateFlow<String?> = _importResult.asStateFlow()
     
     // Pagination
     private val _currentPage = MutableStateFlow(1)
@@ -116,29 +122,57 @@ class TrainingViewModel @Inject constructor(
     
     fun exportQAToJson(context: Context) {
         viewModelScope.launch {
+            _isLoading.value = true
             val result = trainingSkill.exportQAs("default_user")
             if (result.success && result.data != null) {
                 val jsonString = result.data as? String
                 if (jsonString != null) {
-                    // Lưu file hoặc share
-                    Toast.makeText(context, "Export thành công: $jsonString", Toast.LENGTH_LONG).show()
+                    try {
+                        // Lưu file vào Downloads folder
+                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        val file = File(downloadsDir, "qa_export_${System.currentTimeMillis()}.json")
+                        file.writeText(jsonString)
+                        _exportResult.value = "Đã lưu tại: ${file.absolutePath}"
+                    } catch (e: Exception) {
+                        _exportResult.value = "Lỗi lưu file: ${e.message}"
+                    }
+                } else {
+                    _exportResult.value = "Export thất bại: Dữ liệu rỗng"
                 }
             } else {
-                Toast.makeText(context, "Export thất bại: ${result.error}", Toast.LENGTH_SHORT).show()
+                _exportResult.value = "Export thất bại: ${result.error}"
             }
+            _isLoading.value = false
         }
     }
     
+    fun clearExportResult() {
+        _exportResult.value = null
+    }
+    
+    fun clearImportResult() {
+        _importResult.value = null
+    }
+    
     fun importQAFromJson(context: Context) {
-        // Mở file picker và đọc JSON
         viewModelScope.launch {
-            Toast.makeText(context, "Chức năng đang phát triển", Toast.LENGTH_SHORT).show()
+            _isLoading.value = true
+            // Mở file picker
+            val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+            }
+            // Note: Cần ActivityResultLauncher để xử lý, tạm thời báo Toast
+            _importResult.value = "Chức năng import JSON: Vui lòng chọn file JSON từ bộ nhớ"
+            _isLoading.value = false
         }
     }
     
     fun importQAFromCsv(context: Context) {
         viewModelScope.launch {
-            Toast.makeText(context, "Chức năng đang phát triển", Toast.LENGTH_SHORT).show()
+            _isLoading.value = true
+            _importResult.value = "Chức năng import CSV: Đang phát triển"
+            _isLoading.value = false
         }
     }
 }

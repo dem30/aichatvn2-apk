@@ -32,11 +32,13 @@ class AgentRouter @Inject constructor(
                     val message = request.payload["message"] as? String ?: ""
                     val context = request.payload["context"] as? String ?: ""
                     val fileUrl = request.payload["fileUrl"] as? String
+                    val imageBase64 = request.payload["imageBase64"] as? String
                     chatSkill.processQuery(
                         message = message,
                         context = context,
                         username = request.username,
-                        fileUrl = fileUrl
+                        fileUrl = fileUrl,
+                        imageBase64 = imageBase64
                     )
                 }
                 

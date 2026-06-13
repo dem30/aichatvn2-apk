@@ -33,6 +33,9 @@ class CameraViewModel @Inject constructor(
 
     private val _isAdmin = MutableStateFlow(true)
     val isAdmin: StateFlow<Boolean> = _isAdmin.asStateFlow()
+    
+    private val _testResult = MutableStateFlow<String?>(null)
+    val testResult: StateFlow<String?> = _testResult.asStateFlow()
 
     fun loadCameras() {
         viewModelScope.launch {
@@ -62,20 +65,20 @@ class CameraViewModel @Inject constructor(
         }
     }
 
-    // FIXED: Sửa logic toggle active
-    fun toggleCameraActive(cameraId: String, active: Boolean) {
+    // SỬA: toggleActive - true = bật theo dõi, false = tắt theo dõi
+    fun toggleCameraActive(cameraId: String, isCurrentlyActive: Boolean) {
         viewModelScope.launch {
             _isLoading.value = true
-            // active = true nghĩa là bật theo dõi -> manualOff = 0
-            // active = false nghĩa là tắt theo dõi -> manualOff = 1
-            val manualOff = if (active) 0 else 1
+            // isCurrentlyActive = true đang bật -> muốn tắt -> manualOff = 1
+            // isCurrentlyActive = false đang tắt -> muốn bật -> manualOff = 0
+            val newManualOff = if (isCurrentlyActive) 1 else 0
             agentRouter.route(
                 AgentRequest(
                     intent = IntentType.CAMERA_UPDATE,
                     payload = mapOf(
                         "config" to mapOf(
                             "id" to cameraId,
-                            "manualOff" to manualOff
+                            "manualOff" to newManualOff
                         )
                     ),
                     username = "default_user"
@@ -89,9 +92,28 @@ class CameraViewModel @Inject constructor(
     fun testCamera(cameraId: String) {
         viewModelScope.launch {
             _isLoading.value = true
-            cameraSkill.scanCamera(cameraId, isDailyReport = true)
+            _testResult.value = null
+            val response = cameraSkill.scanCamera(cameraId, isDailyReport = true)
+            if (response.success) {
+                val data = response.data as? Map<*, *>
+                val results = data?.get("results") as? List<*>
+                val firstResult = results?.firstOrNull() as? Map<*, *>
+                val hasChange = firstResult?.get("hasChange") as? Boolean ?: false
+                val aiComment = firstResult?.get("aiComment") as? String ?: "Không có phân tích"
+                _testResult.value = if (hasChange) {
+                    "⚠️ Phát hiện biến động!\n$aiComment"
+                } else {
+                    "✅ Bình thường\n$aiComment"
+                }
+            } else {
+                _testResult.value = "❌ Lỗi: ${response.error}"
+            }
             _isLoading.value = false
         }
+    }
+    
+    fun clearTestResult() {
+        _testResult.value = null
     }
 
     fun syncFromCloud() {
