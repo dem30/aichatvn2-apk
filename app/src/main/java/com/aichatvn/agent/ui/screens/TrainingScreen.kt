@@ -41,8 +41,6 @@ fun TrainingScreen(
     var searchQuery by remember { mutableStateOf("") }
     var selectedQAs by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
-    var showExportSnackbar by remember { mutableStateOf(false) }
-    var exportMessage by remember { mutableStateOf("") }
     
     val listState = rememberLazyListState()
     
@@ -51,8 +49,7 @@ fun TrainingScreen(
     // Hiển thị kết quả export
     LaunchedEffect(exportResult) {
         exportResult?.let {
-            exportMessage = it
-            showExportSnackbar = true
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
             viewModel.clearExportResult()
         }
     }
@@ -78,34 +75,17 @@ fun TrainingScreen(
             TopAppBar(
                 title = { Text("Huấn luyện Q&A") },
                 actions = {
-                    // Export button
                     IconButton(onClick = { viewModel.exportQAToJson(context) }) {
                         Icon(Icons.Default.Download, contentDescription = "Export JSON")
                     }
-                    // Delete all button
                     IconButton(onClick = { showDeleteConfirm = true }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Xóa tất cả")
                     }
-                    // Add button
                     IconButton(onClick = { showAddDialog = true }) {
                         Icon(Icons.Default.Add, contentDescription = "Thêm Q&A")
                     }
                 }
             )
-        },
-        snackbarHost = {
-            if (showExportSnackbar) {
-                Snackbar(
-                    modifier = Modifier.padding(16.dp),
-                    action = {
-                        TextButton(onClick = { showExportSnackbar = false }) {
-                            Text("Đóng")
-                        }
-                    }
-                ) {
-                    Text(exportMessage.take(100))
-                }
-            }
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
@@ -185,7 +165,6 @@ fun TrainingScreen(
                         )
                     }
                     
-                    // Loading more indicator
                     if (hasMore && searchQuery.isBlank() && isLoading) {
                         item {
                             Box(
@@ -258,7 +237,6 @@ fun QACard(
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            // Checkbox for batch delete
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onSelect() },

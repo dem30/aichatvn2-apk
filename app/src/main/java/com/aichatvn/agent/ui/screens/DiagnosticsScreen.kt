@@ -3,11 +3,14 @@ package com.aichatvn.agent.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.TextUnitType
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -45,17 +48,18 @@ class DiagnosticsViewModel @Inject constructor(
         mapOf(
             "learningStats" to stats,
             "cameras" to cameras.map { camera ->
+                val status = when {
+                    camera.manualOff == 1 -> "Đã tắt"
+                    camera.isOnline != 1 -> "Mất kết nối"
+                    else -> "Hoạt động"
+                }
                 mapOf(
                     "id" to camera.id,
                     "name" to camera.customername,
                     "customerId" to camera.customerId,
                     "isOnline" to (camera.isOnline == 1),
                     "manualOff" to (camera.manualOff == 1),
-                    "status" when {
-                        camera.manualOff == 1 -> "Đã tắt"
-                        camera.isOnline != 1 -> "Mất kết nối"
-                        else -> "Hoạt động"
-                    }
+                    "status" to status
                 )
             },
             "totalCameras" to cameras.size,
@@ -145,7 +149,7 @@ fun DiagnosticsScreen(
             if (cameras.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("📭", fontSize = androidx.compose.ui.unit.TextUnit(48, androidx.compose.ui.unit.TextUnitType.Sp))
+                        Text("📭", fontSize = TextUnit(48f, TextUnitType.Sp))
                         Spacer(Modifier.height(8.dp))
                         Text("Chưa có camera nào được cấu hình", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -167,6 +171,7 @@ fun DiagnosticsScreen(
                     items(cameras, key = { it["id"] as? String ?: "" }) { camera ->
                         val cameraId = camera["id"] as? String ?: ""
                         val cameraName = camera["name"] as? String ?: ""
+                        val cameraStatus = camera["status"] as? String ?: "Unknown"
                         val cameraStats = learningStats[cameraId] as? Map<String, Any>
                         
                         Card(modifier = Modifier.fillMaxWidth()) {
@@ -181,14 +186,14 @@ fun DiagnosticsScreen(
                                     )
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = when (camera["status"]) {
+                                        color = when (cameraStatus) {
                                             "Hoạt động" -> MaterialTheme.colorScheme.primaryContainer
                                             "Mất kết nối" -> MaterialTheme.colorScheme.errorContainer
                                             else -> MaterialTheme.colorScheme.secondaryContainer
                                         }
                                     ) {
                                         Text(
-                                            text = camera["status"] as? String ?: "Unknown",
+                                            text = cameraStatus,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                             style = MaterialTheme.typography.labelSmall
                                         )

@@ -1,5 +1,7 @@
 package com.aichatvn.agent.ui.screens
-
+// Thêm dòng import này ở đầu file CameraScreen.kt
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
