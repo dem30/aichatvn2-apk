@@ -29,11 +29,16 @@ import java.util.concurrent.TimeUnit
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @javax.inject.Inject
+    lateinit var logger: com.aichatvn.agent.utils.Logger
+
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+
+        logger.i("MainActivity", "🚀 App khởi động - onCreate")
 
         // Đăng ký WorkManager cho camera ngầm
         setupWorkManager()

@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -86,7 +87,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val client = OkHttpClient.Builder()
                     .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -112,15 +113,24 @@ class SettingsViewModel @Inject constructor(
                     .build()
                 
                 val response = client.newCall(request).execute()
+                val responseBody = response.body?.string()
                 if (response.isSuccessful) {
-                    onResult(true, "Kết nối thành công!")
+                    logger.i("SettingsViewModel", "Groq test OK: $responseBody")
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(true, "Kết nối thành công!")
+                    }
                 } else {
-                    onResult(false, "Lỗi API: ${response.code} - ${response.message}")
+                    logger.e("SettingsViewModel", "Groq test failed: ${response.code} - ${response.message} - $responseBody")
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        onResult(false, "Lỗi API: ${response.code} - ${response.message}")
+                    }
                 }
                 response.close()
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Lỗi kết nối: ${e.message}", e)
-                onResult(false, "Lỗi kết nối: ${e.message}")
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onResult(false, "Lỗi kết nối: ${e.message}")
+                }
             }
         }
     }
