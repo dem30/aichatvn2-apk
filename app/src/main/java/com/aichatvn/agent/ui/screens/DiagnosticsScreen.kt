@@ -39,15 +39,15 @@ class DiagnosticsViewModel @Inject constructor(
     private val database by lazy { AppDatabase.getDatabase(context) }
     
     private val _learningStats = MutableStateFlow<Map<String, Any>>(emptyMap())
-    val learningStats: StateFlow<Map<String, Any>> = _learningStats.asStateFlow()
+    val learningStats = _learningStats.asStateFlow()
     
     private val _cameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
-    val cameras: StateFlow<List<CameraConfigEntity>> = _cameras.asStateFlow()
+    val cameras = _cameras.asStateFlow()
     
-    val combinedStats: StateFlow<Map<String, Any>> = combine(_learningStats, _cameras) { stats, cameras ->
+    val combinedStats: StateFlow<Map<String, Any>> = combine(_learningStats, _cameras) { stats, cameraList ->
         mapOf(
             "learningStats" to stats,
-            "cameras" to cameras.map { camera ->
+            "cameras" to cameraList.map { camera ->
                 val status = when {
                     camera.manualOff == 1 -> "Đã tắt"
                     camera.isOnline != 1 -> "Mất kết nối"
@@ -62,10 +62,10 @@ class DiagnosticsViewModel @Inject constructor(
                     "status" to status
                 )
             },
-            "totalCameras" to cameras.size,
-            "onlineCameras" to cameras.count { it.isOnline == 1 && it.manualOff == 0 },
-            "offlineCameras" to cameras.count { it.isOnline != 1 && it.manualOff == 0 },
-            "disabledCameras" to cameras.count { it.manualOff == 1 }
+            "totalCameras" to cameraList.size,
+            "onlineCameras" to cameraList.count { it.isOnline == 1 && it.manualOff == 0 },
+            "offlineCameras" to cameraList.count { it.isOnline != 1 && it.manualOff == 0 },
+            "disabledCameras" to cameraList.count { it.manualOff == 1 }
         )
     }.asStateFlow()
 
