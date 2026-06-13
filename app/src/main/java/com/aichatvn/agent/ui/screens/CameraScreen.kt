@@ -1,16 +1,14 @@
 package com.aichatvn.agent.ui.screens
-// Thêm dòng import này ở đầu file CameraScreen.kt
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState  // <-- THÊM DÒNG NÀY
-import androidx.compose.foundation.verticalScroll      // <-- THÊM DÒNG NÀY
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,7 +17,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import androidx.compose.foundation.layout.Arrangement
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.ui.viewmodels.CameraViewModel
 
@@ -304,7 +301,6 @@ fun CameraDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 
-                // Thêm các field AI Prompt và Keywords
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 Text("Cài đặt AI", style = MaterialTheme.typography.titleSmall)
                 
@@ -434,10 +430,4 @@ fun CameraDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
     )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun rememberScrollState(): androidx.compose.foundation.ScrollState {
-    return androidx.compose.foundation.ScrollState(0)
 }
