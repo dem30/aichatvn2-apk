@@ -11,6 +11,10 @@ interface CameraDao {
     @Query("SELECT * FROM cameras ORDER BY timestamp DESC")
     fun getAllCamerasFlow(): Flow<List<CameraConfigEntity>>
     
+    // THÊM: suspend version cho CameraViewModel.loadCameras()
+    @Query("SELECT * FROM cameras ORDER BY timestamp DESC")
+    suspend fun getAllCameras(): List<CameraConfigEntity>
+    
     @Query("SELECT * FROM cameras WHERE customerId = :customerId")
     suspend fun getCamerasByCustomer(customerId: String): List<CameraConfigEntity>
     
@@ -29,7 +33,7 @@ interface CameraDao {
     @Query("DELETE FROM cameras WHERE customerId = :customerId")
     suspend fun deleteCamerasByCustomer(customerId: String)
     
-    // FIXED: Bỏ điều kiện isOnline = 1 để worker có thể retry camera offline
+    // Giữ nguyên - dùng cho worker scan (chỉ quét camera đang theo dõi)
     @Query("SELECT * FROM cameras WHERE manualOff = 0")
     suspend fun getActiveCameras(): List<CameraConfigEntity>
     

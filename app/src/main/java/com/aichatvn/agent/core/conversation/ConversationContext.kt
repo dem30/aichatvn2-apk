@@ -32,7 +32,6 @@ class ConversationContext @Inject constructor(
         const val PENDING_MISSING_PARAMS = "pending_missing_params"
     }
     
-    // DataStore keys
     private val lastPluginKey = stringPreferencesKey(Keys.LAST_PLUGIN)
     private val lastActionKey = stringPreferencesKey(Keys.LAST_ACTION)
     private val lastEntityKey = stringPreferencesKey(Keys.LAST_ENTITY)
@@ -87,7 +86,7 @@ class ConversationContext @Inject constructor(
                 }
                 val prefs = context.dataStore.data.first()
                 val value = prefs[dataStoreKey]
-                if (value != null) {
+                if (value != null && value.isNotEmpty()) {
                     cache[key] = value
                     return value
                 }
@@ -101,18 +100,26 @@ class ConversationContext @Inject constructor(
     suspend fun setPending(pluginId: String, action: String, params: Map<String, Any>, missingParams: List<String> = emptyList()) {
         set(Keys.PENDING_PLUGIN, pluginId)
         set(Keys.PENDING_ACTION, action)
-        // Lưu params dưới dạng JSON string
         val jsonParams = JSONObject(params).toString()
         set(Keys.PENDING_PARAMS, jsonParams)
         set(Keys.PENDING_MISSING_PARAMS, JSONObject(mapOf("missing" to missingParams)).toString())
         logger.d("ConversationContext", "Saved pending: $pluginId.$action, params=$jsonParams, missing=$missingParams")
     }
     
-    suspend fun getPendingPlugin(): String? = get(Keys.PENDING_PLUGIN)
-    suspend fun getPendingAction(): String? = get(Keys.PENDING_ACTION)
+    suspend fun getPendingPlugin(): String? {
+        val value = get(Keys.PENDING_PLUGIN)
+        return if (value.isNullOrEmpty()) null else value
+    }
+    
+    suspend fun getPendingAction(): String? {
+        val value = get(Keys.PENDING_ACTION)
+        return if (value.isNullOrEmpty()) null else value
+    }
     
     suspend fun getPendingParams(): Map<String, Any> {
         val paramsStr = get(Keys.PENDING_PARAMS) ?: return emptyMap()
+        // FIX: Kiểm tra chuỗi rỗng trước khi parse JSON
+        if (paramsStr.isBlank()) return emptyMap()
         return try {
             val json = JSONObject(paramsStr)
             jsonToMap(json)
@@ -124,6 +131,8 @@ class ConversationContext @Inject constructor(
     
     suspend fun getPendingMissingParams(): List<String> {
         val missingStr = get(Keys.PENDING_MISSING_PARAMS) ?: return emptyList()
+        // FIX: Kiểm tra chuỗi rỗng trước khi parse JSON
+        if (missingStr.isBlank()) return emptyList()
         return try {
             val json = JSONObject(missingStr)
             val arr = json.optJSONArray("missing") ?: return emptyList()
@@ -139,27 +148,53 @@ class ConversationContext @Inject constructor(
         set(Keys.PENDING_ACTION, "")
         set(Keys.PENDING_PARAMS, "")
         set(Keys.PENDING_MISSING_PARAMS, "")
+        // FIX: Xóa cache để tránh stale data
+        cache.remove(Keys.PENDING_PLUGIN)
+        cache.remove(Keys.PENDING_ACTION)
+        cache.remove(Keys.PENDING_PARAMS)
+        cache.remove(Keys.PENDING_MISSING_PARAMS)
         logger.d("ConversationContext", "Cleared pending")
     }
     
     suspend fun hasPending(): Boolean {
         val plugin = getPendingPlugin()
-        return !plugin.isNullOrEmpty()
+        val action = getPendingAction()
+        return !plugin.isNullOrEmpty() && !action.isNullOrEmpty()
     }
     
-    suspend fun getLastPlugin(): String? = get(Keys.LAST_PLUGIN)
+    suspend fun getLastPlugin(): String? {
+        val value = get(Keys.LAST_PLUGIN)
+        return if (value.isNullOrEmpty()) null else value
+    }
+    
     suspend fun setLastPlugin(pluginId: String) = set(Keys.LAST_PLUGIN, pluginId)
     
-    suspend fun getLastAction(): String? = get(Keys.LAST_ACTION)
+    suspend fun getLastAction(): String? {
+        val value = get(Keys.LAST_ACTION)
+        return if (value.isNullOrEmpty()) null else value
+    }
+    
     suspend fun setLastAction(action: String) = set(Keys.LAST_ACTION, action)
     
-    suspend fun getLastEntity(): String? = get(Keys.LAST_ENTITY)
+    suspend fun getLastEntity(): String? {
+        val value = get(Keys.LAST_ENTITY)
+        return if (value.isNullOrEmpty()) null else value
+    }
+    
     suspend fun setLastEntity(entity: String) = set(Keys.LAST_ENTITY, entity)
     
-    suspend fun getLastCameraId(): String? = get(Keys.LAST_CAMERA_ID)
+    suspend fun getLastCameraId(): String? {
+        val value = get(Keys.LAST_CAMERA_ID)
+        return if (value.isNullOrEmpty()) null else value
+    }
+    
     suspend fun setLastCameraId(cameraId: String) = set(Keys.LAST_CAMERA_ID, cameraId)
     
-    suspend fun getLastEmailTo(): String? = get(Keys.LAST_EMAIL_TO)
+    suspend fun getLastEmailTo(): String? {
+        val value = get(Keys.LAST_EMAIL_TO)
+        return if (value.isNullOrEmpty()) null else value
+    }
+    
     suspend fun setLastEmailTo(email: String) = set(Keys.LAST_EMAIL_TO, email)
     
     suspend fun getContextString(): String {
@@ -173,7 +208,7 @@ class ConversationContext @Inject constructor(
         val pendingMissing = getPendingMissingParams()
         
         return buildString {
-            if (pendingPlugin != null && pendingAction != null && pendingPlugin.isNotEmpty()) {
+            if (pendingPlugin != null && pendingAction != null) {
                 append("- Đang chờ bạn cung cấp thông tin cho: $pendingPlugin.$pendingAction\n")
                 if (pendingMissing.isNotEmpty()) {
                     append("- Cần cung cấp: ${pendingMissing.joinToString()}\n")
@@ -198,7 +233,7 @@ class ConversationContext @Inject constructor(
         val pendingMissing = getPendingMissingParams()
         
         return buildString {
-            if (pendingPlugin != null && pendingAction != null && pendingPlugin.isNotEmpty()) {
+            if (pendingPlugin != null && pendingAction != null) {
                 append("Người dùng đang trong quá trình thực hiện hành động '$pendingAction' của plugin '$pendingPlugin'.\n")
                 if (pendingMissing.isNotEmpty()) {
                     append("Các tham số còn thiếu: ${pendingMissing.joinToString()}\n")
@@ -236,15 +271,15 @@ class ConversationContext @Inject constructor(
         try {
             val prefs = context.dataStore.data.first()
             
-            prefs[lastPluginKey]?.let { cache[Keys.LAST_PLUGIN] = it }
-            prefs[lastActionKey]?.let { cache[Keys.LAST_ACTION] = it }
-            prefs[lastEntityKey]?.let { cache[Keys.LAST_ENTITY] = it }
-            prefs[lastCameraIdKey]?.let { cache[Keys.LAST_CAMERA_ID] = it }
-            prefs[lastEmailToKey]?.let { cache[Keys.LAST_EMAIL_TO] = it }
-            prefs[pendingPluginKey]?.let { cache[Keys.PENDING_PLUGIN] = it }
-            prefs[pendingActionKey]?.let { cache[Keys.PENDING_ACTION] = it }
-            prefs[pendingParamsKey]?.let { cache[Keys.PENDING_PARAMS] = it }
-            prefs[pendingMissingParamsKey]?.let { cache[Keys.PENDING_MISSING_PARAMS] = it }
+            prefs[lastPluginKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.LAST_PLUGIN] = it }
+            prefs[lastActionKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.LAST_ACTION] = it }
+            prefs[lastEntityKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.LAST_ENTITY] = it }
+            prefs[lastCameraIdKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.LAST_CAMERA_ID] = it }
+            prefs[lastEmailToKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.LAST_EMAIL_TO] = it }
+            prefs[pendingPluginKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.PENDING_PLUGIN] = it }
+            prefs[pendingActionKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.PENDING_ACTION] = it }
+            prefs[pendingParamsKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.PENDING_PARAMS] = it }
+            prefs[pendingMissingParamsKey]?.takeIf { it.isNotEmpty() }?.let { cache[Keys.PENDING_MISSING_PARAMS] = it }
         } catch (e: Exception) {
             logger.e("ConversationContext", "Failed to load from store: ${e.message}")
         }

@@ -29,14 +29,20 @@ class AgentCore @Inject constructor(
         if (conversationContext.hasPending()) {
             val pendingPluginId = conversationContext.getPendingPlugin()
             val pendingAction = conversationContext.getPendingAction()
-            val pendingParams = conversationContext.getPendingParams().toMutableMap()
-            val pendingMissing = conversationContext.getPendingMissingParams()
+            
+            // FIX: Kiểm tra pending bị corruption (null hoặc empty)
+            if (pendingPluginId.isNullOrEmpty() || pendingAction.isNullOrEmpty()) {
+                logger.w("AgentCore", "Pending corrupted (plugin=$pendingPluginId, action=$pendingAction), clearing")
+                conversationContext.clearPending()
+                // Continue to normal flow
+            } else {
+                val pendingParams = conversationContext.getPendingParams().toMutableMap()
+                val pendingMissing = conversationContext.getPendingMissingParams()
 
-            if (pendingPluginId != null && pendingAction != null && pendingPluginId.isNotEmpty() && pendingMissing.isNotEmpty()) {
                 logger.d("AgentCore", "Resuming pending: $pendingPluginId.$pendingAction, missing=$pendingMissing")
                 val plugin = pluginRegistry.getPlugin(pendingPluginId)
 
-                if (plugin != null) {
+                if (plugin != null && pendingMissing.isNotEmpty()) {
                     val missingKey = pendingMissing.firstOrNull()
                     if (missingKey != null) {
                         pendingParams[missingKey] = userMessage
@@ -78,9 +84,9 @@ class AgentCore @Inject constructor(
                         }
                     }
                 }
+                // Plugin not found or no missing params - clear corrupted pending
+                conversationContext.clearPending()
             }
-            // Pending bị lỗi (không có missing params hợp lệ), clear nó
-            conversationContext.clearPending()
         }
 
         // 1. Kiểm tra câu hỏi về khả năng
@@ -114,7 +120,7 @@ class AgentCore @Inject constructor(
             }
         }
 
-        // 3. LLM fallback — FIX 3: có timeout
+        // 3. LLM fallback
         val context = conversationContext.getContextForLLM()
         val resolved = resolveIntentWithLLM(userMessage, context)
 
@@ -226,7 +232,6 @@ class AgentCore @Inject constructor(
             Trả về JSON thuần túy.
         """.trimIndent()
 
-        // FIX 3: Timeout 15 giây cho LLM intent resolution
         val response = try {
             withTimeout(15_000L) {
                 groqClient.chatForIntent(prompt)
@@ -240,7 +245,6 @@ class AgentCore @Inject constructor(
         }
 
         return try {
-            // Lọc markdown code fence nếu model trả về ```json ... ```
             val cleaned = response
                 .trimIndent()
                 .removePrefix("```json")

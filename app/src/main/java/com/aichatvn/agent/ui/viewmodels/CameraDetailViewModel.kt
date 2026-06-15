@@ -47,7 +47,6 @@ class CameraDetailViewModel @Inject constructor(
     private val _testResult = MutableStateFlow<String?>(null)
     val testResult: StateFlow<String?> = _testResult.asStateFlow()
 
-    // Bytes ảnh xem trực tiếp (live snapshot)
     private val _liveSnapshot = MutableStateFlow<ByteArray?>(null)
     val liveSnapshot: StateFlow<ByteArray?> = _liveSnapshot.asStateFlow()
 
@@ -61,7 +60,6 @@ class CameraDetailViewModel @Inject constructor(
 
     init {
         loadCamera()
-        // Poll thống kê học tập mỗi 5s, giống DiagnosticsViewModel
         viewModelScope.launch {
             while (isActive) {
                 _diagnostics.value = cameraSkill.getDiagnostics()[cameraId] as? Map<String, Any>
@@ -114,17 +112,26 @@ class CameraDetailViewModel @Inject constructor(
         }
     }
 
-    // Test ngay — bật tạm smart mode nếu đang tắt, chạy scan thật, có gửi email nếu phát hiện cảnh báo
     fun testCamera() {
         viewModelScope.launch {
             _isLoading.value = true
             _testResult.value = null
             try {
                 val cam = database.cameraDao().getCameraById(cameraId)
-                val setting = cam?.let { database.cameraDao().getCustomerSetting(it.customerId) }
+                if (cam == null) {
+                    _testResult.value = "❌ Không tìm thấy camera"
+                    return@launch
+                }
+                
+                if (cam.snapshoturl.isBlank()) {
+                    _testResult.value = "❌ Camera chưa cấu hình URL ảnh chụp"
+                    return@launch
+                }
+                
+                val setting = database.cameraDao().getCustomerSetting(cam.customerId)
                 val wasSmartOff = setting?.smartMode != 1
 
-                if (wasSmartOff && cam != null) {
+                if (wasSmartOff) {
                     database.cameraDao().insertCustomerSetting(
                         CustomerSettingEntity(
                             customerId = cam.customerId,
@@ -138,7 +145,7 @@ class CameraDetailViewModel @Inject constructor(
 
                 val response = cameraSkill.scanCamera(cameraId, isDailyReport = false)
 
-                if (wasSmartOff && cam != null) {
+                if (wasSmartOff) {
                     database.cameraDao().insertCustomerSetting(
                         CustomerSettingEntity(
                             customerId = cam.customerId,
@@ -154,21 +161,27 @@ class CameraDetailViewModel @Inject constructor(
                     val data = response.data as? Map<*, *>
                     val results = data?.get("results") as? List<*>
                     val first = results?.firstOrNull() as? Map<*, *>
-                    val hasChange = first?.get("hasChange") as? Boolean ?: false
-                    val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
-                    val aiComment = first?.get("aiComment") as? String ?: "Không có phân tích"
-                    val diff = first?.get("diff") as? Int ?: 0
-                    val deltaTrigger = first?.get("deltaTrigger") as? Int ?: 0
-                    val absDiffTrigger = first?.get("absDiffTrigger") as? Int ?: 0
+                    
+                    // FIX: Kiểm tra lỗi fetch ảnh từ camera skill
+                    val fetchError = first?.get("error") as? String
+                    if (fetchError != null) {
+                        _testResult.value = "❌ Không thể chụp ảnh: $fetchError\nKiểm tra URL camera hoặc kết nối mạng"
+                    } else {
+                        val hasChange = first?.get("hasChange") as? Boolean ?: false
+                        val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
+                        val aiComment = first?.get("aiComment") as? String ?: "Không có phân tích"
+                        val diff = first?.get("diff") as? Int ?: 0
+                        val deltaTrigger = first?.get("deltaTrigger") as? Int ?: 0
+                        val absDiffTrigger = first?.get("absDiffTrigger") as? Int ?: 0
 
-                    _testResult.value = buildString {
-                        if (isSuspicious) append("⚠️ CẢNH BÁO! Email đã gửi!\n")
-                        else if (hasChange) append("🔄 Có biến động nhưng AI đánh giá bình thường\n")
-                        else append("✅ Bình thường\n")
-                        append("━━━━━━━━━━━━━━━\n")
-                        append("🤖 AI: $aiComment\n")
-                        append("━━━━━━━━━━━━━━━\n")
-                        append("📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
+                        _testResult.value = buildString {
+                            if (isSuspicious) append("⚠️ CẢNH BÁO! Email đã gửi!\n")
+                            else if (hasChange) append("🔄 Có biến động nhưng AI đánh giá bình thường\n")
+                            else append("✅ Bình thường\n")
+                            append("━━━━━━━━━━━━━━━\n")
+                            append("🤖 AI: $aiComment\n")
+                            if (diff > 0) append("━━━━━━━━━━━━━━━\n📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
+                        }
                     }
                 } else {
                     _testResult.value = "❌ Lỗi: ${response.error}"

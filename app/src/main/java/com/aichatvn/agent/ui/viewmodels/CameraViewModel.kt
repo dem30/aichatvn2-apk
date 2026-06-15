@@ -17,8 +17,6 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import com.aichatvn.agent.utils.Logger
 
-// ✅ KHÔNG còn dùng AgentRouter (legacy). Mọi thao tác đi qua CameraPlugin hoặc CameraSkill trực tiếp.
-
 @HiltViewModel
 class CameraViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
@@ -28,6 +26,7 @@ class CameraViewModel @Inject constructor(
     private val logger: Logger
 ) : ViewModel() {
 
+    // FIX: Load TẤT CẢ camera, không lọc active
     private val _cameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
     val cameras: StateFlow<List<CameraConfigEntity>> = _cameras.asStateFlow()
 
@@ -45,8 +44,11 @@ class CameraViewModel @Inject constructor(
 
     fun loadCameras() {
         viewModelScope.launch {
-            _cameras.value = database.cameraDao().getActiveCameras()
+            _isLoading.value = true
+            // FIX: Dùng getAllCameras() thay vì getActiveCameras()
+            _cameras.value = database.cameraDao().getAllCameras()
             loadSmartModes()
+            _isLoading.value = false
         }
     }
 
@@ -73,8 +75,6 @@ class CameraViewModel @Inject constructor(
     fun saveCamera(config: Map<String, Any>) {
         viewModelScope.launch {
             _isLoading.value = true
-            // Dùng CameraSkill trực tiếp — CameraPlugin.execute("set_active") chỉ bật/tắt,
-            // không có action "add/update config". saveCameraConfig là thao tác DB thuần.
             cameraSkill.saveCameraConfig(config)
             loadCameras()
             _isLoading.value = false
@@ -97,8 +97,9 @@ class CameraViewModel @Inject constructor(
                     val newManualOff = if (camera.manualOff == 0) 1 else 0
                     database.cameraDao().updateCamera(camera.copy(manualOff = newManualOff))
                     logger.i("CameraViewModel", "Camera $cameraId manualOff → $newManualOff")
+                    // FIX: Refresh toàn bộ danh sách
+                    loadCameras()
                 }
-                loadCameras()
             } catch (e: Exception) {
                 logger.e("CameraViewModel", "toggleCameraActive error: ${e.message}", e)
             }
@@ -110,7 +111,6 @@ class CameraViewModel @Inject constructor(
         viewModelScope.launch {
             val current = _smartModes.value[customerId] ?: false
             val newMode = !current
-            // Dùng CameraPlugin thay vì AgentRouter — nhất quán với pipeline mới
             cameraPlugin.execute(
                 "set_smart_mode",
                 mapOf("customerId" to customerId, "enabled" to newMode)
@@ -159,21 +159,27 @@ class CameraViewModel @Inject constructor(
                     val data = response.data as? Map<*, *>
                     val results = data?.get("results") as? List<*>
                     val first = results?.firstOrNull() as? Map<*, *>
-                    val hasChange = first?.get("hasChange") as? Boolean ?: false
-                    val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
-                    val aiComment = first?.get("aiComment") as? String ?: "Không có phân tích"
-                    val diff = first?.get("diff") as? Int ?: 0
-                    val deltaTrigger = first?.get("deltaTrigger") as? Int ?: 0
-                    val absDiffTrigger = first?.get("absDiffTrigger") as? Int ?: 0
+                    
+                    // FIX: Kiểm tra lỗi fetch ảnh từ camera skill
+                    val fetchError = first?.get("error") as? String
+                    if (fetchError != null) {
+                        _testResult.value = "❌ Không thể chụp ảnh: $fetchError\nKiểm tra URL camera hoặc kết nối mạng"
+                    } else {
+                        val hasChange = first?.get("hasChange") as? Boolean ?: false
+                        val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
+                        val aiComment = first?.get("aiComment") as? String ?: "Không có phân tích"
+                        val diff = first?.get("diff") as? Int ?: 0
+                        val deltaTrigger = first?.get("deltaTrigger") as? Int ?: 0
+                        val absDiffTrigger = first?.get("absDiffTrigger") as? Int ?: 0
 
-                    _testResult.value = buildString {
-                        if (isSuspicious) append("⚠️ CẢNH BÁO! Email đã gửi!\n")
-                        else if (hasChange) append("🔄 Có biến động nhưng AI đánh giá bình thường\n")
-                        else append("✅ Bình thường\n")
-                        append("━━━━━━━━━━━━━━━\n")
-                        append("🤖 AI: $aiComment\n")
-                        append("━━━━━━━━━━━━━━━\n")
-                        append("📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
+                        _testResult.value = buildString {
+                            if (isSuspicious) append("⚠️ CẢNH BÁO! Email đã gửi!\n")
+                            else if (hasChange) append("🔄 Có biến động nhưng AI đánh giá bình thường\n")
+                            else append("✅ Bình thường\n")
+                            append("━━━━━━━━━━━━━━━\n")
+                            append("🤖 AI: $aiComment\n")
+                            if (diff > 0) append("━━━━━━━━━━━━━━━\n📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
+                        }
                     }
                 } else {
                     _testResult.value = "❌ Lỗi: ${response.error}"
@@ -190,12 +196,9 @@ class CameraViewModel @Inject constructor(
         _testResult.value = null
     }
 
-    // syncFromCloud: không dùng AgentRouter nữa — hiện tại chưa có CloudPlugin,
-    // giữ stub để UI không crash
     fun syncFromCloud() {
         viewModelScope.launch {
             _isLoading.value = true
-            // TODO: Khi có CloudPlugin, gọi cameraPlugin.execute("sync", ...) ở đây
             logger.i("CameraViewModel", "syncFromCloud: stub, chưa có CloudPlugin")
             loadCameras()
             _isLoading.value = false
