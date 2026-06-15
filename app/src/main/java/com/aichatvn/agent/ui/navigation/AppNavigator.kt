@@ -10,14 +10,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.aichatvn.agent.R
 import com.aichatvn.agent.ui.screens.*
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
+    object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
     object Chat       : Screen("chat",        R.string.tab_chat,        Icons.Default.Chat)
     object Camera     : Screen("camera",      R.string.tab_camera,      Icons.Default.Videocam)
     object Training   : Screen("training",    R.string.tab_training,    Icons.Default.School)
@@ -34,7 +37,7 @@ fun AppNavigator() {
     val currentRoute = navBackStackEntry?.destination?.route
 
     val screens = listOf(
-        Screen.Chat, Screen.Camera, Screen.Training, Screen.Diagnostics, Screen.Settings
+        Screen.Dashboard, Screen.Chat, Screen.Camera, Screen.Training, Screen.Diagnostics, Screen.Settings
     )
 
     Scaffold(
@@ -61,15 +64,33 @@ fun AppNavigator() {
     ) { paddingValues ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Chat.route,
+            startDestination = Screen.Dashboard.route,
             modifier = Modifier.padding(paddingValues)
         ) {
+            composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
             composable(Screen.Chat.route)        { ChatScreen(navController) }
             composable(Screen.Camera.route)      { CameraScreen(navController) }
             composable(Screen.Training.route)    { TrainingScreen(navController) }
             composable(Screen.Diagnostics.route) { DiagnosticsScreen(navController) }
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
+
+            // Lịch sử cảnh báo — "alert_history" (toàn bộ) hoặc "alert_history?cameraId=xxx" (lọc theo camera)
+            composable(
+                route = "alert_history?cameraId={cameraId}",
+                arguments = listOf(
+                    navArgument("cameraId") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    }
+                )
+            ) { AlertHistoryScreen(navController) }
+
+            // Chi tiết 1 camera
+            composable(
+                route = "camera_detail/{cameraId}",
+                arguments = listOf(navArgument("cameraId") { type = NavType.StringType })
+            ) { CameraDetailScreen(navController) }
         }
     }
 }

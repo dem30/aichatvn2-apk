@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AIChatVN2</string>
+    <string name="tab_dashboard">Tổng quan</string>
     <string name="tab_chat">Trò chuyện</string>
     <string name="tab_camera">Camera</string>
     <string name="tab_training">Huấn luyện</string>

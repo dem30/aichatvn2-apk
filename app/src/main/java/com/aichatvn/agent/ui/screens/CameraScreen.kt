@@ -17,7 +17,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.CameraConfigEntity
-import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.ui.viewmodels.CameraViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -28,28 +27,49 @@ fun CameraScreen(
 ) {
     val cameras by viewModel.cameras.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val isAdmin by viewModel.isAdmin.collectAsState()
+    val isAdmin by viewModel.isAdmin.collectAsState(initial = false)
     val testResult by viewModel.testResult.collectAsState()
-    val errorMessage by viewModel.errorMessage.collectAsState()
-    val customerSettings by viewModel.customerSettings.collectAsState()
+    val smartModes by viewModel.smartModes.collectAsState()
+
+    val alertHistoryViewModel: com.aichatvn.agent.ui.viewmodels.AlertHistoryViewModel = hiltViewModel()
+    val unreadAlertCount by alertHistoryViewModel.unreadCount.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var selectedCamera by remember { mutableStateOf<CameraConfigEntity?>(null) }
+    var showTestDialog by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // Hiển thị kết quả test trong dialog thay vì snackbar (vì text dài)
     LaunchedEffect(testResult) {
-        testResult?.let {
-            snackbarHostState.showSnackbar(it, duration = SnackbarDuration.Long)
-            viewModel.clearTestResult()
-        }
+        testResult?.let { showTestDialog = true }
     }
 
-    LaunchedEffect(errorMessage) {
-        errorMessage?.let {
-            snackbarHostState.showSnackbar("⚠️ $it")
-            viewModel.clearError()
-        }
+    LaunchedEffect(Unit) {
+        viewModel.loadCameras()
+    }
+
+    // Dialog hiển thị kết quả test chi tiết
+    if (showTestDialog && testResult != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showTestDialog = false
+                viewModel.clearTestResult()
+            },
+            title = { Text("📊 Kết quả kiểm tra") },
+            text = {
+                Text(
+                    text = testResult ?: "",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showTestDialog = false
+                    viewModel.clearTestResult()
+                }) { Text("Đóng") }
+            }
+        )
     }
 
     Scaffold(
@@ -57,9 +77,21 @@ fun CameraScreen(
             TopAppBar(
                 title = { Text("Quản lý Camera") },
                 actions = {
+                    IconButton(onClick = { navController.navigate("alert_history") }) {
+                        if (unreadAlertCount > 0) {
+                            BadgedBox(badge = { Badge { Text("$unreadAlertCount") } }) {
+                                Icon(Icons.Default.Notifications, contentDescription = "Lịch sử cảnh báo")
+                            }
+                        } else {
+                            Icon(Icons.Default.Notifications, contentDescription = "Lịch sử cảnh báo")
+                        }
+                    }
                     if (isAdmin) {
                         IconButton(onClick = { showAddDialog = true }) {
                             Icon(Icons.Default.Add, contentDescription = "Thêm camera")
+                        }
+                        IconButton(onClick = { viewModel.syncFromCloud() }) {
+                            Icon(Icons.Default.Sync, contentDescription = "Đồng bộ")
                         }
                     }
                 }
@@ -77,41 +109,27 @@ fun CameraScreen(
             } else if (cameras.isEmpty()) {
                 Text(
                     text = "Chưa có camera nào. Hãy thêm camera mới!",
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(24.dp),
+                    modifier = Modifier.align(Alignment.Center),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                // Nhóm camera theo customerId
-                val grouped = cameras.groupBy { it.customerId }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    grouped.forEach { (customerId, cameraList) ->
-                        val setting = customerSettings[customerId]
-                        item {
-                            CustomerSection(
-                                customerId = customerId,
-                                setting = setting,
-                                isAdmin = isAdmin,
-                                onSetSmartMode = { enabled -> viewModel.setSmartMode(customerId, enabled) },
-                                onSetActive = { active -> viewModel.setCustomerActive(customerId, active) },
-                                onDeleteCustomer = { viewModel.deleteCustomer(customerId) }
-                            )
-                        }
-                        items(cameraList) { camera ->
-                            CameraCard(
-                                camera = camera,
-                                isAdmin = isAdmin,
-                                onEdit = { selectedCamera = camera },
-                                onDelete = { viewModel.deleteCamera(camera.id) },
-                                onToggleActive = { viewModel.toggleCameraActive(camera.id, camera.manualOff) },
-                                onTest = { viewModel.testCamera(camera.id) }
-                            )
-                        }
+                    items(cameras) { camera ->
+                        CameraCard(
+                            camera = camera,
+                            isAdmin = isAdmin,
+                            isSmartMode = smartModes[camera.customerId] ?: false,
+                            onEdit = { selectedCamera = camera },
+                            onDelete = { viewModel.deleteCamera(camera.id) },
+                            onToggleActive = { viewModel.toggleCameraActive(camera.id) },
+                            onToggleSmartMode = { viewModel.toggleSmartMode(camera.customerId) },
+                            onTest = { viewModel.testCamera(camera.id) },
+                            onOpenDetail = { navController.navigate("camera_detail/${camera.id}") }
+                        )
                     }
                 }
             }
@@ -134,132 +152,29 @@ fun CameraScreen(
     }
 }
 
-// ─── CustomerSection: hiển thị SmartMode + isActive cho từng nhóm khách hàng ───
-
-@Composable
-fun CustomerSection(
-    customerId: String,
-    setting: CustomerSettingEntity?,
-    isAdmin: Boolean,
-    onSetSmartMode: (Boolean) -> Unit,
-    onSetActive: (Boolean) -> Unit,
-    onDeleteCustomer: () -> Unit
-) {
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-
-    Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 4.dp)
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "Khách hàng: $customerId",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    if (setting == null) {
-                        Text(
-                            text = "⚠️ Chưa có CustomerSetting",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-                if (isAdmin) {
-                    IconButton(
-                        onClick = { showDeleteConfirm = true },
-                        colors = IconButtonDefaults.iconButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = "Xoá khách hàng")
-                    }
-                }
-            }
-
-            if (isAdmin && setting != null) {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Smart Mode
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Smart AI", style = MaterialTheme.typography.labelMedium)
-                        Spacer(Modifier.width(4.dp))
-                        Switch(
-                            checked = setting.smartMode == 1,
-                            onCheckedChange = { onSetSmartMode(it) },
-                            modifier = Modifier.height(32.dp)
-                        )
-                    }
-                    // isActive (dịch vụ bật/tắt)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Dịch vụ", style = MaterialTheme.typography.labelMedium)
-                        Spacer(Modifier.width(4.dp))
-                        Switch(
-                            checked = setting.isActive == 1,
-                            onCheckedChange = { onSetActive(it) },
-                            modifier = Modifier.height(32.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Xoá khách hàng") },
-            text = { Text("Xoá toàn bộ camera và dữ liệu của khách hàng \"$customerId\"? Hành động này không thể hoàn tác.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteCustomer()
-                        showDeleteConfirm = false
-                    },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                ) { Text("Xoá") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Huỷ") }
-            }
-        )
-    }
-}
-
-// ─── CameraCard ───────────────────────────────────────────────────────────────
-
 @Composable
 fun CameraCard(
     camera: CameraConfigEntity,
     isAdmin: Boolean,
+    isSmartMode: Boolean,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onToggleActive: () -> Unit,
-    onTest: () -> Unit
+    onToggleSmartMode: () -> Unit,
+    onTest: () -> Unit,
+    onOpenDetail: () -> Unit
 ) {
-    // manualOff == 0 → đang theo dõi; manualOff == 1 → user đã tắt
-    val isTracking = camera.manualOff == 0
+    val isTracking = camera.manualOff == 0  // đang theo dõi = chưa tắt thủ công
     val isOnline = camera.isOnline == 1
 
     val cardColor = when {
-        !isTracking -> MaterialTheme.colorScheme.surfaceVariant
-        !isOnline   -> MaterialTheme.colorScheme.errorContainer
-        else        -> MaterialTheme.colorScheme.surface
+        camera.manualOff == 1 -> MaterialTheme.colorScheme.surfaceVariant
+        !isOnline -> MaterialTheme.colorScheme.errorContainer
+        else -> MaterialTheme.colorScheme.surface
     }
 
     Card(
+        onClick = onOpenDetail,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = cardColor)
     ) {
@@ -268,7 +183,7 @@ fun CameraCard(
                 .fillMaxWidth()
                 .padding(12.dp)
         ) {
-            // Header
+            // Header: tên + trạng thái
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -282,29 +197,36 @@ fun CameraCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                StatusChip(isTracking = isTracking, isOnline = isOnline)
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = when {
+                        camera.manualOff == 1 -> MaterialTheme.colorScheme.surfaceVariant
+                        !isOnline -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.primaryContainer
+                    }
+                ) {
+                    Text(
+                        text = when {
+                            camera.manualOff == 1 -> "⏸ Đã tắt"
+                            !isOnline -> "🔴 Mất kết nối"
+                            else -> "🟢 Hoạt động"
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Thông tin thửa đất
-            if (!camera.landinfo.isNullOrBlank()) {
-                Text(
-                    text = "📍 ${camera.landinfo}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-
-            // URL snapshot
             Text(
-                text = "🔗 ${camera.snapshoturl.take(60)}${if (camera.snapshoturl.length > 60) "..." else ""}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = camera.landinfo ?: "Chưa có thông tin thửa đất",
+                style = MaterialTheme.typography.bodyMedium
             )
 
-            // AI Prompt preview
             if (camera.aiPrompt.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "🤖 ${camera.aiPrompt.take(60)}${if (camera.aiPrompt.length > 60) "..." else ""}",
                     style = MaterialTheme.typography.labelSmall,
@@ -312,63 +234,79 @@ fun CameraCard(
                 )
             }
 
-            // Admin controls
             if (isAdmin) {
                 Spacer(modifier = Modifier.height(8.dp))
                 HorizontalDivider()
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Toggle theo dõi
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Toggle theo dõi (manualOff)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
+                    Column {
                         Text("Theo dõi", style = MaterialTheme.typography.labelMedium)
-                        Switch(
-                            checked = isTracking,
-                            onCheckedChange = { onToggleActive() },
-                            modifier = Modifier.height(32.dp)
+                        Text(
+                            if (isTracking) "Đang bật — camera được quét tự động"
+                            else "Đã tắt — không quét",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Switch(
+                        checked = isTracking,
+                        onCheckedChange = { onToggleActive() }
+                    )
+                }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                        IconButton(onClick = onTest) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = "Test camera", tint = MaterialTheme.colorScheme.primary)
-                        }
-                        IconButton(onClick = onEdit) {
-                            Icon(Icons.Default.Edit, contentDescription = "Sửa")
-                        }
-                        IconButton(onClick = onDelete) {
-                            Icon(Icons.Default.Delete, contentDescription = "Xoá", tint = MaterialTheme.colorScheme.error)
-                        }
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Toggle smart mode (AI phân tích)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("AI Smart Mode", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            if (isSmartMode) "Bật — AI phân tích & gửi email khi có biến động"
+                            else "Tắt — chỉ so sánh ảnh, không gọi AI",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = isSmartMode,
+                        onCheckedChange = { onToggleSmartMode() }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Nút hành động
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onTest) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Test ngay")
+                    }
+                    IconButton(onClick = onEdit) {
+                        Icon(Icons.Default.Edit, contentDescription = "Sửa")
+                    }
+                    IconButton(onClick = onDelete) {
+                        Icon(Icons.Default.Delete, contentDescription = "Xóa")
                     }
                 }
             }
         }
     }
 }
-
-@Composable
-private fun StatusChip(isTracking: Boolean, isOnline: Boolean) {
-    val (label, color) = when {
-        !isTracking -> "Đã tắt" to MaterialTheme.colorScheme.surfaceVariant
-        !isOnline   -> "Mất kết nối" to MaterialTheme.colorScheme.errorContainer
-        else        -> "Hoạt động" to MaterialTheme.colorScheme.primaryContainer
-    }
-    Surface(shape = RoundedCornerShape(12.dp), color = color) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall
-        )
-    }
-}
-
-// ─── CameraDialog ─────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -383,18 +321,9 @@ fun CameraDialog(
     var customerEmail by remember { mutableStateOf(camera?.customeremail ?: "") }
     var snapshotUrl by remember { mutableStateOf(camera?.snapshoturl ?: "") }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
-    var aiPrompt by remember {
-        mutableStateOf(
-            camera?.aiPrompt?.ifBlank { null }
-                ?: "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả."
-        )
-    }
-    var aiPositiveKeywords by remember { mutableStateOf(camera?.aiPositiveKeywords?.ifBlank { null } ?: "cảnh báo") }
-    var aiNegativeKeywords by remember { mutableStateOf(camera?.aiNegativeKeywords?.ifBlank { null } ?: "bình thường") }
-
-    // Validation
-    var idError by remember { mutableStateOf(false) }
-    var urlError by remember { mutableStateOf(false) }
+    var aiPrompt by remember { mutableStateOf(camera?.aiPrompt ?: "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả.") }
+    var aiPositiveKeywords by remember { mutableStateOf(camera?.aiPositiveKeywords ?: "cảnh báo") }
+    var aiNegativeKeywords by remember { mutableStateOf(camera?.aiNegativeKeywords ?: "bình thường") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -404,161 +333,81 @@ fun CameraDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 520.dp)
+                    .heightIn(max = 500.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                OutlinedTextField(
-                    value = id,
-                    onValueChange = { id = it; idError = false },
-                    label = { Text("Mã camera *") },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = camera == null,
-                    isError = idError,
-                    supportingText = if (idError) ({ Text("Bắt buộc") }) else null
-                )
-                OutlinedTextField(
-                    value = customerId,
-                    onValueChange = { customerId = it },
-                    label = { Text("Mã khách hàng") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = customerName,
-                    onValueChange = { customerName = it },
-                    label = { Text("Tên khách hàng") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = customerEmail,
-                    onValueChange = { customerEmail = it },
-                    label = { Text("Email nhận cảnh báo") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = snapshotUrl,
-                    onValueChange = { snapshotUrl = it; urlError = false },
-                    label = { Text("URL ảnh chụp (snapshot) *") },
-                    modifier = Modifier.fillMaxWidth(),
-                    isError = urlError,
-                    supportingText = if (urlError) ({ Text("Bắt buộc") }) else null,
-                    placeholder = { Text("http://192.168.1.x/snapshot.jpg") }
-                )
+                OutlinedTextField(value = id, onValueChange = { id = it }, label = { Text("Mã camera") }, modifier = Modifier.fillMaxWidth(), enabled = camera == null)
+                OutlinedTextField(value = customerId, onValueChange = { customerId = it }, label = { Text("Mã khách hàng") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = customerName, onValueChange = { customerName = it }, label = { Text("Tên khách hàng") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = customerEmail, onValueChange = { customerEmail = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = snapshotUrl, onValueChange = { snapshotUrl = it }, label = { Text("URL ảnh chụp") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = landInfo, onValueChange = { landInfo = it }, label = { Text("Thông tin thửa đất") }, modifier = Modifier.fillMaxWidth())
 
-                // Lấy vị trí GPS
-                val context = LocalContext.current
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text("Cài đặt AI", style = MaterialTheme.typography.titleSmall)
+
+                OutlinedTextField(value = aiPrompt, onValueChange = { aiPrompt = it }, label = { Text("AI Prompt") }, modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 4)
+                OutlinedTextField(value = aiPositiveKeywords, onValueChange = { aiPositiveKeywords = it }, label = { Text("Từ khóa cảnh báo (phân cách bằng dấu phẩy)") }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("cảnh báo, phát hiện, xâm nhập") })
+                OutlinedTextField(value = aiNegativeKeywords, onValueChange = { aiNegativeKeywords = it }, label = { Text("Từ khóa bình thường (phân cách bằng dấu phẩy)") }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("bình thường, không có") })
+
+                val context = androidx.compose.ui.platform.LocalContext.current
                 var locationError by remember { mutableStateOf<String?>(null) }
 
-                OutlinedTextField(
-                    value = landInfo,
-                    onValueChange = { landInfo = it },
-                    label = { Text("Thông tin thửa đất / toạ độ") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
                         onClick = {
                             locationError = null
                             try {
                                 val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
-                                val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(
-                                    context, android.Manifest.permission.ACCESS_FINE_LOCATION
-                                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                 if (!hasFine) { locationError = "Chưa cấp quyền vị trí"; return@OutlinedButton }
-                                val providers = lm.getProviders(true)
                                 var best: android.location.Location? = null
-                                for (p in providers) {
+                                for (p in lm.getProviders(true)) {
                                     val l = lm.getLastKnownLocation(p) ?: continue
                                     if (best == null || l.accuracy < best!!.accuracy) best = l
                                 }
                                 if (best != null) {
                                     val coord = "${best!!.latitude},${best!!.longitude}"
                                     landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
-                                } else {
-                                    locationError = "Không lấy được vị trí. Hãy mở Maps một lần rồi thử lại."
-                                }
-                            } catch (e: Exception) {
-                                locationError = "Lỗi: ${e.message}"
-                            }
+                                } else locationError = "GPS chưa có dữ liệu, mở Maps rồi thử lại"
+                            } catch (e: Exception) { locationError = "Lỗi: ${e.message}" }
                         },
                         modifier = Modifier.weight(1f)
-                    ) { Text("📍 Lấy GPS") }
+                    ) { Text("📍 Lấy vị trí") }
 
                     OutlinedButton(
                         onClick = {
                             locationError = null
-                            val match = Regex("(-?\\d{1,3}\\.\\d+)\\s*,\\s*(-?\\d{1,3}\\.\\d+)").find(landInfo)
-                            if (match != null) {
-                                val (lat, lng) = match.destructured
+                            val m = Regex("(-?\\d{1,3}\\.\\d+)\\s*,\\s*(-?\\d{1,3}\\.\\d+)").find(landInfo)
+                            if (m != null) {
+                                val lat = m.groupValues[1]; val lng = m.groupValues[2]
                                 try {
-                                    val uri = android.net.Uri.parse("geo:$lat,$lng?q=$lat,$lng")
-                                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri))
-                                } catch (e: Exception) {
-                                    locationError = "Không mở được bản đồ"
-                                }
-                            } else {
-                                locationError = "Chưa có toạ độ, hãy bấm 'Lấy GPS' trước."
-                            }
+                                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:$lat,$lng?q=$lat,$lng")))
+                                } catch (e: Exception) { locationError = "Không mở được bản đồ" }
+                            } else locationError = "Chưa có tọa độ, bấm 'Lấy vị trí' trước"
                         },
                         modifier = Modifier.weight(1f)
-                    ) { Text("🗺️ Xem bản đồ") }
+                    ) { Text("🗺️ Mở bản đồ") }
                 }
 
                 if (locationError != null) {
-                    Text(locationError!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                    Text(locationError ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                Text("Cài đặt AI", style = MaterialTheme.typography.titleSmall)
-
-                OutlinedTextField(
-                    value = aiPrompt,
-                    onValueChange = { aiPrompt = it },
-                    label = { Text("AI Prompt") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3, maxLines = 5
-                )
-                OutlinedTextField(
-                    value = aiPositiveKeywords,
-                    onValueChange = { aiPositiveKeywords = it },
-                    label = { Text("Từ khoá cảnh báo (phân cách bằng dấu phẩy)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("cảnh báo, phát hiện, xâm nhập") }
-                )
-                OutlinedTextField(
-                    value = aiNegativeKeywords,
-                    onValueChange = { aiNegativeKeywords = it },
-                    label = { Text("Từ khoá bình thường") },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("bình thường, không có") }
-                )
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                idError = id.isBlank()
-                urlError = snapshotUrl.isBlank()
-                if (!idError && !urlError) {
-                    onSave(
-                        mapOf(
-                            "id" to id,
-                            "customerId" to customerId,
-                            "customername" to customerName,
-                            "customeremail" to customerEmail,
-                            "snapshoturl" to snapshotUrl,
-                            "landinfo" to landInfo,
-                            "aiPrompt" to aiPrompt,
-                            "aiPositiveKeywords" to aiPositiveKeywords,
-                            "aiNegativeKeywords" to aiNegativeKeywords
-                        )
-                    )
+                if (id.isNotBlank() && snapshotUrl.isNotBlank()) {
+                    onSave(mapOf(
+                        "id" to id, "customerId" to customerId,
+                        "customername" to customerName, "customeremail" to customerEmail,
+                        "snapshoturl" to snapshotUrl, "landinfo" to landInfo,
+                        "aiPrompt" to aiPrompt, "aiPositiveKeywords" to aiPositiveKeywords,
+                        "aiNegativeKeywords" to aiNegativeKeywords
+                    ))
                 }
             }) { Text("Lưu") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Huỷ") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
     )
 }

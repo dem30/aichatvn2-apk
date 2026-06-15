@@ -8,83 +8,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.TextUnitType
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
-import com.aichatvn.agent.data.database.AppDatabase
-import com.aichatvn.agent.data.model.CameraConfigEntity
-import com.aichatvn.agent.skills.CameraSkill
-import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import javax.inject.Inject
-import android.content.Context
-
-@HiltViewModel
-class DiagnosticsViewModel @Inject constructor(
-    private val cameraSkill: CameraSkill,
-    @ApplicationContext private val context: Context
-) : ViewModel() {
-    
-    private val database by lazy { AppDatabase.getDatabase(context) }
-    
-    private val _learningStats = MutableStateFlow<Map<String, Any>>(emptyMap())
-    val learningStats = _learningStats.asStateFlow()
-    
-    private val _cameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
-    val cameras = _cameras.asStateFlow()
-    
-    val combinedStats: StateFlow<Map<String, Any>> = combine(_learningStats, _cameras) { stats, cameraList ->
-        mapOf(
-            "learningStats" to stats,
-            "cameras" to cameraList.map { camera ->
-                val status = when {
-                    camera.manualOff == 1 -> "Đã tắt"
-                    camera.isOnline != 1 -> "Mất kết nối"
-                    else -> "Hoạt động"
-                }
-                mapOf(
-                    "id" to camera.id,
-                    "name" to camera.customername,
-                    "customerId" to camera.customerId,
-                    "isOnline" to (camera.isOnline == 1),
-                    "manualOff" to (camera.manualOff == 1),
-                    "status" to status
-                )
-            },
-            "totalCameras" to cameraList.size,
-            "onlineCameras" to cameraList.count { it.isOnline == 1 && it.manualOff == 0 },
-            "offlineCameras" to cameraList.count { it.isOnline != 1 && it.manualOff == 0 },
-            "disabledCameras" to cameraList.count { it.manualOff == 1 }
-        )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyMap()
-    )
-
-    init {
-        viewModelScope.launch {
-            while (isActive) {
-                _learningStats.value = cameraSkill.getDiagnostics()
-                _cameras.value = database.cameraDao().getActiveCameras()
-                delay(5000)
-            }
-        }
-    }
-}
+import com.aichatvn.agent.ui.viewmodels.DiagnosticsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -114,153 +43,168 @@ fun DiagnosticsScreen(
                     .padding(8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Card(modifier = Modifier.weight(1f)) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("📷 Tổng", style = MaterialTheme.typography.labelSmall)
-                        Text("$totalCameras", style = MaterialTheme.typography.titleLarge)
-                    }
-                }
-                Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("🟢 Online", style = MaterialTheme.typography.labelSmall)
-                        Text("$onlineCameras", style = MaterialTheme.typography.titleLarge)
-                    }
-                }
-                Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("🔴 Offline", style = MaterialTheme.typography.labelSmall)
-                        Text("$offlineCameras", style = MaterialTheme.typography.titleLarge)
-                    }
-                }
-                Card(modifier = Modifier.weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("⛔ Tắt", style = MaterialTheme.typography.labelSmall)
-                        Text("$disabledCameras", style = MaterialTheme.typography.titleLarge)
-                    }
-                }
+                StatSummaryCard("📷 Tổng", "$totalCameras", modifier = Modifier.weight(1f))
+                StatSummaryCard(
+                    "🟢 Online", "$onlineCameras",
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
+                StatSummaryCard(
+                    "🔴 Offline", "$offlineCameras",
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier.weight(1f)
+                )
+                StatSummaryCard(
+                    "⛔ Tắt", "$disabledCameras",
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
             }
-            
-            if (cameras.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("📭", fontSize = TextUnit(48f, TextUnitType.Sp))
-                        Spacer(Modifier.height(8.dp))
-                        Text("Chưa có camera nào được cấu hình", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            } else if (learningStats.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(Modifier.height(8.dp))
-                        Text("Đang tải thống kê học tập...", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(cameras, key = { it["id"] as? String ?: "" }) { camera ->
-                        val cameraId = camera["id"] as? String ?: ""
-                        val cameraName = camera["name"] as? String ?: ""
-                        val cameraStatus = camera["status"] as? String ?: "Unknown"
-                        val cameraStats = learningStats[cameraId] as? Map<String, Any>
-                        
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = cameraName,
-                                        style = MaterialTheme.typography.titleSmall
-                                    )
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = when (cameraStatus) {
-                                            "Hoạt động" -> MaterialTheme.colorScheme.primaryContainer
-                                            "Mất kết nối" -> MaterialTheme.colorScheme.errorContainer
-                                            else -> MaterialTheme.colorScheme.secondaryContainer
-                                        }
-                                    ) {
-                                        Text(
-                                            text = cameraStatus,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    }
-                                }
-                                
-                                Text(
-                                    text = "ID: $cameraId",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                
-                                Spacer(Modifier.height(8.dp))
-                                
-                                if (cameraStats != null) {
-                                    StatRow("Mẫu học", "${cameraStats["samples"] ?: 0}")
-                                    StatRow("Sự kiện thật", "${cameraStats["realEvents"] ?: 0}")
-                                    StatRow("Ngưỡng delta", "${cameraStats["deltaTrigger"] ?: 10}")
-                                    StatRow("Ngưỡng diff", "${cameraStats["absDiffTrigger"] ?: 18}")
-                                    StatRow("Baseline size", "${cameraStats["baselineSize"] ?: 0}")
-                                    
-                                    val inCooldown = cameraStats["inCooldown"] as? Boolean ?: false
-                                    if (inCooldown) {
-                                        Spacer(Modifier.height(4.dp))
-                                        Surface(
-                                            shape = MaterialTheme.shapes.small,
-                                            color = MaterialTheme.colorScheme.tertiaryContainer
-                                        ) {
-                                            Text(
-                                                "⏳ Đang cooldown",
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                        }
-                                    }
-                                    
-                                    val circuitBreakerOpen = cameraStats["circuitBreakerOpen"] as? Boolean ?: false
-                                    if (circuitBreakerOpen) {
-                                        Spacer(Modifier.height(4.dp))
-                                        Surface(
-                                            shape = MaterialTheme.shapes.small,
-                                            color = MaterialTheme.colorScheme.errorContainer
-                                        ) {
-                                            Text(
-                                                "⚠️ Circuit Breaker OPEN",
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    Text(
-                                        "Chưa có dữ liệu học tập",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
+
+            when {
+                cameras.isEmpty() -> {
+                    // Chưa có camera nào — bình thường, không phải lỗi
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("📭", fontSize = TextUnit(48f, TextUnitType.Sp))
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Chưa có camera nào được cấu hình",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }
+                else -> {
+                    // FIX: không chặn hiển thị khi learningStats rỗng.
+                    // Camera mới thêm hoặc chưa scan lần nào → hiển thị "Chưa có dữ liệu học tập"
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(cameras, key = { it["id"] as? String ?: "" }) { camera ->
+                            val cameraId = camera["id"] as? String ?: ""
+                            val cameraName = camera["name"] as? String ?: ""
+                            val cameraStatus = camera["status"] as? String ?: "Unknown"
+                            val cameraStats = learningStats[cameraId] as? Map<String, Any>
+
+                            CameraDiagnosticCard(
+                                cameraId = cameraId,
+                                cameraName = cameraName,
+                                status = cameraStatus,
+                                stats = cameraStats
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatSummaryCard(
+    label: String,
+    value: String,
+    color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.surface,
+    modifier: Modifier = Modifier
+) {
+    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = color)) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall)
+            Text(value, style = MaterialTheme.typography.titleLarge)
+        }
+    }
+}
+
+@Composable
+private fun CameraDiagnosticCard(
+    cameraId: String,
+    cameraName: String,
+    status: String,
+    stats: Map<String, Any>?
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(cameraName, style = MaterialTheme.typography.titleSmall)
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = when (status) {
+                        "Hoạt động" -> MaterialTheme.colorScheme.primaryContainer
+                        "Mất kết nối" -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.secondaryContainer
+                    }
+                ) {
+                    Text(
+                        text = status,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+
+            Text(
+                text = "ID: $cameraId",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            if (stats != null) {
+                StatRow("Mẫu học", "${stats["samples"] ?: 0}")
+                StatRow("Sự kiện thật", "${stats["realEvents"] ?: 0}")
+                StatRow("Ngưỡng delta", "${stats["deltaTrigger"] ?: 10}")
+                StatRow("Ngưỡng diff", "${stats["absDiffTrigger"] ?: 18}")
+                StatRow("Baseline size", "${stats["baselineSize"] ?: 0}")
+
+                val inCooldown = stats["inCooldown"] as? Boolean ?: false
+                if (inCooldown) {
+                    Spacer(Modifier.height(4.dp))
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.tertiaryContainer
+                    ) {
+                        Text(
+                            "⏳ Đang cooldown",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+
+                val circuitOpen = stats["circuitBreakerOpen"] as? Boolean ?: false
+                if (circuitOpen) {
+                    Spacer(Modifier.height(4.dp))
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.errorContainer
+                    ) {
+                        Text(
+                            "⚠️ Circuit Breaker OPEN",
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+            } else {
+                // Camera chưa bao giờ scan — bình thường với camera mới
+                Text(
+                    text = if (status == "Mất kết nối")
+                        "⚠️ Camera offline, chưa thu thập được dữ liệu"
+                    else
+                        "📊 Chưa có dữ liệu học tập — sẽ có sau lần quét đầu tiên",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

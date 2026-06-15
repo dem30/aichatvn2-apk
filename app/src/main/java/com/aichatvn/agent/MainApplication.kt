@@ -8,12 +8,18 @@ import javax.inject.Inject
 
 @HiltAndroidApp
 class MainApplication : Application(), Configuration.Provider {
-    
+
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
-    
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
             .build()
+
+    override fun onCreate() {
+        super.onCreate()
+        // WorkManager đã được khởi tạo trong MainActivity.setupWorkManager()
+        // Không cần schedule ở đây nữa để tránh trùng lặp
+    }
 }

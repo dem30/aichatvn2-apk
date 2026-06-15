@@ -1,6 +1,8 @@
 package com.aichatvn.agent.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,49 +33,64 @@ fun TrainingScreen(
     val qaList by viewModel.qaList.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val currentPage by viewModel.currentPage.collectAsState()
     val hasMore by viewModel.hasMore.collectAsState()
     val exportResult by viewModel.exportResult.collectAsState()
     val importResult by viewModel.importResult.collectAsState()
-    
+
     var showAddDialog by remember { mutableStateOf(false) }
     var editingQA by remember { mutableStateOf<QAEntity?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedQAs by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
-    
+
     val listState = rememberLazyListState()
-    
     val displayList = if (searchQuery.isNotBlank()) searchResults else qaList
-    
-    // Hiển thị kết quả export
+
+    // ─── ActivityResultLaunchers cho file picker ──────────────────────────────
+
+    val jsonPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { viewModel.importQAFromUri(context, it) }
+    }
+
+    val csvPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { viewModel.importQAFromCsvUri(context, it) }
+    }
+
+    // ─── Feedback Toasts ──────────────────────────────────────────────────────
+
     LaunchedEffect(exportResult) {
         exportResult?.let {
             Toast.makeText(context, it, Toast.LENGTH_LONG).show()
             viewModel.clearExportResult()
         }
     }
-    
-    // Hiển thị kết quả import
+
     LaunchedEffect(importResult) {
         importResult?.let {
             Toast.makeText(context, it, Toast.LENGTH_LONG).show()
             viewModel.clearImportResult()
         }
     }
-    
-    // Load more khi cuộn gần cuối
+
+    // ─── Infinite scroll ──────────────────────────────────────────────────────
+
     LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-        if (lastVisibleIndex >= displayList.size - 3 && hasMore && !isLoading && searchQuery.isBlank()) {
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        if (lastVisible >= displayList.size - 3 && hasMore && !isLoading && searchQuery.isBlank()) {
             viewModel.loadMoreQAs()
         }
     }
-    
+
+    // ─── UI ───────────────────────────────────────────────────────────────────
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Huấn luyện Q&A") },
+                title = { Text("Huấn luyện Q&A (${qaList.size})") },
                 actions = {
                     IconButton(onClick = { viewModel.exportQAToJson(context) }) {
                         Icon(Icons.Default.Download, contentDescription = "Export JSON")
@@ -88,90 +105,136 @@ fun TrainingScreen(
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Column(modifier = Modifier
+            .fillMaxSize()
+            .padding(padding)) {
+
             // Search bar
             OutlinedTextField(
                 value = searchQuery,
-                onValueChange = { 
+                onValueChange = {
                     searchQuery = it
-                    if (it.isNotBlank()) {
-                        viewModel.searchQAs(it)
-                    } else {
-                        viewModel.clearSearch()
-                    }
+                    if (it.isNotBlank()) viewModel.searchQAs(it) else viewModel.clearSearch()
                 },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 placeholder = { Text("Tìm kiếm câu hỏi...") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
+                trailingIcon = {
+                    if (searchQuery.isNotBlank()) {
+                        IconButton(onClick = { searchQuery = ""; viewModel.clearSearch() }) {
+                            Icon(Icons.Default.Close, null)
+                        }
+                    }
+                },
                 shape = RoundedCornerShape(24.dp),
                 singleLine = true
             )
-            
-            // Import buttons row
+
+            // Import buttons — dùng launcher thật
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Button(
-                    onClick = { viewModel.importQAFromJson(context) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                OutlinedButton(
+                    onClick = { jsonPickerLauncher.launch("application/json") },
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Import JSON")
                 }
-                Button(
-                    onClick = { viewModel.importQAFromCsv(context) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                OutlinedButton(
+                    onClick = { csvPickerLauncher.launch("text/*") },
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Import CSV")
                 }
             }
-            
-            if (isLoading && displayList.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (displayList.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = if (searchQuery.isNotBlank()) "Không tìm thấy kết quả" else "Chưa có dữ liệu huấn luyện",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+
+            // Batch selection bar (xuất hiện khi có mục được chọn)
+            if (selectedQAs.isNotEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    items(displayList, key = { it.id }) { qa ->
-                        QACard(
-                            qa = qa,
-                            isSelected = selectedQAs.contains(qa.id),
-                            onSelect = { 
-                                selectedQAs = if (selectedQAs.contains(qa.id)) {
-                                    selectedQAs - qa.id
-                                } else {
-                                    selectedQAs + qa.id
-                                }
-                            },
-                            onEdit = { editingQA = qa },
-                            onDelete = { viewModel.deleteQA(qa.id) }
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "Đã chọn ${selectedQAs.size}",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Row {
+                            TextButton(onClick = { selectedQAs = emptySet() }) {
+                                Text("Bỏ chọn")
+                            }
+                            TextButton(
+                                onClick = { showDeleteConfirm = true },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("Xoá")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Content
+            when {
+                isLoading && displayList.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+                displayList.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = if (searchQuery.isNotBlank()) "Không tìm thấy kết quả" else "Chưa có dữ liệu huấn luyện",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    
-                    if (hasMore && searchQuery.isBlank() && isLoading) {
-                        item {
-                            Box(
-                                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+                else -> {
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(displayList, key = { it.id }) { qa ->
+                            QACard(
+                                qa = qa,
+                                isSelected = selectedQAs.contains(qa.id),
+                                onSelect = {
+                                    selectedQAs = if (selectedQAs.contains(qa.id))
+                                        selectedQAs - qa.id
+                                    else
+                                        selectedQAs + qa.id
+                                },
+                                onEdit = { editingQA = qa },
+                                onDelete = { viewModel.deleteQA(qa.id) }
+                            )
+                        }
+
+                        if (hasMore && searchQuery.isBlank() && isLoading) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                }
                             }
                         }
                     }
@@ -179,17 +242,20 @@ fun TrainingScreen(
             }
         }
     }
-    
-    // Batch delete confirmation dialog
+
+    // ─── Dialogs ──────────────────────────────────────────────────────────────
+
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Xác nhận xóa") },
-            text = { 
-                Text(if (selectedQAs.isNotEmpty()) 
-                    "Xóa ${selectedQAs.size} mục đã chọn?" 
-                else 
-                    "Xóa tất cả Q&A? Hành động này không thể hoàn tác!")
+            text = {
+                Text(
+                    if (selectedQAs.isNotEmpty())
+                        "Xóa ${selectedQAs.size} mục đã chọn?"
+                    else
+                        "Xóa tất cả Q&A? Hành động này không thể hoàn tác!"
+                )
             },
             confirmButton = {
                 TextButton(
@@ -207,13 +273,11 @@ fun TrainingScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Hủy")
-                }
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Hủy") }
             }
         )
     }
-    
+
     if (showAddDialog || editingQA != null) {
         QADialog(
             existing = editingQA,
@@ -227,32 +291,45 @@ fun TrainingScreen(
     }
 }
 
+// ─── QACard ───────────────────────────────────────────────────────────────────
+
 @Composable
 fun QACard(
-    qa: QAEntity, 
+    qa: QAEntity,
     isSelected: Boolean,
     onSelect: () -> Unit,
-    onEdit: () -> Unit, 
+    onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.surface
+        )
+    ) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Checkbox(
                 checked = isSelected,
                 onCheckedChange = { onSelect() },
                 modifier = Modifier.padding(start = 4.dp, top = 12.dp)
             )
-            
-            Column(modifier = Modifier.weight(1f).padding(12.dp)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(12.dp)
+            ) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer
+                        color = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Text(
-                            qa.category, 
+                            qa.category,
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
@@ -261,23 +338,35 @@ fun QACard(
                             Icon(Icons.Default.Edit, null, modifier = Modifier.size(18.dp))
                         }
                         IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.error)
+                            Icon(
+                                Icons.Default.Delete, null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
                         }
                     }
                 }
                 Text("Q: ${qa.question}", style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(4.dp))
-                Text("A: ${qa.answer}", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "A: ${qa.answer}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
 }
 
+// ─── QADialog ─────────────────────────────────────────────────────────────────
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QADialog(existing: QAEntity?, onDismiss: () -> Unit, onSave: (String, String, String) -> Unit) {
+fun QADialog(
+    existing: QAEntity?,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String) -> Unit
+) {
     var question by remember { mutableStateOf(existing?.question ?: "") }
     var answer by remember { mutableStateOf(existing?.answer ?: "") }
     var category by remember { mutableStateOf(existing?.category ?: "chat") }
@@ -289,16 +378,16 @@ fun QADialog(existing: QAEntity?, onDismiss: () -> Unit, onSave: (String, String
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
-                    value = question, 
+                    value = question,
                     onValueChange = { question = it },
-                    label = { Text("Câu hỏi") }, 
+                    label = { Text("Câu hỏi") },
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
-                    value = answer, 
+                    value = answer,
                     onValueChange = { answer = it },
-                    label = { Text("Câu trả lời") }, 
-                    modifier = Modifier.fillMaxWidth(), 
+                    label = { Text("Câu trả lời") },
+                    modifier = Modifier.fillMaxWidth(),
                     minLines = 3
                 )
                 ExposedDropdownMenuBox(
@@ -311,7 +400,9 @@ fun QADialog(existing: QAEntity?, onDismiss: () -> Unit, onSave: (String, String
                         readOnly = true,
                         label = { Text("Danh mục") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
                     )
                     ExposedDropdownMenu(
                         expanded = expanded,
@@ -320,10 +411,7 @@ fun QADialog(existing: QAEntity?, onDismiss: () -> Unit, onSave: (String, String
                         PRESET_CATEGORIES.forEach { preset ->
                             DropdownMenuItem(
                                 text = { Text(preset) },
-                                onClick = {
-                                    category = preset
-                                    expanded = false
-                                }
+                                onClick = { category = preset; expanded = false }
                             )
                         }
                     }
@@ -332,12 +420,10 @@ fun QADialog(existing: QAEntity?, onDismiss: () -> Unit, onSave: (String, String
         },
         confirmButton = {
             TextButton(
-                onClick = { 
-                    if (question.isNotBlank() && answer.isNotBlank()) onSave(question, answer, category) 
+                onClick = {
+                    if (question.isNotBlank() && answer.isNotBlank()) onSave(question, answer, category)
                 }
-            ) {
-                Text("Lưu")
-            }
+            ) { Text("Lưu") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
     )

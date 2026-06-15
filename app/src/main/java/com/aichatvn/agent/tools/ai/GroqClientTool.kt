@@ -152,4 +152,57 @@ class GroqClientTool @Inject constructor(
         val dataUrl = "data:image/jpeg;base64,$base64Image"
         return@withContext chat(message = prompt, imageUrl = dataUrl)
     }
+    // Thêm vào cuối class GroqClientTool
+suspend fun chatForIntent(prompt: String): String = withContext(Dispatchers.IO) {
+    val apiKey = getApiKey()
+    if (apiKey.isBlank()) {
+        return@withContext "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
+    }
+    
+    val messages = JSONArray()
+    messages.put(JSONObject().put("role", "system").put("content", 
+        "Bạn là bộ phân tích ý định. Chỉ trả về JSON thuần túy, không markdown, không giải thích."))
+    messages.put(JSONObject().put("role", "user").put("content", prompt))
+    
+    val requestBody = JSONObject().apply {
+        put("model", "llama-3.3-70b-versatile")
+        put("messages", messages)
+        put("temperature", 0.2)
+        put("max_tokens", 500)
+    }
+    
+    val request = Request.Builder()
+        .url("$baseUrl/chat/completions")
+        .addHeader("Authorization", "Bearer $apiKey")
+        .addHeader("Content-Type", "application/json")
+        .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+        .build()
+    
+    try {
+        val response = client.newCall(request).execute()
+        val responseBody = response.body?.string() ?: ""
+        
+        if (!response.isSuccessful) {
+            logger.e("GroqClientTool", "Intent API error: ${response.code}")
+            return@withContext "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
+        }
+        
+        val jsonResponse = JSONObject(responseBody)
+        val choices = jsonResponse.getJSONArray("choices")
+        if (choices.length() > 0) {
+            choices.getJSONObject(0).getJSONObject("message").getString("content")
+                .trim()
+                .removeSurrounding("```json", "```")
+                .trim()
+                .removeSurrounding("```", "```")
+                .trim()
+        } else {
+            "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
+        }
+    } catch (e: Exception) {
+        logger.e("GroqClientTool", "Intent error: ${e.message}")
+        "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
+    }
+}
+    
 }

@@ -2,6 +2,7 @@ package com.aichatvn.agent.di
 
 import android.content.Context
 import com.aichatvn.agent.data.database.AppDatabase
+import com.aichatvn.agent.utils.Logger
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -36,4 +37,6 @@ object AppModule {
     @ApplicationScope
     fun provideApplicationScope(): CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    
+    // ❌ XÓA provideMergedPlugins - gây vòng lặp dependency
 }

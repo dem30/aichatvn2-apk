@@ -2,11 +2,12 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.core.AgentResponse
-import com.aichatvn.agent.core.Event
-import com.aichatvn.agent.core.EventBus
 import com.aichatvn.agent.data.database.AppDatabase
+import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
+import com.aichatvn.agent.core.plugin.PluginEvent
+import com.aichatvn.agent.core.plugin.PluginEventBus
 import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
@@ -18,10 +19,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.text.SimpleDateFormat
+import java.io.File
+import java.io.FileOutputStream
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,7 +40,7 @@ class CameraSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
-    private val eventBus: EventBus,
+    private val pluginEventBus: PluginEventBus,
     private val logger: Logger,
     @ApplicationScope private val scope: CoroutineScope
 ) : BaseAgentSkill {
@@ -105,6 +111,16 @@ class CameraSkill @Inject constructor(
         private const val CIRCUIT_BREAKER_THRESHOLD = 3
         private const val CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000L // 30 phút
         private const val DAILY_REPORT_HOUR = 20 // 8 PM
+        private const val MAX_DAILY_EVENTS_PER_CAMERA = 50 // Giới hạn số sự kiện/ngày mỗi camera tránh phình bộ nhớ
+
+        // DateTimeFormatter (java.time) là immutable & thread-safe, có thể dùng chung
+        // giữa nhiều coroutine trên Dispatchers.IO, khác với SimpleDateFormat.
+        private val TIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        private val DATE_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        private val DATETIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
     
     override suspend fun initialize() {
@@ -114,9 +130,60 @@ class CameraSkill @Inject constructor(
             circuitBreakers[camera.id] = CircuitBreakerState()
         }
         updateDiagnostics()
-        
+        cleanupOldAlerts()
+        pruneOrphanedCameraState()
+
         // Schedule daily report
         scheduleDailyReport()
+    }
+
+    /**
+     * Dọn các entry trong learningStates/circuitBreakers/pendingResets/dailyEvents
+     * mà cameraId không còn tồn tại trong DB (ví dụ camera bị xóa bằng cách khác
+     * ngoài deleteCamera()/deleteCustomer(), hoặc dữ liệu lệch sau khi app restart).
+     * Đảm bảo tổng số entry trong các map luôn bám theo số camera thực tế trong DB,
+     * tránh tăng vô hạn theo thời gian.
+     */
+    private suspend fun pruneOrphanedCameraState() {
+        try {
+            cameraMutex.withLock {
+                // Dùng toàn bộ camera (kể cả manualOff/inactive) làm tập hợp "còn tồn tại",
+                // chỉ coi là orphan khi camera đã thực sự bị xóa khỏi DB.
+                val allIds = database.cameraDao().getAllCamerasFlow().first().map { it.id }.toSet()
+                val orphans = (learningStates.keys + circuitBreakers.keys + pendingResets.keys + dailyEvents.keys) - allIds
+                orphans.forEach { id ->
+                    learningStates.remove(id)
+                    circuitBreakers.remove(id)
+                    pendingResets.remove(id)
+                    dailyEvents.remove(id)
+                }
+                if (orphans.isNotEmpty()) {
+                    logger.i("CameraSkill", "🧹 Pruned ${orphans.size} orphaned camera state entries")
+                }
+            }
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "pruneOrphanedCameraState error: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Xóa các cảnh báo (và ảnh kèm theo) cũ hơn 30 ngày để tránh phình DB/bộ nhớ trên điện thoại.
+     */
+    private fun cleanupOldAlerts() {
+        scope.launch {
+            try {
+                val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+                val dir = File(context.filesDir, "alert_images")
+                if (dir.exists()) {
+                    dir.listFiles()?.forEach { file ->
+                        if (file.lastModified() < cutoff) file.delete()
+                    }
+                }
+                database.alertDao().deleteAlertsOlderThan(cutoff)
+            } catch (e: Exception) {
+                logger.e("CameraSkill", "cleanupOldAlerts error: ${e.message}", e)
+            }
+        }
     }
     
     private fun scheduleDailyReport() {
@@ -139,6 +206,7 @@ class CameraSkill @Inject constructor(
                 val delay = nextRun - now
                 kotlinx.coroutines.delay(delay)
                 sendDailyReports()
+                pruneOrphanedCameraState()
             }
         }
     }
@@ -159,7 +227,7 @@ class CameraSkill @Inject constructor(
                             "landInfo" to (camera.landinfo ?: "N/A"),
                             "events" to dailyEventsList.map { event ->
                                 mapOf(
-                                    "time" to SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(event.timestamp)),
+                                    "time" to TIME_FORMATTER.format(Instant.ofEpochMilli(event.timestamp)),
                                     "comment" to event.comment
                                 )
                             },
@@ -185,7 +253,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun sendDailySummaryEmail(to: String, customerId: String, events: List<Map<String, Any>>) {
-        val subject = "📋 BÁO CÁO GIÁM SÁT ĐẤT ĐAI ĐỊNH KỲ - $customerId - ${SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())}"
+        val subject = "📋 BÁO CÁO GIÁM SÁT ĐẤT ĐAI ĐỊNH KỲ - $customerId - ${DATE_FORMATTER.format(Instant.now())}"
         
         val body = buildString {
             append("<html><body style='font-family: Arial, sans-serif;'>")
@@ -281,7 +349,7 @@ class CameraSkill @Inject constructor(
                     <tr><td><strong>Tên Camera:</strong></td><td>${camera.customername}</td></tr>
                     <tr><td><strong>Mã Camera:</strong></td><td>${camera.id}</td></tr>
                     <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId}</td></tr>
-                    <tr><td><strong>Thời gian:</strong></td><td>${SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(Date())}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
                 </table>
                 <div style="background: #fef2f2; padding: 10px; border-left: 4px solid #dc2626;">
                     <strong>Chi tiết lỗi:</strong><br>$reason
@@ -435,12 +503,15 @@ class CameraSkill @Inject constructor(
                         state.realEvents++
                         state.cooldownUntil = now + COOLDOWN_DURATION_MS
                         
-                        // Ghi nhận sự kiện hàng ngày
-                        dailyEvents.getOrPut(camera.id) { mutableListOf() }.add(
-                            DailyEvent(now, aiComment, optimizedBytes)
-                        )
+                        // Ghi nhận sự kiện hàng ngày (giới hạn kích thước để tránh phình bộ nhớ)
+                        val cameraDailyEvents = dailyEvents.getOrPut(camera.id) { mutableListOf() }
+                        cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
+                        if (cameraDailyEvents.size > MAX_DAILY_EVENTS_PER_CAMERA) {
+                            cameraDailyEvents.removeAt(0)
+                        }
                         
                         val customerEmail = camera.customeremail
+                        var emailSent = false
                         if (customerEmail.isNotEmpty()) {
                             emailSkill.sendEmail(
                                 to = customerEmail,
@@ -448,6 +519,7 @@ class CameraSkill @Inject constructor(
                                 body = buildAlertEmailBody(camera, aiComment),
                                 imageBytes = optimizedBytes
                             )
+                            emailSent = true
                         }
                         
                         notificationSkill.sendNotification(
@@ -455,7 +527,26 @@ class CameraSkill @Inject constructor(
                             message = aiComment.take(100)
                         )
                         
-                        eventBus.emit(Event.AlertDetected(camera.id, aiComment, optimizedBytes))
+                        // Lưu vào AlertHistory (DB) để xem lại sau
+                        saveAlertToHistory(
+                            camera = camera,
+                            aiComment = aiComment,
+                            imageBytes = optimizedBytes,
+                            diff = currentDiff,
+                            deltaTrigger = deltaTrigger,
+                            absDiffTrigger = absDiffTrigger,
+                            emailSent = emailSent
+                        )
+                        
+                        pluginEventBus.publishAndForget(PluginEvent(
+                            type = "ALERT_DETECTED",
+                            source = "camera_skill",
+                            payload = mapOf(
+                                "cameraId" to camera.id,
+                                "message" to aiComment,
+                                "emailSent" to emailSent
+                            )
+                        ))
                     } else {
                         // Nếu AI nói bình thường nhưng diff lớn, đánh dấu pending reset
                         if (isMature && isSuddenChange) {
@@ -499,7 +590,15 @@ class CameraSkill @Inject constructor(
                     database.cameraDao().updateCamera(camera.copy(isOnline = 1, status = "online"))
                 }
                 
-                eventBus.emit(Event.CameraScanned(camera.id, isSuddenChange, aiComment))
+                pluginEventBus.publishAndForget(PluginEvent(
+                    type = "CAMERA_SCANNED",
+                    source = "camera_skill",
+                    payload = mapOf(
+                        "cameraId" to camera.id,
+                        "hasChange" to isSuddenChange,
+                        "aiComment" to (aiComment ?: "")
+                    )
+                ))
                 updateDiagnostics()
                 
                 return mapOf(
@@ -689,6 +788,12 @@ class CameraSkill @Inject constructor(
         }
     }
     
+    /**
+     * Flow danh sách toàn bộ camera (kể cả inactive), dùng để các Plugin/ViewModel
+     * theo dõi trạng thái online/offline liên tục (real-time) thay vì check 1 lần.
+     */
+    fun observeCameras() = database.cameraDao().getAllCamerasFlow()
+
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
     
     private fun updateDiagnostics() {
@@ -711,6 +816,61 @@ class CameraSkill @Inject constructor(
         }
     }
     
+    /**
+     * Lưu một cảnh báo vào bảng "alerts" để hiển thị ở màn hình Lịch sử cảnh báo.
+     * Ảnh snapshot được lưu vào file riêng trong filesDir/alert_images, chỉ lưu path trong DB.
+     */
+    private suspend fun saveAlertToHistory(
+        camera: CameraConfigEntity,
+        aiComment: String,
+        imageBytes: ByteArray?,
+        diff: Int,
+        deltaTrigger: Int,
+        absDiffTrigger: Int,
+        emailSent: Boolean
+    ) {
+        try {
+            val alertId = UUID.randomUUID().toString()
+            val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
+
+            val alert = AlertEntity(
+                id = alertId,
+                cameraId = camera.id,
+                customerId = camera.customerId,
+                cameraName = camera.customername,
+                timestamp = System.currentTimeMillis(),
+                aiComment = aiComment,
+                diff = diff,
+                deltaTrigger = deltaTrigger,
+                absDiffTrigger = absDiffTrigger,
+                imagePath = imagePath,
+                emailSent = if (emailSent) 1 else 0,
+                isSuspicious = 1,
+                isRead = 0
+            )
+            database.alertDao().insertAlert(alert)
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Ghi ảnh snapshot ra file trong bộ nhớ trong app (filesDir/alert_images),
+     * trả về đường dẫn tuyệt đối để lưu vào AlertEntity.imagePath.
+     */
+    private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
+        return try {
+            val dir = File(context.filesDir, "alert_images")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "$alertId.jpg")
+            FileOutputStream(file).use { it.write(bytes) }
+            file.absolutePath
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveAlertImage error: ${e.message}", e)
+            null
+        }
+    }
+
     private fun buildAlertEmailBody(camera: CameraConfigEntity, analysis: String): String {
         return """
             <html>
@@ -719,7 +879,7 @@ class CameraSkill @Inject constructor(
                 <p>Hệ thống phát hiện biến động bất thường tại camera <strong>${camera.customername}</strong></p>
                 <table style="margin: 15px 0;">
                     <tr><td><strong>Vị trí:</strong></td><td>${camera.landinfo ?: "Không xác định"}</td></tr>
-                    <tr><td><strong>Thời gian:</strong></td><td>${SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(System.currentTimeMillis())}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
                 </table>
                 <div style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107;">
                     <strong>🤖 Phân tích AI:</strong><br>
