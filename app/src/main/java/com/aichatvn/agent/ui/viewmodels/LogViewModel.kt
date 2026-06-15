@@ -1,15 +1,20 @@
 package com.aichatvn.agent.ui.viewmodels
 
+import android.content.Context
+import android.os.Environment
 import androidx.lifecycle.ViewModel
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
 class LogViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -26,7 +31,11 @@ class LogViewModel @Inject constructor(
         logger.clear()
     }
 
-    fun exportLogs(cacheDir: java.io.File): java.io.File {
-        return logger.exportLogsToFile(cacheDir)
+    fun exportLogs(): File {
+        val downloadsDir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "AIChatVN"
+        )
+        return logger.exportLogsToFile(downloadsDir)
     }
 }

@@ -111,11 +111,12 @@ class Logger @Inject constructor() {
     }
 
     /**
-     * Xuất toàn bộ log hiện tại ra file text trong cacheDir của app.
+     * Xuất toàn bộ log hiện tại ra Downloads/AIChatVN/ — thống nhất với TrainingSkill.exportQAs().
      * Trả về File đã tạo để có thể chia sẻ / đọc.
      */
-    fun exportLogsToFile(cacheDir: File): File {
-        val logFile = File(cacheDir, "app_logs_${System.currentTimeMillis()}.txt")
+    fun exportLogsToFile(downloadsDir: File): File {
+        if (!downloadsDir.exists()) downloadsDir.mkdirs()
+        val logFile = File(downloadsDir, "aichatvn_logs_${System.currentTimeMillis()}.txt")
         logFile.bufferedWriter().use { writer ->
             _logs.value.asReversed().forEach { log ->
                 writer.write("[${formatTimestamp(log.timestamp)}] ${log.level.name} [${log.tag}] ${log.message}")

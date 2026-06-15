@@ -194,7 +194,7 @@ fun SettingsScreen(
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = testEmailAddress.isNotBlank() && gmailSenderInput.isNotBlank()
+                        enabled = testEmailAddress.isNotBlank()
                     ) {
                         Text("📤 Gửi email test")
                     }

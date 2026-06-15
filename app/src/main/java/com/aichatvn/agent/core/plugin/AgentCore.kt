@@ -5,8 +5,8 @@ import com.aichatvn.agent.core.conversation.ConversationContext
 import com.aichatvn.agent.skills.ChatSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,39 +21,36 @@ class AgentCore @Inject constructor(
     private val eventBus: PluginEventBus,
     private val logger: Logger
 ) {
-    
+
     suspend fun process(userMessage: String, username: String = "default_user"): AgentResponse {
         logger.d("AgentCore", "Processing: '$userMessage'")
-        
-        // 0. Kiểm tra pending action (multi-turn) - SỬA HOÀN CHỈNH
+
+        // 0. Kiểm tra pending action (multi-turn)
         if (conversationContext.hasPending()) {
             val pendingPluginId = conversationContext.getPendingPlugin()
             val pendingAction = conversationContext.getPendingAction()
             val pendingParams = conversationContext.getPendingParams().toMutableMap()
             val pendingMissing = conversationContext.getPendingMissingParams()
-            
+
             if (pendingPluginId != null && pendingAction != null && pendingPluginId.isNotEmpty() && pendingMissing.isNotEmpty()) {
                 logger.d("AgentCore", "Resuming pending: $pendingPluginId.$pendingAction, missing=$pendingMissing")
                 val plugin = pluginRegistry.getPlugin(pendingPluginId)
-                
+
                 if (plugin != null) {
-                    // Điền giá trị người dùng vừa cung cấp vào tham số đang thiếu
                     val missingKey = pendingMissing.firstOrNull()
                     if (missingKey != null) {
                         pendingParams[missingKey] = userMessage
                         logger.d("AgentCore", "Filled missing param '$missingKey' with '$userMessage'")
                     }
-                    
-                    // Kiểm tra còn thiếu param nào không
+
                     val manifest = plugin.manifest
                     val actionDef = manifest.actions.find { it.name == pendingAction }
                     val stillMissing = actionDef?.parameters
                         ?.filter { it.required }
                         ?.map { it.name }
                         ?.filter { !pendingParams.containsKey(it) } ?: emptyList()
-                    
+
                     if (stillMissing.isNotEmpty()) {
-                        // Vẫn còn thiếu, hỏi tiếp
                         val question = "Vui lòng cung cấp ${stillMissing.joinToString(", ")}"
                         conversationContext.setPending(pendingPluginId, pendingAction, pendingParams, stillMissing)
                         return AgentResponse(
@@ -61,11 +58,10 @@ class AgentCore @Inject constructor(
                             data = mapOf("response" to question)
                         )
                     }
-                    
-                    // Đã đủ params, thực thi
+
                     val result = plugin.execute(pendingAction, pendingParams)
                     conversationContext.clearPending()
-                    
+
                     return when (result) {
                         is PluginResult.Success -> {
                             updateContext(pendingPluginId, pendingAction, pendingParams)
@@ -74,12 +70,8 @@ class AgentCore @Inject constructor(
                                 data = mapOf("response" to formatSuccessResponse(result.data))
                             )
                         }
-                        is PluginResult.Failure -> {
-                            AgentResponse(success = false, error = result.error)
-                        }
-                        is PluginResult.Ask -> {
-                            AgentResponse(success = true, data = mapOf("response" to result.question))
-                        }
+                        is PluginResult.Failure -> AgentResponse(success = false, error = result.error)
+                        is PluginResult.Ask -> AgentResponse(success = true, data = mapOf("response" to result.question))
                         is PluginResult.NeedMoreInfo -> {
                             conversationContext.setPending(pendingPluginId, pendingAction, pendingParams, result.missingParams)
                             AgentResponse(success = true, data = mapOf("response" to result.question))
@@ -87,10 +79,10 @@ class AgentCore @Inject constructor(
                     }
                 }
             }
-            // Nếu không có missing params nhưng vẫn có pending (lỗi), clear nó
+            // Pending bị lỗi (không có missing params hợp lệ), clear nó
             conversationContext.clearPending()
         }
-        
+
         // 1. Kiểm tra câu hỏi về khả năng
         if (isCapabilityInquiry(userMessage)) {
             return AgentResponse(
@@ -98,7 +90,7 @@ class AgentCore @Inject constructor(
                 data = mapOf("response" to pluginRegistry.getActionsDescription())
             )
         }
-        
+
         // 2. Rule resolver
         val ruleMatch = ruleIntentResolver.resolve(userMessage)
         if (ruleMatch != null) {
@@ -121,26 +113,26 @@ class AgentCore @Inject constructor(
                 }
             }
         }
-        
-        // 3. LLM fallback
+
+        // 3. LLM fallback — FIX 3: có timeout
         val context = conversationContext.getContextForLLM()
         val resolved = resolveIntentWithLLM(userMessage, context)
-        
+
         if (resolved.needsClarification) {
             if (resolved.pluginId != null && resolved.action != null) {
                 conversationContext.setPending(resolved.pluginId, resolved.action, resolved.params, resolved.missingParams)
             }
             return AgentResponse(
                 success = true,
-                data = mapOf("response" to resolved.question)
+                data = mapOf("response" to (resolved.question ?: "Bạn có thể nói rõ hơn không?"))
             )
         }
-        
+
         if (resolved.pluginId == null || resolved.action == null) {
             conversationContext.clearPending()
             return chatSkill.processQuery(message = userMessage, username = username)
         }
-        
+
         val plugin = pluginRegistry.getPlugin(resolved.pluginId)
         if (plugin == null) {
             conversationContext.clearPending()
@@ -149,9 +141,9 @@ class AgentCore @Inject constructor(
                 error = "Plugin '${resolved.pluginId}' not found"
             )
         }
-        
+
         val result = plugin.execute(resolved.action, resolved.params)
-        
+
         return when (result) {
             is PluginResult.Success -> {
                 updateContext(resolved.pluginId, resolved.action, resolved.params)
@@ -174,33 +166,33 @@ class AgentCore @Inject constructor(
             }
         }
     }
-    
+
     private suspend fun getCandidatePlugins(userMessage: String): List<Plugin> {
         val lower = userMessage.lowercase()
         val allPlugins = pluginRegistry.getAllPlugins()
-        
+
         val matchedPlugins = allPlugins.filter { plugin ->
             plugin.manifest.keywords.any { keyword ->
                 lower.contains(keyword.lowercase())
             }
         }
-        
+
         return if (matchedPlugins.isNotEmpty()) matchedPlugins else allPlugins
     }
-    
+
     private suspend fun resolveIntentWithLLM(userMessage: String, context: String): ResolvedIntent {
         val allManifests = pluginRegistry.getAllManifests()
         if (allManifests.isEmpty()) {
             return ResolvedIntent(needsClarification = false)
         }
-        
+
         val candidatePlugins = getCandidatePlugins(userMessage)
         val candidateManifests = candidatePlugins.map { it.manifest }
-        
+
         if (candidateManifests.isEmpty()) {
             return ResolvedIntent(needsClarification = false)
         }
-        
+
         val actionsDescription = candidateManifests.joinToString("\n") { manifest ->
             buildString {
                 append("Plugin: ${manifest.id}\n")
@@ -214,7 +206,7 @@ class AgentCore @Inject constructor(
                 }
             }
         }
-        
+
         val prompt = """
             Bạn là bộ phân tích ý định. Chọn plugin và action phù hợp.
             
@@ -233,46 +225,65 @@ class AgentCore @Inject constructor(
             
             Trả về JSON thuần túy.
         """.trimIndent()
-        
-        val response = groqClient.chatForIntent(prompt)
-        
+
+        // FIX 3: Timeout 15 giây cho LLM intent resolution
+        val response = try {
+            withTimeout(15_000L) {
+                groqClient.chatForIntent(prompt)
+            }
+        } catch (e: TimeoutCancellationException) {
+            logger.w("AgentCore", "LLM intent resolution timed out after 15s — falling back to chat")
+            return ResolvedIntent(needsClarification = false)
+        } catch (e: Exception) {
+            logger.e("AgentCore", "LLM intent resolution error: ${e.message}")
+            return ResolvedIntent(needsClarification = false)
+        }
+
         return try {
-            val json = JSONObject(response)
-            
+            // Lọc markdown code fence nếu model trả về ```json ... ```
+            val cleaned = response
+                .trimIndent()
+                .removePrefix("```json")
+                .removePrefix("```")
+                .removeSuffix("```")
+                .trim()
+
+            val json = JSONObject(cleaned)
+
             if (json.optBoolean("needs_clarification", false)) {
                 val missingParams = json.optJSONArray("missing_params")?.let { arr ->
                     (0 until arr.length()).map { arr.getString(it) }
                 } ?: emptyList()
-                
+
                 return ResolvedIntent(
                     needsClarification = true,
                     question = json.optString("question", "Bạn có thể nói rõ hơn không?"),
-                    pluginId = json.optString("plugin", null),
-                    action = json.optString("action", null),
+                    pluginId = json.optString("plugin").takeIf { it.isNotEmpty() },
+                    action = json.optString("action").takeIf { it.isNotEmpty() },
                     params = json.optJSONObject("params")?.toMap() ?: emptyMap(),
                     missingParams = missingParams
                 )
             }
-            
-            val pluginId = json.optString("plugin", null)
-            val action = json.optString("action", null)
+
+            val pluginId = json.optString("plugin").takeIf { it.isNotEmpty() }
+            val action = json.optString("action").takeIf { it.isNotEmpty() }
             val params = json.optJSONObject("params")?.toMap() ?: emptyMap()
-            
+
             ResolvedIntent(
                 pluginId = pluginId,
                 action = action,
                 params = params
             )
         } catch (e: Exception) {
-            logger.e("AgentCore", "LLM intent resolution failed: ${e.message}")
+            logger.e("AgentCore", "Failed to parse LLM response: ${e.message}. Raw: '$response'")
             ResolvedIntent()
         }
     }
-    
+
     private suspend fun updateContext(pluginId: String, action: String, params: Map<String, Any>) {
         conversationContext.setLastPlugin(pluginId)
         conversationContext.setLastAction(action)
-        
+
         params.forEach { (key, value) ->
             when {
                 key == "customerId" || key == "cameraId" -> {
@@ -289,7 +300,7 @@ class AgentCore @Inject constructor(
             }
         }
     }
-    
+
     private fun formatSuccessResponse(data: Any): String {
         return when (data) {
             is Map<*, *> -> {
@@ -305,13 +316,13 @@ class AgentCore @Inject constructor(
             else -> "✅ Đã thực hiện thành công"
         }
     }
-    
+
     private fun isCapabilityInquiry(message: String): Boolean {
         val lower = message.lowercase()
         val patterns = listOf("làm được gì", "có thể làm", "giúp được gì", "khả năng", "chức năng")
         return patterns.any { lower.contains(it) }
     }
-    
+
     private data class ResolvedIntent(
         val pluginId: String? = null,
         val action: String? = null,
@@ -320,7 +331,7 @@ class AgentCore @Inject constructor(
         val question: String? = null,
         val missingParams: List<String> = emptyList()
     )
-    
+
     private fun JSONObject.toMap(): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
         keys().forEach { key ->

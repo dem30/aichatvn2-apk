@@ -135,7 +135,7 @@ class EmailSkill @Inject constructor(
         }
     }
 
-    override suspend fun initialize() {
+    override suspend fun initialize() = withContext(Dispatchers.IO) {
         val (service, error) = getGmailService()
         if (service == null) {
             logger.w("EmailSkill", "initialize: $error")

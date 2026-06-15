@@ -8,9 +8,13 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.tools.ai.GroqClientTool
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import java.util.UUID
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -39,10 +43,18 @@ class ChatSkill @Inject constructor(
     val chatMode: StateFlow<ChatMode> = _chatMode.asStateFlow()
 
     private val database by lazy { AppDatabase.getDatabase(context) }
-    private val username = "default_user"
+
+    // FIX 1: Không hardcode username — lưu username hiện tại để initialize() load đúng
+    private var currentUsername: String = "default_user"
+
+    // FIX 2: Mutex bảo vệ thao tác đọc-ghi _messages, tránh race condition
+    private val messagesMutex = Mutex()
 
     override suspend fun initialize() {
-        _messages.value = database.chatMessageDao().getMessages(username, 500)
+        // Load messages cho username hiện tại
+        val loaded = database.chatMessageDao().getMessages(currentUsername, 500)
+        _messages.value = loaded
+        logger.d("ChatSkill", "Initialized with ${loaded.size} messages for user '$currentUsername'")
     }
 
     override suspend fun shutdown() {}
@@ -59,6 +71,15 @@ class ChatSkill @Inject constructor(
         imageBase64: String? = null
     ): AgentResponse {
         return try {
+            // FIX 1: Nếu username thay đổi, reload messages đúng bucket
+            if (currentUsername != username) {
+                currentUsername = username
+                val loaded = database.chatMessageDao().getMessages(username, 500)
+                _messages.value = loaded
+                logger.d("ChatSkill", "Username changed to '$username', reloaded ${loaded.size} messages")
+            }
+
+            // Tạo và lưu userMessage
             val userMessageId = UUID.randomUUID().toString()
             val userMessage = ChatMessageEntity(
                 id = userMessageId,
@@ -72,14 +93,14 @@ class ChatSkill @Inject constructor(
             )
             database.chatMessageDao().insertMessage(userMessage)
 
-            val currentMessages = _messages.value.toMutableList()
-            currentMessages.add(userMessage)
-            _messages.value = currentMessages
+            // FIX 2: Dùng mutex để append userMessage an toàn
+            messagesMutex.withLock {
+                _messages.value = _messages.value + userMessage
+            }
 
             val currentMode = _chatMode.value
-            val response: String
 
-            // Tạo dataUrl cho ảnh — lọc chuỗi rỗng bằng isNullOrEmpty()
+            // Tạo dataUrl cho ảnh
             val imageDataUrl = if (!imageBase64.isNullOrEmpty()) {
                 "data:image/jpeg;base64,$imageBase64"
             } else if (!fileUrl.isNullOrEmpty()) {
@@ -95,62 +116,72 @@ class ChatSkill @Inject constructor(
                 }
             } else null
 
-            when (currentMode) {
-                ChatMode.QA -> {
-                    val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
-                    if (qaResult.success && qaResult.data != null) {
-                        @Suppress("UNCHECKED_CAST")
-                        val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
-                        val qa = matches.firstOrNull()?.get("qa") as? QAEntity
-                        response = qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
-                    } else {
-                        response = "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này trong cơ sở dữ liệu Q&A."
-                    }
-                }
-
-                ChatMode.COMBINED -> {
-                    var qaContext = ""
-                    var foundQA = false
-
-                    val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
-                    if (qaResult.success && qaResult.data != null) {
-                        @Suppress("UNCHECKED_CAST")
-                        val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
-                        val qa = matches.firstOrNull()?.get("qa") as? QAEntity
-                        if (qa != null) {
-                            foundQA = true
-                            qaContext = "Dữ liệu từ hệ thống Q&A:\nCÂU HỎI: ${qa.question}\nCÂU TRẢ LỜI THAM KHẢO: ${qa.answer}\n\n"
-                        }
-                    }
-
-                    val groqMessage = if (foundQA) {
-                        "$qaContext\nCâu hỏi của người dùng: $message\nHãy sử dụng thông tin từ Q&A làm cơ sở để trả lời, bổ sung thêm nếu cần."
-                    } else {
-                        message
-                    }
-
-                    response = groqClient.chat(
-                        message = groqMessage,
-                        extraContext = extraContext,
-                        history = _messages.value.takeLast(10).map {
-                            mapOf("role" to it.role, "content" to it.content)
-                        },
-                        imageUrl = imageDataUrl
-                    )
-                }
-
-                ChatMode.GROQ -> {
-                    response = groqClient.chat(
-                        message = message,
-                        extraContext = extraContext,
-                        history = _messages.value.takeLast(10).map {
-                            mapOf("role" to it.role, "content" to it.content)
-                        },
-                        imageUrl = imageDataUrl
-                    )
-                }
+            // Snapshot history trước khi gọi AI (tránh dùng biến cũ sau khi await)
+            val historySnapshot = _messages.value.takeLast(10).map {
+                mapOf("role" to it.role, "content" to it.content)
             }
 
+            // FIX 3: Timeout cho tất cả Groq calls
+            val response: String = try {
+                withTimeout(30_000L) {
+                    when (currentMode) {
+                        ChatMode.QA -> {
+                            val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
+                            if (qaResult.success && qaResult.data != null) {
+                                @Suppress("UNCHECKED_CAST")
+                                val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
+                                val qa = matches.firstOrNull()?.get("qa") as? QAEntity
+                                qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
+                            } else {
+                                "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này trong cơ sở dữ liệu Q&A."
+                            }
+                        }
+
+                        ChatMode.COMBINED -> {
+                            var qaContext = ""
+                            var foundQA = false
+
+                            val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
+                            if (qaResult.success && qaResult.data != null) {
+                                @Suppress("UNCHECKED_CAST")
+                                val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
+                                val qa = matches.firstOrNull()?.get("qa") as? QAEntity
+                                if (qa != null) {
+                                    foundQA = true
+                                    qaContext = "Dữ liệu từ hệ thống Q&A:\nCÂU HỎI: ${qa.question}\nCÂU TRẢ LỜI THAM KHẢO: ${qa.answer}\n\n"
+                                }
+                            }
+
+                            val groqMessage = if (foundQA) {
+                                "$qaContext\nCâu hỏi của người dùng: $message\nHãy sử dụng thông tin từ Q&A làm cơ sở để trả lời, bổ sung thêm nếu cần."
+                            } else {
+                                message
+                            }
+
+                            groqClient.chat(
+                                message = groqMessage,
+                                extraContext = extraContext,
+                                history = historySnapshot,
+                                imageUrl = imageDataUrl
+                            )
+                        }
+
+                        ChatMode.GROQ -> {
+                            groqClient.chat(
+                                message = message,
+                                extraContext = extraContext,
+                                history = historySnapshot,
+                                imageUrl = imageDataUrl
+                            )
+                        }
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                logger.w("ChatSkill", "Groq call timed out after 30s")
+                "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
+            }
+
+            // Lưu assistantMessage
             val assistantMessageId = UUID.randomUUID().toString()
             val assistantMessage = ChatMessageEntity(
                 id = assistantMessageId,
@@ -163,12 +194,18 @@ class ChatSkill @Inject constructor(
             )
             database.chatMessageDao().insertMessage(assistantMessage)
 
-            currentMessages.add(assistantMessage)
-            _messages.value = currentMessages
+            // FIX 2: Dùng mutex để append assistantMessage an toàn, lấy state MỚI NHẤT
+            messagesMutex.withLock {
+                _messages.value = _messages.value + assistantMessage
+            }
 
             AgentResponse(
                 success = true,
-                data = mapOf("response" to response, "messageId" to assistantMessageId, "mode" to currentMode.name)
+                data = mapOf(
+                    "response" to response,
+                    "messageId" to assistantMessageId,
+                    "mode" to currentMode.name
+                )
             )
 
         } catch (e: Exception) {
@@ -180,7 +217,9 @@ class ChatSkill @Inject constructor(
     suspend fun clearHistory(username: String): AgentResponse {
         return try {
             database.chatMessageDao().clearMessages(username)
-            _messages.value = emptyList()
+            messagesMutex.withLock {
+                _messages.value = emptyList()
+            }
             AgentResponse(success = true, data = "History cleared")
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
