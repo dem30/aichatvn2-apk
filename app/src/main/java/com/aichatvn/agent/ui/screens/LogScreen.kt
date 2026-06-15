@@ -94,7 +94,7 @@ fun LogScreen(
                     IconButton(onClick = {
                         try {
                             val file = viewModel.exportLogs()
-                            )
+                            
                             exportMessage = "Đã lưu: ${file.absolutePath}"
                         } catch (e: Exception) {
                             exportMessage = "Lỗi xuất log: ${e.message}"
