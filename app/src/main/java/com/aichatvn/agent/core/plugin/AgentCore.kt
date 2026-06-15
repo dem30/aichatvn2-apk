@@ -2,7 +2,6 @@ package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.core.conversation.ConversationContext
-import com.aichatvn.agent.skills.ChatSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.TimeoutCancellationException
@@ -17,7 +16,7 @@ class AgentCore @Inject constructor(
     private val conversationContext: ConversationContext,
     private val ruleIntentResolver: RuleIntentResolver,
     private val groqClient: GroqClientTool,
-    private val chatSkill: ChatSkill,
+    // ❌ ĐÃ XÓA: private val chatSkill: ChatSkill,
     private val eventBus: PluginEventBus,
     private val logger: Logger
 ) {
@@ -136,7 +135,12 @@ class AgentCore @Inject constructor(
 
         if (resolved.pluginId == null || resolved.action == null) {
             conversationContext.clearPending()
-            return chatSkill.processQuery(message = userMessage, username = username)
+            // ❌ ĐÃ XÓA: return chatSkill.processQuery(...)
+            // Thay bằng response fallback
+            return AgentResponse(
+                success = true,
+                data = mapOf("response" to "Xin lỗi, tôi không hiểu yêu cầu của bạn. Bạn có thể nói rõ hơn không?")
+            )
         }
 
         val plugin = pluginRegistry.getPlugin(resolved.pluginId)
