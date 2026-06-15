@@ -20,7 +20,7 @@ class SmartScan15MinWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         return withContext(Dispatchers.IO) {
             try {
-                val result = cameraPlugin.execute("scan", mapOf("cameraId" to null))
+                val result = cameraPlugin.execute("scan", emptyMap())
                 if (result is com.aichatvn.agent.core.plugin.PluginResult.Success) {
                     Result.success()
                 } else {

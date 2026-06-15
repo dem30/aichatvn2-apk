@@ -107,7 +107,7 @@ class DashboardViewModel @Inject constructor(
             try {
                 // Dùng CameraPlugin thay vì AgentRouter — nhất quán với pipeline mới.
                 // cameraId = null → scan toàn bộ camera.
-                val result = cameraPlugin.execute("scan", mapOf("cameraId" to null))
+                val result = cameraPlugin.execute("scan", emptyMap())
                 _scanResultMessage.value = when (result) {
                     is com.aichatvn.agent.core.plugin.PluginResult.Success -> {
                         val msg = (result.data as? Map<*, *>)?.get("message") as? String
