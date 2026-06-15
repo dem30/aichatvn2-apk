@@ -1,4 +1,3 @@
-// ChatViewModel.kt - ĐƠN GIẢN: chỉ gọi ChatSkill
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
@@ -23,7 +22,8 @@ import android.util.Base64
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    private val chatSkill: ChatSkill,
+    private val chatSkill: ChatSkill,  // ✅ Chỉ inject ChatSkill
+    // ❌ XÓA: private val agentCore: AgentCore,
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
@@ -77,7 +77,7 @@ class ChatViewModel @Inject constructor(
                 else -> message
             }
 
-            // LUÔN gọi ChatSkill - ChatSkill tự quyết định routing
+            // ✅ LUÔN gọi ChatSkill - ChatSkill tự routing
             val response = chatSkill.processQuery(
                 message = userMessageContent,
                 username = "default_user",
