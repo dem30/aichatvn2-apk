@@ -49,17 +49,9 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         val workManager = WorkManager.getInstance(context)
         try {
-            val cameraScheduleInfo = workManager.getWorkInfosForUniqueWork("camera_schedule_work").get()
             val smartScanInfo = workManager.getWorkInfosForUniqueWork("smart_scan_15min_work").get()
             
             workerStatus = mapOf(
-                "Camera Schedule (30 phút)" to when (cameraScheduleInfo.firstOrNull()?.state?.name) {
-                    "ENQUEUED" -> "⏳ Đang chờ"
-                    "RUNNING" -> "🔄 Đang chạy"
-                    "SUCCEEDED" -> "✅ Thành công"
-                    "FAILED" -> "❌ Thất bại"
-                    else -> "⏸ Chưa kích hoạt"
-                },
                 "Smart Scan (15 phút)" to when (smartScanInfo.firstOrNull()?.state?.name) {
                     "ENQUEUED" -> "⏳ Đang chờ"
                     "RUNNING" -> "🔄 Đang chạy"

@@ -19,7 +19,6 @@ import androidx.work.*
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
-import com.aichatvn.agent.workers.CameraScheduleWorker
 import com.aichatvn.agent.workers.SmartScan15MinWorker
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
@@ -77,22 +76,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupWorkManager() {
-        // CameraScheduleWorker - 30 phút
-        val cameraScheduleRequest = PeriodicWorkRequestBuilder<CameraScheduleWorker>(
-            30, TimeUnit.MINUTES
-        ).setConstraints(
-            Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-        ).build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "camera_schedule_work",
-            ExistingPeriodicWorkPolicy.KEEP,
-            cameraScheduleRequest
-        )
-
         // SmartScan15MinWorker - 15 phút
+        // Duy nhất camera scan worker được lên lịch
         val smartScanRequest = PeriodicWorkRequestBuilder<SmartScan15MinWorker>(
             15, TimeUnit.MINUTES
         ).setConstraints(
