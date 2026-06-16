@@ -19,6 +19,7 @@ import com.aichatvn.agent.core.camera.CameraEngine
 import com.aichatvn.agent.core.camera.EngineFactory
 import com.aichatvn.agent.core.camera.EngineStatus
 import com.aichatvn.agent.core.camera.EngineType
+import com.aichatvn.agent.core.heartbeat.ServiceHeartbeat  // ✅ THÊM
 import com.aichatvn.agent.core.processor.CameraProcessor
 import com.aichatvn.agent.core.telemetry.TelemetryManager
 import com.aichatvn.agent.utils.Logger
@@ -69,8 +70,11 @@ class CameraScanService : Service() {
     override fun onCreate() {
         super.onCreate()
         logger.i("CameraScanService", "Service created")
+        
+        // ✅ Đánh dấu service đang chạy
+        ServiceHeartbeat.markRunning()
+        
         createNotificationChannel()
-
         telemetryManager.start()
 
         startForeground(NOTIFICATION_ID, createNotification("Đang khởi tạo..."))
@@ -133,6 +137,15 @@ class CameraScanService : Service() {
                 logger.e("CameraScanService", "Failed to start engine: ${e.message}", e)
                 updateNotification("❌ Lỗi khởi động: ${e.message?.take(30)}")
             }
+        }
+    }
+
+    // ✅ Gọi updateHeartbeat mỗi khi scan thành công
+    private suspend fun updateHeartbeat() {
+        try {
+            ServiceHeartbeat.updateHeartbeat(applicationContext)
+        } catch (e: Exception) {
+            logger.e("CameraScanService", "Failed to update heartbeat: ${e.message}", e)
         }
     }
 
@@ -227,6 +240,9 @@ class CameraScanService : Service() {
 
     override fun onDestroy() {
         logger.i("CameraScanService", "Service destroying")
+        
+        // ✅ Đánh dấu service đã dừng
+        ServiceHeartbeat.markStopped()
         
         // ✅ Reset notification flag
         lastNotificationText = null
