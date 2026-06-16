@@ -6,24 +6,21 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
 import com.aichatvn.agent.services.CameraScanService
+import kotlinx.coroutines.runBlocking
 
-/**
- * BootReceiver - Khởi động CameraScanService khi Android boot completed
- * ✅ Check trạng thái enabled trước khi start
- */
+// ✅ Extension property cho DataStore
+private val Context.dataStore by preferencesDataStore(name = "monitoring_settings")
+
 class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
-            Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_QUICKBOOT_POWERON -> {
+            Intent.ACTION_BOOT_COMPLETED -> {
                 try {
                     Log.i("BootReceiver", "Device boot completed, checking monitoring state...")
                     
-                    // ✅ Check trạng thái enabled từ DataStore
                     val isEnabled = isMonitoringEnabled(context)
                     
                     if (isEnabled) {
@@ -55,26 +52,16 @@ class BootReceiver : BroadcastReceiver() {
     
     private fun isMonitoringEnabled(context: Context): Boolean {
         return try {
-            // ✅ Mặc định true nếu chưa có setting
-            // Dùng DataStore check trạng thái
-            val prefs = androidx.datastore.preferences.PreferenceDataStoreFactory
-                .create(
-                    produceFile = { context.getFileStreamPath("monitoring_settings.preferences_pb") }
-                )
-            
             val key = booleanPreferencesKey("monitoring_enabled")
-            // Mặc định true (user muốn giám sát)
             runBlocking {
-                prefs[key] ?: true
+                // ✅ Dùng extension property
+                context.dataStore.data.collect { prefs ->
+                    return@runBlocking prefs[key] ?: true
+                }
             }
         } catch (e: Exception) {
-            // Nếu lỗi, mặc định true
             Log.e("BootReceiver", "Failed to read preference, defaulting to true", e)
             true
         }
-    }
-    
-    private fun runBlocking(block: suspend () -> Boolean): Boolean {
-        return kotlinx.coroutines.runBlocking { block() }
     }
 }
