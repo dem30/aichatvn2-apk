@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lưu ý: Android network-security-config không hỗ trợ CIDR/subnet.
+  Để cho phép cleartext tới camera LAN, có 2 cách:
+  1. Dùng base-config cho phép cleartext với mọi IP literal
+  2. Chặn riêng domain cloud bằng domain-config
+
+  Đánh đổi: base-config cleartext true cho phép HTTP tới BẤT KỲ IP nào,
+  nhưng chỉ ảnh hưởng tới HTTP thuần (không ảnh hưởng HTTPS).
+  Nếu app chỉ gọi HTTP tới camera LAN, domain cloud vẫn được bảo vệ.
+-->
+<network-security-config>
+    
+    <!-- ✅ Cho phép cleartext mặc định (cho IP literal) -->
+    <base-config cleartextTrafficPermitted="true" />
+    
+    <!-- ✅ Chặn HTTP cho domain cloud - buộc HTTPS -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">api.aichatvn.com</domain>
+    </domain-config>
+    
+    <!-- ✅ Nếu camera có domain cố định, có thể thêm riêng -->
+    <!--
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">camera.local</domain>
+        <domain includeSubdomains="true">192.168.1.100</domain>
+    </domain-config>
+    -->
+    
+</network-security-config>

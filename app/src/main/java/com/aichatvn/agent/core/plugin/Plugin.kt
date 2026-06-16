@@ -3,7 +3,7 @@ package com.aichatvn.agent.core.plugin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-
+import kotlinx.coroutines.cancel
 // Annotation để đánh dấu plugin tự động đăng ký
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)

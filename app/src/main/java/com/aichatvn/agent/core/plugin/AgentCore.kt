@@ -15,6 +15,7 @@ import javax.inject.Singleton
 class AgentCore @Inject constructor(
     private val pluginRegistry: PluginRegistry,
     private val conversationContext: ConversationContext,
+    private val parameterExtractor: ParameterValueExtractor,
     private val ruleIntentResolver: RuleIntentResolver,
     private val groqClient: GroqClientTool,
     private val eventBus: PluginEventBus,
