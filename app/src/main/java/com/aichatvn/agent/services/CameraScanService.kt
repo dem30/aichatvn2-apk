@@ -101,45 +101,48 @@ class CameraScanService : Service() {
     }
 
     private fun startEngine() {
-        serviceScope.launch {
-            try {
-                // ✅ Check camera permission trước khi start
-                if (!hasCameraPermission()) {
-                    logger.w("CameraScanService", "Camera permission not granted, waiting...")
-                    updateNotification("⏳ Đợi cấp quyền camera...")
-                    return@launch
-                }
-                
-                currentEngine = engineFactory.create(engineType)
-                val engine = currentEngine ?: return@launch
+    serviceScope.launch {
+        try {
+            if (!hasCameraPermission()) {
+                logger.w("CameraScanService", "Camera permission not granted, waiting...")
+                updateNotification("⏳ Đợi cấp quyền camera...")
+                return@launch
+            }
+            
+            currentEngine = engineFactory.create(engineType)
+            val engine = currentEngine ?: return@launch
 
-                cameraProcessor.attach(engine.frameFlow)
+            cameraProcessor.attach(engine.frameFlow)
 
-                statusJob?.cancel()
-                statusJob = serviceScope.launch {
-                    engine.status.collect { status ->
-                        val statusText = when (status) {
-                            is EngineStatus.Running -> "✅ Đang giám sát..."
-                            is EngineStatus.Starting -> "⏳ Đang khởi động..."
-                            is EngineStatus.Stopping -> "⏹️ Đang dừng..."
-                            is EngineStatus.Idle -> "⏸️ Tạm dừng"
-                            is EngineStatus.Error -> "❌ Lỗi: ${status.message.take(30)}"
-                            is EngineStatus.Reconnecting -> "🔄 Đang kết nối lại (lần ${status.attempt})"
-                        }
-                        updateNotification(statusText)
+            statusJob?.cancel()
+            statusJob = serviceScope.launch {
+                engine.status.collect { status ->
+                    val statusText = when (status) {
+                        is EngineStatus.Running -> "✅ Đang giám sát..."
+                        is EngineStatus.Starting -> "⏳ Đang khởi động..."
+                        is EngineStatus.Stopping -> "⏹️ Đang dừng..."
+                        is EngineStatus.Idle -> "⏸️ Tạm dừng"
+                        is EngineStatus.Error -> "❌ Lỗi: ${status.message.take(30)}"
+                        is EngineStatus.Reconnecting -> "🔄 Đang kết nối lại (lần ${status.attempt})"
+                    }
+                    updateNotification(statusText)
+                    
+                    // ✅ THÊM: Cập nhật heartbeat khi engine đang chạy
+                    if (status is EngineStatus.Running) {
+                        updateHeartbeat()
                     }
                 }
-
-                logger.i("CameraScanService", "Starting engine: ${engine::class.simpleName}")
-                engine.start()
-
-            } catch (e: Exception) {
-                logger.e("CameraScanService", "Failed to start engine: ${e.message}", e)
-                updateNotification("❌ Lỗi khởi động: ${e.message?.take(30)}")
             }
+
+            logger.i("CameraScanService", "Starting engine: ${engine::class.simpleName}")
+            engine.start()
+
+        } catch (e: Exception) {
+            logger.e("CameraScanService", "Failed to start engine: ${e.message}", e)
+            updateNotification("❌ Lỗi khởi động: ${e.message?.take(30)}")
         }
     }
-
+}
     // ✅ Gọi updateHeartbeat mỗi khi scan thành công
     private suspend fun updateHeartbeat() {
         try {

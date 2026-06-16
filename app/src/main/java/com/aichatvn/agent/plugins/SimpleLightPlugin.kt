@@ -5,7 +5,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-@AutoPlugin
+
 class SimpleLightPlugin @Inject constructor() : SimplePlugin(
     manifest = PluginManifest(
         id = "light",

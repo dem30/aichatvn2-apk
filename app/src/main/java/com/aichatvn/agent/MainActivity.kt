@@ -27,7 +27,7 @@ import com.aichatvn.agent.services.CameraScanService
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
-import com.aichatvn.agent.workers.ServiceWatchdogWorker
+import com.aichatvn.agent.workers.SmartScan15MinWorker
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import dagger.hilt.android.AndroidEntryPoint
@@ -115,11 +115,13 @@ class MainActivity : ComponentActivity() {
         }
         val workName = "service_watchdog_work_v$version"
         
-        val watchdogRequest = PeriodicWorkRequestBuilder<ServiceWatchdogWorker>(
-            15, TimeUnit.MINUTES
-        ).setConstraints(
-            Constraints.Builder().build()
-        ).build()
+        val watchdogRequest = PeriodicWorkRequestBuilder<SmartScan15MinWorker>(
+    15, TimeUnit.MINUTES
+).setConstraints(
+    Constraints.Builder()
+        .setRequiresBatteryNotLow(false)
+        .build()
+).build()
 
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             workName,

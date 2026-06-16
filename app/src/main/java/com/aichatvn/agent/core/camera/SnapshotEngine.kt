@@ -1,8 +1,11 @@
 package com.aichatvn.agent.core.camera
 
+import android.content.Context
+import com.aichatvn.agent.core.heartbeat.ServiceHeartbeat
 import com.aichatvn.agent.core.telemetry.TelemetryManager
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.utils.Logger
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,7 +26,8 @@ import javax.inject.Inject
 class SnapshotEngine @Inject constructor(
     private val cameraSkill: CameraSkill,
     private val telemetryManager: TelemetryManager,
-    private val logger: Logger
+    private val logger: Logger,
+    @ApplicationContext private val context: Context  // ✅ THÊM context để update heartbeat
 ) : CameraEngine {
 
     private var engineScope: CoroutineScope? = null
@@ -96,6 +100,9 @@ class SnapshotEngine @Inject constructor(
 
                         val frame = fetchSnapshot()
                         if (frame != null) {
+                            // ✅ Cập nhật heartbeat mỗi khi fetch snapshot thành công
+                            updateHeartbeat()
+                            
                             _frameFlow.emit(frame)
                             frameCount++
                             totalFrames++
@@ -145,6 +152,19 @@ class SnapshotEngine @Inject constructor(
                 }
                 logger.i("SnapshotEngine", "Stopped")
             }
+        }
+    }
+
+    /**
+     * ✅ Cập nhật heartbeat vào DataStore mỗi khi scan thành công
+     * ServiceWatchdog sẽ dùng timestamp này để kiểm tra service còn sống không
+     */
+    private suspend fun updateHeartbeat() {
+        try {
+            ServiceHeartbeat.updateHeartbeat(context)
+            logger.v("SnapshotEngine", "Heartbeat updated")
+        } catch (e: Exception) {
+            logger.e("SnapshotEngine", "Failed to update heartbeat: ${e.message}", e)
         }
     }
 

@@ -70,16 +70,16 @@ class CameraSkill @Inject constructor(
         var offlineCount: Int = 0,
         var offlineSince: Long = 0L,
         var isOpen: Boolean = false,
-        var halfOpenAttempted: Boolean = false  // cho phép thử lại 1 lần sau 30 phút
+        var halfOpenAttempted: Boolean = false
     )
     
-    // ==================== PENDING RESET (MỚI) ====================
+    // ==================== PENDING RESET ====================
     private data class PendingResetState(
         var diff: Int = 0,
         var timestamp: Long = 0L
     )
     
-    // ==================== DAILY EVENT SUMMARY (MỚI) ====================
+    // ==================== DAILY EVENT SUMMARY ====================
     private data class DailyEvent(
         val timestamp: Long,
         val comment: String,
@@ -110,14 +110,12 @@ class CameraSkill @Inject constructor(
         private const val DEFAULT_AI_PROMPT = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả."
         private val DEFAULT_POSITIVE_KEYWORDS = listOf("cảnh báo")
         private val DEFAULT_NEGATIVE_KEYWORDS = listOf("bình thường")
-        private const val COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000L // 3 hours
+        private const val COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000L
         private const val CIRCUIT_BREAKER_THRESHOLD = 3
-        private const val CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000L // 30 phút
-        private const val DAILY_REPORT_HOUR = 20 // 8 PM
-        private const val MAX_DAILY_EVENTS_PER_CAMERA = 50 // Giới hạn số sự kiện/ngày mỗi camera tránh phình bộ nhớ
+        private const val CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000L
+        private const val DAILY_REPORT_HOUR = 20
+        private const val MAX_DAILY_EVENTS_PER_CAMERA = 50
 
-        // DateTimeFormatter (java.time) là immutable & thread-safe, có thể dùng chung
-        // giữa nhiều coroutine trên Dispatchers.IO, khác với SimpleDateFormat.
         private val TIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault())
         private val DATE_FORMATTER: DateTimeFormatter =
@@ -135,25 +133,14 @@ class CameraSkill @Inject constructor(
         updateDiagnostics()
         cleanupOldAlerts()
         pruneOrphanedCameraState()
-
-        // Schedule daily report
         scheduleDailyReport()
     }
 
-    /**
-     * Dọn các entry trong learningStates/circuitBreakers/pendingResets/dailyEvents
-     * mà cameraId không còn tồn tại trong DB (ví dụ camera bị xóa bằng cách khác
-     * ngoài deleteCamera()/deleteCustomer(), hoặc dữ liệu lệch sau khi app restart).
-     * Đảm bảo tổng số entry trong các map luôn bám theo số camera thực tế trong DB,
-     * tránh tăng vô hạn theo thời gian.
-     */
     private val pruneMutex = Mutex()
 
     private suspend fun pruneOrphanedCameraState() {
         try {
             pruneMutex.withLock {
-                // Dùng toàn bộ camera (kể cả manualOff/inactive) làm tập hợp "còn tồn tại",
-                // chỉ coi là orphan khi camera đã thực sự bị xóa khỏi DB.
                 val allIds = database.cameraDao().getAllCamerasFlow().first().map { it.id }.toSet()
                 val orphans = (learningStates.keys + circuitBreakers.keys + pendingResets.keys + dailyEvents.keys) - allIds
                 orphans.forEach { id ->
@@ -171,9 +158,6 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    /**
-     * Xóa các cảnh báo (và ảnh kèm theo) cũ hơn 30 ngày để tránh phình DB/bộ nhớ trên điện thoại.
-     */
     private fun cleanupOldAlerts() {
         scope.launch {
             try {
@@ -238,7 +222,6 @@ class CameraSkill @Inject constructor(
                             },
                             "hasImage" to dailyEventsList.any { it.imageBytes != null }
                         ))
-                        // Clear daily events after sending
                         dailyEvents[camera.id]?.clear()
                     }
                 }
@@ -292,8 +275,9 @@ class CameraSkill @Inject constructor(
     
     override suspend fun shutdown() {
         // ApplicationScope được quản lý bởi Hilt SingletonComponent
-        // Không cancel ở đây để tránh ảnh hưởng các coroutine khác dùng chung scope
     }
+    
+    // ==================== CIRCUIT BREAKER METHODS ====================
     
     private fun isCircuitBreakerOpen(cameraId: String): Boolean {
         val cb = circuitBreakers[cameraId] ?: return false
@@ -301,16 +285,12 @@ class CameraSkill @Inject constructor(
 
         val elapsed = System.currentTimeMillis() - cb.offlineSince
 
-        // Sau 30 phút → chuyển sang HALF_OPEN: cho phép thử lại 1 lần
-        // Nếu thử thành công → recordOnline() sẽ reset hoàn toàn
-        // Nếu thử thất bại → recordOffline() sẽ mở lại và reset timer
         if (elapsed > CIRCUIT_BREAKER_RESET_MS) {
             if (!cb.halfOpenAttempted) {
                 cb.halfOpenAttempted = true
                 logger.i("CameraSkill", "🔁 Circuit Breaker HALF-OPEN for camera $cameraId - thử lại...")
-                return false  // Cho phép scan lần này
+                return false
             } else {
-                // Đã thử rồi nhưng vẫn chưa online → reset timer, thử lại sau 30 phút nữa
                 cb.offlineSince = System.currentTimeMillis()
                 cb.halfOpenAttempted = false
                 logger.w("CameraSkill", "🔌 Circuit Breaker reset timer for camera $cameraId")
@@ -323,7 +303,7 @@ class CameraSkill @Inject constructor(
     private fun recordOffline(cameraId: String) {
         val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
         cb.offlineCount++
-        cb.halfOpenAttempted = false  // reset để lần sau có thể HALF_OPEN lại
+        cb.halfOpenAttempted = false
         if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
@@ -342,14 +322,12 @@ class CameraSkill @Inject constructor(
         val diffChange = kotlin.math.abs(currentDiff - pending.diff)
         val timeSince = System.currentTimeMillis() - pending.timestamp
         
-        // Nếu sau 2 chu kỳ (khoảng 60 phút) mà diff vẫn lớn, reset learning
         if (timeSince > 60 * 60 * 1000L && diffChange <= 5 && currentDiff >= absDiffTrigger / 2) {
             logger.w("CameraSkill", "🔄 Pending Reset triggered for camera $cameraId - resetting learning state")
             pendingResets.remove(cameraId)
             return true
         }
         
-        // Nếu diff giảm xuống, clear pending
         if (currentDiff < absDiffTrigger / 2) {
             pendingResets.remove(cameraId)
         }
@@ -357,33 +335,7 @@ class CameraSkill @Inject constructor(
         return false
     }
     
-    private suspend fun sendAdminAlert(camera: CameraConfigEntity, reason: String) {
-        val subject = "🚨 [HỆ THỐNG] LỖI CAMERA: ${camera.customername} (${camera.id})"
-        val body = """
-            <html>
-            <body>
-                <h2 style="color: #dc2626;">🚨 CẢNH BÁO SỰ CỐ VẬN HÀNH CAMERA</h2>
-                <p>Hệ thống phát hiện sự cố tại thiết bị camera giám sát thửa đất:</p>
-                <table>
-                    <tr><td><strong>Tên Camera:</strong></td><td>${camera.customername}</td></tr>
-                    <tr><td><strong>Mã Camera:</strong></td><td>${camera.id}</td></tr>
-                    <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId}</td></tr>
-                    <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
-                </table>
-                <div style="background: #fef2f2; padding: 10px; border-left: 4px solid #dc2626;">
-                    <strong>Chi tiết lỗi:</strong><br>$reason
-                </div>
-                <p>Vui lòng kiểm tra hạ tầng đường truyền camera.</p>
-            </body>
-            </html>
-        """.trimIndent()
-        
-        // TODO: Lấy admin email từ config
-        val adminEmail = "admin@aichatvn.com"
-        if (adminEmail.isNotBlank()) {
-            emailSkill.sendEmail(adminEmail, subject, body, null)
-        }
-    }
+    // ==================== SCAN METHODS ====================
     
     suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): AgentResponse {
         return try {
@@ -396,7 +348,6 @@ class CameraSkill @Inject constructor(
             val results = mutableListOf<Map<String, Any>>()
             
             for (camera in cameras) {
-                // Check circuit breaker
                 if (!isDailyReport && isCircuitBreakerOpen(camera.id)) {
                     logger.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera ${camera.id}")
                     continue
@@ -431,23 +382,51 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
+    /**
+     * ✅ PHƯƠNG THỨC MỚI: Xử lý ảnh từ CameraProcessor
+     * Được gọi từ CameraProcessor.processByteArray() và processByteBuffer()
+     */
+    suspend fun processImage(cameraId: String, imageBytes: ByteArray): AgentResponse {
+        return try {
+            val camera = database.cameraDao().getCameraById(cameraId)
+            if (camera == null) {
+                logger.w("CameraSkill", "processImage: camera not found: $cameraId")
+                return AgentResponse(success = false, error = "Camera not found")
+            }
+            
+            val customerSetting = database.cameraDao().getCustomerSetting(camera.customerId)
+            if (customerSetting?.isActive != 1) {
+                logger.d("CameraSkill", "processImage: camera ${camera.id} is inactive, skipping")
+                return AgentResponse(success = true, data = mapOf("skipped" to true))
+            }
+            
+            // Xử lý ảnh với learning
+            val result = processImageWithLearning(camera, imageBytes, customerSetting?.smartMode == 1)
+            
+            AgentResponse(
+                success = true,
+                data = result
+            )
+            
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "processImage error: ${e.message}", e)
+            AgentResponse(success = false, error = e.message)
+        }
+    }
+    
+    /**
+     * Xử lý ảnh với cơ chế học tập thích nghi (tách từ scanWithLearning)
+     */
+    private suspend fun processImageWithLearning(
+        camera: CameraConfigEntity,
+        imageBytes: ByteArray,
+        isSmartMode: Boolean
+    ): Map<String, Any> {
         return getMutexForCamera(camera.id).withLock {
             val state = learningStates.getOrPut(camera.id) { CameraLearningState() }
             val now = System.currentTimeMillis()
             
             try {
-                val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
-                if (imageBytes == null) {
-                    handleOfflineCamera(camera)
-                    recordOffline(camera.id)
-                    return mapOf(
-                        "cameraId" to camera.id,
-                        "success" to false,
-                        "error" to "Cannot fetch snapshot"
-                    )
-                }
-                
                 // Reset circuit breaker on successful fetch
                 recordOnline(camera.id)
                 
@@ -480,12 +459,11 @@ class CameraSkill @Inject constructor(
                 // Check pending reset
                 val shouldReset = checkPendingReset(camera.id, currentDiff, absDiffTrigger)
                 if (shouldReset) {
-                    // Reset learning state
                     learningStates[camera.id] = CameraLearningState(
                         lastPhash = currentPhash,
                         lastDiff = currentDiff
                     )
-                    return mapOf(
+                    return@withLock mapOf(
                         "cameraId" to camera.id,
                         "success" to true,
                         "hasChange" to false,
@@ -522,7 +500,6 @@ class CameraSkill @Inject constructor(
                         state.realEvents++
                         state.cooldownUntil = now + COOLDOWN_DURATION_MS
                         
-                        // Ghi nhận sự kiện hàng ngày (giới hạn kích thước để tránh phình bộ nhớ)
                         val cameraDailyEvents = dailyEvents.getOrPut(camera.id) { mutableListOf() }
                         cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
                         if (cameraDailyEvents.size > MAX_DAILY_EVENTS_PER_CAMERA) {
@@ -546,7 +523,6 @@ class CameraSkill @Inject constructor(
                             message = aiComment.take(100)
                         )
                         
-                        // Lưu vào AlertHistory (DB) để xem lại sau
                         saveAlertToHistory(
                             camera = camera,
                             aiComment = aiComment,
@@ -567,7 +543,6 @@ class CameraSkill @Inject constructor(
                             )
                         ))
                     } else {
-                        // Nếu AI nói bình thường nhưng diff lớn, đánh dấu pending reset
                         if (isMature && isSuddenChange) {
                             pendingResets[camera.id] = PendingResetState(currentDiff, now)
                             logger.i("CameraSkill", "⚠️ Pending reset for camera ${camera.id} - monitoring next cycle")
@@ -620,7 +595,7 @@ class CameraSkill @Inject constructor(
                 ))
                 updateDiagnostics()
                 
-                return mapOf(
+                return@withLock mapOf(
                     "cameraId" to camera.id,
                     "success" to true,
                     "hasChange" to isSuddenChange,
@@ -634,8 +609,39 @@ class CameraSkill @Inject constructor(
                 )
                 
             } catch (e: Exception) {
+                logger.e("CameraSkill", "Error in processImageWithLearning: ${e.message}", e)
+                return@withLock mapOf(
+                    "cameraId" to camera.id,
+                    "success" to false,
+                    "error" to (e.message ?: "Unknown error")
+                )
+            }
+        }
+    }
+    
+    private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
+        return getMutexForCamera(camera.id).withLock {
+            val state = learningStates.getOrPut(camera.id) { CameraLearningState() }
+            val now = System.currentTimeMillis()
+            
+            try {
+                val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
+                if (imageBytes == null) {
+                    handleOfflineCamera(camera)
+                    recordOffline(camera.id)
+                    return@withLock mapOf(
+                        "cameraId" to camera.id,
+                        "success" to false,
+                        "error" to "Cannot fetch snapshot"
+                    )
+                }
+                
+                // Gọi processImageWithLearning để xử lý
+                return@withLock processImageWithLearning(camera, imageBytes, isSmartMode)
+                
+            } catch (e: Exception) {
                 logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
-                return mapOf(
+                return@withLock mapOf(
                     "cameraId" to camera.id,
                     "success" to false,
                     "error" to (e.message ?: "Unknown error")
@@ -682,10 +688,38 @@ class CameraSkill @Inject constructor(
                 title = "Camera ${camera.customername} mất kết nối",
                 message = "Không thể kết nối đến camera. Vui lòng kiểm tra!"
             )
-            // Gửi cảnh báo admin
             sendAdminAlert(camera, "Không thể kết nối đến camera. Vui lòng kiểm tra đường truyền!")
         }
     }
+    
+    private suspend fun sendAdminAlert(camera: CameraConfigEntity, reason: String) {
+        val subject = "🚨 [HỆ THỐNG] LỖI CAMERA: ${camera.customername} (${camera.id})"
+        val body = """
+            <html>
+            <body>
+                <h2 style="color: #dc2626;">🚨 CẢNH BÁO SỰ CỐ VẬN HÀNH CAMERA</h2>
+                <p>Hệ thống phát hiện sự cố tại thiết bị camera giám sát thửa đất:</p>
+                <table>
+                    <tr><td><strong>Tên Camera:</strong></td><td>${camera.customername}</td></tr>
+                    <tr><td><strong>Mã Camera:</strong></td><td>${camera.id}</td></tr>
+                    <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
+                </table>
+                <div style="background: #fef2f2; padding: 10px; border-left: 4px solid #dc2626;">
+                    <strong>Chi tiết lỗi:</strong><br>$reason
+                </div>
+                <p>Vui lòng kiểm tra hạ tầng đường truyền camera.</p>
+            </body>
+            </html>
+        """.trimIndent()
+        
+        val adminEmail = "admin@aichatvn.com"
+        if (adminEmail.isNotBlank()) {
+            emailSkill.sendEmail(adminEmail, subject, body, null)
+        }
+    }
+    
+    // ==================== CRUD METHODS ====================
     
     suspend fun saveCameraConfig(config: Map<String, Any>): AgentResponse {
         return try {
@@ -807,10 +841,6 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    /**
-     * Flow danh sách toàn bộ camera (kể cả inactive), dùng để các Plugin/ViewModel
-     * theo dõi trạng thái online/offline liên tục (real-time) thay vì check 1 lần.
-     */
     fun observeCameras() = database.cameraDao().getAllCamerasFlow()
 
     fun resetCircuitBreaker(cameraId: String) {
@@ -848,10 +878,8 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    /**
-     * Lưu một cảnh báo vào bảng "alerts" để hiển thị ở màn hình Lịch sử cảnh báo.
-     * Ảnh snapshot được lưu vào file riêng trong filesDir/alert_images, chỉ lưu path trong DB.
-     */
+    // ==================== ALERT HELPER METHODS ====================
+    
     private suspend fun saveAlertToHistory(
         camera: CameraConfigEntity,
         aiComment: String,
@@ -886,10 +914,6 @@ class CameraSkill @Inject constructor(
         }
     }
 
-    /**
-     * Ghi ảnh snapshot ra file trong bộ nhớ trong app (filesDir/alert_images),
-     * trả về đường dẫn tuyệt đối để lưu vào AlertEntity.imagePath.
-     */
     private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
         return try {
             val dir = File(context.filesDir, "alert_images")

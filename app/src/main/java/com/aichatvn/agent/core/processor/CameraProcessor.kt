@@ -73,9 +73,31 @@ class CameraProcessor @Inject constructor(
     }
 
     private suspend fun processByteArray(data: ByteArray, frame: CameraFrame) {
-        // TODO: Xử lý ByteArray
-        // cameraSkill.processImage(frame.cameraId, data)
+    // ✅ BỎ COMMENT - Gọi CameraSkill xử lý ảnh
+    try {
+        cameraSkill.processImage(frame.cameraId, data)
+    } catch (e: Exception) {
+        logger.e("CameraProcessor", "processByteArray error: ${e.message}", e)
     }
+}
+
+private suspend fun processByteBuffer(buffer: ByteBuffer, frame: CameraFrame) {
+    val position = buffer.position()
+    val limit = buffer.limit()
+    val size = limit - position
+
+    logger.d("CameraProcessor", "Processing ByteBuffer, size=$size")
+
+    // ✅ BỎ COMMENT - Xử lý trực tiếp ByteBuffer cho RTSP
+    try {
+        // Chuyển ByteBuffer thành ByteArray để xử lý
+        val bytes = ByteArray(size)
+        buffer.get(bytes, position, size)
+        cameraSkill.processImage(frame.cameraId, bytes)
+    } catch (e: Exception) {
+        logger.e("CameraProcessor", "processByteBuffer error: ${e.message}", e)
+    }
+}
 
     private suspend fun processByteBuffer(buffer: ByteBuffer, frame: CameraFrame) {
         val position = buffer.position()
