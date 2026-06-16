@@ -19,7 +19,7 @@ import com.aichatvn.agent.core.camera.CameraEngine
 import com.aichatvn.agent.core.camera.EngineFactory
 import com.aichatvn.agent.core.camera.EngineStatus
 import com.aichatvn.agent.core.camera.EngineType
-import com.aichatvn.agent.core.heartbeat.ServiceHeartbeat  // ✅ THÊM
+import com.aichatvn.agent.core.heartbeat.ServiceHeartbeat
 import com.aichatvn.agent.core.processor.CameraProcessor
 import com.aichatvn.agent.core.telemetry.TelemetryManager
 import com.aichatvn.agent.utils.Logger
@@ -56,8 +56,7 @@ class CameraScanService : Service() {
     private var statusJob: Job? = null
 
     private val isStopping = AtomicBoolean(false)
-    
-    // ✅ Track notification text để tránh flicker
+    private val isEngineStarting = AtomicBoolean(false)
     private var lastNotificationText: String? = null
 
     companion object {
@@ -70,10 +69,9 @@ class CameraScanService : Service() {
     override fun onCreate() {
         super.onCreate()
         logger.i("CameraScanService", "Service created")
-        
-        // ✅ Đánh dấu service đang chạy
+
         ServiceHeartbeat.markRunning()
-        
+
         createNotificationChannel()
         telemetryManager.start()
 
@@ -83,8 +81,12 @@ class CameraScanService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         logger.i("CameraScanService", "Service started, flags=$flags, startId=$startId")
-        
-        // ✅ Chỉ update notification nếu text khác
+
+        if (currentEngine != null || isEngineStarting.get()) {
+            logger.d("CameraScanService", "Engine already running or starting, skip")
+            return START_STICKY
+        }
+
         val initText = "Đang khởi tạo..."
         if (lastNotificationText != initText) {
             startForeground(NOTIFICATION_ID, createNotification(initText))
@@ -101,49 +103,55 @@ class CameraScanService : Service() {
     }
 
     private fun startEngine() {
-    serviceScope.launch {
-        try {
-            if (!hasCameraPermission()) {
-                logger.w("CameraScanService", "Camera permission not granted, waiting...")
-                updateNotification("⏳ Đợi cấp quyền camera...")
-                return@launch
-            }
-            
-            currentEngine = engineFactory.create(engineType)
-            val engine = currentEngine ?: return@launch
+        if (!isEngineStarting.compareAndSet(false, true)) {
+            logger.d("CameraScanService", "Engine already starting, skip")
+            return
+        }
 
-            cameraProcessor.attach(engine.frameFlow)
+        serviceScope.launch {
+            try {
+                if (!hasCameraPermission()) {
+                    logger.w("CameraScanService", "Camera permission not granted, waiting...")
+                    updateNotification("⏳ Đợi cấp quyền camera...")
+                    return@launch
+                }
 
-            statusJob?.cancel()
-            statusJob = serviceScope.launch {
-                engine.status.collect { status ->
-                    val statusText = when (status) {
-                        is EngineStatus.Running -> "✅ Đang giám sát..."
-                        is EngineStatus.Starting -> "⏳ Đang khởi động..."
-                        is EngineStatus.Stopping -> "⏹️ Đang dừng..."
-                        is EngineStatus.Idle -> "⏸️ Tạm dừng"
-                        is EngineStatus.Error -> "❌ Lỗi: ${status.message.take(30)}"
-                        is EngineStatus.Reconnecting -> "🔄 Đang kết nối lại (lần ${status.attempt})"
-                    }
-                    updateNotification(statusText)
-                    
-                    // ✅ THÊM: Cập nhật heartbeat khi engine đang chạy
-                    if (status is EngineStatus.Running) {
-                        updateHeartbeat()
+                currentEngine = engineFactory.create(engineType)
+                val engine = currentEngine ?: return@launch
+
+                cameraProcessor.attach(engine.frameFlow)
+
+                statusJob?.cancel()
+                statusJob = serviceScope.launch {
+                    engine.status.collect { status ->
+                        val statusText = when (status) {
+                            is EngineStatus.Running -> "✅ Đang giám sát..."
+                            is EngineStatus.Starting -> "⏳ Đang khởi động..."
+                            is EngineStatus.Stopping -> "⏹️ Đang dừng..."
+                            is EngineStatus.Idle -> "⏸️ Tạm dừng"
+                            is EngineStatus.Error -> "❌ Lỗi: ${status.message.take(30)}"
+                            is EngineStatus.Reconnecting -> "🔄 Đang kết nối lại (lần ${status.attempt})"
+                        }
+                        updateNotification(statusText)
+
+                        if (status is EngineStatus.Running) {
+                            updateHeartbeat()
+                        }
                     }
                 }
+
+                logger.i("CameraScanService", "Starting engine: ${engine::class.simpleName}")
+                engine.start()
+
+            } catch (e: Exception) {
+                logger.e("CameraScanService", "Failed to start engine: ${e.message}", e)
+                updateNotification("❌ Lỗi khởi động: ${e.message?.take(30)}")
+            } finally {
+                isEngineStarting.set(false)
             }
-
-            logger.i("CameraScanService", "Starting engine: ${engine::class.simpleName}")
-            engine.start()
-
-        } catch (e: Exception) {
-            logger.e("CameraScanService", "Failed to start engine: ${e.message}", e)
-            updateNotification("❌ Lỗi khởi động: ${e.message?.take(30)}")
         }
     }
-}
-    // ✅ Gọi updateHeartbeat mỗi khi scan thành công
+
     private suspend fun updateHeartbeat() {
         try {
             ServiceHeartbeat.updateHeartbeat(applicationContext)
@@ -180,13 +188,12 @@ class CameraScanService : Service() {
         }
     }
 
-    // ✅ Chỉ update notification khi text thay đổi
     private fun updateNotification(text: String) {
         if (text == lastNotificationText) {
-            return  // ✅ Tránh flicker
+            return
         }
         lastNotificationText = text
-        
+
         try {
             val notification = createNotification(text)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -228,8 +235,7 @@ class CameraScanService : Service() {
             manager.createNotificationChannel(channel)
         }
     }
-    
-    // ✅ Check camera permission
+
     private fun hasCameraPermission(): Boolean {
         return try {
             ContextCompat.checkSelfPermission(
@@ -243,14 +249,10 @@ class CameraScanService : Service() {
 
     override fun onDestroy() {
         logger.i("CameraScanService", "Service destroying")
-        
-        // ✅ Đánh dấu service đã dừng
+
         ServiceHeartbeat.markStopped()
-        
-        // ✅ Reset notification flag
         lastNotificationText = null
 
-        // ✅ Stop engine với timeout
         runBlocking(Dispatchers.IO) {
             val completed = withTimeoutOrNull(STOP_TIMEOUT_MS) {
                 stopEngineInternal()

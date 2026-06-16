@@ -24,22 +24,19 @@ class SmartScan15MinWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         return withContext(Dispatchers.IO) {
             try {
-                // ✅ Kiểm tra heartbeat, KHÔNG dùng getRunningServices()
                 val lastHeartbeat = ServiceHeartbeat.getLastHeartbeat(applicationContext)
                 val now = System.currentTimeMillis()
                 val isServiceRunning = ServiceHeartbeat.isRunning
-                
-                // Nếu service đang chạy và heartbeat còn mới → OK
+
                 val heartbeatAge = now - lastHeartbeat
                 if (isServiceRunning && heartbeatAge < 120_000L) {
                     logger.d("SmartScan15MinWorker", "Service is running (heartbeat: ${heartbeatAge}ms ago)")
                     return@withContext Result.success()
                 }
-                
-                // Service chết → restart
+
                 logger.w("SmartScan15MinWorker", "Service appears dead (heartbeat: ${heartbeatAge}ms ago), restarting...")
                 restartService()
-                
+
                 Result.success()
             } catch (e: Exception) {
                 logger.e("SmartScan15MinWorker", "Watchdog error: ${e.message}", e)
@@ -51,13 +48,13 @@ class SmartScan15MinWorker @AssistedInject constructor(
     private fun restartService() {
         try {
             val intent = Intent(applicationContext, CameraScanService::class.java)
-            
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 applicationContext.startForegroundService(intent)
             } else {
                 applicationContext.startService(intent)
             }
-            
+
             logger.i("SmartScan15MinWorker", "Service restart triggered")
         } catch (e: Exception) {
             logger.e("SmartScan15MinWorker", "Failed to restart service: ${e.message}", e)

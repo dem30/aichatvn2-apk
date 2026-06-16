@@ -87,7 +87,7 @@ class CameraProcessor @Inject constructor(
             val bytes = ByteArray(size)
             buffer.get(bytes, position, size)
             cameraSkill.processImage(frame.cameraId, bytes)
-            
+
             logger.d("CameraProcessor", "ByteBuffer processed for camera: ${frame.cameraId}")
         } catch (e: Exception) {
             logger.e("CameraProcessor", "processByteBuffer error: ${e.message}", e)

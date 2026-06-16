@@ -20,9 +20,9 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED -> {
                 try {
                     Log.i("BootReceiver", "Device boot completed, checking monitoring state...")
-                    
+
                     val isEnabled = isMonitoringEnabled(context)
-                    
+
                     if (isEnabled) {
                         Log.i("BootReceiver", "Monitoring is enabled, starting CameraScanService")
                         startService(context)
@@ -35,7 +35,7 @@ class BootReceiver : BroadcastReceiver() {
             }
         }
     }
-    
+
     private fun startService(context: Context) {
         try {
             val serviceIntent = Intent(context, CameraScanService::class.java)
@@ -49,11 +49,11 @@ class BootReceiver : BroadcastReceiver() {
             Log.e("BootReceiver", "Failed to start CameraScanService", e)
         }
     }
-    
+
     private fun isMonitoringEnabled(context: Context): Boolean {
         return try {
             val key = booleanPreferencesKey("monitoring_enabled")
-            
+
             runBlocking {
                 val prefs = context.dataStore.data.first()
                 prefs[key] ?: true
