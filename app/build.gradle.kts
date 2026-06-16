@@ -20,10 +20,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         
         buildConfigField("String", "GROQ_API_KEY", "\"${project.findProperty("GROQ_API_KEY") ?: ""}\"")
-        buildConfigField("String", "GMAIL_CLIENT_ID", "\"${project.findProperty("GMAIL_CLIENT_ID") ?: ""}\"")
-        buildConfigField("String", "GMAIL_CLIENT_SECRET", "\"${project.findProperty("GMAIL_CLIENT_SECRET") ?: ""}\"")
-        buildConfigField("String", "GMAIL_REFRESH_TOKEN", "\"${project.findProperty("GMAIL_REFRESH_TOKEN") ?: ""}\"")
-        buildConfigField("String", "GMAIL_SENDER", "\"${project.findProperty("GMAIL_SENDER") ?: "another.vin2@gmail.com"}\"")
+        buildConfigField "String", "RESEND_API_KEY", "\"${System.getenv('RESEND_API_KEY') ?: ''}\""
+        buildConfigField "String", "RESEND_SENDER",  "\"${System.getenv('RESEND_SENDER')  ?: ''}\""
+    
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
     }
 

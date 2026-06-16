@@ -25,39 +25,34 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    
-    val groqApiKey by viewModel.groqApiKey.collectAsState()
-    val darkMode by viewModel.darkMode.collectAsState()
-    val gmailClientId by viewModel.gmailClientId.collectAsState()
-    val gmailClientSecret by viewModel.gmailClientSecret.collectAsState()
-    val gmailRefreshToken by viewModel.gmailRefreshToken.collectAsState()
-    val gmailSender by viewModel.gmailSender.collectAsState()
 
-    var groqKeyInput by remember(groqApiKey) { mutableStateOf(groqApiKey) }
-    var gmailClientIdInput by remember(gmailClientId) { mutableStateOf(gmailClientId) }
-    var gmailClientSecretInput by remember(gmailClientSecret) { mutableStateOf(gmailClientSecret) }
-    var gmailRefreshTokenInput by remember(gmailRefreshToken) { mutableStateOf(gmailRefreshToken) }
-    var gmailSenderInput by remember(gmailSender) { mutableStateOf(gmailSender) }
+    val groqApiKey       by viewModel.groqApiKey.collectAsState()
+    val darkMode         by viewModel.darkMode.collectAsState()
+    val resendApiKey     by viewModel.resendApiKey.collectAsState()
+    val resendSender     by viewModel.resendSender.collectAsState()
+
+    var groqKeyInput     by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
+    var resendKeyInput   by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
+    var resendSenderInput by remember(resendSender)  { mutableStateOf(resendSender) }
     var testEmailAddress by remember { mutableStateOf("") }
-    var showSaved by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var testEmailResult by remember { mutableStateOf<String?>(null) }
-    
+    var showSaved        by remember { mutableStateOf(false) }
+    var errorMessage     by remember { mutableStateOf<String?>(null) }
+    var testEmailResult  by remember { mutableStateOf<String?>(null) }
+
     // Worker schedule status
     var workerStatus by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    
+
     LaunchedEffect(Unit) {
         val workManager = WorkManager.getInstance(context)
         try {
             val smartScanInfo = workManager.getWorkInfosForUniqueWork("smart_scan_15min_work").get()
-            
             workerStatus = mapOf(
                 "Smart Scan (15 phút)" to when (smartScanInfo.firstOrNull()?.state?.name) {
-                    "ENQUEUED" -> "⏳ Đang chờ"
-                    "RUNNING" -> "🔄 Đang chạy"
+                    "ENQUEUED"  -> "⏳ Đang chờ"
+                    "RUNNING"   -> "🔄 Đang chạy"
                     "SUCCEEDED" -> "✅ Thành công"
-                    "FAILED" -> "❌ Thất bại"
-                    else -> "⏸ Chưa kích hoạt"
+                    "FAILED"    -> "❌ Thất bại"
+                    else        -> "⏸ Chưa kích hoạt"
                 }
             )
         } catch (e: Exception) {
@@ -74,7 +69,8 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Card hiển thị trạng thái worker schedule
+
+            // ── Worker schedule status ──────────────────────────────────────
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
@@ -92,9 +88,10 @@ fun SettingsScreen(
                     )
                 }
             }
-            
+
+            // ── Groq API ───────────────────────────────────────────────────
             Text("🤖 Groq API", style = MaterialTheme.typography.titleMedium)
-            
+
             OutlinedTextField(
                 value = groqKeyInput,
                 onValueChange = { groqKeyInput = it },
@@ -108,67 +105,71 @@ fun SettingsScreen(
             Button(
                 onClick = {
                     viewModel.testGroqConnection(groqKeyInput) { success, message ->
-                        if (success) {
-                            errorMessage = null
-                            showSaved = true
-                        } else {
-                            errorMessage = message
-                        }
+                        if (success) { errorMessage = null; showSaved = true }
+                        else errorMessage = message
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                )
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
                 Text("🔌 Kiểm tra kết nối Groq")
             }
 
             HorizontalDivider()
 
-            Text("📧 Gmail API", style = MaterialTheme.typography.titleMedium)
-            
-            OutlinedTextField(
-                value = gmailClientIdInput,
-                onValueChange = { gmailClientIdInput = it },
-                label = { Text("Client ID") },
+            // ── Resend Email API ───────────────────────────────────────────
+            Text("📧 Resend Email API", style = MaterialTheme.typography.titleMedium)
+
+            // Hướng dẫn ngắn
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        "Đăng ký miễn phí tại resend.com → tạo API Key → điền vào đây.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Text(
+                        "Free: 3.000 email/tháng, 100 email/ngày.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f)
+                    )
+                    Text(
+                        "Email gửi phải dùng domain đã xác minh trên Resend (hoặc onboarding@resend.dev để test).",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
             OutlinedTextField(
-                value = gmailClientSecretInput,
-                onValueChange = { gmailClientSecretInput = it },
-                label = { Text("Client Secret") },
+                value = resendKeyInput,
+                onValueChange = { resendKeyInput = it },
+                label = { Text("Resend API Key") },
+                placeholder = { Text("re_xxxxxxxxxxxxxxxxxxxx") },
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true
             )
-            
+
             OutlinedTextField(
-                value = gmailRefreshTokenInput,
-                onValueChange = { gmailRefreshTokenInput = it },
-                label = { Text("Refresh Token") },
-                modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true
-            )
-            
-            OutlinedTextField(
-                value = gmailSenderInput,
-                onValueChange = { gmailSenderInput = it },
-                label = { Text("Email gửi") },
+                value = resendSenderInput,
+                onValueChange = { resendSenderInput = it },
+                label = { Text("Email gửi (From)") },
+                placeholder = { Text("AIChatVN <onboarding@resend.dev>") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            
-            // Test email section
+
+            // ── Test email ─────────────────────────────────────────────────
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("📧 Kiểm tra gửi email", style = MaterialTheme.typography.labelMedium)
+                    Text("📤 Kiểm tra gửi email", style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
                     OutlinedTextField(
                         value = testEmailAddress,
@@ -176,25 +177,21 @@ fun SettingsScreen(
                         label = { Text("Email nhận test") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        placeholder = { Text("nhanvien@example.com") }
+                        placeholder = { Text("ban@example.com") }
                     )
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = {
                             scope.launch {
                                 testEmailResult = null
-                                val result = viewModel.testSendEmail(
-                                    testEmailAddress,
-                                    gmailClientIdInput,
-                                    gmailClientSecretInput,
-                                    gmailRefreshTokenInput,
-                                    gmailSenderInput
-                                )
+                                // Lưu settings trước rồi mới test
+                                viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
+                                val result = viewModel.testSendEmail(testEmailAddress)
                                 testEmailResult = result
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = testEmailAddress.isNotBlank()
+                        enabled = testEmailAddress.isNotBlank() && resendKeyInput.isNotBlank()
                     ) {
                         Text("📤 Gửi email test")
                     }
@@ -202,9 +199,9 @@ fun SettingsScreen(
                         Text(
                             text = testEmailResult!!,
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (testEmailResult!!.startsWith("✅")) 
-                                MaterialTheme.colorScheme.primary 
-                            else 
+                            color = if (testEmailResult!!.startsWith("✅"))
+                                MaterialTheme.colorScheme.primary
+                            else
                                 MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(top = 4.dp)
                         )
@@ -214,6 +211,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ── Dark mode ──────────────────────────────────────────────────
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -225,21 +223,17 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ── Lưu tất cả ────────────────────────────────────────────────
             Button(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
-                    viewModel.saveGmailSettings(
-                        gmailClientIdInput,
-                        gmailClientSecretInput,
-                        gmailRefreshTokenInput,
-                        gmailSenderInput
-                    )
+                    viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
                     showSaved = true
                     errorMessage = null
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Lưu cài đặt")
+                Text("💾 Lưu cài đặt")
             }
 
             if (errorMessage != null) {
