@@ -8,9 +8,9 @@ import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.aichatvn.agent.services.CameraScanService
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
-// ✅ Extension property cho DataStore
 private val Context.dataStore by preferencesDataStore(name = "monitoring_settings")
 
 class BootReceiver : BroadcastReceiver() {
@@ -53,11 +53,10 @@ class BootReceiver : BroadcastReceiver() {
     private fun isMonitoringEnabled(context: Context): Boolean {
         return try {
             val key = booleanPreferencesKey("monitoring_enabled")
+            
             runBlocking {
-                // ✅ Dùng extension property
-                context.dataStore.data.collect { prefs ->
-                    return@runBlocking prefs[key] ?: true
-                }
+                val prefs = context.dataStore.data.first()
+                prefs[key] ?: true
             }
         } catch (e: Exception) {
             Log.e("BootReceiver", "Failed to read preference, defaulting to true", e)
