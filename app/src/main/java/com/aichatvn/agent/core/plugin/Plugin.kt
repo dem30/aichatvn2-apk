@@ -48,7 +48,12 @@ abstract class SimplePlugin(
     }
     
     override suspend fun shutdown() {
-        onDestroy()
+        // ✅ Đảm bảo cancel luôn chạy, kể cả onDestroy() throw exception
+        try {
+            onDestroy()
+        } finally {
+            pluginScope.cancel()
+        }
     }
     
     open suspend fun onInit() {}

@@ -6,6 +6,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -16,7 +17,6 @@ class AgentCore @Inject constructor(
     private val conversationContext: ConversationContext,
     private val ruleIntentResolver: RuleIntentResolver,
     private val groqClient: GroqClientTool,
-    // ❌ ĐÃ XÓA: private val chatSkill: ChatSkill,
     private val eventBus: PluginEventBus,
     private val logger: Logger
 ) {
@@ -29,7 +29,6 @@ class AgentCore @Inject constructor(
             val pendingPluginId = conversationContext.getPendingPlugin()
             val pendingAction = conversationContext.getPendingAction()
             
-            // FIX: Kiểm tra pending bị corruption (null hoặc empty)
             if (pendingPluginId.isNullOrEmpty() || pendingAction.isNullOrEmpty()) {
                 logger.w("AgentCore", "Pending corrupted (plugin=$pendingPluginId, action=$pendingAction), clearing")
                 conversationContext.clearPending()
@@ -44,16 +43,52 @@ class AgentCore @Inject constructor(
                 if (plugin != null && pendingMissing.isNotEmpty()) {
                     val missingKey = pendingMissing.firstOrNull()
                     if (missingKey != null) {
-                        pendingParams[missingKey] = userMessage
-                        logger.d("AgentCore", "Filled missing param '$missingKey' with '$userMessage'")
+                        // ✅ Type-aware extraction thay vì gán string thô
+                        val manifest = plugin.manifest
+                        val actionDef = manifest.actions.find { it.name == pendingAction }
+                        
+                        // ✅ Nếu actionDef null → clear pending và báo lỗi
+                        if (actionDef == null) {
+                            logger.w("AgentCore", "Action '$pendingAction' not found in manifest, clearing pending")
+                            conversationContext.clearPending()
+                            return AgentResponse(
+                                success = false,
+                                error = "Hành động '$pendingAction' không còn tồn tại"
+                            )
+                        }
+                        
+                        val paramDef = actionDef.parameters.find { it.name == missingKey }
+                        val typedValue = if (paramDef != null) {
+                            // Sử dụng ParameterValueExtractor để parse đúng kiểu
+                            val extracted = parameterExtractor.extractValueByType(
+                                paramDef,
+                                userMessage,
+                                userMessage.lowercase()
+                            )
+                            extracted ?: userMessage
+                        } else {
+                            userMessage
+                        }
+                        
+                        pendingParams[missingKey] = typedValue
+                        logger.d("AgentCore", "Filled missing param '$missingKey' with '$typedValue' (type: ${typedValue::class.simpleName})")
                     }
 
-                    val manifest = plugin.manifest
-                    val actionDef = manifest.actions.find { it.name == pendingAction }
-                    val stillMissing = actionDef?.parameters
-                        ?.filter { it.required }
-                        ?.map { it.name }
-                        ?.filter { !pendingParams.containsKey(it) } ?: emptyList()
+                    // ✅ Kiểm tra actionDef một lần nữa (đã check ở trên, nhưng để an toàn)
+                    val actionDef = plugin.manifest.actions.find { it.name == pendingAction }
+                    if (actionDef == null) {
+                        logger.w("AgentCore", "Action '$pendingAction' not found, clearing pending")
+                        conversationContext.clearPending()
+                        return AgentResponse(
+                            success = false,
+                            error = "Hành động '$pendingAction' không còn tồn tại"
+                        )
+                    }
+                    
+                    val stillMissing = actionDef.parameters
+                        .filter { it.required }
+                        .map { it.name }
+                        .filter { !pendingParams.containsKey(it) }
 
                     if (stillMissing.isNotEmpty()) {
                         val question = "Vui lòng cung cấp ${stillMissing.joinToString(", ")}"
@@ -96,26 +131,53 @@ class AgentCore @Inject constructor(
             )
         }
 
-        // 2. Rule resolver
-        val ruleMatch = ruleIntentResolver.resolve(userMessage)
-        if (ruleMatch != null) {
-            logger.d("AgentCore", "Rule matched: ${ruleMatch.pluginId}.${ruleMatch.action}")
-            val plugin = pluginRegistry.getPlugin(ruleMatch.pluginId)
-            if (plugin != null) {
-                val result = plugin.execute(ruleMatch.action, ruleMatch.params)
-                updateContext(ruleMatch.pluginId, ruleMatch.action, ruleMatch.params)
-                return when (result) {
-                    is PluginResult.Success -> AgentResponse(
-                        success = true,
-                        data = mapOf("response" to formatSuccessResponse(result.data))
-                    )
-                    is PluginResult.Failure -> AgentResponse(success = false, error = result.error)
-                    is PluginResult.Ask -> AgentResponse(success = true, data = mapOf("response" to result.question))
-                    is PluginResult.NeedMoreInfo -> {
-                        conversationContext.setPending(ruleMatch.pluginId, ruleMatch.action, ruleMatch.params, result.missingParams)
-                        AgentResponse(success = true, data = mapOf("response" to result.question))
+        // 2. Rule resolver (NO side-effect)
+        val ruleResult = ruleIntentResolver.resolve(userMessage)
+        when (ruleResult) {
+            is RuleResult.Match -> {
+                logger.d("AgentCore", "Rule matched: ${ruleResult.pluginId}.${ruleResult.action}")
+                val plugin = pluginRegistry.getPlugin(ruleResult.pluginId)
+                if (plugin != null) {
+                    val result = plugin.execute(ruleResult.action, ruleResult.params)
+                    updateContext(ruleResult.pluginId, ruleResult.action, ruleResult.params)
+                    return when (result) {
+                        is PluginResult.Success -> AgentResponse(
+                            success = true,
+                            data = mapOf("response" to formatSuccessResponse(result.data))
+                        )
+                        is PluginResult.Failure -> AgentResponse(success = false, error = result.error)
+                        is PluginResult.Ask -> AgentResponse(success = true, data = mapOf("response" to result.question))
+                        is PluginResult.NeedMoreInfo -> {
+                            conversationContext.setPending(ruleResult.pluginId, ruleResult.action, ruleResult.params, result.missingParams)
+                            AgentResponse(success = true, data = mapOf("response" to result.question))
+                        }
                     }
                 }
+                conversationContext.clearPending()
+                return AgentResponse(
+                    success = false,
+                    error = "Plugin '${ruleResult.pluginId}' not found"
+                )
+            }
+            
+            is RuleResult.NeedMoreInfo -> {
+                // ✅ AgentCore manages pending state (single source of truth)
+                conversationContext.setPending(
+                    ruleResult.pluginId,
+                    ruleResult.action,
+                    ruleResult.params,
+                    ruleResult.missingParams
+                )
+                logger.d("AgentCore", "Need more info: ${ruleResult.pluginId}.${ruleResult.action}, missing: ${ruleResult.missingParams}")
+                return AgentResponse(
+                    success = true,
+                    data = mapOf("response" to ruleResult.question)
+                )
+            }
+            
+            RuleResult.NoMatch -> {
+                // Fall through to LLM
+                logger.d("AgentCore", "No rule match, falling back to LLM")
             }
         }
 
@@ -135,8 +197,6 @@ class AgentCore @Inject constructor(
 
         if (resolved.pluginId == null || resolved.action == null) {
             conversationContext.clearPending()
-            // ❌ ĐÃ XÓA: return chatSkill.processQuery(...)
-            // Thay bằng response fallback
             return AgentResponse(
                 success = true,
                 data = mapOf("response" to "Xin lỗi, tôi không hiểu yêu cầu của bạn. Bạn có thể nói rõ hơn không?")
@@ -176,6 +236,8 @@ class AgentCore @Inject constructor(
             }
         }
     }
+
+    // ============= PRIVATE METHODS =============
 
     private suspend fun getCandidatePlugins(userMessage: String): List<Plugin> {
         val lower = userMessage.lowercase()
@@ -340,14 +402,27 @@ class AgentCore @Inject constructor(
         val missingParams: List<String> = emptyList()
     )
 
+    // ============= JSON CONVERTERS (đệ quy triệt để) =============
+    
     private fun JSONObject.toMap(): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
         keys().forEach { key ->
-            map[key] = when (val value = get(key)) {
-                is JSONObject -> value.toMap()
-                else -> value
-            }
+            map[key] = convertJsonValue(get(key))
         }
         return map
+    }
+
+    private fun convertJsonValue(value: Any): Any {
+        return when (value) {
+            is JSONObject -> value.toMap()
+            is JSONArray -> {
+                val list = mutableListOf<Any>()
+                for (i in 0 until value.length()) {
+                    list.add(convertJsonValue(value.get(i))) // ✅ Đệ quy triệt để
+                }
+                list
+            }
+            else -> value
+        }
     }
 }

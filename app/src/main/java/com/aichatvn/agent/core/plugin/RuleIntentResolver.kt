@@ -7,32 +7,28 @@ import javax.inject.Singleton
 @Singleton
 class RuleIntentResolver @Inject constructor(
     private val pluginRegistry: PluginRegistry,
-    private val conversationContext: ConversationContext
+    private val conversationContext: ConversationContext,
+    private val parameterExtractor: ParameterValueExtractor
 ) {
-    
-    data class RuleMatch(
-        val pluginId: String,
-        val action: String,
-        val params: Map<String, Any>
-    )
     
     /**
      * Dynamic resolve - không hardcode pattern nào
      * Tất cả đều đọc từ manifest của plugin
+     * ⚠️ NO SIDE-EFFECT: only returns RuleResult, doesn't modify ConversationContext
      */
-    suspend fun resolve(userMessage: String): RuleMatch? {
+    suspend fun resolve(userMessage: String): RuleResult {
         val lower = userMessage.lowercase()
         
-        // Kiểm tra context trước (câu ngắn như "tắt nó đi")
-        val contextMatch = resolveWithContext(userMessage)
+        // 1. Context-based resolution (short commands like "tắt nó đi")
+        val contextMatch = resolveWithContext(userMessage, lower)
         if (contextMatch != null) return contextMatch
         
+        // 2. Plugin/action matching
         val plugins = pluginRegistry.getAllPlugins()
         
         for (plugin in plugins) {
             val manifest = plugin.manifest
             
-            // Plugin matching - kiểm tra keywords
             val pluginMatched = manifest.keywords.any { keyword ->
                 lower.contains(keyword.lowercase())
             }
@@ -40,13 +36,12 @@ class RuleIntentResolver @Inject constructor(
             if (!pluginMatched) continue
             
             for (action in manifest.actions) {
-                // Dynamic action matching dựa vào keywords
                 val actionMatched = action.keywords.any { keyword ->
                     lower.contains(keyword.lowercase())
                 }
                 
                 if (actionMatched) {
-                    val params = extractParamsDynamically(action, userMessage, lower)
+                    val params = parameterExtractor.extract(action, userMessage, lower)
                     
                     val missingParams = action.parameters
                         .filter { it.required }
@@ -54,16 +49,19 @@ class RuleIntentResolver @Inject constructor(
                     
                     if (missingParams.isNotEmpty()) {
                         val missingNames = missingParams.map { it.name }
-                        conversationContext.setPending(
-                            manifest.id, 
-                            action.name, 
-                            params.toMutableMap(),
-                            missingNames
+                        val question = "Vui lòng cung cấp ${missingNames.joinToString(", ")}"
+                        
+                        // ⚠️ NO side-effect here! AgentCore will handle setPending()
+                        return RuleResult.NeedMoreInfo(
+                            pluginId = manifest.id,
+                            action = action.name,
+                            params = params,
+                            missingParams = missingNames,
+                            question = question
                         )
-                        return null
                     }
                     
-                    return RuleMatch(
+                    return RuleResult.Match(
                         pluginId = manifest.id,
                         action = action.name,
                         params = params
@@ -72,152 +70,88 @@ class RuleIntentResolver @Inject constructor(
             }
         }
         
-        return null
+        return RuleResult.NoMatch
     }
     
-    private suspend fun extractParamsDynamically(
-        action: PluginAction,
-        originalMessage: String,
+    // ============= PRIVATE METHODS =============
+    
+    /**
+     * Xử lý câu lệnh ngắn dạng "tắt nó đi", "bật nó lên"
+     * Dựa vào context (lastPlugin, lastAction, lastEntity) để suy luận
+     */
+    private suspend fun resolveWithContext(
+        userMessage: String,
         lowerMessage: String
-    ): Map<String, Any> {
-        val params = mutableMapOf<String, Any>()
-        
-        for (param in action.parameters) {
-            val value = extractValueByType(param, originalMessage, lowerMessage)
-            if (value != null) {
-                params[param.name] = value
-            }
-        }
-        
-        return params
-    }
-    
-    private suspend fun extractValueByType(
-        param: PluginParameter,
-        originalMessage: String,
-        lowerMessage: String
-    ): Any? {
-        val paramName = param.name.lowercase()
-        val paramType = param.type.lowercase()
-        
-        return when {
-            // Boolean parameters
-            paramType == "boolean" || paramType == "bool" -> {
-                when {
-                    lowerMessage.contains("bật") || lowerMessage.contains("mở") ||
-                    lowerMessage.contains("kích hoạt") || lowerMessage.contains("bật lên") -> true
-                    lowerMessage.contains("tắt") || lowerMessage.contains("ngưng") ||
-                    lowerMessage.contains("vô hiệu") || lowerMessage.contains("dừng") -> false
-                    else -> null
-                }
-            }
-            
-            // Email parameters
-            paramName == "to" || paramName == "email" -> {
-                extractEmail(originalMessage) ?: conversationContext.getLastEmailTo()
-            }
-            
-            // Camera/Device ID parameters
-            paramName == "customerid" || paramName == "cameraid" || 
-            paramName == "device" || paramName == "id" -> {
-                extractDeviceId(originalMessage) ?: conversationContext.getLastCameraId()
-            }
-            
-            // Question/Answer parameters
-            paramName == "question" -> extractQuestion(originalMessage)
-            paramName == "answer" -> extractAnswer(originalMessage)
-            
-            // Search query
-            paramName == "query" -> extractSearchQuery(originalMessage)
-            
-            // Title/Subject
-            paramName == "title" || paramName == "subject" -> {
-                extractTitle(originalMessage) ?: "Không có tiêu đề"
-            }
-            
-            // Generic string - lấy toàn bộ message nếu không có pattern đặc biệt
-            paramType == "string" || paramType == "text" -> {
-                originalMessage.takeIf { it.isNotBlank() }
-            }
-            
-            // Number
-            paramType == "number" || paramType == "int" || paramType == "long" -> {
-                lowerMessage.split(" ").find { it.toIntOrNull() != null }?.toInt()
-            }
-            
-            else -> null
-        }
-    }
-    
-    private fun extractDeviceId(message: String): String? {
-        val patterns = listOf(
-            Regex("(camera|cam|đèn)\\s+(\\S+)", RegexOption.IGNORE_CASE),
-            Regex("(phòng|kho|nhà|bãi|bếp)\\s+(\\S+)", RegexOption.IGNORE_CASE)
-        )
-        for (pattern in patterns) {
-            val match = pattern.find(message)
-            if (match != null && match.groupValues.size >= 2) {
-                return match.groupValues.last()
-            }
-        }
-        return null
-    }
-    
-    private fun extractEmail(message: String): String? {
-        val pattern = Regex("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}")
-        return pattern.find(message)?.value
-    }
-    
-    private fun extractQuestion(message: String): String? {
-        val pattern = Regex("câu hỏi\\s*[:]?\\s*['\"]?([^'\"]+)['\"]?")
-        return pattern.find(message)?.groupValues?.get(1)
-    }
-    
-    private fun extractAnswer(message: String): String? {
-        val pattern = Regex("câu trả lời\\s*[:]?\\s*['\"]?([^'\"]+)['\"]?")
-        return pattern.find(message)?.groupValues?.get(1)
-    }
-    
-    private fun extractSearchQuery(message: String): String? {
-        val pattern = Regex("tìm\\s+(.+)", RegexOption.IGNORE_CASE)
-        return pattern.find(message)?.groupValues?.get(1)
-    }
-    
-    private fun extractTitle(message: String): String? {
-        val pattern = Regex("(tiêu đề|title)\\s*[:]?\\s*['\"]?([^'\"]+)['\"]?")
-        return pattern.find(message)?.groupValues?.get(2)
-    }
-    
-    private suspend fun resolveWithContext(userMessage: String): RuleMatch? {
-        val lower = userMessage.lowercase()
-        
+    ): RuleResult? {
         val shortCommands = listOf("tắt nó", "bật nó", "dừng", "ngưng", "tắt đi", "bật lên")
-        if (shortCommands.any { lower.contains(it) }) {
-            val lastPlugin = conversationContext.getLastPlugin()
-            val lastAction = conversationContext.getLastAction()
-            val lastEntity = conversationContext.getLastEntity()
+        if (shortCommands.any { lowerMessage.contains(it) }) {
+            val lastPluginId = conversationContext.getLastPlugin() ?: return null
+            val lastAction = conversationContext.getLastAction() ?: return null
+            val lastEntity = conversationContext.getLastEntity() ?: return null
             
-            if (lastPlugin != null && lastAction != null && lastEntity != null) {
-                val isTurnOff = lower.contains("tắt") || lower.contains("dừng") || lower.contains("ngưng")
-                val isTurnOn = lower.contains("bật")
-                
-                if (isTurnOff || isTurnOn) {
-                    return RuleMatch(
-                        pluginId = lastPlugin,
-                        action = lastAction,
-                        params = mapOf(
-                            "customerId" to lastEntity,
-                            "cameraId" to lastEntity,
-                            "device" to lastEntity,
-                            "active" to isTurnOn,
-                            "state" to isTurnOn,
-                            "enabled" to isTurnOn
-                        )
-                    )
+            val plugin = pluginRegistry.getPlugin(lastPluginId) ?: return null
+            
+            val isTurnOff = lowerMessage.contains("tắt") || lowerMessage.contains("dừng") || lowerMessage.contains("ngưng")
+            val isTurnOn = lowerMessage.contains("bật")
+            
+            // ✅ Find appropriate action based on context (turn on/off)
+            // Không tái sử dụng lastAction mà tìm action đúng nghĩa với ngữ cảnh
+            val targetAction = if (isTurnOn) {
+                findActionByKeywords(plugin, listOf("enable", "start", "on", "bật", "mở", "kích hoạt"))
+                    ?: lastAction // Fallback nếu không tìm thấy
+            } else {
+                findActionByKeywords(plugin, listOf("disable", "stop", "off", "tắt", "ngưng", "vô hiệu"))
+                    ?: lastAction // Fallback nếu không tìm thấy
+            }
+            
+            val actionDef = plugin.manifest.actions.find { it.name == targetAction } ?: return null
+            
+            // ✅ Build params chỉ cho các field thực sự tồn tại trong manifest
+            val params = mutableMapOf<String, Any>()
+            actionDef.parameters.forEach { param ->
+                when (param.name) {
+                    "customerId", "cameraId", "device", "id" -> {
+                        if (param.type.lowercase() in listOf("string", "text")) {
+                            params[param.name] = lastEntity
+                        }
+                    }
+                    "active", "state", "enabled" -> {
+                        if (param.type.lowercase() in listOf("boolean", "bool")) {
+                            params[param.name] = isTurnOn
+                        }
+                    }
                 }
             }
+            
+            return RuleResult.Match(
+                pluginId = lastPluginId,
+                action = targetAction,
+                params = params
+            )
         }
         
         return null
+    }
+    
+    /**
+     * ✅ Token-based matching to avoid false positives
+     * Ví dụ: "monitor" contains "on" → false positive, cần token hóa
+     */
+    private fun findActionByKeywords(plugin: Plugin, keywords: List<String>): String? {
+        val lowerKeywords = keywords.map { it.lowercase() }
+        return plugin.manifest.actions.firstOrNull { action ->
+            action.keywords.any { actionKeyword ->
+                val lowerActionKeyword = actionKeyword.lowercase()
+                lowerKeywords.any { targetKeyword ->
+                    val targetTokens = targetKeyword.split(" ")
+                    val actionTokens = lowerActionKeyword.split(" ")
+                    targetTokens.any { targetToken ->
+                        actionTokens.any { actionToken ->
+                            actionToken == targetToken
+                        }
+                    }
+                }
+            }
+        }?.name
     }
 }

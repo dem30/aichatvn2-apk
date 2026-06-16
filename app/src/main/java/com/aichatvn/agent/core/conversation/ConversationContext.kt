@@ -7,6 +7,7 @@ import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
+import org.json.JSONArray
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -118,7 +119,6 @@ class ConversationContext @Inject constructor(
     
     suspend fun getPendingParams(): Map<String, Any> {
         val paramsStr = get(Keys.PENDING_PARAMS) ?: return emptyMap()
-        // FIX: Kiểm tra chuỗi rỗng trước khi parse JSON
         if (paramsStr.isBlank()) return emptyMap()
         return try {
             val json = JSONObject(paramsStr)
@@ -131,7 +131,6 @@ class ConversationContext @Inject constructor(
     
     suspend fun getPendingMissingParams(): List<String> {
         val missingStr = get(Keys.PENDING_MISSING_PARAMS) ?: return emptyList()
-        // FIX: Kiểm tra chuỗi rỗng trước khi parse JSON
         if (missingStr.isBlank()) return emptyList()
         return try {
             val json = JSONObject(missingStr)
@@ -148,7 +147,6 @@ class ConversationContext @Inject constructor(
         set(Keys.PENDING_ACTION, "")
         set(Keys.PENDING_PARAMS, "")
         set(Keys.PENDING_MISSING_PARAMS, "")
-        // FIX: Xóa cache để tránh stale data
         cache.remove(Keys.PENDING_PLUGIN)
         cache.remove(Keys.PENDING_ACTION)
         cache.remove(Keys.PENDING_PARAMS)
@@ -252,15 +250,28 @@ class ConversationContext @Inject constructor(
         }
     }
     
+    // ============= JSON CONVERTERS (đệ quy triệt để) =============
+    
     private fun jsonToMap(json: JSONObject): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
         json.keys().forEach { key ->
-            when (val value = json.get(key)) {
-                is JSONObject -> map[key] = jsonToMap(value)
-                else -> map[key] = value
-            }
+            map[key] = convertJsonValue(json.get(key))
         }
         return map
+    }
+    
+    private fun convertJsonValue(value: Any): Any {
+        return when (value) {
+            is JSONObject -> jsonToMap(value)
+            is JSONArray -> {
+                val list = mutableListOf<Any>()
+                for (i in 0 until value.length()) {
+                    list.add(convertJsonValue(value.get(i))) // ✅ Đệ quy triệt để
+                }
+                list
+            }
+            else -> value
+        }
     }
     
     fun clearMemory() {

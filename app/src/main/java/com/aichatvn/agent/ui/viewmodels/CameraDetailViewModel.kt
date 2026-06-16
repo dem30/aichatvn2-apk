@@ -102,16 +102,33 @@ class CameraDetailViewModel @Inject constructor(
             _isLoading.value = true
             try {
                 val url = _camera.value?.snapshoturl
-                if (!url.isNullOrBlank()) {
-                    _liveSnapshot.value = snapshotFetcher.fetchSnapshot(url)
+                if (url.isNullOrBlank()) {
+                    logger.w("CameraDetailViewModel", "loadLiveSnapshot: snapshotUrl trống, id=$cameraId")
+                } else {
+                    val bytes = snapshotFetcher.fetchSnapshot(url)
+                    if (bytes != null) {
+                        logger.d("CameraDetailViewModel", "loadLiveSnapshot: OK (${bytes.size} bytes) | id=$cameraId")
+                    } else {
+                        logger.w("CameraDetailViewModel", "loadLiveSnapshot: fetchSnapshot trả về null | id=$cameraId")
+                    }
+                    _liveSnapshot.value = bytes
                 }
             } catch (e: Exception) {
                 logger.e("CameraDetailViewModel", "loadLiveSnapshot error: ${e.message}", e)
+            } finally {
+                _isLoading.value = false
             }
-            _isLoading.value = false
         }
     }
 
+    /**
+     * FIX (lỗi phụ - loading bị treo):
+     * Hai nhánh return@launch (không tìm thấy camera / URL trống) trước đây nằm
+     * ngoài finally nên bỏ qua luôn dòng đặt _isLoading.value = false ở cuối hàm,
+     * khiến UI bị kẹt ở trạng thái "đang test" mãi nếu rơi vào 2 trường hợp đó.
+     * Sửa: chuyển toàn bộ logic vào try { } finally { _isLoading.value = false },
+     * Kotlin coroutine vẫn chạy finally trước khi return@launch thực sự thoát ra.
+     */
     fun testCamera() {
         viewModelScope.launch {
             _isLoading.value = true
@@ -120,14 +137,16 @@ class CameraDetailViewModel @Inject constructor(
                 val cam = database.cameraDao().getCameraById(cameraId)
                 if (cam == null) {
                     _testResult.value = "❌ Không tìm thấy camera"
+                    logger.w("CameraDetailViewModel", "testCamera: không tìm thấy camera id=$cameraId")
                     return@launch
                 }
-                
+
                 if (cam.snapshoturl.isBlank()) {
                     _testResult.value = "❌ Camera chưa cấu hình URL ảnh chụp"
+                    logger.w("CameraDetailViewModel", "testCamera: snapshotUrl trống, id=$cameraId")
                     return@launch
                 }
-                
+
                 val setting = database.cameraDao().getCustomerSetting(cam.customerId)
                 val wasSmartOff = setting?.smartMode != 1
 
@@ -143,6 +162,7 @@ class CameraDetailViewModel @Inject constructor(
                     )
                 }
 
+                logger.d("CameraDetailViewModel", "testCamera: bắt đầu scan id=$cameraId, url=${cam.snapshoturl}")
                 val response = cameraSkill.scanCamera(cameraId, isDailyReport = false)
 
                 if (wasSmartOff) {
@@ -161,11 +181,12 @@ class CameraDetailViewModel @Inject constructor(
                     val data = response.data as? Map<*, *>
                     val results = data?.get("results") as? List<*>
                     val first = results?.firstOrNull() as? Map<*, *>
-                    
+
                     // FIX: Kiểm tra lỗi fetch ảnh từ camera skill
                     val fetchError = first?.get("error") as? String
                     if (fetchError != null) {
                         _testResult.value = "❌ Không thể chụp ảnh: $fetchError\nKiểm tra URL camera hoặc kết nối mạng"
+                        logger.e("CameraDetailViewModel", "testCamera: fetchError=$fetchError | id=$cameraId")
                     } else {
                         val hasChange = first?.get("hasChange") as? Boolean ?: false
                         val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
@@ -182,16 +203,22 @@ class CameraDetailViewModel @Inject constructor(
                             append("🤖 AI: $aiComment\n")
                             if (diff > 0) append("━━━━━━━━━━━━━━━\n📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
                         }
+                        logger.i(
+                            "CameraDetailViewModel",
+                            "testCamera: OK id=$cameraId hasChange=$hasChange isSuspicious=$isSuspicious diff=$diff"
+                        )
                     }
                 } else {
                     _testResult.value = "❌ Lỗi: ${response.error}"
+                    logger.e("CameraDetailViewModel", "testCamera: response.success=false, error=${response.error} | id=$cameraId")
                 }
                 loadCamera()
             } catch (e: Exception) {
                 _testResult.value = "❌ Exception: ${e.message}"
                 logger.e("CameraDetailViewModel", "testCamera error: ${e.message}", e)
+            } finally {
+                _isLoading.value = false
             }
-            _isLoading.value = false
         }
     }
 
