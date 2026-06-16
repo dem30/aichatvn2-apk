@@ -48,7 +48,9 @@ class CameraSkill @Inject constructor(
     override val skillName = "CameraSkill"
     
     private val database by lazy { AppDatabase.getDatabase(context) }
-    private val cameraMutex = Mutex()
+    private val cameraMutexMap = mutableMapOf<String, Mutex>()
+    private fun getMutexForCamera(cameraId: String): Mutex =
+        cameraMutexMap.getOrPut(cameraId) { Mutex() }
     
     // ==================== HỌC TẬP THÍCH NGHI ====================
     private data class CameraLearningState(
@@ -63,11 +65,12 @@ class CameraSkill @Inject constructor(
         var cooldownUntil: Long = 0L
     )
     
-    // ==================== CIRCUIT BREAKER (MỚI) ====================
+    // ==================== CIRCUIT BREAKER ====================
     private data class CircuitBreakerState(
         var offlineCount: Int = 0,
         var offlineSince: Long = 0L,
-        var isOpen: Boolean = false
+        var isOpen: Boolean = false,
+        var halfOpenAttempted: Boolean = false  // cho phép thử lại 1 lần sau 30 phút
     )
     
     // ==================== PENDING RESET (MỚI) ====================
@@ -144,9 +147,11 @@ class CameraSkill @Inject constructor(
      * Đảm bảo tổng số entry trong các map luôn bám theo số camera thực tế trong DB,
      * tránh tăng vô hạn theo thời gian.
      */
+    private val pruneMutex = Mutex()
+
     private suspend fun pruneOrphanedCameraState() {
         try {
-            cameraMutex.withLock {
+            pruneMutex.withLock {
                 // Dùng toàn bộ camera (kể cả manualOff/inactive) làm tập hợp "còn tồn tại",
                 // chỉ coi là orphan khi camera đã thực sự bị xóa khỏi DB.
                 val allIds = database.cameraDao().getAllCamerasFlow().first().map { it.id }.toSet()
@@ -293,11 +298,24 @@ class CameraSkill @Inject constructor(
     private fun isCircuitBreakerOpen(cameraId: String): Boolean {
         val cb = circuitBreakers[cameraId] ?: return false
         if (!cb.isOpen) return false
-        
-        // Tự reset sau 30 phút
-        if (System.currentTimeMillis() - cb.offlineSince > CIRCUIT_BREAKER_RESET_MS) {
-            circuitBreakers[cameraId] = CircuitBreakerState()
-            return false
+
+        val elapsed = System.currentTimeMillis() - cb.offlineSince
+
+        // Sau 30 phút → chuyển sang HALF_OPEN: cho phép thử lại 1 lần
+        // Nếu thử thành công → recordOnline() sẽ reset hoàn toàn
+        // Nếu thử thất bại → recordOffline() sẽ mở lại và reset timer
+        if (elapsed > CIRCUIT_BREAKER_RESET_MS) {
+            if (!cb.halfOpenAttempted) {
+                cb.halfOpenAttempted = true
+                logger.i("CameraSkill", "🔁 Circuit Breaker HALF-OPEN for camera $cameraId - thử lại...")
+                return false  // Cho phép scan lần này
+            } else {
+                // Đã thử rồi nhưng vẫn chưa online → reset timer, thử lại sau 30 phút nữa
+                cb.offlineSince = System.currentTimeMillis()
+                cb.halfOpenAttempted = false
+                logger.w("CameraSkill", "🔌 Circuit Breaker reset timer for camera $cameraId")
+                return true
+            }
         }
         return true
     }
@@ -305,6 +323,7 @@ class CameraSkill @Inject constructor(
     private fun recordOffline(cameraId: String) {
         val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
         cb.offlineCount++
+        cb.halfOpenAttempted = false  // reset để lần sau có thể HALF_OPEN lại
         if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
@@ -413,7 +432,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
-        return cameraMutex.withLock {
+        return getMutexForCamera(camera.id).withLock {
             val state = learningStates.getOrPut(camera.id) { CameraLearningState() }
             val now = System.currentTimeMillis()
             
@@ -793,6 +812,19 @@ class CameraSkill @Inject constructor(
      * theo dõi trạng thái online/offline liên tục (real-time) thay vì check 1 lần.
      */
     fun observeCameras() = database.cameraDao().getAllCamerasFlow()
+
+    fun resetCircuitBreaker(cameraId: String) {
+        circuitBreakers[cameraId] = CircuitBreakerState()
+        learningStates[cameraId] = CameraLearningState()
+        logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $cameraId")
+    }
+
+    fun resetAllCircuitBreakers() {
+        circuitBreakers.keys.forEach { id ->
+            circuitBreakers[id] = CircuitBreakerState()
+        }
+        logger.i("CameraSkill", "🔄 All Circuit Breakers reset manually")
+    }
 
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
     
