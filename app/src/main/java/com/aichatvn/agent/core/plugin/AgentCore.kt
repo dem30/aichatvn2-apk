@@ -301,7 +301,7 @@ class AgentCore @Inject constructor(
 
         val response = try {
             withTimeout(15_000L) {
-                groqClient.chatForIntent(prompt)
+                groqClient.chat(prompt)
             }
         } catch (e: TimeoutCancellationException) {
             logger.w("AgentCore", "LLM intent resolution timed out after 15s — falling back to chat")
