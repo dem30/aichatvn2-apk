@@ -30,12 +30,67 @@ fun DiagnosticsScreen(
     val offlineCameras = stats["offlineCameras"] as? Int ?: 0
     val disabledCameras = stats["disabledCameras"] as? Int ?: 0
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Chẩn đoán hệ thống") }) }) { padding ->
+    val snackbarHostState = remember { SnackbarHostState() }
+    var resetMessage by remember { mutableStateOf<String?>(null) }
+
+    // Hiển thị thông báo reset
+    LaunchedEffect(resetMessage) {
+        resetMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            resetMessage = null
+        }
+    }
+
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Chẩn đoán hệ thống") }) },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // Nút Reset tất cả Circuit Breaker
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            "🔌 Circuit Breaker",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            "Tạm ngưng quét camera khi mất kết nối liên tục",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            viewModel.resetAllCircuitBreakers()
+                            resetMessage = "✅ Đã reset tất cả Circuit Breaker"
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("🔄 Reset all")
+                    }
+                }
+            }
+
             // Summary cards
             Row(
                 modifier = Modifier
@@ -63,7 +118,6 @@ fun DiagnosticsScreen(
 
             when {
                 cameras.isEmpty() -> {
-                    // Chưa có camera nào — bình thường, không phải lỗi
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("📭", fontSize = TextUnit(48f, TextUnitType.Sp))
@@ -76,8 +130,6 @@ fun DiagnosticsScreen(
                     }
                 }
                 else -> {
-                    // FIX: không chặn hiển thị khi learningStats rỗng.
-                    // Camera mới thêm hoặc chưa scan lần nào → hiển thị "Chưa có dữ liệu học tập"
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(8.dp),
@@ -93,7 +145,11 @@ fun DiagnosticsScreen(
                                 cameraId = cameraId,
                                 cameraName = cameraName,
                                 status = cameraStatus,
-                                stats = cameraStats
+                                stats = cameraStats,
+                                onResetCircuitBreaker = {
+                                    viewModel.resetCircuitBreaker(cameraId)
+                                    resetMessage = "✅ Đã reset Circuit Breaker cho camera $cameraName"
+                                }
                             )
                         }
                     }
@@ -126,13 +182,15 @@ private fun CameraDiagnosticCard(
     cameraId: String,
     cameraName: String,
     status: String,
-    stats: Map<String, Any>?
+    stats: Map<String, Any>?,
+    onResetCircuitBreaker: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(cameraName, style = MaterialTheme.typography.titleSmall)
                 Surface(
@@ -184,19 +242,40 @@ private fun CameraDiagnosticCard(
                 val circuitOpen = stats["circuitBreakerOpen"] as? Boolean ?: false
                 if (circuitOpen) {
                     Spacer(Modifier.height(4.dp))
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.errorContainer
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            "⚠️ Circuit Breaker OPEN",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                            style = MaterialTheme.typography.labelSmall
-                        )
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.errorContainer
+                        ) {
+                            Text(
+                                "⚠️ Circuit Breaker OPEN",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        
+                        // ✅ Nút reset cho từng camera
+                        TextButton(
+                            onClick = onResetCircuitBreaker,
+                            colors = TextButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(
+                                androidx.compose.material.icons.Icons.Default.Refresh,
+                                contentDescription = "Reset",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("Reset", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
             } else {
-                // Camera chưa bao giờ scan — bình thường với camera mới
                 Text(
                     text = if (status == "Mất kết nối")
                         "⚠️ Camera offline, chưa thu thập được dữ liệu"
