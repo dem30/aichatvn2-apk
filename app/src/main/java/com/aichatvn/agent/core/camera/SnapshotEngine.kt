@@ -172,30 +172,49 @@ class SnapshotEngine @Inject constructor(
         try {
             val result = cameraSkill.scanCamera(null, isDailyReport = false)
 
-            if (result.success) {
-                val data = result.data as? Map<*, *>
-                val results = data?.get("results") as? List<*>
-                val firstResult = results?.firstOrNull() as? Map<*, *>
-                val imageBytes = firstResult?.get("imageBytes") as? ByteArray
-                val cameraId = firstResult?.get("cameraId") as? String ?: "unknown"
-
-                if (imageBytes != null) {
-                    return CameraFrame(
-                        data = FrameData.ByteArrayData(imageBytes),
-                        source = "snapshot",
-                        cameraId = cameraId,
-                        width = 0,
-                        height = 0,
-                        format = "jpeg",
-                        metadata = mapOf(
-                            "diff" to (firstResult["diff"] ?: 0),
-                            "hasChange" to (firstResult["hasChange"] ?: false),
-                            "isSuspicious" to (firstResult["isSuspicious"] ?: false)
-                        )
-                    )
-                }
+            if (!result.success) {
+                logger.e("SnapshotEngine", "scanCamera failed: ${result.error}")
+                return null
             }
-            return null
+
+            val data = result.data as? Map<*, *>
+            val results = data?.get("results") as? List<*>
+
+            // FIX: Log rõ khi không có camera nào trong DB hoặc không có camera active
+            if (results.isNullOrEmpty()) {
+                val processed = data?.get("processed") as? Int ?: 0
+                logger.w("SnapshotEngine", "scanCamera returned 0 results (processed=$processed). " +
+                    "Kiểm tra: (1) đã thêm camera chưa? (2) customerSetting.isActive == 1 chưa?")
+                return null
+            }
+
+            // Lấy frame đầu tiên có imageBytes hợp lệ
+            val firstResult = results
+                .filterIsInstance<Map<*, *>>()
+                .firstOrNull { it["imageBytes"] != null }
+
+            if (firstResult == null) {
+                logger.w("SnapshotEngine", "Tất cả ${results.size} camera đều không có imageBytes " +
+                    "(có thể offline hoặc circuit breaker đang mở)")
+                return null
+            }
+
+            val imageBytes = firstResult["imageBytes"] as? ByteArray ?: return null
+            val cameraId = firstResult["cameraId"] as? String ?: "unknown"
+
+            return CameraFrame(
+                data = FrameData.ByteArrayData(imageBytes),
+                source = "snapshot",
+                cameraId = cameraId,
+                width = 0,
+                height = 0,
+                format = "jpeg",
+                metadata = mapOf(
+                    "diff" to (firstResult["diff"] ?: 0),
+                    "hasChange" to (firstResult["hasChange"] ?: false),
+                    "isSuspicious" to (firstResult["isSuspicious"] ?: false)
+                )
+            )
 
         } catch (e: Exception) {
             logger.e("SnapshotEngine", "fetchSnapshot error: ${e.message}", e)

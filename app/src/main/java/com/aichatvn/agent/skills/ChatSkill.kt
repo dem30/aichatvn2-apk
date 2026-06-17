@@ -64,13 +64,43 @@ class ChatSkill @Inject constructor(
     // THÊM: Phát hiện lệnh điều khiển thiết bị
     private fun isDeviceControlIntent(message: String): Boolean {
         val lower = message.lowercase()
-        val controlKeywords = listOf(
-            "bật", "tắt", "mở", "ngưng", "dừng",
-            "camera", "đèn", "light", "email", "gửi mail",
-            "thông báo", "notify", "chế độ thông minh", "smart mode"
+
+        // FIX: Bỏ điều kiện "length < 50" — nguyên nhân gốc rễ khiến "hi", "hello",
+        // "xin chào" và mọi câu ngắn bị route sang AgentCore thay vì Groq chat.
+        // Log: "Routing to AgentCore for device control: 'hi'" là bug này.
+        //
+        // Chỉ route sang AgentCore khi message chứa từ khóa điều khiển RÕ RÀNG.
+        // Phân nhóm để dễ maintain:
+
+        // Động từ điều khiển thiết bị (phải đi kèm đối tượng, nhưng check đơn giản trước)
+        val actionVerbs = listOf("bật", "tắt", "khởi động lại", "ngưng", "dừng hẳn", "reset")
+
+        // Đối tượng cụ thể trong hệ thống này
+        val systemObjects = listOf(
+            "camera", "đèn", "light", "đèn led",
+            "chế độ thông minh", "smart mode", "giám sát"
         )
-        // Câu ngắn hoặc có từ khóa điều khiển
-        return message.length < 50 || controlKeywords.any { lower.contains(it) }
+
+        // Lệnh gửi — phải có từ "gửi" hoặc "send" đi kèm
+        val sendCommands = listOf("gửi mail", "gửi email", "gửi thông báo", "send email", "send mail")
+
+        // Lệnh truy vấn hệ thống rõ ràng
+        val queryCommands = listOf(
+            "trạng thái camera", "camera status",
+            "bao nhiêu camera", "danh sách camera",
+            "xem log", "xem alert", "xem cảnh báo"
+        )
+
+        val hasAction = actionVerbs.any { lower.contains(it) }
+        val hasObject = systemObjects.any { lower.contains(it) }
+        val hasSendCommand = sendCommands.any { lower.contains(it) }
+        val hasQueryCommand = queryCommands.any { lower.contains(it) }
+
+        // Route sang AgentCore chỉ khi:
+        // - Có động từ điều khiển VÀ đối tượng hệ thống ("bật camera", "tắt đèn")
+        // - Hoặc lệnh gửi rõ ràng ("gửi email cho khách hàng")
+        // - Hoặc query hệ thống rõ ràng ("trạng thái camera")
+        return (hasAction && hasObject) || hasSendCommand || hasQueryCommand
     }
 
     // THÊM: Lưu message từ AgentCore response

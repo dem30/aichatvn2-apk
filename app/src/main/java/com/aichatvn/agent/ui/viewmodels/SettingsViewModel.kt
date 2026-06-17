@@ -11,6 +11,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -18,7 +19,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @HiltViewModel
@@ -29,11 +32,18 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     companion object {
-        val GROQ_API_KEY    = stringPreferencesKey("groq_api_key")
-        val RESEND_API_KEY  = stringPreferencesKey("resend_api_key")
-        val RESEND_SENDER   = stringPreferencesKey("resend_sender")
-        val DARK_MODE       = booleanPreferencesKey("dark_mode")
+        val GROQ_API_KEY   = stringPreferencesKey("groq_api_key")
+        val RESEND_API_KEY = stringPreferencesKey("resend_api_key")
+        val RESEND_SENDER  = stringPreferencesKey("resend_sender")
+        val DARK_MODE      = booleanPreferencesKey("dark_mode")
     }
+
+    // FIX: Tái sử dụng một OkHttpClient thay vì tạo mới mỗi lần test
+    // OkHttpClient giữ thread pool và connection pool — tạo mới liên tục là resource leak
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
 
     val groqApiKey: StateFlow<String> = context.dataStore.data
         .map { it[GROQ_API_KEY] ?: "" }
@@ -51,11 +61,26 @@ class SettingsViewModel @Inject constructor(
         .map { it[DARK_MODE] ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    // ─── Expose trạng thái key để UI cảnh báo user khi chưa cấu hình ─────────
+
+    /**
+     * Dùng trong UI: hiển thị banner cảnh báo nếu Groq key chưa được set.
+     * Ví dụ: if (!isGroqKeyConfigured) { Text("⚠️ Chưa nhập Groq API key") }
+     */
+    val isGroqKeyConfigured: StateFlow<Boolean> = groqApiKey
+        .map { it.isNotBlank() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val isResendConfigured: StateFlow<Boolean> = combine(resendApiKey, resendSender) { key, sender ->
+        key.isNotBlank() && sender.isNotBlank()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     // ─── Save ─────────────────────────────────────────────────────────────────
 
     fun saveGroqApiKey(key: String) {
         viewModelScope.launch {
             context.dataStore.edit { it[GROQ_API_KEY] = key.trim() }
+            logger.i("SettingsViewModel", "Groq API key saved (length=${key.trim().length})")
         }
     }
 
@@ -65,6 +90,7 @@ class SettingsViewModel @Inject constructor(
                 it[RESEND_API_KEY] = apiKey.trim()
                 it[RESEND_SENDER]  = sender.trim()
             }
+            logger.i("SettingsViewModel", "Resend settings saved")
         }
     }
 
@@ -77,15 +103,21 @@ class SettingsViewModel @Inject constructor(
     // ─── Test Groq ────────────────────────────────────────────────────────────
 
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val client = OkHttpClient.Builder()
-                    .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                    .build()
+        val trimmedKey = apiKey.trim()
 
+        // FIX: Validate key trước khi gọi network — tránh gửi "Bearer " → 401
+        if (trimmedKey.isEmpty()) {
+            viewModelScope.launch(Dispatchers.Main) {
+                onResult(false, "❌ API key trống — vui lòng nhập key trước khi test")
+            }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
                 val requestBodyJson = JSONObject().apply {
                     put("model", "llama-3.3-70b-versatile")
-                    put("messages", org.json.JSONArray().apply {
+                    put("messages", JSONArray().apply {
                         put(JSONObject().apply {
                             put("role", "user")
                             put("content", "Test connection. Reply with 'OK'")
@@ -96,38 +128,44 @@ class SettingsViewModel @Inject constructor(
 
                 val request = Request.Builder()
                     .url("https://api.groq.com/openai/v1/chat/completions")
-                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Authorization", "Bearer $trimmedKey")
                     .addHeader("Content-Type", "application/json")
                     .post(requestBodyJson.toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = client.newCall(request).execute()
+                // FIX: dùng httpClient singleton thay vì tạo mới
+                val response = httpClient.newCall(request).execute()
                 val responseBody = response.body?.string()
                 val success = response.isSuccessful
-                val message = if (success) "Kết nối thành công!"
-                              else "Lỗi API: ${response.code} - ${response.message}"
-                if (success) logger.i("SettingsViewModel", "Groq test OK: $responseBody")
+
+                val message = when {
+                    success -> "✅ Kết nối thành công!"
+                    response.code == 401 -> "❌ 401 Unauthorized — API key sai hoặc hết hạn. Key bắt đầu bằng 'gsk_'?"
+                    response.code == 429 -> "⚠️ 429 Rate limit — key hợp lệ nhưng đang bị throttle"
+                    else -> "❌ Lỗi API: ${response.code} - ${response.message}"
+                }
+
+                if (success) logger.i("SettingsViewModel", "Groq test OK")
                 else logger.e("SettingsViewModel", "Groq test failed: ${response.code} - $responseBody")
+
                 response.close()
 
-                withContext(kotlinx.coroutines.Dispatchers.Main) { onResult(success, message) }
+                withContext(Dispatchers.Main) { onResult(success, message) }
 
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Lỗi kết nối Groq: ${e.message}", e)
-                withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    onResult(false, "Lỗi kết nối: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    onResult(false, "❌ Lỗi kết nối: ${e.message}")
                 }
             }
         }
     }
 
     // ─── Test Email ───────────────────────────────────────────────────────────
-    // SettingsScreen đã lưu settings trước khi gọi hàm này,
-    // nên EmailSkill sẽ tự đọc đúng key từ DataStore.
 
     suspend fun testSendEmail(to: String): String {
         if (to.isBlank()) return "❌ Vui lòng nhập email nhận test"
-        return withContext(kotlinx.coroutines.Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             try {
                 val result = emailSkill.sendEmail(
                     to      = to,
@@ -147,5 +185,12 @@ class SettingsViewModel @Inject constructor(
                 "❌ Gửi email thất bại: ${e.message}"
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        // Giải phóng connection pool khi ViewModel bị destroy
+        httpClient.dispatcher.executorService.shutdown()
+        httpClient.connectionPool.evictAll()
     }
 }

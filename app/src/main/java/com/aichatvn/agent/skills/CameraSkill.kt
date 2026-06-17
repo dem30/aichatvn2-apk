@@ -344,36 +344,62 @@ class CameraSkill @Inject constructor(
             } else {
                 database.cameraDao().getActiveCameras()
             }
-            
+
+            // FIX: Báo rõ khi không có camera nào trong DB
+            if (cameras.isEmpty()) {
+                logger.w("CameraSkill", "scanCamera: không có camera nào trong DB" +
+                    if (cameraId != null) " (cameraId=$cameraId không tồn tại)" else " (chưa thêm camera)")
+                return AgentResponse(
+                    success = true,
+                    data = mapOf("processed" to 0, "results" to emptyList<Any>(),
+                        "warning" to "Chưa có camera nào được cấu hình")
+                )
+            }
+
             val results = mutableListOf<Map<String, Any>>()
-            
+            var skippedCircuitBreaker = 0
+            var skippedInactive = 0
+
             for (camera in cameras) {
                 if (!isDailyReport && isCircuitBreakerOpen(camera.id)) {
                     logger.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera ${camera.id}")
+                    skippedCircuitBreaker++
                     continue
                 }
-                
+
                 val customerSetting = database.cameraDao().getCustomerSetting(camera.customerId)
+                // FIX: Log rõ khi camera bị skip vì inactive
                 if (customerSetting?.isActive != 1) {
+                    logger.d("CameraSkill", "⏭️ Camera ${camera.id} skipped: " +
+                        if (customerSetting == null) "không có customerSetting (chưa tạo?)"
+                        else "isActive=${customerSetting.isActive} (không phải 1)")
+                    skippedInactive++
                     continue
                 }
-                
+
                 val result = if (isDailyReport) {
                     scanForDailyReport(camera)
                 } else {
-                    scanWithLearning(camera, customerSetting?.smartMode == 1)
+                    scanWithLearning(camera, customerSetting.smartMode == 1)
                 }
                 results.add(result)
             }
-            
+
+            if (results.isEmpty() && cameras.isNotEmpty()) {
+                logger.w("CameraSkill", "scanCamera: có ${cameras.size} camera nhưng 0 được xử lý " +
+                    "(skippedCircuitBreaker=$skippedCircuitBreaker, skippedInactive=$skippedInactive)")
+            }
+
             AgentResponse(
                 success = true,
                 data = mapOf(
                     "processed" to results.size,
-                    "results" to results
+                    "results" to results,
+                    "skippedCircuitBreaker" to skippedCircuitBreaker,
+                    "skippedInactive" to skippedInactive
                 )
             )
-            
+
         } catch (e: Exception) {
             AgentResponse(
                 success = false,
@@ -842,6 +868,44 @@ class CameraSkill @Inject constructor(
     }
     
     fun observeCameras() = database.cameraDao().getAllCamerasFlow()
+
+    /**
+     * Test trực tiếp một snapshot URL — không cần camera có trong DB.
+     * Dùng để debug khi camera test không được.
+     * Trả về: imageBytes nếu thành công, error message nếu thất bại.
+     */
+    suspend fun testCameraUrl(snapshotUrl: String): AgentResponse {
+        return try {
+            logger.i("CameraSkill", "🧪 testCameraUrl: $snapshotUrl")
+            val imageBytes = snapshotFetcher.fetchSnapshot(snapshotUrl)
+
+            if (imageBytes == null) {
+                logger.w("CameraSkill", "🧪 testCameraUrl: fetch trả về null (URL sai hoặc camera offline)")
+                return AgentResponse(
+                    success = false,
+                    error = "Không thể fetch ảnh từ URL này. Kiểm tra: URL đúng định dạng? Camera online? Network ok?"
+                )
+            }
+
+            val optimized = imageHashTool.optimizeImage(imageBytes)
+            val phash = imageHashTool.calculatePhash(optimized)
+            logger.i("CameraSkill", "🧪 testCameraUrl OK: ${optimized.size} bytes, phash=$phash")
+
+            AgentResponse(
+                success = true,
+                data = mapOf(
+                    "imageBytes" to optimized,
+                    "originalSize" to imageBytes.size,
+                    "optimizedSize" to optimized.size,
+                    "phash" to phash,
+                    "message" to "Camera fetch OK — ${optimized.size} bytes"
+                )
+            )
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "🧪 testCameraUrl error: ${e.message}", e)
+            AgentResponse(success = false, error = "Lỗi: ${e.message}")
+        }
+    }
 
     fun resetCircuitBreaker(cameraId: String) {
         circuitBreakers[cameraId] = CircuitBreakerState()

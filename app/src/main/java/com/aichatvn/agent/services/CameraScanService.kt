@@ -110,10 +110,27 @@ class CameraScanService : Service() {
 
         serviceScope.launch {
             try {
+                // FIX: Retry thay vì bỏ cuộc — WorkManager có thể start service trước
+                // khi user thấy permission dialog từ MainActivity.
+                // Thử lại mỗi 5 giây tối đa 60 lần (~5 phút), sau đó dừng hẳn.
                 if (!hasCameraPermission()) {
-                    logger.w("CameraScanService", "Camera permission not granted, waiting...")
+                    logger.w("CameraScanService", "Camera permission not granted, bắt đầu retry loop...")
                     updateNotification("⏳ Đợi cấp quyền camera...")
-                    return@launch
+
+                    var retryCount = 0
+                    val maxRetries = 60
+                    while (!hasCameraPermission() && retryCount < maxRetries) {
+                        kotlinx.coroutines.delay(5_000L)
+                        retryCount++
+                        logger.d("CameraScanService", "Chờ permission... ($retryCount/$maxRetries)")
+                    }
+
+                    if (!hasCameraPermission()) {
+                        logger.e("CameraScanService", "Hết thời gian chờ permission sau ${maxRetries * 5}s, dừng engine.")
+                        updateNotification("❌ Không có quyền camera — vào app để cấp quyền")
+                        return@launch
+                    }
+                    logger.i("CameraScanService", "Permission được cấp sau ${retryCount * 5}s, tiếp tục khởi động engine.")
                 }
 
                 currentEngine = engineFactory.create(engineType)

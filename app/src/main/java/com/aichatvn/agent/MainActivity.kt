@@ -15,9 +15,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.content.pm.PackageInfoCompat
@@ -61,26 +58,39 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val requiredPermissions = buildList {
-                        add(Manifest.permission.CAMERA)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            add(Manifest.permission.POST_NOTIFICATIONS)
-                        }
+                    // FIX: Tách riêng 2 nhóm permission:
+                    // - cameraPermission: BẮT BUỘC để start service
+                    // - notificationPermission: TÙY CHỌN, không block service
+                    val cameraPermission = rememberMultiplePermissionsState(
+                        listOf(Manifest.permission.CAMERA)
+                    )
+
+                    val notificationPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        rememberMultiplePermissionsState(listOf(Manifest.permission.POST_NOTIFICATIONS))
+                    } else {
+                        null
                     }
 
-                    val permissionState = rememberMultiplePermissionsState(requiredPermissions)
-                    var isServiceStarted by remember { mutableStateOf(false) }
-
-                    LaunchedEffect(permissionState.allPermissionsGranted) {
-                        if (permissionState.allPermissionsGranted && !isServiceStarted) {
+                    // FIX: Chỉ cần CAMERA granted là start service — NOTIFICATION là optional
+                    LaunchedEffect(cameraPermission.allPermissionsGranted) {
+                        if (cameraPermission.allPermissionsGranted) {
                             startCameraService()
-                            isServiceStarted = true
                         }
                     }
 
+                    // Xin camera permission trước
                     LaunchedEffect(Unit) {
-                        if (!permissionState.allPermissionsGranted) {
-                            permissionState.launchMultiplePermissionRequest()
+                        if (!cameraPermission.allPermissionsGranted) {
+                            cameraPermission.launchMultiplePermissionRequest()
+                        }
+                    }
+
+                    // Xin notification permission độc lập (không block UI hay service)
+                    LaunchedEffect(Unit) {
+                        notificationPermissions?.let {
+                            if (!it.allPermissionsGranted) {
+                                it.launchMultiplePermissionRequest()
+                            }
                         }
                     }
 
@@ -160,13 +170,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        val hasRequiredPermissions = listOf(
-            Manifest.permission.CAMERA
-        ).all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
+        // FIX: onResume chỉ cần CAMERA — nhất quán với logic trên
+        val hasCameraPermission = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
 
-        if (hasRequiredPermissions && !isServiceStarting) {
+        if (hasCameraPermission && !isServiceStarting) {
             startCameraService()
         }
     }
