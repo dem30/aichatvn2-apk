@@ -1,13 +1,8 @@
 package com.aichatvn.agent.tools.ai
 
-import android.content.Context
-import com.aichatvn.agent.BuildConfig
-import com.aichatvn.agent.data.dataStore
+import android.util.Base64
 import com.aichatvn.agent.utils.Logger
-import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -15,194 +10,195 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.Base64
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Template cho GroqClientTool đúng cách.
+ *
+ * ĐIỂM QUAN TRỌNG — root cause của 401:
+ * KHÔNG inject API key qua constructor hay đọc từ StateFlow.value lúc khởi tạo.
+ * DataStore chưa load xong khi Hilt inject → key vẫn là "" → "Bearer " → 401.
+ *
+ * GIẢI PHÁP: inject GroqApiKeyProvider và gọi getKey() suspend ngay trước mỗi request.
+ *
+ * Nếu GroqClientTool hiện tại của bạn có dạng:
+ *   class GroqClientTool @Inject constructor(
+ *       private val apiKey: String,  // ← SAI, key có thể là ""
+ *       ...
+ *   )
+ * hoặc:
+ *   private val apiKey = groqApiKey.value  // ← SAI, .value có thể là "" lúc init
+ *
+ * Thì cần đổi sang pattern dưới đây.
+ */
 @Singleton
 class GroqClientTool @Inject constructor(
-    private val context: Context,
+    private val apiKeyProvider: GroqApiKeyProvider,  // ← inject provider, không inject key trực tiếp
     private val logger: Logger
 ) {
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
-
-    private val baseUrl = "https://api.groq.com/openai/v1"
-
-    private val textModel = "llama-3.3-70b-versatile"
-    private val visionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
-
-    private val lastCallTime = AtomicLong(0L)
-    private val minCallInterval = 6000L
-
-    private suspend fun getApiKey(): String {
-        return try {
-            val GROQ_API_KEY = stringPreferencesKey("groq_api_key")
-            val keyFromStore = context.dataStore.data.first()[GROQ_API_KEY]
-            if (!keyFromStore.isNullOrBlank()) {
-                keyFromStore
-            } else {
-                logger.e("GroqClientTool", "API key trống trong DataStore, thử BuildConfig fallback")
-                BuildConfig.GROQ_API_KEY
-            }
-        } catch (e: Exception) {
-            logger.e("GroqClientTool", "Không đọc được API key từ DataStore: ${e.message}")
-            BuildConfig.GROQ_API_KEY
-        }
+    companion object {
+        private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+        private const val MODEL_TEXT = "llama-3.3-70b-versatile"
+        private const val MODEL_VISION = "llava-v1.5-7b-4096-preview"
+        private const val MAX_TOKENS_CHAT = 1000
+        private const val MAX_TOKENS_VISION = 500
     }
 
+    // Singleton client — không tạo mới mỗi request
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * Chat text với lịch sử hội thoại.
+     */
     suspend fun chat(
         message: String,
         extraContext: String = "",
         history: List<Map<String, String>> = emptyList(),
         imageUrl: String? = null
     ): String = withContext(Dispatchers.IO) {
-
-        val now = System.currentTimeMillis()
-        var lastCall = lastCallTime.get()
-        while (now - lastCall < minCallInterval) {
-            delay(minCallInterval - (now - lastCall))
-            lastCall = lastCallTime.get()
-        }
-        lastCallTime.set(now)
-
-        val apiKey = getApiKey()
-        if (apiKey.isBlank()) {
-            return@withContext "Lỗi: Chưa cấu hình Groq API Key. Vui lòng vào Settings để cập nhật."
-        }
-
-        val messages = JSONArray()
-
-        val systemPrompt = """
-            Bạn là Groq, trợ lý hữu ích. Trả lời chính xác, ngắn gọn bằng tiếng Việt.
-            Ưu tiên thông tin cụ thể từ ngữ cảnh cung cấp.
-            Nếu thông tin mơ hồ, hỏi thêm chi tiết. Không bịa dữ liệu.
-            Thời gian hiện tại: ${java.text.SimpleDateFormat("HH:mm:ss dd/MM/yyyy").format(System.currentTimeMillis())}
-        """.trimIndent()
-        messages.put(JSONObject().put("role", "system").put("content", systemPrompt))
-
-        if (extraContext.isNotEmpty()) {
-            messages.put(JSONObject().put("role", "assistant").put("content", "Context: $extraContext"))
-        }
-
-        history.forEach { msg ->
-            messages.put(JSONObject().put("role", msg["role"]).put("content", msg["content"]))
-        }
-
-        val contentArray = JSONArray()
-
-        // Groq/Llama-4 yêu cầu image_url đứng TRƯỚC text
-        if (imageUrl != null) {
-            contentArray.put(
-                JSONObject()
-                    .put("type", "image_url")
-                    .put("image_url", JSONObject().put("url", imageUrl))
-            )
-        }
-
-        contentArray.put(JSONObject().put("type", "text").put("text", message))
-
-        messages.put(JSONObject().put("role", "user").put("content", contentArray))
-
-        val requestBody = JSONObject().apply {
-            put("model", if (imageUrl != null) visionModel else textModel)
-            put("messages", messages)
-            put("temperature", 0.7)
-            put("max_tokens", 1200)
-        }
-
-        val request = Request.Builder()
-            .url("$baseUrl/chat/completions")
-            .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("Content-Type", "application/json")
-            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
+        // FIX: đọc key lazy ngay trước request, không phải lúc khởi tạo
+        val apiKey = apiKeyProvider.getKey()
+            ?: return@withContext "⚠️ Chưa cấu hình Groq API key. Vào Settings để nhập key."
 
         try {
-            val response = client.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
+            val messages = JSONArray()
 
-            if (!response.isSuccessful) {
-                logger.e("GroqClientTool", "Lỗi API: ${response.code} - ${response.message} - $responseBody")
-                return@withContext "Lỗi API: ${response.code} - ${response.message}"
+            if (extraContext.isNotBlank()) {
+                messages.put(JSONObject().apply {
+                    put("role", "system")
+                    put("content", extraContext)
+                })
             }
 
-            val jsonResponse = JSONObject(responseBody)
-            val choices = jsonResponse.getJSONArray("choices")
-            if (choices.length() > 0) {
-                choices.getJSONObject(0).getJSONObject("message").getString("content")
+            for (h in history.takeLast(10)) {
+                messages.put(JSONObject().apply {
+                    put("role", h["role"] ?: "user")
+                    put("content", h["content"] ?: "")
+                })
+            }
+
+            val userContent: Any = if (imageUrl != null) {
+                JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("type", "text")
+                        put("text", message)
+                    })
+                    put(JSONObject().apply {
+                        put("type", "image_url")
+                        put("image_url", JSONObject().apply { put("url", imageUrl) })
+                    })
+                }
             } else {
-                "Không có phản hồi từ API"
+                message
             }
+
+            messages.put(JSONObject().apply {
+                put("role", "user")
+                put("content", userContent)
+            })
+
+            val model = if (imageUrl != null) MODEL_VISION else MODEL_TEXT
+            val body = JSONObject().apply {
+                put("model", model)
+                put("messages", messages)
+                put("max_tokens", MAX_TOKENS_CHAT)
+            }.toString()
+
+            val response = client.newCall(
+                Request.Builder()
+                    .url(BASE_URL)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .post(body.toRequestBody("application/json".toMediaType()))
+                    .build()
+            ).execute()
+
+            parseResponse(response, "chat")
 
         } catch (e: Exception) {
-            logger.e("GroqClientTool", "Lỗi kết nối Groq API: ${e.message}", e)
-            "Lỗi kết nối Groq API: ${e.message}"
+            logger.e("GroqClientTool", "chat error: ${e.message}", e)
+            "Xin lỗi, không thể kết nối AI lúc này."
         }
     }
 
+    /**
+     * Phân tích ảnh (vision) với prompt.
+     */
     suspend fun analyzeImage(imageBytes: ByteArray, prompt: String): String = withContext(Dispatchers.IO) {
-        val base64Image = Base64.getEncoder().encodeToString(imageBytes)
-        val dataUrl = "data:image/jpeg;base64,$base64Image"
-        return@withContext chat(message = prompt, imageUrl = dataUrl)
+        val apiKey = apiKeyProvider.getKey()
+            ?: return@withContext "⚠️ Chưa cấu hình Groq API key."
+
+        try {
+            val base64 = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+            val dataUrl = "data:image/jpeg;base64,$base64"
+
+            val messages = JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("type", "text")
+                            put("text", prompt)
+                        })
+                        put(JSONObject().apply {
+                            put("type", "image_url")
+                            put("image_url", JSONObject().apply { put("url", dataUrl) })
+                        })
+                    })
+                })
+            }
+
+            val body = JSONObject().apply {
+                put("model", MODEL_VISION)
+                put("messages", messages)
+                put("max_tokens", MAX_TOKENS_VISION)
+            }.toString()
+
+            val response = client.newCall(
+                Request.Builder()
+                    .url(BASE_URL)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .post(body.toRequestBody("application/json".toMediaType()))
+                    .build()
+            ).execute()
+
+            parseResponse(response, "analyzeImage")
+
+        } catch (e: Exception) {
+            logger.e("GroqClientTool", "analyzeImage error: ${e.message}", e)
+            "Không thể phân tích ảnh lúc này."
+        }
     }
-    // Thêm vào cuối class GroqClientTool
-suspend fun chatForIntent(prompt: String): String = withContext(Dispatchers.IO) {
-    val apiKey = getApiKey()
-    if (apiKey.isBlank()) {
-        return@withContext "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
-    }
-    
-    val messages = JSONArray()
-    messages.put(JSONObject().put("role", "system").put("content", 
-        "Bạn là bộ phân tích ý định. Chỉ trả về JSON thuần túy, không markdown, không giải thích."))
-    messages.put(JSONObject().put("role", "user").put("content", prompt))
-    
-    val requestBody = JSONObject().apply {
-        put("model", "llama-3.3-70b-versatile")
-        put("messages", messages)
-        put("temperature", 0.2)
-        put("max_tokens", 500)
-    }
-    
-    val request = Request.Builder()
-        .url("$baseUrl/chat/completions")
-        .addHeader("Authorization", "Bearer $apiKey")
-        .addHeader("Content-Type", "application/json")
-        .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
-        .build()
-    
-    try {
-        val response = client.newCall(request).execute()
-        val responseBody = response.body?.string() ?: ""
-        
+
+    private fun parseResponse(response: okhttp3.Response, caller: String): String {
+        val bodyStr = response.body?.string() ?: ""
+
         if (!response.isSuccessful) {
-            logger.e("GroqClientTool", "Intent API error: ${response.code}")
-            return@withContext "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
+            // Log chi tiết để debug
+            logger.e("GroqClientTool", "$caller HTTP ${response.code}: $bodyStr")
+            return when (response.code) {
+                401 -> "❌ Groq API key không hợp lệ (401). Kiểm tra lại key trong Settings."
+                429 -> "⚠️ Groq rate limit — thử lại sau ít phút."
+                else -> "Lỗi API: ${response.code}"
+            }
         }
-        
-        val jsonResponse = JSONObject(responseBody)
-        val choices = jsonResponse.getJSONArray("choices")
-        if (choices.length() > 0) {
-            choices.getJSONObject(0).getJSONObject("message").getString("content")
+
+        return try {
+            JSONObject(bodyStr)
+                .getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .getString("content")
                 .trim()
-                .removeSurrounding("```json", "```")
-                .trim()
-                .removeSurrounding("```", "```")
-                .trim()
-        } else {
-            "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
+        } catch (e: Exception) {
+            logger.e("GroqClientTool", "$caller parse error: ${e.message}, body=$bodyStr")
+            "Không thể đọc phản hồi từ AI."
         }
-    } catch (e: Exception) {
-        logger.e("GroqClientTool", "Intent error: ${e.message}")
-        "{\"plugin\":\"chat\",\"action\":\"query\",\"params\":{}}"
     }
-}
-    
 }
