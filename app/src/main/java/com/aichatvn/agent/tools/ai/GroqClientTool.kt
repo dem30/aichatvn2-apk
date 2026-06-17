@@ -42,7 +42,7 @@ class GroqClientTool @Inject constructor(
     companion object {
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
         private const val MODEL_TEXT = "llama-3.3-70b-versatile"
-        private const val MODEL_VISION = "llava-v1.5-7b-4096-preview"
+        private const val MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
         private const val MAX_TOKENS_CHAT = 1000
         private const val MAX_TOKENS_VISION = 500
     }

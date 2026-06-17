@@ -1,7 +1,6 @@
 package com.aichatvn.agent
 
 import android.Manifest
-import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -101,6 +100,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCameraService() {
+        // FIX: Bỏ check isServiceRunning() qua getRunningServices() — API này không
+        // đáng tin cậy (có thể báo "đang chạy" sai ngay sau khi process bị OS kill),
+        // và từng khiến onStartCommand()/startEngine() không được gọi cho tới khi
+        // SmartScan15MinWorker ép restart 15 phút sau (xem ghi chú "Heartbeat over
+        // getRunningServices()" trong file kiến trúc). Gọi thẳng startForegroundService();
+        // CameraScanService.onStartCommand() đã tự guard chống start trùng
+        // (currentEngine != null || isEngineStarting.get()), nên gọi nhiều lần vô hại.
         if (isServiceStarting) {
             logger.d("MainActivity", "Service already starting, skip")
             return
@@ -110,35 +116,16 @@ class MainActivity : ComponentActivity() {
             isServiceStarting = true
             val intent = Intent(this, CameraScanService::class.java)
 
-            if (!isServiceRunning(CameraScanService::class.java)) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
-                } else {
-                    startService(intent)
-                }
-                logger.i("MainActivity", "CameraScanService started")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
             } else {
-                logger.d("MainActivity", "CameraScanService already running")
+                startService(intent)
             }
+            logger.i("MainActivity", "CameraScanService start requested")
         } catch (e: Exception) {
             logger.e("MainActivity", "Failed to start CameraScanService: ${e.message}", e)
         } finally {
             isServiceStarting = false
-        }
-    }
-
-    private fun isServiceRunning(serviceClass: Class<*>): Boolean {
-        return try {
-            val manager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-            for (service in manager.getRunningServices(Int.MAX_VALUE)) {
-                if (serviceClass.name == service.service.className) {
-                    return true
-                }
-            }
-            false
-        } catch (e: Exception) {
-            logger.e("MainActivity", "Failed to check service status: ${e.message}", e)
-            false
         }
     }
 
