@@ -13,6 +13,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aichatvn.agent.data.GroqApiKeyProvider
 
 /**
  * Template cho GroqClientTool đúng cách.
