@@ -13,7 +13,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.di.ApplicationScope
+
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,9 +41,9 @@ class CameraSkill @Inject constructor(
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
     private val logger: Logger,
-    @ApplicationScope private val scope: CoroutineScope
-) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
     
+) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     // ✅ Khai báo actions
     override fun getActions(): List<PluginAction> {
         return listOf(
