@@ -9,7 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import com.aichatvn.agent.data.dataStore
+import com.aichatvn.agent.data.dataStore  // ✅ THÊM IMPORT
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.utils.Logger
@@ -94,6 +94,10 @@ class SettingsViewModel @Inject constructor(
     private val _exportResult = MutableStateFlow<String?>(null)
     val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
+    // ─── Import result ──────────────────────────────────────────────────────
+    private val _importResult = MutableStateFlow<String?>(null)  // ✅ THÊM KHỞI TẠO
+    val importResult: StateFlow<String?> = _importResult.asStateFlow()  // ✅ THÊM
+
     // ─── Init ────────────────────────────────────────────────────────────────
     init {
         viewModelScope.launch {
@@ -102,7 +106,11 @@ class SettingsViewModel @Inject constructor(
             _tuyaClientSecret.value = prefs[TUYA_CLIENT_SECRET] ?: ""
         }
     }
-fun clearImportResult() { _importResult.value = null }
+
+    fun clearImportResult() { 
+        _importResult.value = null 
+    }
+
     // ─── Save ─────────────────────────────────────────────────────────────────
 
     fun saveGroqApiKey(key: String) {
@@ -237,8 +245,13 @@ fun clearImportResult() { _importResult.value = null }
                         </body></html>
                     """.trimIndent()
                 )
-                if (result.success) "✅ ${result.data ?: "Gửi thành công tới $to"}"
-                else "❌ ${result.error ?: "Gửi email thất bại"}"
+                when (result) {
+                    is com.aichatvn.agent.core.AgentKernel.PluginResult.Success -> 
+                        "✅ ${result.data?.get("message") ?: "Gửi thành công tới $to"}"
+                    is com.aichatvn.agent.core.AgentKernel.PluginResult.Failure -> 
+                        "❌ ${result.error}"
+                    else -> "❌ Gửi email thất bại"
+                }
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Test email error: ${e.message}", e)
                 "❌ Gửi email thất bại: ${e.message}"
@@ -305,10 +318,10 @@ fun clearImportResult() { _importResult.value = null }
                 _tuyaClientId.value = tuyaClientId
                 _tuyaClientSecret.value = tuyaClientSecret
                 
-                _exportResult.value = "✅ Import thành công!"
+                _importResult.value = "✅ Import thành công!"  // ✅ Dùng _importResult
                 "✅ Import thành công!"
             } catch (e: Exception) {
-                _exportResult.value = "❌ Lỗi: ${e.message}"
+                _importResult.value = "❌ Lỗi: ${e.message}"  // ✅ Dùng _importResult
                 "❌ Lỗi: ${e.message}"
             }
         }

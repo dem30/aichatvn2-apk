@@ -2,9 +2,10 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.BuildConfig
-import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.core.AgentResponse
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.plugin.PluginAction
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
@@ -62,33 +63,54 @@ class EmailSkill @Inject constructor(
 
     // ==================== PLUGIN IMPLEMENTATION ====================
 
-    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+    override fun getActions(): List<PluginAction> {
+        return listOf(
+            PluginAction(
+                name = "send",
+                description = "Gửi email",
+                parameters = listOf(
+                    PluginParameter("to", "string", "Địa chỉ email nhận", true),
+                    PluginParameter("subject", "string", "Tiêu đề email", false),
+                    PluginParameter("body", "string", "Nội dung email", false)
+                )
+            ),
+            PluginAction(
+                name = "test",
+                description = "Gửi email test",
+                parameters = listOf(
+                    PluginParameter("to", "string", "Địa chỉ email nhận", true)
+                )
+            )
+        )
+    }
+
+    override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         return when (action) {
             "send" -> handleSend(params)
             "test" -> handleTest(params)
-            else -> failure("Action không xác định: $action")
+            else -> PluginResult.Failure("Action không xác định: $action")
         }
     }
 
-    private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
+    private suspend fun handleSend(params: Map<String, Any>): PluginResult {
         val to = params["to"] as? String
-            ?: return needMoreInfo(listOf("to"), "Bạn muốn gửi email tới địa chỉ nào?")
+            ?: return PluginResult.Failure("Bạn muốn gửi email tới địa chỉ nào?")
         
         val subject = params["subject"] as? String ?: "Không có tiêu đề"
         val body = params["body"] as? String ?: ""
         
         val result = sendEmail(to, subject, body, null)
         
-        return if (result.success) {
-            success("✅ Email đã gửi tới $to", mapOf("to" to to, "subject" to subject))
-        } else {
-            failure(result.error ?: "Gửi email thất bại")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Gửi email thất bại")
         }
     }
 
-    private suspend fun handleTest(params: Map<String, Any>): AgentKernel.PluginResult {
+    private suspend fun handleTest(params: Map<String, Any>): PluginResult {
         val to = params["to"] as? String
-            ?: return needMoreInfo(listOf("to"), "Bạn muốn gửi email test tới địa chỉ nào?")
+            ?: return PluginResult.Failure("Bạn muốn gửi email test tới địa chỉ nào?")
         
         val result = sendEmail(
             to = to,
@@ -97,10 +119,10 @@ class EmailSkill @Inject constructor(
             imageBytes = null
         )
         
-        return if (result.success) {
-            success("✅ Email test đã gửi tới $to", mapOf("to" to to))
-        } else {
-            failure(result.error ?: "Gửi email test thất bại")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Gửi email test thất bại")
         }
     }
 
@@ -120,24 +142,22 @@ class EmailSkill @Inject constructor(
         subject: String,
         body: String,
         imageBytes: ByteArray? = null
-    ): AgentResponse = withContext(Dispatchers.IO) {
+    ): PluginResult = withContext(Dispatchers.IO) {
         if (to.isBlank()) {
-            return@withContext AgentResponse(success = false, error = "Địa chỉ email nhận không được để trống")
+            return@withContext PluginResult.Failure("Địa chỉ email nhận không được để trống")
         }
 
         val apiKey = loadApiKey()
         if (apiKey.isBlank()) {
-            return@withContext AgentResponse(
-                success = false,
-                error = "Chưa cấu hình Resend API key. Vào Settings để nhập."
+            return@withContext PluginResult.Failure(
+                "Chưa cấu hình Resend API key. Vào Settings để nhập."
             )
         }
 
         val sender = loadSenderEmail()
         if (sender.isBlank()) {
-            return@withContext AgentResponse(
-                success = false,
-                error = "Chưa cấu hình email gửi (Resend sender). Vào Settings để nhập."
+            return@withContext PluginResult.Failure(
+                "Chưa cấu hình email gửi (Resend sender). Vào Settings để nhập."
             )
         }
 
@@ -166,18 +186,24 @@ class EmailSkill @Inject constructor(
 
             if (code in 200..299) {
                 logger.i("EmailSkill", "✅ Email gửi thành công tới $to (HTTP $code)")
-                AgentResponse(success = true, data = "Email đã gửi tới $to")
+                PluginResult.Success(
+                    mapOf(
+                        "message" to "Email đã gửi tới $to",
+                        "to" to to,
+                        "subject" to subject
+                    )
+                )
             } else {
                 val errorBody = runCatching {
                     connection.errorStream?.bufferedReader()?.readText() ?: responseBody
                 }.getOrDefault(responseBody)
                 logger.e("EmailSkill", "❌ Resend API lỗi HTTP $code: $errorBody")
-                AgentResponse(success = false, error = "Gửi email thất bại (HTTP $code): $errorBody")
+                PluginResult.Failure("Gửi email thất bại (HTTP $code): $errorBody")
             }
 
         } catch (e: Exception) {
             logger.e("EmailSkill", "❌ Exception khi gửi email: ${e.message}", e)
-            AgentResponse(success = false, error = "Gửi email thất bại: ${e.message}")
+            PluginResult.Failure("Gửi email thất bại: ${e.message}")
         }
     }
 

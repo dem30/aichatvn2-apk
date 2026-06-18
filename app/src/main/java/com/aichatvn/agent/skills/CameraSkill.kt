@@ -1,9 +1,10 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
-import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.core.AgentResponse
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.plugin.PluginAction
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
@@ -13,9 +14,11 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
-
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,10 +44,10 @@ class CameraSkill @Inject constructor(
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
     private val logger: Logger,
-    
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
+    
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    // ✅ Khai báo actions
+    
     override fun getActions(): List<PluginAction> {
         return listOf(
             PluginAction(
@@ -123,8 +126,7 @@ class CameraSkill @Inject constructor(
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
             if (javaClass != other?.javaClass) return false
-            other as DailyEvent
-            return timestamp == other.timestamp && comment == other.comment
+            return timestamp == (other as DailyEvent).timestamp && comment == other.comment
         }
         override fun hashCode(): Int {
             var result = timestamp.hashCode()
@@ -161,7 +163,7 @@ class CameraSkill @Inject constructor(
     
     // ==================== PLUGIN IMPLEMENTATION ====================
     
-    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+    override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         logger.d("CameraSkill", "execute: action=$action")
         
         return when (action) {
@@ -170,82 +172,79 @@ class CameraSkill @Inject constructor(
             "status" -> handleStatus(params)
             "set_active" -> handleSetActive(params)
             "set_smart_mode" -> handleSetSmartMode(params)
-            else -> failure("Action không xác định: $action")
+            else -> PluginResult.Failure("Action không xác định: $action")
         }
     }
     
-    private suspend fun handleScan(params: Map<String, Any>): AgentKernel.PluginResult {
+    private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = params["cameraId"] as? String
         val result = scanCamera(cameraId, false)
         
-        return if (result.success) {
-            val data = result.data as? Map<*, *>
-            val processed = data?.get("processed") ?: 0
-            success("Đã quét $processed camera thành công")
-        } else {
-            failure(result.error ?: "Quét thất bại")
+        return when (result) {
+            is PluginResult.Success -> {
+                val data = result.data as? Map<*, *>
+                val processed = data?.get("processed") ?: 0
+                PluginResult.Success(mapOf("message" to "Đã quét $processed camera thành công"))
+            }
+            is PluginResult.Failure -> PluginResult.Failure(result.error)
+            else -> PluginResult.Failure("Quét thất bại")
         }
     }
     
-    private suspend fun handleList(): AgentKernel.PluginResult {
-        val result = getCamerasPaginated(1, 100)
-        return if (result.success) {
-            AgentKernel.PluginResult.Success(result.data ?: emptyList<Any>())
-        } else {
-            failure(result.error ?: "Không thể lấy danh sách")
-        }
+    private suspend fun handleList(): PluginResult {
+        return getCamerasPaginated(1, 100)
     }
     
-    private suspend fun handleStatus(params: Map<String, Any>): AgentKernel.PluginResult {
+    private suspend fun handleStatus(params: Map<String, Any>): PluginResult {
         val customerId = params["customerId"] as? String
         if (customerId != null) {
             val result = getCamerasPaginated(1, 100)
-            if (result.success) {
+            if (result is PluginResult.Success) {
                 val cameras = (result.data as? Map<*, *>)?.get("cameras") as? List<*>
                 val camera = cameras?.find { 
                     (it as? Map<*, *>)?.get("id") == customerId 
                 }
                 if (camera != null) {
-                    return AgentKernel.PluginResult.Success(camera)
+                    return PluginResult.Success(camera)
                 }
-                return failure("Không tìm thấy camera $customerId")
+                return PluginResult.Failure("Không tìm thấy camera $customerId")
             }
-            return failure(result.error ?: "Lỗi lấy thông tin")
+            return PluginResult.Failure((result as? PluginResult.Failure)?.error ?: "Lỗi lấy thông tin")
         }
-        return AgentKernel.PluginResult.Success(getDiagnostics())
+        return PluginResult.Success(getDiagnostics())
     }
     
-    private suspend fun handleSetActive(params: Map<String, Any>): AgentKernel.PluginResult {
+    private suspend fun handleSetActive(params: Map<String, Any>): PluginResult {
         val customerId = params["customerId"] as? String
-            ?: return needMoreInfo(listOf("customerId"), "Bạn muốn bật/tắt camera nào?")
+            ?: return PluginResult.Failure("Bạn muốn bật/tắt camera nào?")
         
         val active = params["active"] as? Boolean
-            ?: return needMoreInfo(listOf("active"), "Bạn muốn bật hay tắt camera $customerId?")
+            ?: return PluginResult.Failure("Bạn muốn bật hay tắt camera $customerId?")
         
         val result = setCustomerActive(customerId, active)
-        return if (result.success) {
-            success(result.data as? String ?: "Đã cập nhật")
-        } else {
-            failure(result.error ?: "Không thể thực hiện")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Không thể thực hiện")
         }
     }
     
-    private suspend fun handleSetSmartMode(params: Map<String, Any>): AgentKernel.PluginResult {
+    private suspend fun handleSetSmartMode(params: Map<String, Any>): PluginResult {
         val customerId = params["customerId"] as? String
-            ?: return needMoreInfo(listOf("customerId"), "Bạn muốn bật/tắt chế độ thông minh cho camera nào?")
+            ?: return PluginResult.Failure("Bạn muốn bật/tắt chế độ thông minh cho camera nào?")
         
         val enabled = params["enabled"] as? Boolean
-            ?: return needMoreInfo(listOf("enabled"), "Bạn muốn bật hay tắt chế độ thông minh?")
+            ?: return PluginResult.Failure("Bạn muốn bật hay tắt chế độ thông minh?")
         
         val result = setSmartMode(customerId, enabled)
-        return if (result.success) {
-            success(result.data as? String ?: "Đã cập nhật")
-        } else {
-            failure(result.error ?: "Không thể thực hiện")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Không thể thực hiện")
         }
     }
     
-    // ==================== CORE SKILL METHODS (GIỮ NGUYÊN) ====================
+    // ==================== CORE SKILL METHODS ====================
     
     private val pruneMutex = Mutex()
     
@@ -458,7 +457,7 @@ class CameraSkill @Inject constructor(
     
     // ==================== SCAN METHODS ====================
     
-    suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): AgentResponse {
+    suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): PluginResult {
         return try {
             val cameras = if (cameraId != null) {
                 listOfNotNull(database.cameraDao().getCameraById(cameraId))
@@ -469,10 +468,12 @@ class CameraSkill @Inject constructor(
             if (cameras.isEmpty()) {
                 logger.w("CameraSkill", "scanCamera: không có camera nào trong DB" +
                     if (cameraId != null) " (cameraId=$cameraId không tồn tại)" else " (chưa thêm camera)")
-                return AgentResponse(
-                    success = true,
-                    data = mapOf("processed" to 0, "results" to emptyList<Any>(),
-                        "warning" to "Chưa có camera nào được cấu hình")
+                return PluginResult.Success(
+                    mapOf(
+                        "processed" to 0,
+                        "results" to emptyList<Any>(),
+                        "warning" to "Chưa có camera nào được cấu hình"
+                    )
                 )
             }
 
@@ -509,9 +510,8 @@ class CameraSkill @Inject constructor(
                     "(skippedCircuitBreaker=$skippedCircuitBreaker, skippedInactive=$skippedInactive)")
             }
 
-            AgentResponse(
-                success = true,
-                data = mapOf(
+            PluginResult.Success(
+                mapOf(
                     "processed" to results.size,
                     "results" to results,
                     "skippedCircuitBreaker" to skippedCircuitBreaker,
@@ -520,37 +520,30 @@ class CameraSkill @Inject constructor(
             )
 
         } catch (e: Exception) {
-            AgentResponse(
-                success = false,
-                error = e.message ?: "Camera scan failed"
-            )
+            PluginResult.Failure(e.message ?: "Camera scan failed")
         }
     }
     
-    suspend fun processImage(cameraId: String, imageBytes: ByteArray): AgentResponse {
+    suspend fun processImage(cameraId: String, imageBytes: ByteArray): PluginResult {
         return try {
             val camera = database.cameraDao().getCameraById(cameraId)
             if (camera == null) {
                 logger.w("CameraSkill", "processImage: camera not found: $cameraId")
-                return AgentResponse(success = false, error = "Camera not found")
+                return PluginResult.Failure("Camera not found")
             }
             
             val customerSetting = database.cameraDao().getCustomerSetting(camera.customerId)
             if (customerSetting?.isActive != 1) {
                 logger.d("CameraSkill", "processImage: camera ${camera.id} is inactive, skipping")
-                return AgentResponse(success = true, data = mapOf("skipped" to true))
+                return PluginResult.Success(mapOf("skipped" to true))
             }
             
             val result = processImageWithLearning(camera, imageBytes, customerSetting?.smartMode == 1)
-            
-            AgentResponse(
-                success = true,
-                data = result
-            )
+            PluginResult.Success(result)
             
         } catch (e: Exception) {
             logger.e("CameraSkill", "processImage error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
@@ -840,9 +833,9 @@ class CameraSkill @Inject constructor(
     
     // ==================== CRUD METHODS ====================
     
-    suspend fun saveCameraConfig(config: Map<String, Any>): AgentResponse {
+    suspend fun saveCameraConfig(config: Map<String, Any>): PluginResult {
         return try {
-            val id = config["id"] as? String ?: return AgentResponse(success = false, error = "Missing camera id")
+            val id = config["id"] as? String ?: return PluginResult.Failure("Missing camera id")
             val existing = database.cameraDao().getCameraById(id)
 
             val camera = CameraConfigEntity(
@@ -881,28 +874,28 @@ class CameraSkill @Inject constructor(
                 circuitBreakers[camera.id] = CircuitBreakerState()
             }
             
-            AgentResponse(success = true, data = "Camera saved")
+            PluginResult.Success(mapOf("message" to "Camera saved"))
             
         } catch (e: Exception) {
             logger.e("CameraSkill", "saveCameraConfig error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun deleteCamera(cameraId: String): AgentResponse {
+    suspend fun deleteCamera(cameraId: String): PluginResult {
         return try {
             database.cameraDao().deleteCamera(cameraId)
             learningStates.remove(cameraId)
             circuitBreakers.remove(cameraId)
             pendingResets.remove(cameraId)
             dailyEvents.remove(cameraId)
-            AgentResponse(success = true, data = "Camera deleted")
+            PluginResult.Success(mapOf("message" to "Camera deleted"))
         } catch (e: Exception) {
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun deleteCustomer(customerId: String): AgentResponse {
+    suspend fun deleteCustomer(customerId: String): PluginResult {
         return try {
             val cameras = database.cameraDao().getCamerasByCustomer(customerId)
             database.cameraDao().deleteCamerasByCustomer(customerId)
@@ -915,40 +908,39 @@ class CameraSkill @Inject constructor(
                 dailyEvents.remove(camera.id)
             }
             
-            AgentResponse(success = true, data = "Customer deleted")
+            PluginResult.Success(mapOf("message" to "Customer deleted"))
         } catch (e: Exception) {
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun setSmartMode(customerId: String, enabled: Boolean): AgentResponse {
+    suspend fun setSmartMode(customerId: String, enabled: Boolean): PluginResult {
         return try {
             database.cameraDao().updateSmartMode(customerId, enabled, System.currentTimeMillis())
-            AgentResponse(success = true, data = "Smart mode updated")
+            PluginResult.Success(mapOf("message" to "Smart mode updated"))
         } catch (e: Exception) {
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun setCustomerActive(customerId: String, active: Boolean): AgentResponse {
+    suspend fun setCustomerActive(customerId: String, active: Boolean): PluginResult {
         return try {
             database.cameraDao().updateActiveStatus(customerId, active, System.currentTimeMillis())
-            AgentResponse(success = true, data = "Customer status updated")
+            PluginResult.Success(mapOf("message" to "Customer status updated"))
         } catch (e: Exception) {
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun getCamerasPaginated(page: Int, pageSize: Int): AgentResponse {
+    suspend fun getCamerasPaginated(page: Int, pageSize: Int): PluginResult {
         return try {
             val cameras = database.cameraDao().getActiveCameras()
             val start = (page - 1) * pageSize
             val end = minOf(start + pageSize, cameras.size)
             val paginated = if (start < cameras.size) cameras.subList(start, end) else emptyList()
             
-            AgentResponse(
-                success = true,
-                data = mapOf(
+            PluginResult.Success(
+                mapOf(
                     "cameras" to paginated,
                     "total" to cameras.size,
                     "page" to page,
@@ -956,32 +948,28 @@ class CameraSkill @Inject constructor(
                 )
             )
         } catch (e: Exception) {
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
     fun observeCameras() = database.cameraDao().getAllCamerasFlow()
 
-    suspend fun testCameraUrl(snapshotUrl: String): AgentResponse {
+    suspend fun testCameraUrl(snapshotUrl: String): PluginResult {
         return try {
             logger.i("CameraSkill", "🧪 testCameraUrl: $snapshotUrl")
             val imageBytes = snapshotFetcher.fetchSnapshot(snapshotUrl)
 
             if (imageBytes == null) {
                 logger.w("CameraSkill", "🧪 testCameraUrl: fetch trả về null (URL sai hoặc camera offline)")
-                return AgentResponse(
-                    success = false,
-                    error = "Không thể fetch ảnh từ URL này. Kiểm tra: URL đúng định dạng? Camera online? Network ok?"
-                )
+                return PluginResult.Failure("Không thể fetch ảnh từ URL này. Kiểm tra: URL đúng định dạng? Camera online? Network ok?")
             }
 
             val optimized = imageHashTool.optimizeImage(imageBytes)
             val phash = imageHashTool.calculatePhash(optimized)
             logger.i("CameraSkill", "🧪 testCameraUrl OK: ${optimized.size} bytes, phash=$phash")
 
-            AgentResponse(
-                success = true,
-                data = mapOf(
+            PluginResult.Success(
+                mapOf(
                     "imageBytes" to optimized,
                     "originalSize" to imageBytes.size,
                     "optimizedSize" to optimized.size,
@@ -991,7 +979,7 @@ class CameraSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("CameraSkill", "🧪 testCameraUrl error: ${e.message}", e)
-            AgentResponse(success = false, error = "Lỗi: ${e.message}")
+            PluginResult.Failure("Lỗi: ${e.message}")
         }
     }
 

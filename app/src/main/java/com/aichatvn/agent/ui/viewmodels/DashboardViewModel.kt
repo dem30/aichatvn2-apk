@@ -2,10 +2,10 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
-
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -22,8 +22,6 @@ import kotlinx.coroutines.launch
 import java.util.Calendar
 import javax.inject.Inject
 
-// ✅ KHÔNG còn dùng AgentRouter (legacy). scanAllNow dùng CameraPlugin trực tiếp.
-
 data class DashboardSummary(
     val totalCameras: Int = 0,
     val onlineCameras: Int = 0,
@@ -35,8 +33,7 @@ data class DashboardSummary(
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val cameraSkill: CameraSkill,
-    private val cameraSkill: CameraSkill,
+    private val cameraSkill: CameraSkill,  // ✅ CHỈ 1 LẦN
     private val database: AppDatabase,
     private val logger: Logger
 ) : ViewModel() {
@@ -99,21 +96,19 @@ class DashboardViewModel @Inject constructor(
         return cal.timeInMillis
     }
 
-    /** Quét tất cả camera đang hoạt động ngay lập tức. */
     fun scanAllNow() {
         viewModelScope.launch {
             _isScanning.value = true
             _scanResultMessage.value = null
             try {
-                // Dùng CameraPlugin thay vì AgentRouter — nhất quán với pipeline mới.
-                // cameraId = null → scan toàn bộ camera.
-                val result = cameraPlugin.execute("scan", emptyMap())
+                // ✅ Dùng cameraSkill.execute thay vì cameraPlugin
+                val result = cameraSkill.execute("scan", emptyMap())
                 _scanResultMessage.value = when (result) {
-                    is com.aichatvn.agent.core.plugin.PluginResult.Success -> {
+                    is PluginResult.Success -> {
                         val msg = (result.data as? Map<*, *>)?.get("message") as? String
                         "✅ ${msg ?: "Đã quét xong"}"
                     }
-                    is com.aichatvn.agent.core.plugin.PluginResult.Failure -> "❌ Lỗi: ${result.error}"
+                    is PluginResult.Failure -> "❌ Lỗi: ${result.error}"
                     else -> "❌ Không thực hiện được"
                 }
             } catch (e: Exception) {

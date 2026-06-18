@@ -1,8 +1,7 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
-import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.core.AgentResponse
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
@@ -44,14 +43,16 @@ class TrainingSkill @Inject constructor(
                 parameters = listOf(
                     PluginParameter("question", "string", "Câu hỏi", true),
                     PluginParameter("answer", "string", "Câu trả lời", true),
-                    PluginParameter("category", "string", "Danh mục", false)
+                    PluginParameter("category", "string", "Danh mục", false),
+                    PluginParameter("username", "string", "Tên người dùng", true)
                 )
             ),
             PluginAction(
                 name = "search",
                 description = "Tìm kiếm Q&A",
                 parameters = listOf(
-                    PluginParameter("query", "string", "Từ khóa", true)
+                    PluginParameter("query", "string", "Từ khóa", true),
+                    PluginParameter("username", "string", "Tên người dùng", true)
                 )
             ),
             PluginAction(
@@ -59,14 +60,38 @@ class TrainingSkill @Inject constructor(
                 description = "Liệt kê Q&A",
                 parameters = listOf(
                     PluginParameter("page", "number", "Trang", false),
-                    PluginParameter("pageSize", "number", "Số lượng", false)
+                    PluginParameter("pageSize", "number", "Số lượng", false),
+                    PluginParameter("username", "string", "Tên người dùng", true)
                 )
             ),
             PluginAction(
                 name = "delete",
                 description = "Xóa Q&A",
                 parameters = listOf(
-                    PluginParameter("id", "string", "ID", true)
+                    PluginParameter("id", "string", "ID", true),
+                    PluginParameter("username", "string", "Tên người dùng", true)
+                )
+            ),
+            PluginAction(
+                name = "delete_all",
+                description = "Xóa tất cả Q&A",
+                parameters = listOf(
+                    PluginParameter("username", "string", "Tên người dùng", true)
+                )
+            ),
+            PluginAction(
+                name = "export",
+                description = "Xuất Q&A ra JSON",
+                parameters = listOf(
+                    PluginParameter("username", "string", "Tên người dùng", true)
+                )
+            ),
+            PluginAction(
+                name = "import",
+                description = "Nhập Q&A từ JSON",
+                parameters = listOf(
+                    PluginParameter("json", "string", "Dữ liệu JSON", true),
+                    PluginParameter("username", "string", "Tên người dùng", true)
                 )
             ),
             PluginAction(
@@ -77,7 +102,7 @@ class TrainingSkill @Inject constructor(
         )
     }
 
-    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+    override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         val username = params["username"] as? String ?: "default_user"
         
         return when (action) {
@@ -85,60 +110,94 @@ class TrainingSkill @Inject constructor(
             "search" -> handleSearch(params, username)
             "list" -> handleList(params, username)
             "delete" -> handleDelete(params, username)
+            "delete_all" -> handleDeleteAll(params, username)
+            "export" -> handleExport(params, username)
+            "import" -> handleImport(params, username)
             "stats" -> handleStats()
-            else -> failure("Action không xác định: $action")
+            else -> PluginResult.Failure("Action không xác định: $action")
         }
     }
 
-    private suspend fun handleAdd(params: Map<String, Any>, username: String): AgentKernel.PluginResult {
-        val question = params["question"] as? String ?: return failure("Thiếu câu hỏi")
-        val answer = params["answer"] as? String ?: return failure("Thiếu câu trả lời")
+    private suspend fun handleAdd(params: Map<String, Any>, username: String): PluginResult {
+        val question = params["question"] as? String 
+            ?: return PluginResult.Failure("Thiếu câu hỏi")
+        val answer = params["answer"] as? String 
+            ?: return PluginResult.Failure("Thiếu câu trả lời")
         val category = params["category"] as? String ?: "general"
         val result = addQA(question, answer, category, username)
-        return if (result.success) {
-            success("✅ Đã thêm: $question", mapOf("qa" to result.data))
-        } else {
-            failure(result.error ?: "Thêm thất bại")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Thêm thất bại")
         }
     }
 
-    private suspend fun handleSearch(params: Map<String, Any>, username: String): AgentKernel.PluginResult {
-        val query = params["query"] as? String ?: return failure("Thiếu từ khóa")
+    private suspend fun handleSearch(params: Map<String, Any>, username: String): PluginResult {
+        val query = params["query"] as? String 
+            ?: return PluginResult.Failure("Thiếu từ khóa")
         val threshold = (params["threshold"] as? Number)?.toFloat() ?: 0.5f
         val result = fuzzyMatchQuestion(query, username, threshold)
-        return if (result.success) {
-            AgentKernel.PluginResult.Success(result.data ?: emptyList<Any>())
-        } else {
-            failure(result.error ?: "Tìm kiếm thất bại")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Tìm kiếm thất bại")
         }
     }
 
-    private suspend fun handleList(params: Map<String, Any>, username: String): AgentKernel.PluginResult {
+    private suspend fun handleList(params: Map<String, Any>, username: String): PluginResult {
         val page = (params["page"] as? Number)?.toInt() ?: 1
         val pageSize = (params["pageSize"] as? Number)?.toInt() ?: 20
         val result = getQAsPaginated(page, pageSize, username)
-        return if (result.success) {
-            @Suppress("UNCHECKED_CAST")
-            val data = result.data as? Map<String, Any>
-            AgentKernel.PluginResult.Success(data?.get("qas") ?: emptyList<Any>())
-        } else {
-            failure(result.error ?: "Lấy danh sách thất bại")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Lấy danh sách thất bại")
         }
     }
 
-    private suspend fun handleDelete(params: Map<String, Any>, username: String): AgentKernel.PluginResult {
-        val id = params["id"] as? String ?: return failure("Thiếu ID")
+    private suspend fun handleDelete(params: Map<String, Any>, username: String): PluginResult {
+        val id = params["id"] as? String 
+            ?: return PluginResult.Failure("Thiếu ID")
         val result = deleteQA(id, username)
-        return if (result.success) {
-            success("✅ Đã xóa")
-        } else {
-            failure(result.error ?: "Xóa thất bại")
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Xóa thất bại")
         }
     }
 
-    private suspend fun handleStats(): AgentKernel.PluginResult {
+    private suspend fun handleDeleteAll(params: Map<String, Any>, username: String): PluginResult {
+        val result = deleteAllQAs(username)
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Xóa tất cả thất bại")
+        }
+    }
+
+    private suspend fun handleExport(params: Map<String, Any>, username: String): PluginResult {
+        val result = exportQAs(username)
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Xuất dữ liệu thất bại")
+        }
+    }
+
+    private suspend fun handleImport(params: Map<String, Any>, username: String): PluginResult {
+        val jsonString = params["json"] as? String 
+            ?: return PluginResult.Failure("Thiếu dữ liệu JSON")
+        val result = importQAs(jsonString, username)
+        return when (result) {
+            is PluginResult.Success -> result
+            is PluginResult.Failure -> result
+            else -> PluginResult.Failure("Nhập dữ liệu thất bại")
+        }
+    }
+
+    private suspend fun handleStats(): PluginResult {
         updateStats()
-        return AgentKernel.PluginResult.Success(_stats.value)
+        return PluginResult.Success(_stats.value)
     }
 
     // ==================== CORE SKILL METHODS ====================
@@ -165,16 +224,15 @@ class TrainingSkill @Inject constructor(
         updateStats()
     }
     
-    suspend fun getQAsPaginated(page: Int, pageSize: Int, username: String): AgentResponse {
+    suspend fun getQAsPaginated(page: Int, pageSize: Int, username: String): PluginResult {
         return try {
             val allQAs = database.qaDao().getAllQAs(username)
             val start = (page - 1) * pageSize
             val end = minOf(start + pageSize, allQAs.size)
             val paginated = if (start < allQAs.size) allQAs.subList(start, end) else emptyList()
             
-            AgentResponse(
-                success = true,
-                data = mapOf(
+            PluginResult.Success(
+                mapOf(
                     "qas" to paginated,
                     "total" to allQAs.size,
                     "page" to page,
@@ -183,11 +241,11 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun exportQAs(username: String): AgentResponse {
+    suspend fun exportQAs(username: String): PluginResult {
         return try {
             val allQAs = database.qaDao().getAllQAs(username)
             val jsonArray = JSONArray()
@@ -203,14 +261,19 @@ class TrainingSkill @Inject constructor(
                 }
                 jsonArray.put(obj)
             }
-            AgentResponse(success = true, data = jsonArray.toString(2))
+            PluginResult.Success(
+                mapOf(
+                    "json" to jsonArray.toString(2),
+                    "count" to allQAs.size
+                )
+            )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun importQAs(jsonString: String, username: String): AgentResponse {
+    suspend fun importQAs(jsonString: String, username: String): PluginResult {
         return try {
             val jsonArray = JSONArray(jsonString)
             var imported = 0
@@ -229,14 +292,19 @@ class TrainingSkill @Inject constructor(
                 imported++
             }
             refreshQAList(username)
-            AgentResponse(success = true, data = "Imported $imported Q&As")
+            PluginResult.Success(
+                mapOf(
+                    "message" to "Imported $imported Q&As",
+                    "imported" to imported
+                )
+            )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun addQA(question: String, answer: String, category: String, username: String): AgentResponse {
+    suspend fun addQA(question: String, answer: String, category: String, username: String): PluginResult {
         return try {
             val qa = QAEntity(
                 id = UUID.randomUUID().toString(),
@@ -249,18 +317,23 @@ class TrainingSkill @Inject constructor(
             )
             database.qaDao().insertQA(qa)
             refreshQAList(username)
-            AgentResponse(success = true, data = qa)
+            PluginResult.Success(
+                mapOf(
+                    "message" to "Đã thêm Q&A",
+                    "qa" to qa
+                )
+            )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun updateQA(id: String, question: String?, answer: String?, category: String?, username: String): AgentResponse {
+    suspend fun updateQA(id: String, question: String?, answer: String?, category: String?, username: String): PluginResult {
         return try {
             val existing = database.qaDao().getQAById(id, username)
             if (existing == null) {
-                return AgentResponse(success = false, error = "QA not found")
+                return PluginResult.Failure("QA not found")
             }
             
             val updated = existing.copy(
@@ -271,42 +344,52 @@ class TrainingSkill @Inject constructor(
             )
             database.qaDao().updateQA(updated)
             refreshQAList(username)
-            AgentResponse(success = true, data = updated)
+            PluginResult.Success(
+                mapOf(
+                    "message" to "Đã cập nhật Q&A",
+                    "qa" to updated
+                )
+            )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun deleteQA(id: String, username: String): AgentResponse {
+    suspend fun deleteQA(id: String, username: String): PluginResult {
         return try {
             database.qaDao().deleteQA(id, username)
             refreshQAList(username)
-            AgentResponse(success = true, data = "QA deleted")
+            PluginResult.Success(mapOf("message" to "QA deleted"))
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun deleteAllQAs(username: String): AgentResponse {
+    suspend fun deleteAllQAs(username: String): PluginResult {
         return try {
             database.qaDao().deleteAllQAs(username)
             refreshQAList(username)
-            AgentResponse(success = true, data = "All QAs deleted")
+            PluginResult.Success(mapOf("message" to "All QAs deleted"))
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
-    suspend fun searchQAs(query: String, username: String): AgentResponse {
+    suspend fun searchQAs(query: String, username: String): PluginResult {
         return try {
             val results = database.qaDao().searchQAs(query, username)
-            AgentResponse(success = true, data = results)
+            PluginResult.Success(
+                mapOf(
+                    "results" to results,
+                    "count" to results.size
+                )
+            )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     
@@ -318,7 +401,7 @@ class TrainingSkill @Inject constructor(
      * - ChatSkill: xây dựng context cho Groq
      * - AgentKernel: xây dựng context cho LLM routing
      */
-    suspend fun fuzzyMatchQuestion(query: String, username: String, threshold: Float = 0.5f): AgentResponse {
+    suspend fun fuzzyMatchQuestion(query: String, username: String, threshold: Float = 0.5f): PluginResult {
         return try {
             val allQAs = database.qaDao().getAllQAs(username)
             val matches = allQAs.mapNotNull { qa ->
@@ -330,13 +413,17 @@ class TrainingSkill @Inject constructor(
                 } else null
             }.sortedByDescending { it.second }.take(3)
             
-            AgentResponse(
-                success = true,
-                data = matches.map { mapOf("qa" to it.first, "similarity" to it.second) }
+            PluginResult.Success(
+                matches.map { 
+                    mapOf(
+                        "qa" to it.first, 
+                        "similarity" to it.second
+                    ) 
+                }
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            AgentResponse(success = false, error = e.message)
+            PluginResult.Failure(e.message)
         }
     }
     

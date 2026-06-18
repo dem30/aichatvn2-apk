@@ -2,13 +2,15 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.dao.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.dataStore
+import com.aichatvn.agent.data.dataStore  // ✅ Import extension function
 import com.aichatvn.agent.utils.Logger
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -26,6 +28,7 @@ import javax.inject.Singleton
 @Singleton
 class TuyaManager @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val tuyaDeviceDao: TuyaDeviceDao,
     private val logger: Logger
 ) {
     companion object {
@@ -44,7 +47,6 @@ class TuyaManager @Inject constructor(
         private var powerDps = "1"
     }
 
-    private val database by lazy { AppDatabase.getDatabase(context) }
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -54,7 +56,6 @@ class TuyaManager @Inject constructor(
     private var accessToken: String? = null
     private var tokenExpiry: Long = 0L
     
-    // ✅ Cache RAM vẫn giữ để truy xuất nhanh
     private val deviceCache = mutableMapOf<String, DeviceInfo>()
 
     data class DeviceInfo(
@@ -70,7 +71,7 @@ class TuyaManager @Inject constructor(
     // ============================================================
 
     suspend fun loadDevicesFromDB() {
-        val devices = database.tuyaDeviceDao().getAllDevices()
+        val devices = tuyaDeviceDao.getAllDevices()
         deviceCache.clear()
         devices.forEach { entity ->
             deviceCache[entity.name] = DeviceInfo(
@@ -128,11 +129,9 @@ class TuyaManager @Inject constructor(
                 val productName = device.optString("product_name", "")
                 
                 if (name.isNotBlank() && id.isNotBlank()) {
-                    // ✅ Lưu vào cache RAM
                     deviceCache[name] = DeviceInfo(id, name, online, category, productName)
                     logger.i("TuyaManager", "📱 $name → $id (online: $online)")
                     
-                    // ✅ Lưu vào Database
                     deviceList.add(
                         TuyaDeviceEntity(
                             id = id,
@@ -147,9 +146,8 @@ class TuyaManager @Inject constructor(
             }
         }
         
-        // ✅ Lưu tất cả vào Database (replace)
         if (deviceList.isNotEmpty()) {
-            database.tuyaDeviceDao().insertAllDevices(deviceList)
+            tuyaDeviceDao.insertAllDevices(deviceList)
             logger.i("TuyaManager", "💾 Saved ${deviceList.size} devices to DB")
         }
         
@@ -162,14 +160,12 @@ class TuyaManager @Inject constructor(
     // ============================================================
 
     private suspend fun getDeviceInfo(deviceName: String): DeviceInfo {
-        // ✅ Tìm trong cache trước
         val cached = deviceCache[deviceName]
         if (cached != null) {
             return cached
         }
         
-        // ✅ Nếu không có trong cache, tìm trong DB
-        val entity = database.tuyaDeviceDao().getDeviceByName(deviceName)
+        val entity = tuyaDeviceDao.getDeviceByName(deviceName)
         if (entity != null) {
             val info = DeviceInfo(
                 id = entity.id,
@@ -190,8 +186,7 @@ class TuyaManager @Inject constructor(
     // ============================================================
 
     private suspend fun updateDeviceStatus(deviceId: String, online: Boolean) {
-        database.tuyaDeviceDao().updateOnlineStatus(deviceId, online, System.currentTimeMillis())
-        // Cập nhật cache
+        tuyaDeviceDao.updateOnlineStatus(deviceId, online, System.currentTimeMillis())
         deviceCache.values.find { it.id == deviceId }?.let { info ->
             deviceCache[info.name] = info.copy(online = online)
         }
@@ -371,7 +366,6 @@ class TuyaManager @Inject constructor(
             throw Exception("Control API error: $msg")
         }
         
-        // ✅ Cập nhật trạng thái online
         updateDeviceStatus(device.id, true)
     }
 }
