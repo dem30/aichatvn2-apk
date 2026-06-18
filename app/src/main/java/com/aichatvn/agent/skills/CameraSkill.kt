@@ -5,7 +5,7 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.data.model.lAlertEntity
+import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.base.BaseSkill
@@ -44,10 +44,6 @@ class CameraSkill @Inject constructor(
     @ApplicationScope private val scope: CoroutineScope
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
     
-    
-    
-    
-
     // ✅ Khai báo actions
     override fun getActions(): List<PluginAction> {
         return listOf(
@@ -86,13 +82,8 @@ class CameraSkill @Inject constructor(
                     PluginParameter("enabled", "boolean", "true: bật, false: tắt", true)
                 )
             )
-        }
-    
-
-    // ... rest of CameraSkill ...
-}
-    
-    
+        )
+    }
     
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = mutableMapOf<String, Mutex>()
