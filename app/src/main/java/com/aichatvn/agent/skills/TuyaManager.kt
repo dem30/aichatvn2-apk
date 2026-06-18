@@ -2,7 +2,7 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.data.dao.TuyaDeviceDao
+import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.dataStore  // ✅ Import extension function
 import com.aichatvn.agent.utils.Logger
