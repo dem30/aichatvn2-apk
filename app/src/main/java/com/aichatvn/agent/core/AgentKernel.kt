@@ -64,24 +64,27 @@ class AgentKernel @Inject constructor(
      * Trả về context để đưa vào LLM prompt
      */
     private suspend fun buildQAContext(message: String): String {
-        try {
+        return try {
             val result = trainingSkill.fuzzyMatchQuestion(message, "default_user", 0.5f)
-            if (!result.success || result.data == null) return ""
-            
-            @Suppress("UNCHECKED_CAST")
-            val matches = result.data as? List<Map<String, Any>> ?: return ""
-            if (matches.isEmpty()) return ""
-            
-            return matches.joinToString("\n") { match ->
-                val qa = match["qa"] as? QAEntity
-                val similarity = match["similarity"] as? Float ?: 0f
-                if (qa != null) {
-                    "📚 ${qa.question} → ${qa.answer} (độ tương tự: ${String.format("%.2f", similarity)})"
-                } else ""
+            when (result) {
+                is PluginResult.Success -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val matches = result.data as? List<Map<String, Any>> ?: return ""
+                    if (matches.isEmpty()) return ""
+
+                    matches.joinToString("\n") { match ->
+                        val qa = match["qa"] as? QAEntity
+                        val similarity = match["similarity"] as? Float ?: 0f
+                        if (qa != null) {
+                            "📚 ${qa.question} → ${qa.answer} (độ tương tự: ${String.format("%.2f", similarity)})"
+                        } else ""
+                    }
+                }
+                else -> ""
             }
         } catch (e: Exception) {
             logger.e("AgentKernel", "buildQAContext error: ${e.message}", e)
-            return ""
+            ""
         }
     }
 

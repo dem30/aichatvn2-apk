@@ -3,6 +3,7 @@ package com.aichatvn.agent.ui.viewmodels
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
@@ -121,14 +122,6 @@ class CameraDetailViewModel @Inject constructor(
         }
     }
 
-    /**
-     * FIX (lỗi phụ - loading bị treo):
-     * Hai nhánh return@launch (không tìm thấy camera / URL trống) trước đây nằm
-     * ngoài finally nên bỏ qua luôn dòng đặt _isLoading.value = false ở cuối hàm,
-     * khiến UI bị kẹt ở trạng thái "đang test" mãi nếu rơi vào 2 trường hợp đó.
-     * Sửa: chuyển toàn bộ logic vào try { } finally { _isLoading.value = false },
-     * Kotlin coroutine vẫn chạy finally trước khi return@launch thực sự thoát ra.
-     */
     fun testCamera() {
         viewModelScope.launch {
             _isLoading.value = true
@@ -177,40 +170,45 @@ class CameraDetailViewModel @Inject constructor(
                     )
                 }
 
-                if (response.success) {
-                    val data = response.data as? Map<*, *>
-                    val results = data?.get("results") as? List<*>
-                    val first = results?.firstOrNull() as? Map<*, *>
+                when (response) {
+                    is PluginResult.Success -> {
+                        val data = response.data as? Map<*, *>
+                        val results = data?.get("results") as? List<*>
+                        val first = results?.firstOrNull() as? Map<*, *>
 
-                    // FIX: Kiểm tra lỗi fetch ảnh từ camera skill
-                    val fetchError = first?.get("error") as? String
-                    if (fetchError != null) {
-                        _testResult.value = "❌ Không thể chụp ảnh: $fetchError\nKiểm tra URL camera hoặc kết nối mạng"
-                        logger.e("CameraDetailViewModel", "testCamera: fetchError=$fetchError | id=$cameraId")
-                    } else {
-                        val hasChange = first?.get("hasChange") as? Boolean ?: false
-                        val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
-                        val aiComment = first?.get("aiComment") as? String ?: "Không có phân tích"
-                        val diff = first?.get("diff") as? Int ?: 0
-                        val deltaTrigger = first?.get("deltaTrigger") as? Int ?: 0
-                        val absDiffTrigger = first?.get("absDiffTrigger") as? Int ?: 0
+                        val fetchError = first?.get("error") as? String
+                        if (fetchError != null) {
+                            _testResult.value = "❌ Không thể chụp ảnh: $fetchError\nKiểm tra URL camera hoặc kết nối mạng"
+                            logger.e("CameraDetailViewModel", "testCamera: fetchError=$fetchError | id=$cameraId")
+                        } else {
+                            val hasChange = first?.get("hasChange") as? Boolean ?: false
+                            val isSuspicious = first?.get("isSuspicious") as? Boolean ?: false
+                            val aiComment = first?.get("aiComment") as? String ?: "Không có phân tích"
+                            val diff = first?.get("diff") as? Int ?: 0
+                            val deltaTrigger = first?.get("deltaTrigger") as? Int ?: 0
+                            val absDiffTrigger = first?.get("absDiffTrigger") as? Int ?: 0
 
-                        _testResult.value = buildString {
-                            if (isSuspicious) append("⚠️ CẢNH BÁO! Email đã gửi!\n")
-                            else if (hasChange) append("🔄 Có biến động nhưng AI đánh giá bình thường\n")
-                            else append("✅ Bình thường\n")
-                            append("━━━━━━━━━━━━━━━\n")
-                            append("🤖 AI: $aiComment\n")
-                            if (diff > 0) append("━━━━━━━━━━━━━━━\n📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
+                            _testResult.value = buildString {
+                                if (isSuspicious) append("⚠️ CẢNH BÁO! Email đã gửi!\n")
+                                else if (hasChange) append("🔄 Có biến động nhưng AI đánh giá bình thường\n")
+                                else append("✅ Bình thường\n")
+                                append("━━━━━━━━━━━━━━━\n")
+                                append("🤖 AI: $aiComment\n")
+                                if (diff > 0) append("━━━━━━━━━━━━━━━\n📊 diff=$diff | ngưỡng delta=$deltaTrigger | ngưỡng diff=$absDiffTrigger")
+                            }
+                            logger.i(
+                                "CameraDetailViewModel",
+                                "testCamera: OK id=$cameraId hasChange=$hasChange isSuspicious=$isSuspicious diff=$diff"
+                            )
                         }
-                        logger.i(
-                            "CameraDetailViewModel",
-                            "testCamera: OK id=$cameraId hasChange=$hasChange isSuspicious=$isSuspicious diff=$diff"
-                        )
                     }
-                } else {
-                    _testResult.value = "❌ Lỗi: ${response.error}"
-                    logger.e("CameraDetailViewModel", "testCamera: response.success=false, error=${response.error} | id=$cameraId")
+                    is PluginResult.Failure -> {
+                        _testResult.value = "❌ Lỗi: ${response.error}"
+                        logger.e("CameraDetailViewModel", "testCamera: response.error=${response.error} | id=$cameraId")
+                    }
+                    else -> {
+                        _testResult.value = "❌ Kết quả không xác định"
+                    }
                 }
                 loadCamera()
             } catch (e: Exception) {

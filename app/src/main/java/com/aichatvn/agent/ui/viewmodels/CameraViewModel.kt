@@ -3,10 +3,10 @@ package com.aichatvn.agent.ui.viewmodels
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
-
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,7 +25,6 @@ class CameraViewModel @Inject constructor(
     private val logger: Logger
 ) : ViewModel() {
 
-    // FIX: Load TẤT CẢ camera, không lọc active
     private val _cameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
     val cameras: StateFlow<List<CameraConfigEntity>> = _cameras.asStateFlow()
 
@@ -44,7 +43,6 @@ class CameraViewModel @Inject constructor(
     fun loadCameras() {
         viewModelScope.launch {
             _isLoading.value = true
-            // FIX: Dùng getAllCameras() thay vì getActiveCameras()
             _cameras.value = database.cameraDao().getAllCameras()
             loadSmartModes()
             _isLoading.value = false
@@ -96,7 +94,6 @@ class CameraViewModel @Inject constructor(
                     val newManualOff = if (camera.manualOff == 0) 1 else 0
                     database.cameraDao().updateCamera(camera.copy(manualOff = newManualOff))
                     logger.i("CameraViewModel", "Camera $cameraId manualOff → $newManualOff")
-                    // FIX: Refresh toàn bộ danh sách
                     loadCameras()
                 }
             } catch (e: Exception) {
@@ -155,9 +152,9 @@ class CameraViewModel @Inject constructor(
                 }
 
                 when (result) {
-                    is com.aichatvn.agent.core.AgentKernel.PluginResult.Success -> {
-                        val data = result.data
-                        val results = data["results"] as? List<*>
+                    is PluginResult.Success -> {
+                        val data = result.data as? Map<*, *>
+                        val results = data?.get("results") as? List<*>
                         val first = results?.firstOrNull() as? Map<*, *>
                         val fetchError = first?.get("error") as? String
                         if (fetchError != null) {
@@ -179,7 +176,7 @@ class CameraViewModel @Inject constructor(
                             }
                         }
                     }
-                    is com.aichatvn.agent.core.AgentKernel.PluginResult.Failure -> {
+                    is PluginResult.Failure -> {
                         _testResult.value = "❌ Lỗi: ${result.error}"
                     }
                     else -> {

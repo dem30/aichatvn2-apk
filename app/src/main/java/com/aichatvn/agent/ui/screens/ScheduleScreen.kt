@@ -14,6 +14,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.ui.viewmodels.ScheduleViewModel
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -139,4 +140,77 @@ fun ScheduleCard(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddScheduleDialog(
+    onDismiss: () -> Unit,
+    onSave: (ScheduleEntity) -> Unit
+) {
+    var pluginId by remember { mutableStateOf("") }
+    var action by remember { mutableStateOf("") }
+    var cron by remember { mutableStateOf("") }
+    var intervalMinutes by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Thêm lịch trình mới") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = pluginId,
+                    onValueChange = { pluginId = it },
+                    label = { Text("Plugin ID") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = action,
+                    onValueChange = { action = it },
+                    label = { Text("Action") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = cron,
+                    onValueChange = { cron = it },
+                    label = { Text("Cron (VD: 0 8 * * *)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = intervalMinutes,
+                    onValueChange = { intervalMinutes = it },
+                    label = { Text("Khoảng cách (phút)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val interval = intervalMinutes.toIntOrNull() ?: 0
+                    val schedule = ScheduleEntity(
+                        id = UUID.randomUUID().toString(),
+                        pluginId = pluginId,
+                        action = action,
+                        cron = cron,
+                        intervalMinutes = interval,
+                        enabled = 1,
+                        lastRunAt = 0
+                    )
+                    onSave(schedule)
+                }
+            ) {
+                Text("Lưu")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Hủy")
+            }
+        }
+    )
 }

@@ -22,8 +22,7 @@ import javax.inject.Singleton
 @Singleton
 class TrainingSkill @Inject constructor(
     @ApplicationContext private val context: Context,
-    logger: Logger
-) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
+) : BaseSkill("training", "Huấn luyện AI quản gia"), Plugin {
     
     private val database by lazy { AppDatabase.getDatabase(context) }
     
@@ -241,7 +240,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Get QAs failed")
         }
     }
     
@@ -269,7 +268,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Export QAs failed")
         }
     }
     
@@ -300,7 +299,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Import QAs failed")
         }
     }
     
@@ -325,7 +324,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Add QA failed")
         }
     }
     
@@ -352,7 +351,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Update QA failed")
         }
     }
     
@@ -363,7 +362,7 @@ class TrainingSkill @Inject constructor(
             PluginResult.Success(mapOf("message" to "QA deleted"))
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Delete QA failed")
         }
     }
     
@@ -374,7 +373,7 @@ class TrainingSkill @Inject constructor(
             PluginResult.Success(mapOf("message" to "All QAs deleted"))
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Delete all QAs failed")
         }
     }
     
@@ -389,7 +388,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Search QAs failed")
         }
     }
     
@@ -423,7 +422,7 @@ class TrainingSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Fuzzy match failed")
         }
     }
     

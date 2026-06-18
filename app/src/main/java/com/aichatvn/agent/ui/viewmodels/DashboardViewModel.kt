@@ -33,7 +33,7 @@ data class DashboardSummary(
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val cameraSkill: CameraSkill,  // ✅ CHỈ 1 LẦN
+    private val cameraSkill: CameraSkill,
     private val database: AppDatabase,
     private val logger: Logger
 ) : ViewModel() {
@@ -101,7 +101,6 @@ class DashboardViewModel @Inject constructor(
             _isScanning.value = true
             _scanResultMessage.value = null
             try {
-                // ✅ Dùng cameraSkill.execute thay vì cameraPlugin
                 val result = cameraSkill.execute("scan", emptyMap())
                 _scanResultMessage.value = when (result) {
                     is PluginResult.Success -> {

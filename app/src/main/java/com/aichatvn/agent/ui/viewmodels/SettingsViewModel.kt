@@ -9,7 +9,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import com.aichatvn.agent.data.dataStore  // ✅ THÊM IMPORT
+import com.aichatvn.agent.data.dataStore
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.utils.Logger
@@ -95,8 +96,8 @@ class SettingsViewModel @Inject constructor(
     val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
     // ─── Import result ──────────────────────────────────────────────────────
-    private val _importResult = MutableStateFlow<String?>(null)  // ✅ THÊM KHỞI TẠO
-    val importResult: StateFlow<String?> = _importResult.asStateFlow()  // ✅ THÊM
+    private val _importResult = MutableStateFlow<String?>(null)
+    val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
     // ─── Init ────────────────────────────────────────────────────────────────
     init {
@@ -246,9 +247,9 @@ class SettingsViewModel @Inject constructor(
                     """.trimIndent()
                 )
                 when (result) {
-                    is com.aichatvn.agent.core.AgentKernel.PluginResult.Success -> 
-                        "✅ ${result.data?.get("message") ?: "Gửi thành công tới $to"}"
-                    is com.aichatvn.agent.core.AgentKernel.PluginResult.Failure -> 
+                    is PluginResult.Success -> 
+                        "✅ ${(result.data as? Map<*, *>)?.get("message") ?: "Gửi thành công tới $to"}"
+                    is PluginResult.Failure -> 
                         "❌ ${result.error}"
                     else -> "❌ Gửi email thất bại"
                 }
@@ -318,10 +319,10 @@ class SettingsViewModel @Inject constructor(
                 _tuyaClientId.value = tuyaClientId
                 _tuyaClientSecret.value = tuyaClientSecret
                 
-                _importResult.value = "✅ Import thành công!"  // ✅ Dùng _importResult
+                _importResult.value = "✅ Import thành công!"
                 "✅ Import thành công!"
             } catch (e: Exception) {
-                _importResult.value = "❌ Lỗi: ${e.message}"  // ✅ Dùng _importResult
+                _importResult.value = "❌ Lỗi: ${e.message}"
                 "❌ Lỗi: ${e.message}"
             }
         }

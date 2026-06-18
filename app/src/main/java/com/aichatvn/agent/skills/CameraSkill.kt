@@ -43,8 +43,7 @@ class CameraSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
-    private val logger: Logger,
-) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
+) : BaseSkill("camera", "Quản lý camera"), Plugin {
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     
@@ -543,7 +542,7 @@ class CameraSkill @Inject constructor(
             
         } catch (e: Exception) {
             logger.e("CameraSkill", "processImage error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Process image failed")
         }
     }
     
@@ -878,7 +877,7 @@ class CameraSkill @Inject constructor(
             
         } catch (e: Exception) {
             logger.e("CameraSkill", "saveCameraConfig error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Save camera failed")
         }
     }
     
@@ -891,7 +890,7 @@ class CameraSkill @Inject constructor(
             dailyEvents.remove(cameraId)
             PluginResult.Success(mapOf("message" to "Camera deleted"))
         } catch (e: Exception) {
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Delete camera failed")
         }
     }
     
@@ -910,7 +909,7 @@ class CameraSkill @Inject constructor(
             
             PluginResult.Success(mapOf("message" to "Customer deleted"))
         } catch (e: Exception) {
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Delete customer failed")
         }
     }
     
@@ -919,7 +918,7 @@ class CameraSkill @Inject constructor(
             database.cameraDao().updateSmartMode(customerId, enabled, System.currentTimeMillis())
             PluginResult.Success(mapOf("message" to "Smart mode updated"))
         } catch (e: Exception) {
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Update smart mode failed")
         }
     }
     
@@ -928,7 +927,7 @@ class CameraSkill @Inject constructor(
             database.cameraDao().updateActiveStatus(customerId, active, System.currentTimeMillis())
             PluginResult.Success(mapOf("message" to "Customer status updated"))
         } catch (e: Exception) {
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Update customer status failed")
         }
     }
     
@@ -948,7 +947,7 @@ class CameraSkill @Inject constructor(
                 )
             )
         } catch (e: Exception) {
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Get cameras failed")
         }
     }
     
@@ -979,7 +978,7 @@ class CameraSkill @Inject constructor(
             )
         } catch (e: Exception) {
             logger.e("CameraSkill", "🧪 testCameraUrl error: ${e.message}", e)
-            PluginResult.Failure("Lỗi: ${e.message}")
+            PluginResult.Failure(e.message ?: "Test camera URL failed")
         }
     }
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.skills.ChatSkill
@@ -85,7 +86,7 @@ class ChatViewModel @Inject constructor(
                 imageBase64 = base64Image
             )
 
-            if (!response.success) {
+            if (response is PluginResult.Failure) {
                 logger.e("ChatViewModel", "Error: ${response.error}")
             }
 

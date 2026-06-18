@@ -53,14 +53,12 @@ class DiagnosticsViewModel @Inject constructor(
         }
     }
 
-    // ✅ Reset circuit breaker cho 1 camera
     fun resetCircuitBreaker(cameraId: String) {
         viewModelScope.launch {
             cameraSkill.resetCircuitBreaker(cameraId)
         }
     }
 
-    // ✅ Reset tất cả circuit breaker
     fun resetAllCircuitBreakers() {
         viewModelScope.launch {
             cameraSkill.resetAllCircuitBreakers()

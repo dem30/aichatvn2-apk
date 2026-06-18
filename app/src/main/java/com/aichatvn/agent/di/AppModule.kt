@@ -26,9 +26,10 @@ object AppModule {
     @Singleton
     fun provideTuyaManager(
         @ApplicationContext context: Context,
+        database: AppDatabase,
         logger: Logger
     ): TuyaManager {
-        return TuyaManager(context, logger)
+        return TuyaManager(context, database.tuyaDeviceDao(), logger)
     }
 
     @Provides

@@ -400,7 +400,7 @@ class ChatSkill @Inject constructor(
             PluginResult.Success(mapOf("message" to "History cleared"))
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Lỗi khi xóa lịch sử")
         }
     }
 
@@ -410,7 +410,7 @@ class ChatSkill @Inject constructor(
             PluginResult.Success(history)
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message)
+            PluginResult.Failure(e.message ?: "Lỗi khi lấy lịch sử chat")
         }
     }
 }
