@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
-import com.aichatvn.agent.plugins.CameraPlugin
+
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -20,7 +20,7 @@ import com.aichatvn.agent.utils.Logger
 @HiltViewModel
 class CameraViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
-    private val cameraPlugin: CameraPlugin,
+    private val cameraSkill: CameraSkill,
     private val database: AppDatabase,
     @ApplicationContext private val context: Context,
     private val logger: Logger

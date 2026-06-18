@@ -5,7 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
-import com.aichatvn.agent.plugins.CameraPlugin
+
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,7 +36,7 @@ data class DashboardSummary(
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
-    private val cameraPlugin: CameraPlugin,
+    private val cameraSkill: CameraSkill,
     private val database: AppDatabase,
     private val logger: Logger
 ) : ViewModel() {

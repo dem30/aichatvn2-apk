@@ -22,8 +22,7 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var logger: com.aichatvn.agent.utils.Logger
 
-    @Inject
-    lateinit var taskScheduler: TaskScheduler
+    
 
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,7 +33,7 @@ class MainActivity : ComponentActivity() {
         logger.i("MainActivity", "🚀 App khởi động - v3")
 
         // Schedule tasks
-        taskScheduler.schedule(this)
+        TaskScheduler.schedule(this)
 
         setContent {
             // ✅ Xin CAMERA + POST_NOTIFICATIONS (Android 13+)

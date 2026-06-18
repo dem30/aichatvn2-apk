@@ -26,7 +26,36 @@ class TaskScheduler @AssistedInject constructor(
 
     companion object {
         private const val WORK_NAME = "aichatvn_scheduler"
-        private const val CHECK_INTERVAL_MINUTES = 5L  // ✅ Kiểm tra mỗi 5 phút
+        private const val CHECK_INTERVAL_MINUTES = 5L
+
+        fun schedule(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiresBatteryNotLow(false)
+                .setRequiresStorageNotLow(false)
+                .build()
+
+            val request = PeriodicWorkRequestBuilder<TaskScheduler>(
+                CHECK_INTERVAL_MINUTES, TimeUnit.MINUTES
+            )
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+        }
+
+        fun runNow(context: Context) {
+            val request = OneTimeWorkRequestBuilder<TaskScheduler>().build()
+            WorkManager.getInstance(context).enqueue(request)
+        }
+
+        fun cancel(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+        }
     }
 
     private val database by lazy { AppDatabase.getDatabase(applicationContext) }
@@ -36,7 +65,6 @@ class TaskScheduler @AssistedInject constructor(
             try {
                 logger.d("TaskScheduler", "Checking schedules...")
                 
-                // ✅ Đọc lịch trình từ Database
                 val schedules = database.scheduleDao().getAllSchedules()
                 val now = System.currentTimeMillis()
                 
@@ -62,12 +90,10 @@ class TaskScheduler @AssistedInject constructor(
     }
 
     private fun shouldRunNow(schedule: ScheduleEntity, now: Long): Boolean {
-        // ✅ Cron check
         if (schedule.cron.isNotEmpty()) {
             return CronParser.matches(schedule.cron, now)
         }
         
-        // ✅ Interval check
         if (schedule.intervalMinutes > 0) {
             val lastRun = schedule.lastRunAt
             return (now - lastRun) >= schedule.intervalMinutes * 60_000L
@@ -107,40 +133,6 @@ class TaskScheduler @AssistedInject constructor(
             logger.e("TaskScheduler", "❌ ${schedule.pluginId}.${schedule.action} exception: ${e.message}")
         }
     }
-
-    fun schedule(context: Context) {
-        val constraints = Constraints.Builder()
-            .setRequiresBatteryNotLow(false)
-            .setRequiresStorageNotLow(false)
-            .build()
-
-        val request = PeriodicWorkRequestBuilder<TaskScheduler>(
-            CHECK_INTERVAL_MINUTES, TimeUnit.MINUTES
-        )
-            .setConstraints(constraints)
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.MINUTES)
-            .build()
-
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
-            request
-        )
-
-        logger.i("TaskScheduler", "Scheduled (check every ${CHECK_INTERVAL_MINUTES} min)")
-    }
-
-    fun runNow(context: Context) {
-        val request = OneTimeWorkRequestBuilder<TaskScheduler>()
-            .build()
-        WorkManager.getInstance(context).enqueue(request)
-        logger.i("TaskScheduler", "Triggered run now")
-    }
-
-    fun cancel(context: Context) {
-        WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-        logger.i("TaskScheduler", "Cancelled scheduled tasks")
-    }
 }
 
 // ============================================================
@@ -149,11 +141,8 @@ class TaskScheduler @AssistedInject constructor(
 
 object CronParser {
     private val patterns = listOf(
-        // "0 7 * * *" -> 7:00 mỗi ngày
         Regex("""^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$"""),
-        // "*/15 * * * *" -> mỗi 15 phút
         Regex("""^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$"""),
-        // "0 22 * * *" -> 22:00 mỗi ngày
         Regex("""^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$""")
     )
     
@@ -165,19 +154,16 @@ object CronParser {
         val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
         val minute = calendar.get(java.util.Calendar.MINUTE)
         
-        // Kiểm tra từng pattern
         for (pattern in patterns) {
             val match = pattern.matchEntire(cron.trim())
             if (match != null) {
                 val groups = match.groupValues
                 when {
-                    // "*/15 * * * *" -> interval
                     cron.contains("*/") -> {
                         val interval = groups[1].toIntOrNull() ?: continue
                         val totalMinutes = hour * 60 + minute
                         return totalMinutes % interval == 0
                     }
-                    // "0 7 * * *" -> exact time
                     groups.size >= 3 -> {
                         val cronMinute = groups[1].toIntOrNull() ?: continue
                         val cronHour = groups[2].toIntOrNull() ?: continue
@@ -187,12 +173,10 @@ object CronParser {
             }
         }
         
-        // Fallback: nếu cron rỗng
         return false
     }
 }
 
-// Helper: JSONObject to Map
 private fun JSONObject.toMap(): Map<String, Any> {
     val map = mutableMapOf<String, Any>()
     keys().forEach { key ->
