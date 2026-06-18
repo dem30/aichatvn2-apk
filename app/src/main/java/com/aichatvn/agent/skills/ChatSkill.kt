@@ -1,7 +1,8 @@
 // ChatSkill.kt
 
 package com.aichatvn.agent.skills
-
+import com.aichatvn.agent.core.plugin.PluginAction
+import com.aichatvn.agent.core.plugin.PluginParameter
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentResponse
@@ -54,7 +55,18 @@ class ChatSkill @Inject constructor(
     }
 
     override suspend fun shutdown() {}
-
+override fun getActions(): List<PluginAction> {
+    return listOf(
+        PluginAction(
+            name = "chat",
+            description = "Trò chuyện với AI",
+            parameters = listOf(
+                PluginParameter("message", "string", "Tin nhắn", true),
+                PluginParameter("username", "string", "Tên người dùng", true)
+            )
+        )
+    )
+}
     fun setChatMode(mode: ChatMode) {
         _chatMode.value = mode
     }

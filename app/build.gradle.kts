@@ -42,7 +42,7 @@ android {
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.4"
+        kotlinCompilerExtensionVersion = "1.5.10"
     }
 
     compileOptions {
@@ -91,6 +91,7 @@ dependencies {
     // Room Database
     implementation("androidx.room:room-runtime:2.6.0")
     implementation("androidx.room:room-ktx:2.6.0")
+    implementation("androidx.hilt:hilt-work:1.1.0")
     ksp("androidx.room:room-compiler:2.6.0")
 
     // Coroutines

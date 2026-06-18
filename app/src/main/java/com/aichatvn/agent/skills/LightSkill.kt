@@ -2,6 +2,8 @@ package com.aichatvn.agent.skills
 
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.plugin.PluginAction          // ✅ THÊM
+import com.aichatvn.agent.core.plugin.PluginParameter       // ✅ THÊM
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import javax.inject.Inject
@@ -22,6 +24,31 @@ class LightSkill @Inject constructor(
             "scan" -> handleScan()
             else -> failure("Action không xác định: $action")
         }
+    }
+
+    override fun getActions(): List<PluginAction> {
+        return listOf(
+            PluginAction(
+                name = "set",
+                description = "Bật/tắt đèn",
+                parameters = listOf(
+                    PluginParameter("device", "string", "Tên thiết bị", true),
+                    PluginParameter("state", "boolean", "true: bật, false: tắt", true)
+                )
+            ),
+            PluginAction(
+                name = "status",
+                description = "Xem trạng thái đèn",
+                parameters = listOf(
+                    PluginParameter("device", "string", "Tên thiết bị", true)
+                )
+            ),
+            PluginAction(
+                name = "scan",
+                description = "Quét thiết bị đèn",
+                parameters = emptyList()
+            )
+        )
     }
 
     private suspend fun handleScan(): AgentKernel.PluginResult {

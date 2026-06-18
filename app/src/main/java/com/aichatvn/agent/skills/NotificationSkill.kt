@@ -8,6 +8,8 @@ import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.R
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.plugin.PluginAction          // ✅ THÊM
+import com.aichatvn.agent.core.plugin.PluginParameter       // ✅ THÊM
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -34,6 +36,19 @@ class NotificationSkill @Inject constructor(
             "send" -> handleSend(params)
             else -> failure("Action không xác định: $action")
         }
+    }
+
+    override fun getActions(): List<PluginAction> {
+        return listOf(
+            PluginAction(
+                name = "send",
+                description = "Gửi thông báo",
+                parameters = listOf(
+                    PluginParameter("title", "string", "Tiêu đề thông báo", true),
+                    PluginParameter("message", "string", "Nội dung thông báo", true)
+                )
+            )
+        )
     }
 
     private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
@@ -81,7 +96,7 @@ class NotificationSkill @Inject constructor(
     ): Int {
         val id = notificationCounter.getAndIncrement()
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)  // ✅ SỬA
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))

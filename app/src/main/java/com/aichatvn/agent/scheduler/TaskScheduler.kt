@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import kotlin.jvm.JvmSuppressWildcards
 
 @HiltWorker
 class TaskScheduler @AssistedInject constructor(

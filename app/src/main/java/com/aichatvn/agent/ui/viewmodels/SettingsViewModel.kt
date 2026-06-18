@@ -102,7 +102,7 @@ class SettingsViewModel @Inject constructor(
             _tuyaClientSecret.value = prefs[TUYA_CLIENT_SECRET] ?: ""
         }
     }
-
+fun clearImportResult() { _importResult.value = null }
     // ─── Save ─────────────────────────────────────────────────────────────────
 
     fun saveGroqApiKey(key: String) {

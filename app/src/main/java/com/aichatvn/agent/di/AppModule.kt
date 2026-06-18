@@ -4,7 +4,6 @@ import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -19,6 +18,15 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideTuyaManager(
+        @ApplicationContext context: Context,
+        logger: Logger
+    ): TuyaManager {
+        return TuyaManager(context, logger)
+    }
 
     @Provides
     @Singleton
@@ -60,7 +68,7 @@ object AppModule {
     @Provides
     @IntoSet
     @Singleton
-    fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill  // ✅ THÊM
+    fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill
 
     // ===== AGENT KERNEL =====
     
@@ -73,17 +81,5 @@ object AppModule {
         logger: Logger
     ): AgentKernel {
         return AgentKernel(plugins, groqClient, trainingSkill, logger)
-    }
-
-    // ===== TASK SCHEDULER =====
-    
-    @Provides
-    @Singleton
-    fun provideTaskScheduler(
-        @ApplicationContext context: Context,
-        plugins: Set<@JvmSuppressWildcards Plugin>,  // ✅ SỬA: cần plugins
-        logger: Logger
-    ): TaskScheduler {
-        return TaskScheduler(context, plugins, logger)
     }
 }
