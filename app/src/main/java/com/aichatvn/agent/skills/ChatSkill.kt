@@ -7,7 +7,7 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentResponse
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ChatMessageEntity
-import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -34,10 +34,8 @@ class ChatSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val trainingSkill: TrainingSkill,
     private val agentKernel: AgentKernel,
-    private val logger: Logger
-) : BaseAgentSkill {
-
-    override val skillName = "ChatSkill"
+    logger: Logger
+) : BaseSkill("chat", "Chat với AI", logger) {
 
     private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
     val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()
