@@ -6,7 +6,10 @@ import android.content.Context
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.R
-import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.skills.base.BaseSkill
+import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -14,17 +17,41 @@ import javax.inject.Singleton
 
 @Singleton
 class NotificationSkill @Inject constructor(
-    @ApplicationContext private val context: Context
-) : BaseAgentSkill {
-
-    override val skillName = "NotificationSkill"
+    @ApplicationContext private val context: Context,
+    logger: Logger
+) : BaseSkill("notification", "Gửi thông báo", logger), Plugin {
 
     private val notificationManager by lazy {
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     }
 
-    // ID tăng dần — mỗi thông báo có ID riêng, không bị ghi đè
     private val notificationCounter = AtomicInteger(1001)
+
+    // ==================== PLUGIN IMPLEMENTATION ====================
+
+    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+        return when (action) {
+            "send" -> handleSend(params)
+            else -> failure("Action không xác định: $action")
+        }
+    }
+
+    private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
+        val title = params["title"] as? String
+            ?: return needMoreInfo(listOf("title"), "Bạn muốn gửi thông báo với tiêu đề gì?")
+        
+        val message = params["message"] as? String
+            ?: return needMoreInfo(listOf("message"), "Nội dung thông báo là gì?")
+        
+        val notificationId = sendNotification(title, message)
+        
+        return success(
+            message = "✅ Đã gửi thông báo: $title",
+            data = mapOf("notificationId" to notificationId)
+        )
+    }
+
+    // ==================== CORE SKILL METHODS ====================
 
     override suspend fun initialize() {
         createNotificationChannel()
@@ -47,11 +74,6 @@ class NotificationSkill @Inject constructor(
         }
     }
 
-    /**
-     * Gửi thông báo với ID tự động tăng dần.
-     * Mỗi lần gọi tạo một notification mới, không ghi đè cái trước.
-     * Trả về notificationId đã dùng (để caller cancel nếu cần).
-     */
     suspend fun sendNotification(
         title: String,
         message: String,

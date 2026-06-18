@@ -5,6 +5,7 @@
     <string name="tab_chat">Trò chuyện</string>
     <string name="tab_camera">Camera</string>
     <string name="tab_training">Huấn luyện</string>
+    <string name="tab_schedule">Lịch trình</string>  <!-- ✅ THÊM -->
     <string name="tab_diagnostics">Chẩn đoán</string>
     <string name="tab_settings">Cài đặt</string>
     <string name="tab_logs">Logs</string>

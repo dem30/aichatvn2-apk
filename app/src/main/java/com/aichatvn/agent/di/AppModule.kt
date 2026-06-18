@@ -1,22 +1,20 @@
 package com.aichatvn.agent.di
 
 import android.content.Context
-import com.aichatvn.agent.data.database.AppDatabase
+import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.scheduler.TaskScheduler
+import com.aichatvn.agent.skills.*
+import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import javax.inject.Qualifier
+import dagger.multibindings.IntoSet
 import javax.inject.Singleton
-
-@Qualifier
-@Retention(AnnotationRetention.BINARY)
-annotation class ApplicationScope
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -32,11 +30,60 @@ object AppModule {
     @Singleton
     fun provideContext(@ApplicationContext context: Context): Context = context
 
+    // ===== SKILLS (CŨNG LÀ PLUGIN) =====
+    
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideCameraSkill(skill: CameraSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideLightSkill(skill: LightSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideEmailSkill(skill: EmailSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideNotificationSkill(skill: NotificationSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideTrainingSkill(skill: TrainingSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill  // ✅ THÊM
+
+    // ===== AGENT KERNEL =====
+    
     @Provides
     @Singleton
-    @ApplicationScope
-    fun provideApplicationScope(): CoroutineScope =
-        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    fun provideAgentKernel(
+        plugins: Set<@JvmSuppressWildcards Plugin>,
+        groqClient: GroqClientTool,
+        trainingSkill: TrainingSkill,
+        logger: Logger
+    ): AgentKernel {
+        return AgentKernel(plugins, groqClient, trainingSkill, logger)
+    }
+
+    // ===== TASK SCHEDULER =====
     
-    // ❌ XÓA provideMergedPlugins - gây vòng lặp dependency
+    @Provides
+    @Singleton
+    fun provideTaskScheduler(
+        @ApplicationContext context: Context,
+        plugins: Set<@JvmSuppressWildcards Plugin>,  // ✅ SỬA: cần plugins
+        logger: Logger
+    ): TaskScheduler {
+        return TaskScheduler(context, plugins, logger)
+    }
 }

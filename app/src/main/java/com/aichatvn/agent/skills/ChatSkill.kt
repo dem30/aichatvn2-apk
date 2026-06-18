@@ -1,11 +1,11 @@
-// ChatSkill.kt - THÊM khả năng lưu message từ bên ngoài
+// ChatSkill.kt
 
 package com.aichatvn.agent.skills
 
 import android.content.Context
+import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentResponse
-import com.aichatvn.agent.core.plugin.AgentCore
-import com.aichatvn.agent.data.database.AppDatabase
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.base.BaseAgentSkill
 import com.aichatvn.agent.utils.Logger
@@ -33,7 +33,7 @@ class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val groqClient: GroqClientTool,
     private val trainingSkill: TrainingSkill,
-    private val agentCore: AgentCore,  // THÊM: để gọi khi cần điều khiển
+    private val agentKernel: AgentKernel,
     private val logger: Logger
 ) : BaseAgentSkill {
 
@@ -61,49 +61,50 @@ class ChatSkill @Inject constructor(
         _chatMode.value = mode
     }
 
-    // THÊM: Phát hiện lệnh điều khiển thiết bị
+    /**
+     * ✅ PHÁT HIỆN LỆNH ĐIỀU KHIỂN
+     * 
+     * Nếu là lệnh điều khiển → gọi AgentKernel
+     * AgentKernel sẽ tự search QA context
+     */
     private fun isDeviceControlIntent(message: String): Boolean {
         val lower = message.lowercase()
 
-        // FIX: Bỏ điều kiện "length < 50" — nguyên nhân gốc rễ khiến "hi", "hello",
-        // "xin chào" và mọi câu ngắn bị route sang AgentCore thay vì Groq chat.
-        // Log: "Routing to AgentCore for device control: 'hi'" là bug này.
-        //
-        // Chỉ route sang AgentCore khi message chứa từ khóa điều khiển RÕ RÀNG.
-        // Phân nhóm để dễ maintain:
-
-        // Động từ điều khiển thiết bị (phải đi kèm đối tượng, nhưng check đơn giản trước)
-        val actionVerbs = listOf("bật", "tắt", "khởi động lại", "ngưng", "dừng hẳn", "reset")
-
-        // Đối tượng cụ thể trong hệ thống này
-        val systemObjects = listOf(
-            "camera", "đèn", "light", "đèn led",
-            "chế độ thông minh", "smart mode", "giám sát"
-        )
-
-        // Lệnh gửi — phải có từ "gửi" hoặc "send" đi kèm
+        val actionVerbs = listOf("bật", "tắt", "khởi động lại", "ngưng", "dừng hẳn", "reset", "gửi")
+        val systemObjects = listOf("camera", "đèn", "light", "đèn led", "chế độ thông minh", "smart mode", "giám sát")
         val sendCommands = listOf("gửi mail", "gửi email", "gửi thông báo", "send email", "send mail")
-
-        // Lệnh truy vấn hệ thống rõ ràng
-        val queryCommands = listOf(
-            "trạng thái camera", "camera status",
-            "bao nhiêu camera", "danh sách camera",
-            "xem log", "xem alert", "xem cảnh báo"
-        )
+        val queryCommands = listOf("trạng thái", "status", "bao nhiêu", "danh sách", "xem log", "xem alert")
 
         val hasAction = actionVerbs.any { lower.contains(it) }
         val hasObject = systemObjects.any { lower.contains(it) }
         val hasSendCommand = sendCommands.any { lower.contains(it) }
         val hasQueryCommand = queryCommands.any { lower.contains(it) }
 
-        // Route sang AgentCore chỉ khi:
-        // - Có động từ điều khiển VÀ đối tượng hệ thống ("bật camera", "tắt đèn")
-        // - Hoặc lệnh gửi rõ ràng ("gửi email cho khách hàng")
-        // - Hoặc query hệ thống rõ ràng ("trạng thái camera")
         return (hasAction && hasObject) || hasSendCommand || hasQueryCommand
     }
 
-    // THÊM: Lưu message từ AgentCore response
+    /**
+     * ✅ HÀM PHỐI HỢP VỚI TRAININGSKILL
+     * 
+     * Build QA context cho Groq chat (không phải lệnh điều khiển)
+     */
+    private suspend fun buildQAContext(message: String, username: String): String {
+        val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.5f)
+        if (!result.success || result.data == null) return ""
+        
+        @Suppress("UNCHECKED_CAST")
+        val matches = result.data as? List<Map<String, Any>> ?: return ""
+        if (matches.isEmpty()) return ""
+        
+        return matches.joinToString("\n") { match ->
+            val qa = match["qa"] as? com.aichatvn.agent.data.model.QAEntity
+            val similarity = match["similarity"] as? Float ?: 0f
+            if (qa != null) {
+                "📚 Q: ${qa.question}\n   A: ${qa.answer} (độ tương tự: ${String.format("%.2f", similarity)})"
+            } else ""
+        }
+    }
+
     suspend fun addAssistantMessage(response: String, username: String): ChatMessageEntity {
         val assistantMessageId = UUID.randomUUID().toString()
         val assistantMessage = ChatMessageEntity(
@@ -156,19 +157,33 @@ class ChatSkill @Inject constructor(
                 _messages.value = _messages.value + userMessage
             }
 
-            // QUYẾT ĐỊNH ROUTING:
-            // 1. Có ảnh -> ChatSkill (hỏi về ảnh)
-            // 2. Lệnh điều khiển -> AgentCore
-            // 3. Còn lại -> ChatSkill
-            
-            val hasImage = imageBase64 != null || fileUrl != null
-            val isControl = !hasImage && isDeviceControlIntent(message)
+            // ============================================================
+            // ROUTING:
+            // 1. Lệnh học → TrainingSkill
+            // 2. Có ảnh → Groq vision
+            // 3. Lệnh điều khiển → AgentKernel (tự search QA)
+            // 4. Chat thuần → Groq (có QA context)
+            // ============================================================
             
             val responseText: String
             val usedMode: String
             
-            if (hasImage) {
-                // Có ảnh -> dùng ChatSkill với vision
+            // ✅ 1. LỆNH HỌC
+            if (message.startsWith("Học:") || message.startsWith("Dạy:")) {
+                val parts = message.substringAfter(":").split("→").map { it.trim() }
+                if (parts.size == 2) {
+                    val key = parts[0]
+                    val value = parts[1]
+                    trainingSkill.addQA(key, value, "general", username)
+                    responseText = "✅ Đã học: $key → $value"
+                    usedMode = "learn"
+                } else {
+                    responseText = "❌ Cú pháp: Học: câu hỏi → câu trả lời"
+                    usedMode = "learn_error"
+                }
+            }
+            // ✅ 2. CÓ ẢNH
+            else if (imageBase64 != null || fileUrl != null) {
                 usedMode = "vision"
                 val imageDataUrl = if (!imageBase64.isNullOrEmpty()) {
                     "data:image/jpeg;base64,$imageBase64"
@@ -199,23 +214,36 @@ class ChatSkill @Inject constructor(
                 } catch (e: TimeoutCancellationException) {
                     "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                 }
-            } else if (isControl) {
-                // Lệnh điều khiển -> AgentCore
+            }
+            // ✅ 3. LỆNH ĐIỀU KHIỂN → AGENTKERNEL (TỰ SEARCH QA)
+            else if (isDeviceControlIntent(message)) {
                 usedMode = "device_control"
-                logger.d("ChatSkill", "Routing to AgentCore for device control: '$message'")
-                val agentResponse = agentCore.process(message, username)
-                responseText = if (agentResponse.success) {
-                    (agentResponse.data as? Map<*, *>)?.get("response") as? String 
-                        ?: "✅ Đã thực hiện"
-                } else {
-                    agentResponse.error ?: "Không thể thực hiện"
+                logger.d("ChatSkill", "Routing to AgentKernel for device control: '$message'")
+                
+                val kernelResult = agentKernel.process(message)  // ← AgentKernel tự search QA
+                responseText = when (kernelResult) {
+                    is AgentKernel.PluginResult.Success -> {
+                        val data = kernelResult.data as? Map<*, *>
+                        data?.get("message") as? String ?: "✅ Đã thực hiện"
+                    }
+                    is AgentKernel.PluginResult.Failure -> kernelResult.error
+                    is AgentKernel.PluginResult.NeedMoreInfo -> kernelResult.question
                 }
-            } else {
-                // Chat thuần -> ChatSkill với mode hiện tại
+            }
+            // ✅ 4. CHAT THUẦN → GROQ (CÓ QA CONTEXT)
+            else {
                 usedMode = _chatMode.value.name
                 val currentMode = _chatMode.value
                 val historySnapshot = _messages.value.takeLast(10).map {
                     mapOf("role" to it.role, "content" to it.content)
+                }
+                
+                // ✅ Lấy QA context cho chat
+                val qaContext = buildQAContext(message, username)
+                val fullContext = if (qaContext.isNotEmpty()) {
+                    "$qaContext\n\n$extraContext"
+                } else {
+                    extraContext
                 }
                 
                 responseText = try {
@@ -229,38 +257,13 @@ class ChatSkill @Inject constructor(
                                     val qa = matches.firstOrNull()?.get("qa") as? com.aichatvn.agent.data.model.QAEntity
                                     qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
                                 } else {
-                                    "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này trong cơ sở dữ liệu Q&A."
+                                    "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này."
                                 }
                             }
-                            ChatMode.COMBINED -> {
-                                var qaContext = ""
-                                var foundQA = false
-                                val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
-                                if (qaResult.success && qaResult.data != null) {
-                                    @Suppress("UNCHECKED_CAST")
-                                    val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
-                                    val qa = matches.firstOrNull()?.get("qa") as? com.aichatvn.agent.data.model.QAEntity
-                                    if (qa != null) {
-                                        foundQA = true
-                                        qaContext = "Dữ liệu từ hệ thống Q&A:\nCÂU HỎI: ${qa.question}\nCÂU TRẢ LỜI THAM KHẢO: ${qa.answer}\n\n"
-                                    }
-                                }
-                                val groqMessage = if (foundQA) {
-                                    "$qaContext\nCâu hỏi của người dùng: $message\nHãy sử dụng thông tin từ Q&A làm cơ sở để trả lời, bổ sung thêm nếu cần."
-                                } else {
-                                    message
-                                }
-                                groqClient.chat(
-                                    message = groqMessage,
-                                    extraContext = extraContext,
-                                    history = historySnapshot,
-                                    imageUrl = null
-                                )
-                            }
-                            ChatMode.GROQ -> {
+                            ChatMode.COMBINED, ChatMode.GROQ -> {
                                 groqClient.chat(
                                     message = message,
-                                    extraContext = extraContext,
+                                    extraContext = fullContext,
                                     history = historySnapshot,
                                     imageUrl = null
                                 )
@@ -272,7 +275,7 @@ class ChatSkill @Inject constructor(
                 }
             }
 
-            // Lưu assistant message (QUAN TRỌNG: cho CẢ 3 trường hợp)
+            // Lưu assistant message
             val assistantMessageId = UUID.randomUUID().toString()
             val assistantMessage = ChatMessageEntity(
                 id = assistantMessageId,

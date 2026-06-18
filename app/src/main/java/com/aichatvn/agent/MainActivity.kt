@@ -1,42 +1,29 @@
 package com.aichatvn.agent
 
 import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
-import androidx.core.content.ContextCompat
-import androidx.core.content.pm.PackageInfoCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.work.*
-import com.aichatvn.agent.services.CameraScanService
+import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
-import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
-import com.aichatvn.agent.workers.SmartScan15MinWorker
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import dagger.hilt.android.AndroidEntryPoint
-import java.util.concurrent.TimeUnit
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    @javax.inject.Inject
+    @Inject
     lateinit var logger: com.aichatvn.agent.utils.Logger
 
-    private var isServiceStarting = false
+    @Inject
+    lateinit var taskScheduler: TaskScheduler
 
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,126 +31,33 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        logger.i("MainActivity", "🚀 App khởi động - onCreate")
+        logger.i("MainActivity", "🚀 App khởi động - v3")
 
-        setupWorkManager()
+        // Schedule tasks
+        taskScheduler.schedule(this)
 
         setContent {
-            val settingsViewModel: SettingsViewModel = viewModel()
-            val darkMode by settingsViewModel.darkMode.collectAsState()
+            // ✅ Xin CAMERA + POST_NOTIFICATIONS (Android 13+)
+            val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                listOf(
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+            } else {
+                listOf(Manifest.permission.CAMERA)
+            }
 
-            AIChatVN2Theme(darkTheme = darkMode) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    // FIX: Tách riêng 2 nhóm permission:
-                    // - cameraPermission: BẮT BUỘC để start service
-                    // - notificationPermission: TÙY CHỌN, không block service
-                    val cameraPermission = rememberMultiplePermissionsState(
-                        listOf(Manifest.permission.CAMERA)
-                    )
+            val permissionState = rememberMultiplePermissionsState(permissions)
 
-                    val notificationPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        rememberMultiplePermissionsState(listOf(Manifest.permission.POST_NOTIFICATIONS))
-                    } else {
-                        null
-                    }
-
-                    // FIX: Chỉ cần CAMERA granted là start service — NOTIFICATION là optional
-                    LaunchedEffect(cameraPermission.allPermissionsGranted) {
-                        if (cameraPermission.allPermissionsGranted) {
-                            startCameraService()
-                        }
-                    }
-
-                    // Xin camera permission trước
-                    LaunchedEffect(Unit) {
-                        if (!cameraPermission.allPermissionsGranted) {
-                            cameraPermission.launchMultiplePermissionRequest()
-                        }
-                    }
-
-                    // Xin notification permission độc lập (không block UI hay service)
-                    LaunchedEffect(Unit) {
-                        notificationPermissions?.let {
-                            if (!it.allPermissionsGranted) {
-                                it.launchMultiplePermissionRequest()
-                            }
-                        }
-                    }
-
-                    AppNavigator()
+            LaunchedEffect(Unit) {
+                if (!permissionState.allPermissionsGranted) {
+                    permissionState.launchMultiplePermissionRequest()
                 }
             }
-        }
-    }
 
-    private fun startCameraService() {
-        // FIX: Bỏ check isServiceRunning() qua getRunningServices() — API này không
-        // đáng tin cậy (có thể báo "đang chạy" sai ngay sau khi process bị OS kill),
-        // và từng khiến onStartCommand()/startEngine() không được gọi cho tới khi
-        // SmartScan15MinWorker ép restart 15 phút sau (xem ghi chú "Heartbeat over
-        // getRunningServices()" trong file kiến trúc). Gọi thẳng startForegroundService();
-        // CameraScanService.onStartCommand() đã tự guard chống start trùng
-        // (currentEngine != null || isEngineStarting.get()), nên gọi nhiều lần vô hại.
-        if (isServiceStarting) {
-            logger.d("MainActivity", "Service already starting, skip")
-            return
-        }
-
-        try {
-            isServiceStarting = true
-            val intent = Intent(this, CameraScanService::class.java)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
+            AIChatVN2Theme(darkTheme = false) {
+                AppNavigator()
             }
-            logger.i("MainActivity", "CameraScanService start requested")
-        } catch (e: Exception) {
-            logger.e("MainActivity", "Failed to start CameraScanService: ${e.message}", e)
-        } finally {
-            isServiceStarting = false
-        }
-    }
-
-    private fun setupWorkManager() {
-        val version = try {
-            val info = packageManager.getPackageInfo(packageName, 0)
-            PackageInfoCompat.getLongVersionCode(info)
-        } catch (e: Exception) {
-            1L
-        }
-        val workName = "service_watchdog_work_v$version"
-
-        val watchdogRequest = PeriodicWorkRequestBuilder<SmartScan15MinWorker>(
-            15, TimeUnit.MINUTES
-        ).setConstraints(
-            Constraints.Builder()
-                .setRequiresBatteryNotLow(false)
-                .build()
-        ).build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            workName,
-            ExistingPeriodicWorkPolicy.KEEP,
-            watchdogRequest
-        )
-
-        logger.i("MainActivity", "SmartScan15MinWorker scheduled (15 min) - $workName")
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // FIX: onResume chỉ cần CAMERA — nhất quán với logic trên
-        val hasCameraPermission = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (hasCameraPermission && !isServiceStarting) {
-            startCameraService()
         }
     }
 }

@@ -2,9 +2,11 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.BuildConfig
+import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentResponse
+import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.dataStore
-import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -23,16 +25,14 @@ import javax.inject.Singleton
 @Singleton
 class EmailSkill @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val logger: Logger
-) : BaseAgentSkill {
-
-    override val skillName = "EmailSkill"
+    logger: Logger
+) : BaseSkill("email", "Gửi email", logger), Plugin {
 
     companion object {
         private const val RESEND_API_URL = "https://api.resend.com/emails"
     }
 
-    // ─── Đọc credentials từ DataStore, fallback BuildConfig ───────────────────
+    // ─── Đọc credentials từ DataStore ───────────────────────────────────
 
     private suspend fun loadApiKey(): String {
         return try {
@@ -60,6 +60,52 @@ class EmailSkill @Inject constructor(
         }
     }
 
+    // ==================== PLUGIN IMPLEMENTATION ====================
+
+    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+        return when (action) {
+            "send" -> handleSend(params)
+            "test" -> handleTest(params)
+            else -> failure("Action không xác định: $action")
+        }
+    }
+
+    private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
+        val to = params["to"] as? String
+            ?: return needMoreInfo(listOf("to"), "Bạn muốn gửi email tới địa chỉ nào?")
+        
+        val subject = params["subject"] as? String ?: "Không có tiêu đề"
+        val body = params["body"] as? String ?: ""
+        
+        val result = sendEmail(to, subject, body, null)
+        
+        return if (result.success) {
+            success("✅ Email đã gửi tới $to", mapOf("to" to to, "subject" to subject))
+        } else {
+            failure(result.error ?: "Gửi email thất bại")
+        }
+    }
+
+    private suspend fun handleTest(params: Map<String, Any>): AgentKernel.PluginResult {
+        val to = params["to"] as? String
+            ?: return needMoreInfo(listOf("to"), "Bạn muốn gửi email test tới địa chỉ nào?")
+        
+        val result = sendEmail(
+            to = to,
+            subject = "Test từ AIChatVN2",
+            body = "Email test gửi lúc ${System.currentTimeMillis()}",
+            imageBytes = null
+        )
+        
+        return if (result.success) {
+            success("✅ Email test đã gửi tới $to", mapOf("to" to to))
+        } else {
+            failure(result.error ?: "Gửi email test thất bại")
+        }
+    }
+
+    // ==================== CORE SKILL METHODS ====================
+
     override suspend fun initialize() {
         val key = loadApiKey()
         if (key.isBlank()) {
@@ -68,8 +114,6 @@ class EmailSkill @Inject constructor(
     }
 
     override suspend fun shutdown() {}
-
-    // ─── Gửi email qua Resend API ─────────────────────────────────────────────
 
     suspend fun sendEmail(
         to: String,
@@ -137,8 +181,6 @@ class EmailSkill @Inject constructor(
         }
     }
 
-    // ─── Build JSON body cho Resend API ───────────────────────────────────────
-
     private fun buildRequestJson(
         from: String,
         to: String,
@@ -152,7 +194,6 @@ class EmailSkill @Inject constructor(
             put("subject", subject)
             put("html", html)
 
-            // Đính kèm ảnh nếu có (Resend hỗ trợ attachments dạng base64)
             if (imageBytes != null) {
                 val attachments = JSONArray().put(
                     JSONObject().apply {

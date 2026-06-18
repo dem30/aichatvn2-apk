@@ -1,0 +1,142 @@
+package com.aichatvn.agent.ui.screens
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.navigation.NavController
+import com.aichatvn.agent.data.model.ScheduleEntity
+import com.aichatvn.agent.ui.viewmodels.ScheduleViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ScheduleScreen(
+    navController: NavController,
+    viewModel: ScheduleViewModel = hiltViewModel()
+) {
+    val schedules by viewModel.schedules.collectAsState()
+    var showAddDialog by remember { mutableStateOf(false) }
+    
+    LaunchedEffect(Unit) {
+        viewModel.loadSchedules()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Lịch trình") },
+                actions = {
+                    IconButton(onClick = { showAddDialog = true }) {
+                        Icon(Icons.Default.Add, "Thêm lịch")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        if (schedules.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("⏰", fontSize = MaterialTheme.typography.displayMedium.fontSize)
+                    Text("Chưa có lịch trình nào")
+                    TextButton(onClick = { showAddDialog = true }) {
+                        Text("Thêm lịch trình đầu tiên")
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(schedules) { schedule ->
+                    ScheduleCard(
+                        schedule = schedule,
+                        onToggle = { viewModel.toggleSchedule(it) },
+                        onDelete = { viewModel.deleteSchedule(it) }
+                    )
+                }
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddScheduleDialog(
+            onDismiss = { showAddDialog = false },
+            onSave = { schedule ->
+                viewModel.addSchedule(schedule)
+                showAddDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+fun ScheduleCard(
+    schedule: ScheduleEntity,
+    onToggle: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (schedule.enabled == 1) 
+                MaterialTheme.colorScheme.surface 
+            else 
+                MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "${schedule.pluginId}.${schedule.action}",
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    when {
+                        schedule.cron.isNotEmpty() -> "⏰ $schedule.cron"
+                        schedule.intervalMinutes > 0 -> "🔄 ${schedule.intervalMinutes} phút/lần"
+                        else -> "⏸ Không có lịch"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (schedule.lastRunAt > 0) {
+                    Text(
+                        "Lần cuối: ${java.text.SimpleDateFormat("HH:mm dd/MM", java.util.Locale.getDefault()).format(schedule.lastRunAt)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            
+            Switch(
+                checked = schedule.enabled == 1,
+                onCheckedChange = { onToggle(schedule.id) }
+            )
+            
+            IconButton(onClick = { onDelete(schedule.id) }) {
+                Icon(Icons.Default.Delete, "Xóa", tint = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}

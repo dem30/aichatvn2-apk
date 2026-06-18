@@ -2,7 +2,7 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.aichatvn.agent.data.database.AppDatabase
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow

@@ -1,14 +1,14 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
+import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentResponse
-import com.aichatvn.agent.data.database.AppDatabase
-import com.aichatvn.agent.data.model.AlertEntity
+import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.lAlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
-import com.aichatvn.agent.core.plugin.PluginEvent
-import com.aichatvn.agent.core.plugin.PluginEventBus
-import com.aichatvn.agent.skills.base.BaseAgentSkill
+import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
@@ -40,12 +40,59 @@ class CameraSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
-    private val pluginEventBus: PluginEventBus,
-    private val logger: Logger,
+    logger: Logger,
     @ApplicationScope private val scope: CoroutineScope
-) : BaseAgentSkill {
+) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
     
-    override val skillName = "CameraSkill"
+    
+    
+    
+
+    // ✅ Khai báo actions
+    override fun getActions(): List<PluginAction> {
+        return listOf(
+            PluginAction(
+                name = "scan",
+                description = "Quét camera để phát hiện thay đổi",
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera (để trống quét tất cả)", false)
+                )
+            ),
+            PluginAction(
+                name = "list",
+                description = "Liệt kê danh sách camera",
+                parameters = emptyList()
+            ),
+            PluginAction(
+                name = "status",
+                description = "Xem trạng thái camera",
+                parameters = listOf(
+                    PluginParameter("customerId", "string", "Mã khách hàng", false)
+                )
+            ),
+            PluginAction(
+                name = "set_active",
+                description = "Bật hoặc tắt camera",
+                parameters = listOf(
+                    PluginParameter("customerId", "string", "Mã camera", true),
+                    PluginParameter("active", "boolean", "true: bật, false: tắt", true)
+                )
+            ),
+            PluginAction(
+                name = "set_smart_mode",
+                description = "Bật hoặc tắt chế độ thông minh AI",
+                parameters = listOf(
+                    PluginParameter("customerId", "string", "Mã camera", true),
+                    PluginParameter("enabled", "boolean", "true: bật, false: tắt", true)
+                )
+            )
+        }
+    
+
+    // ... rest of CameraSkill ...
+}
+    
+    
     
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = mutableMapOf<String, Mutex>()
@@ -65,7 +112,6 @@ class CameraSkill @Inject constructor(
         var cooldownUntil: Long = 0L
     )
     
-    // ==================== CIRCUIT BREAKER ====================
     private data class CircuitBreakerState(
         var offlineCount: Int = 0,
         var offlineSince: Long = 0L,
@@ -73,13 +119,11 @@ class CameraSkill @Inject constructor(
         var halfOpenAttempted: Boolean = false
     )
     
-    // ==================== PENDING RESET ====================
     private data class PendingResetState(
         var diff: Int = 0,
         var timestamp: Long = 0L
     )
     
-    // ==================== DAILY EVENT SUMMARY ====================
     private data class DailyEvent(
         val timestamp: Long,
         val comment: String,
@@ -124,6 +168,96 @@ class CameraSkill @Inject constructor(
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
     
+    // ==================== PLUGIN IMPLEMENTATION ====================
+    
+    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+        logger.d("CameraSkill", "execute: action=$action")
+        
+        return when (action) {
+            "scan" -> handleScan(params)
+            "list" -> handleList()
+            "status" -> handleStatus(params)
+            "set_active" -> handleSetActive(params)
+            "set_smart_mode" -> handleSetSmartMode(params)
+            else -> failure("Action không xác định: $action")
+        }
+    }
+    
+    private suspend fun handleScan(params: Map<String, Any>): AgentKernel.PluginResult {
+        val cameraId = params["cameraId"] as? String
+        val result = scanCamera(cameraId, false)
+        
+        return if (result.success) {
+            val data = result.data as? Map<*, *>
+            val processed = data?.get("processed") ?: 0
+            success("Đã quét $processed camera thành công")
+        } else {
+            failure(result.error ?: "Quét thất bại")
+        }
+    }
+    
+    private suspend fun handleList(): AgentKernel.PluginResult {
+        val result = getCamerasPaginated(1, 100)
+        return if (result.success) {
+            AgentKernel.PluginResult.Success(result.data ?: emptyList<Any>())
+        } else {
+            failure(result.error ?: "Không thể lấy danh sách")
+        }
+    }
+    
+    private suspend fun handleStatus(params: Map<String, Any>): AgentKernel.PluginResult {
+        val customerId = params["customerId"] as? String
+        if (customerId != null) {
+            val result = getCamerasPaginated(1, 100)
+            if (result.success) {
+                val cameras = (result.data as? Map<*, *>)?.get("cameras") as? List<*>
+                val camera = cameras?.find { 
+                    (it as? Map<*, *>)?.get("id") == customerId 
+                }
+                if (camera != null) {
+                    return AgentKernel.PluginResult.Success(camera)
+                }
+                return failure("Không tìm thấy camera $customerId")
+            }
+            return failure(result.error ?: "Lỗi lấy thông tin")
+        }
+        return AgentKernel.PluginResult.Success(getDiagnostics())
+    }
+    
+    private suspend fun handleSetActive(params: Map<String, Any>): AgentKernel.PluginResult {
+        val customerId = params["customerId"] as? String
+            ?: return needMoreInfo(listOf("customerId"), "Bạn muốn bật/tắt camera nào?")
+        
+        val active = params["active"] as? Boolean
+            ?: return needMoreInfo(listOf("active"), "Bạn muốn bật hay tắt camera $customerId?")
+        
+        val result = setCustomerActive(customerId, active)
+        return if (result.success) {
+            success(result.data as? String ?: "Đã cập nhật")
+        } else {
+            failure(result.error ?: "Không thể thực hiện")
+        }
+    }
+    
+    private suspend fun handleSetSmartMode(params: Map<String, Any>): AgentKernel.PluginResult {
+        val customerId = params["customerId"] as? String
+            ?: return needMoreInfo(listOf("customerId"), "Bạn muốn bật/tắt chế độ thông minh cho camera nào?")
+        
+        val enabled = params["enabled"] as? Boolean
+            ?: return needMoreInfo(listOf("enabled"), "Bạn muốn bật hay tắt chế độ thông minh?")
+        
+        val result = setSmartMode(customerId, enabled)
+        return if (result.success) {
+            success(result.data as? String ?: "Đã cập nhật")
+        } else {
+            failure(result.error ?: "Không thể thực hiện")
+        }
+    }
+    
+    // ==================== CORE SKILL METHODS (GIỮ NGUYÊN) ====================
+    
+    private val pruneMutex = Mutex()
+    
     override suspend fun initialize() {
         val cameras = database.cameraDao().getActiveCameras()
         cameras.forEach { camera ->
@@ -135,9 +269,7 @@ class CameraSkill @Inject constructor(
         pruneOrphanedCameraState()
         scheduleDailyReport()
     }
-
-    private val pruneMutex = Mutex()
-
+    
     private suspend fun pruneOrphanedCameraState() {
         try {
             pruneMutex.withLock {
@@ -273,11 +405,9 @@ class CameraSkill @Inject constructor(
         emailSkill.sendEmail(to, subject, body, null)
     }
     
-    override suspend fun shutdown() {
-        // ApplicationScope được quản lý bởi Hilt SingletonComponent
-    }
+    override suspend fun shutdown() {}
     
-    // ==================== CIRCUIT BREAKER METHODS ====================
+    // ==================== CIRCUIT BREAKER ====================
     
     private fun isCircuitBreakerOpen(cameraId: String): Boolean {
         val cb = circuitBreakers[cameraId] ?: return false
@@ -345,7 +475,6 @@ class CameraSkill @Inject constructor(
                 database.cameraDao().getActiveCameras()
             }
 
-            // FIX: Báo rõ khi không có camera nào trong DB
             if (cameras.isEmpty()) {
                 logger.w("CameraSkill", "scanCamera: không có camera nào trong DB" +
                     if (cameraId != null) " (cameraId=$cameraId không tồn tại)" else " (chưa thêm camera)")
@@ -368,7 +497,6 @@ class CameraSkill @Inject constructor(
                 }
 
                 val customerSetting = database.cameraDao().getCustomerSetting(camera.customerId)
-                // FIX: Log rõ khi camera bị skip vì inactive
                 if (customerSetting?.isActive != 1) {
                     logger.d("CameraSkill", "⏭️ Camera ${camera.id} skipped: " +
                         if (customerSetting == null) "không có customerSetting (chưa tạo?)"
@@ -408,10 +536,6 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    /**
-     * ✅ PHƯƠNG THỨC MỚI: Xử lý ảnh từ CameraProcessor
-     * Được gọi từ CameraProcessor.processByteArray() và processByteBuffer()
-     */
     suspend fun processImage(cameraId: String, imageBytes: ByteArray): AgentResponse {
         return try {
             val camera = database.cameraDao().getCameraById(cameraId)
@@ -426,7 +550,6 @@ class CameraSkill @Inject constructor(
                 return AgentResponse(success = true, data = mapOf("skipped" to true))
             }
             
-            // Xử lý ảnh với learning
             val result = processImageWithLearning(camera, imageBytes, customerSetting?.smartMode == 1)
             
             AgentResponse(
@@ -440,9 +563,6 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    /**
-     * Xử lý ảnh với cơ chế học tập thích nghi (tách từ scanWithLearning)
-     */
     private suspend fun processImageWithLearning(
         camera: CameraConfigEntity,
         imageBytes: ByteArray,
@@ -453,7 +573,6 @@ class CameraSkill @Inject constructor(
             val now = System.currentTimeMillis()
             
             try {
-                // Reset circuit breaker on successful fetch
                 recordOnline(camera.id)
                 
                 val currentPhash = imageHashTool.calculatePhash(imageBytes)
@@ -482,7 +601,6 @@ class CameraSkill @Inject constructor(
                 
                 val isMature = state.baselineWindow.size >= 3
                 
-                // Check pending reset
                 val shouldReset = checkPendingReset(camera.id, currentDiff, absDiffTrigger)
                 if (shouldReset) {
                     learningStates[camera.id] = CameraLearningState(
@@ -559,15 +677,8 @@ class CameraSkill @Inject constructor(
                             emailSent = emailSent
                         )
                         
-                        pluginEventBus.publishAndForget(PluginEvent(
-                            type = "ALERT_DETECTED",
-                            source = "camera_skill",
-                            payload = mapOf(
-                                "cameraId" to camera.id,
-                                "message" to aiComment,
-                                "emailSent" to emailSent
-                            )
-                        ))
+                        logger.i("CameraSkill", "🚨 ALERT detected for camera ${camera.id}: $aiComment")
+                        
                     } else {
                         if (isMature && isSuddenChange) {
                             pendingResets[camera.id] = PendingResetState(currentDiff, now)
@@ -576,7 +687,6 @@ class CameraSkill @Inject constructor(
                     }
                 }
                 
-                // Update learning state
                 if (!shouldCallAi || !isSuspicious) {
                     state.baselineWindow.add(currentDiff)
                     if (state.baselineWindow.size > 20) {
@@ -610,15 +720,8 @@ class CameraSkill @Inject constructor(
                     database.cameraDao().updateCamera(camera.copy(isOnline = 1, status = "online"))
                 }
                 
-                pluginEventBus.publishAndForget(PluginEvent(
-                    type = "CAMERA_SCANNED",
-                    source = "camera_skill",
-                    payload = mapOf(
-                        "cameraId" to camera.id,
-                        "hasChange" to isSuddenChange,
-                        "aiComment" to (aiComment ?: "")
-                    )
-                ))
+                logger.d("CameraSkill", "📷 Camera ${camera.id} scanned, hasChange=$isSuddenChange")
+                
                 updateDiagnostics()
                 
                 return@withLock mapOf(
@@ -662,7 +765,6 @@ class CameraSkill @Inject constructor(
                     )
                 }
                 
-                // Gọi processImageWithLearning để xử lý
                 return@withLock processImageWithLearning(camera, imageBytes, isSmartMode)
                 
             } catch (e: Exception) {
@@ -869,11 +971,6 @@ class CameraSkill @Inject constructor(
     
     fun observeCameras() = database.cameraDao().getAllCamerasFlow()
 
-    /**
-     * Test trực tiếp một snapshot URL — không cần camera có trong DB.
-     * Dùng để debug khi camera test không được.
-     * Trả về: imageBytes nếu thành công, error message nếu thất bại.
-     */
     suspend fun testCameraUrl(snapshotUrl: String): AgentResponse {
         return try {
             logger.i("CameraSkill", "🧪 testCameraUrl: $snapshotUrl")

@@ -1,8 +1,14 @@
 package com.aichatvn.agent.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,17 +36,42 @@ fun SettingsScreen(
     val darkMode         by viewModel.darkMode.collectAsState()
     val resendApiKey     by viewModel.resendApiKey.collectAsState()
     val resendSender     by viewModel.resendSender.collectAsState()
+    val tuyaClientId     by viewModel.tuyaClientId.collectAsState()
+    val tuyaClientSecret by viewModel.tuyaClientSecret.collectAsState()
+    val exportResult     by viewModel.exportResult.collectAsState()
 
     var groqKeyInput     by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput   by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
     var resendSenderInput by remember(resendSender)  { mutableStateOf(resendSender) }
+    var tuyaClientIdInput     by remember(tuyaClientId)     { mutableStateOf(tuyaClientId) }
+    var tuyaClientSecretInput by remember(tuyaClientSecret) { mutableStateOf(tuyaClientSecret) }
+    
     var testEmailAddress by remember { mutableStateOf("") }
     var showSaved        by remember { mutableStateOf(false) }
     var errorMessage     by remember { mutableStateOf<String?>(null) }
     var testEmailResult  by remember { mutableStateOf<String?>(null) }
+    var tuyaTestResult   by remember { mutableStateOf<String?>(null) }
 
-    // Worker schedule status
     var workerStatus by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                try {
+                    val json = context.contentResolver.openInputStream(it)
+                        ?.bufferedReader()
+                        ?.readText()
+                    if (!json.isNullOrBlank()) {
+                        viewModel.importSettings(context, json)
+                    }
+                } catch (e: Exception) {
+                    // Xử lý lỗi
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         val workManager = WorkManager.getInstance(context)
@@ -117,10 +148,91 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ── Tuya Cloud API ─────────────────────────────────────────────
+            Text("🔌 Tuya Smart Life", style = MaterialTheme.typography.titleMedium)
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        "Đăng ký miễn phí tại developer.tuya.com → tạo Cloud Project → link Smart Life.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Text(
+                        "Lấy Client ID và Client Secret từ project.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f)
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = tuyaClientIdInput,
+                onValueChange = { tuyaClientIdInput = it },
+                label = { Text("Tuya Client ID") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            OutlinedTextField(
+                value = tuyaClientSecretInput,
+                onValueChange = { tuyaClientSecretInput = it },
+                label = { Text("Tuya Client Secret") },
+                modifier = Modifier.fillMaxWidth(),
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput)
+                        showSaved = true
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("💾 Lưu Tuya")
+                }
+
+                Button(
+                    onClick = {
+                        scope.launch {
+                            tuyaTestResult = viewModel.testTuyaConnection(
+                                tuyaClientIdInput,
+                                tuyaClientSecretInput
+                            )
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                ) {
+                    Text("🔌 Test")
+                }
+            }
+
+            if (tuyaTestResult != null) {
+                Text(
+                    text = tuyaTestResult!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (tuyaTestResult!!.startsWith("✅"))
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+
+            HorizontalDivider()
+
             // ── Resend Email API ───────────────────────────────────────────
             Text("📧 Resend Email API", style = MaterialTheme.typography.titleMedium)
 
-            // Hướng dẫn ngắn
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
@@ -184,7 +296,6 @@ fun SettingsScreen(
                         onClick = {
                             scope.launch {
                                 testEmailResult = null
-                                // Lưu settings trước rồi mới test
                                 viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
                                 val result = viewModel.testSendEmail(testEmailAddress)
                                 testEmailResult = result
@@ -211,6 +322,56 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ── Export/Import Settings ──────────────────────────────────────────
+            Text("💾 Sao lưu cài đặt", style = MaterialTheme.typography.titleMedium)
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            viewModel.exportSettings(context)
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("📤 Export")
+                }
+
+                OutlinedButton(
+                    onClick = { filePickerLauncher.launch("application/json") },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("📥 Import")
+                }
+            }
+
+            if (exportResult != null) {
+                Text(
+                    text = exportResult!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (exportResult!!.startsWith("✅"))
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+
+            HorizontalDivider()
+
             // ── Dark mode ──────────────────────────────────────────────────
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -228,12 +389,13 @@ fun SettingsScreen(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
                     viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
+                    viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput)
                     showSaved = true
                     errorMessage = null
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("💾 Lưu cài đặt")
+                Text("💾 Lưu tất cả cài đặt")
             }
 
             if (errorMessage != null) {

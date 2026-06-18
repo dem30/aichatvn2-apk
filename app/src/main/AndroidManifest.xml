@@ -10,13 +10,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
-    <!-- ✅ Android 14+ Foreground Service - dataSync (HTTP snapshot) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    
-    <!-- ❌ KHÔNG dùng camera hardware => KHÔNG cần FOREGROUND_SERVICE_CAMERA -->
+    <!-- ✅ WorkManager không cần foreground service -->
+    <!-- ❌ Đã xóa: FOREGROUND_SERVICE, RECEIVE_BOOT_COMPLETED -->
     
     <!-- For USB OTG Serial -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
@@ -47,29 +43,11 @@
             </intent-filter>
         </activity>
         
-        <!--
-          ✅ Foreground Service - dataSync
-          CameraScanService chỉ fetch snapshot HTTP từ camera IP
-          KHÔNG dùng Camera2 API hay CameraX
-        -->
-        <service
-            android:name=".services.CameraScanService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+        <!-- ✅ WorkManager tự động quản lý sau boot -->
+        <!-- ❌ Đã xóa: CameraScanService -->
+        <!-- ❌ Đã xóa: BootReceiver -->
         
-        <!-- Boot Receiver -->
-        <receiver
-            android:name=".receivers.BootReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-            </intent-filter>
-        </receiver>
-        
-        <!-- WorkManager -->
+        <!-- WorkManager - giữ lại để tránh conflict -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
