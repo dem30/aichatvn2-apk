@@ -609,7 +609,7 @@ class CameraSkill @Inject constructor(
                 
                 if (shouldCallAi) {
                     val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else DEFAULT_AI_PROMPT
-                    aiComment = try {
+                    val aiResult: String = try {
                         withTimeout(20_000L) {
                             groqClient.analyzeImage(optimizedBytes, prompt)
                         }
@@ -617,6 +617,7 @@ class CameraSkill @Inject constructor(
                         logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id}, bỏ qua phân tích AI lần này")
                         "Không thể phân tích (AI timeout)"
                     }
+                    aiComment = aiResult
                     
                     val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
                         camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }

@@ -1,11 +1,13 @@
 package com.aichatvn.agent.ui.screens
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,11 +17,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.AlertEntity
+import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
+import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -36,10 +41,47 @@ fun CameraDetailScreen(
     val testResult by viewModel.testResult.collectAsState()
     val liveSnapshot by viewModel.liveSnapshot.collectAsState()
     val recentAlerts by viewModel.recentAlerts.collectAsState()
+    val configDraft by viewModel.configDraft.collectAsState()
+    val configSaveResult by viewModel.configSaveResult.collectAsState()
+    val schedules by viewModel.schedules.collectAsState()
+    val scheduleDraft by viewModel.scheduleDraft.collectAsState()
+    val scheduleResult by viewModel.scheduleResult.collectAsState()
+
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     var showTestDialog by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
     LaunchedEffect(testResult) {
         testResult?.let { showTestDialog = true }
+    }
+    LaunchedEffect(configSaveResult) {
+        configSaveResult?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearConfigSaveResult()
+        }
+    }
+    LaunchedEffect(scheduleResult) {
+        scheduleResult?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearScheduleResult()
+        }
+    }
+
+    // Bottom sheet form thêm/sửa lịch
+    if (scheduleDraft != null) {
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.closeScheduleEditor() },
+            sheetState = sheetState
+        ) {
+            ScheduleFormSheet(
+                draft = scheduleDraft!!,
+                isLoading = isLoading,
+                onUpdate = { viewModel.updateScheduleDraft(it) },
+                onSave = { viewModel.saveSchedule() },
+                onCancel = { viewModel.closeScheduleEditor() }
+            )
+        }
     }
 
     if (showTestDialog && testResult != null) {
@@ -60,6 +102,7 @@ fun CameraDetailScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(camera?.customername ?: "Chi tiết camera") },
@@ -284,6 +327,141 @@ fun CameraDetailScreen(
                 }
             }
 
+            // === Cấu hình camera ===
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Cấu hình", style = MaterialTheme.typography.titleSmall)
+                            if (configDraft == null) {
+                                TextButton(onClick = { viewModel.openConfigEditor() }) {
+                                    Icon(Icons.Default.Edit, null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Sửa")
+                                }
+                            }
+                        }
+
+                        AnimatedVisibility(visible = configDraft == null) {
+                            // Chế độ xem (read-only)
+                            Column {
+                                Spacer(Modifier.height(4.dp))
+                                DetailRow("Snapshot URL", cam.snapshoturl.ifBlank { "—" })
+                                DetailRow("Vị trí", cam.landinfo?.ifBlank { "—" } ?: "—")
+                                DetailRow("AI Prompt", cam.aiPrompt.ifBlank { "(mặc định)" })
+                                DetailRow("Từ khoá (+)", cam.aiPositiveKeywords.ifBlank { "(mặc định)" })
+                                DetailRow("Từ khoá (−)", cam.aiNegativeKeywords.ifBlank { "(mặc định)" })
+                            }
+                        }
+
+                        AnimatedVisibility(visible = configDraft != null) {
+                            // Chế độ chỉnh sửa inline
+                            configDraft?.let { draft ->
+                                Column {
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedTextField(
+                                        value = draft.snapshotUrl,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(snapshotUrl = v) } },
+                                        label = { Text("Snapshot URL") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.landInfo,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(landInfo = v) } },
+                                        label = { Text("Vị trí / Ghi chú") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.aiPrompt,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(aiPrompt = v) } },
+                                        label = { Text("AI Prompt (để trống = dùng mặc định)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 3,
+                                        maxLines = 5
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.aiPositiveKeywords,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(aiPositiveKeywords = v) } },
+                                        label = { Text("Từ khoá cảnh báo (+), cách nhau bằng dấu phẩy") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.aiNegativeKeywords,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(aiNegativeKeywords = v) } },
+                                        label = { Text("Từ khoá bình thường (−), cách nhau bằng dấu phẩy") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedButton(
+                                            onClick = { viewModel.closeConfigEditor() },
+                                            modifier = Modifier.weight(1f)
+                                        ) { Text("Huỷ") }
+                                        Button(
+                                            onClick = { viewModel.saveConfig() },
+                                            modifier = Modifier.weight(1f),
+                                            enabled = !isLoading
+                                        ) {
+                                            if (isLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                            else Text("Lưu")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // === Lịch trình ===
+            item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Lịch trình (${schedules.size})", style = MaterialTheme.typography.titleSmall)
+                            TextButton(onClick = { viewModel.openAddSchedule() }) {
+                                Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Thêm")
+                            }
+                        }
+                        if (schedules.isEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Chưa có lịch — nhấn Thêm để tạo lịch quét tự động",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            items(schedules, key = { it.id }) { schedule ->
+                ScheduleRow(
+                    schedule = schedule,
+                    onToggle = { viewModel.toggleSchedule(schedule) },
+                    onEdit = { viewModel.openEditSchedule(schedule) },
+                    onDelete = { viewModel.deleteSchedule(schedule.id) }
+                )
+            }
+
             // === Cảnh báo gần đây ===
             item {
                 Row(
@@ -320,6 +498,172 @@ fun CameraDetailScreen(
 
 @Composable
 private fun DetailRow(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            modifier = Modifier.padding(start = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun StatRow(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun ScheduleRow(
+    schedule: ScheduleEntity,
+    onToggle: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Xoá lịch?") },
+            text = { Text("Lịch này sẽ bị xoá vĩnh viễn.") },
+            confirmButton = {
+                TextButton(onClick = { showDeleteDialog = false; onDelete() }) { Text("Xoá", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Huỷ") }
+            }
+        )
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (schedule.cron.isNotBlank()) "⏰ ${schedule.cron}" else "🔁 mỗi ${schedule.intervalMinutes} phút",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = "Action: ${schedule.action}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (schedule.lastRunAt > 0L) {
+                    val lastRun = remember(schedule.lastRunAt) {
+                        SimpleDateFormat("HH:mm dd/MM", Locale.getDefault()).format(Date(schedule.lastRunAt))
+                    }
+                    Text(
+                        text = "Chạy lần cuối: $lastRun",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Switch(
+                checked = schedule.enabled == 1,
+                onCheckedChange = { onToggle() },
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Default.Edit, contentDescription = "Sửa", modifier = Modifier.size(18.dp))
+            }
+            IconButton(onClick = { showDeleteDialog = true }) {
+                Icon(Icons.Default.Delete, contentDescription = "Xoá", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduleFormSheet(
+    draft: ScheduleDraft,
+    isLoading: Boolean,
+    onUpdate: (ScheduleDraft.() -> ScheduleDraft) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val isEdit = draft.id.isNotBlank()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            if (isEdit) "Sửa lịch trình" else "Thêm lịch trình",
+            style = MaterialTheme.typography.titleMedium
+        )
+
+        // Action
+        Text("Action", style = MaterialTheme.typography.labelMedium)
+        val actions = listOf("scan")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            actions.forEach { action ->
+                FilterChip(
+                    selected = draft.action == action,
+                    onClick = { onUpdate { copy(action = action) } },
+                    label = { Text(action) }
+                )
+            }
+        }
+
+        // Cron hoặc interval
+        OutlinedTextField(
+            value = draft.cron,
+            onValueChange = { onUpdate { copy(cron = it) } },
+            label = { Text("Cron (vd: 0 7 * * * = 7h sáng mỗi ngày)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            supportingText = { Text("Ưu tiên nếu điền cả hai") }
+        )
+
+        OutlinedTextField(
+            value = if (draft.intervalMinutes > 0) draft.intervalMinutes.toString() else "",
+            onValueChange = { v -> onUpdate { copy(intervalMinutes = v.toIntOrNull() ?: 0) } },
+            label = { Text("Hoặc interval (phút), vd: 30") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Kích hoạt ngay", style = MaterialTheme.typography.labelMedium)
+            Switch(
+                checked = draft.enabled,
+                onCheckedChange = { onUpdate { copy(enabled = it) } }
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Huỷ") }
+            Button(
+                onClick = onSave,
+                modifier = Modifier.weight(1f),
+                enabled = !isLoading
+            ) {
+                if (isLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Text(if (isEdit) "Cập nhật" else "Thêm")
+            }
+        }
+    }
+}
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
