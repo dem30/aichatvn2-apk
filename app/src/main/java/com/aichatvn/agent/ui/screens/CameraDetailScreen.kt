@@ -664,14 +664,6 @@ private fun ScheduleFormSheet(
         }
     }
 }
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodySmall, textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.padding(start = 8.dp))
-    }
-}
 
 @Composable
 private fun MiniAlertRow(alert: AlertEntity) {
