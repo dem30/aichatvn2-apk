@@ -247,6 +247,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun cameraDao(): CameraDao
     abstract fun alertDao(): AlertDao
     abstract fun scheduleDao(): ScheduleDao  // ✅ THÊM
+    abstract fun tuyaDeviceDao(): TuyaDeviceDao   // 👈 THÊM DÒNG NÀY
 
     companion object {
         @Volatile

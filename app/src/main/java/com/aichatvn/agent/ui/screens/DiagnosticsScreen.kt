@@ -262,7 +262,7 @@ private fun CameraDiagnosticCard(
                         // ✅ Nút reset cho từng camera
                         TextButton(
                             onClick = onResetCircuitBreaker,
-                            colors = TextButtonDefaults.textButtonColors(
+                            colors = ButtonDefaults.textButtonColors(
                                 contentColor = MaterialTheme.colorScheme.error
                             )
                         ) {
