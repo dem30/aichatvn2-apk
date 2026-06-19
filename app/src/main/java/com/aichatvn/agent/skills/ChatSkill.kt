@@ -141,14 +141,25 @@ class ChatSkill @Inject constructor(
         val actionVerbs = listOf("bật", "tắt", "khởi động lại", "ngưng", "dừng hẳn", "reset", "gửi")
         val systemObjects = listOf("camera", "đèn", "light", "đèn led", "chế độ thông minh", "smart mode", "giám sát")
         val sendCommands = listOf("gửi mail", "gửi email", "gửi thông báo", "send email", "send mail")
-        val queryCommands = listOf("trạng thái", "status", "bao nhiêu", "danh sách", "xem log", "xem alert")
+        val queryCommands = listOf("trạng thái", "status", "bao nhiêu", "danh sách camera", "xem log", "xem alert")
+
+        // ✅ Lệnh cấu hình camera (mới)
+        val configCommands = listOf(
+            "đặt từ khoá", "cập nhật từ khoá", "thêm từ khoá", "đổi từ khoá",
+            "đặt prompt", "cập nhật prompt", "thay prompt", "đổi prompt",
+            "cập nhật url", "thay url", "đổi url", "url camera",
+            "cấu hình camera", "cập nhật camera", "thiết lập camera",
+            "từ khoá cảnh báo", "từ khoá bình thường",
+            "đặt vị trí", "cập nhật vị trí"
+        )
 
         val hasAction = actionVerbs.any { lower.contains(it) }
         val hasObject = systemObjects.any { lower.contains(it) }
         val hasSendCommand = sendCommands.any { lower.contains(it) }
         val hasQueryCommand = queryCommands.any { lower.contains(it) }
+        val hasConfigCommand = configCommands.any { lower.contains(it) }
 
-        return (hasAction && hasObject) || hasSendCommand || hasQueryCommand
+        return (hasAction && hasObject) || hasSendCommand || hasQueryCommand || hasConfigCommand
     }
 
     /**

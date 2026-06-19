@@ -4,12 +4,14 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -42,6 +44,7 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var selectedChipTab by remember { mutableStateOf(0) } // 0=Camera 1=Đèn 2=Email 3=Khác
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     
@@ -213,6 +216,13 @@ fun ChatScreen(
             }
         }
         
+        // ── Gợi ý lệnh nhanh ─────────────────────────────────────────────────
+        QuickCommandBar(
+            selectedTab = selectedChipTab,
+            onTabChange = { selectedChipTab = it },
+            onChipClick = { inputText = it }
+        )
+
         if (selectedImageUri != null) {
             Card(
                 modifier = Modifier
@@ -280,6 +290,94 @@ fun ChatScreen(
                 shape = RoundedCornerShape(24.dp)
             ) {
                 Icon(Icons.Default.Send, contentDescription = "Send")
+            }
+        }
+    }
+}
+
+// ── Data lệnh gợi ý theo từng nhóm ───────────────────────────────────────────
+
+private data class QuickCommand(val label: String, val text: String)
+
+private val QUICK_TABS = listOf("📷 Camera", "💡 Đèn", "📧 Email", "❓ Khác")
+
+private val QUICK_COMMANDS = listOf(
+    // 0 — Camera
+    listOf(
+        QuickCommand("Quét camera", "quét tất cả camera"),
+        QuickCommand("Danh sách camera", "danh sách camera"),
+        QuickCommand("Trạng thái camera", "trạng thái camera"),
+        QuickCommand("Bật smart mode", "bật chế độ thông minh camera "),
+        QuickCommand("Tắt smart mode", "tắt chế độ thông minh camera "),
+        QuickCommand("Bật theo dõi", "bật theo dõi camera "),
+        QuickCommand("Tắt theo dõi", "tắt theo dõi camera "),
+        QuickCommand("Đặt từ khoá CB", "đặt từ khoá cảnh báo camera  là: "),
+        QuickCommand("Đặt từ khoá BT", "đặt từ khoá bình thường camera  là: "),
+        QuickCommand("Cập nhật prompt", "cập nhật prompt camera  thành: "),
+        QuickCommand("Thay URL camera", "thay url camera  thành: "),
+    ),
+    // 1 — Đèn
+    listOf(
+        QuickCommand("Bật đèn", "bật đèn "),
+        QuickCommand("Tắt đèn", "tắt đèn "),
+        QuickCommand("Danh sách đèn", "danh sách đèn"),
+        QuickCommand("Trạng thái đèn", "trạng thái đèn"),
+    ),
+    // 2 — Email
+    listOf(
+        QuickCommand("Gửi email", "gửi email đến  nội dung: "),
+        QuickCommand("Báo cáo ngay", "gửi báo cáo camera ngay"),
+    ),
+    // 3 — Khác
+    listOf(
+        QuickCommand("Học lệnh mới", "Học: câu hỏi → câu trả lời"),
+        QuickCommand("Xem log", "xem log hệ thống"),
+        QuickCommand("Xem cảnh báo", "xem alert camera"),
+    )
+)
+
+@Composable
+private fun QuickCommandBar(
+    selectedTab: Int,
+    onTabChange: (Int) -> Unit,
+    onChipClick: (String) -> Unit
+) {
+    val tabScrollState = rememberScrollState()
+    val chipScrollState = rememberScrollState()
+
+    Column {
+        HorizontalDivider()
+
+        // Tab nhóm
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(tabScrollState)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            QUICK_TABS.forEachIndexed { index, label ->
+                FilterChip(
+                    selected = selectedTab == index,
+                    onClick = { onTabChange(index) },
+                    label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
+
+        // Chip lệnh
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(chipScrollState)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            QUICK_COMMANDS[selectedTab].forEach { cmd ->
+                SuggestionChip(
+                    onClick = { onChipClick(cmd.text) },
+                    label = { Text(cmd.label, style = MaterialTheme.typography.labelSmall) }
+                )
             }
         }
     }

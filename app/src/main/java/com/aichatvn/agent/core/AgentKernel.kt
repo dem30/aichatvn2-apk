@@ -168,14 +168,22 @@ class AgentKernel @Inject constructor(
     }
 
     private fun getAvailablePluginsDescription(): String {
-        if (plugins.isEmpty()) {
-            return "Không có plugin nào được cài đặt."
-        }
-        
+        if (plugins.isEmpty()) return "Không có plugin nào được cài đặt."
+
         return plugins.joinToString("\n\n") { plugin ->
             buildString {
                 append("📦 ${plugin.id} - ${plugin.name}\n")
-                append("Actions: ${plugin.getActions().joinToString { it.name }}")
+                plugin.getActions().forEach { action ->
+                    append("  • action=\"${action.name}\" — ${action.description}\n")
+                    val required = action.parameters.filter { it.required }
+                    val optional = action.parameters.filter { !it.required }
+                    if (required.isNotEmpty()) {
+                        append("    params bắt buộc: ${required.joinToString { "\"${it.name}\"(${it.type})" }}\n")
+                    }
+                    if (optional.isNotEmpty()) {
+                        append("    params tuỳ chọn: ${optional.joinToString { "\"${it.name}\"(${it.type})" }}\n")
+                    }
+                }
             }
         }
     }

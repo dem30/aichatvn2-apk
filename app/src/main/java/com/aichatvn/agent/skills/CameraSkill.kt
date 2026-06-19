@@ -87,6 +87,23 @@ class CameraSkill @Inject constructor(
                     PluginParameter("customerId", "string", "Mã camera", true),
                     PluginParameter("enabled", "boolean", "true: bật, false: tắt", true)
                 )
+            ),
+            PluginAction(
+                name = "configure",
+                description = "Cập nhật cấu hình AI cho camera: prompt phân tích, từ khoá cảnh báo, từ khoá bình thường, URL ảnh chụp, vị trí. Dùng khi user nói: đặt từ khoá, cập nhật prompt, thay URL camera, đổi vị trí.",
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera (id)", true),
+                    PluginParameter("aiPrompt", "string", "Prompt AI mới cho camera này", false),
+                    PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo, cách nhau bằng dấu phẩy. Ví dụ: cháy, khói, người lạ", false),
+                    PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường, cách nhau bằng dấu phẩy. Ví dụ: bình thường, không có gì", false),
+                    PluginParameter("snapshotUrl", "string", "URL ảnh chụp mới", false),
+                    PluginParameter("landInfo", "string", "Thông tin vị trí / ghi chú", false)
+                )
+            ),
+            PluginAction(
+                name = "list_cameras",
+                description = "Liệt kê tất cả camera kèm id, tên, trạng thái. Dùng để tra cứu cameraId trước khi cấu hình.",
+                parameters = emptyList()
             )
         )
     }
@@ -172,13 +189,60 @@ class CameraSkill @Inject constructor(
         return when (action) {
             "scan" -> handleScan(params)
             "list" -> handleList()
+            "list_cameras" -> handleListCameras()
             "status" -> handleStatus(params)
             "set_active" -> handleSetActive(params)
             "set_smart_mode" -> handleSetSmartMode(params)
+            "configure" -> handleConfigure(params)
             else -> PluginResult.Failure("Action không xác định: $action")
         }
     }
     
+    // ── Configure: cập nhật aiPrompt, keywords, snapshotUrl, landInfo ──────────
+    private suspend fun handleConfigure(params: Map<String, Any>): PluginResult {
+        val cameraId = params["cameraId"] as? String
+            ?: return PluginResult.Failure("Thiếu cameraId. Dùng action list_cameras để xem danh sách camera.")
+        val cam = database.cameraDao().getCameraById(cameraId)
+            ?: return PluginResult.Failure("Không tìm thấy camera id=$cameraId")
+
+        val updated = cam.copy(
+            aiPrompt = (params["aiPrompt"] as? String)?.trim() ?: cam.aiPrompt,
+            aiPositiveKeywords = (params["aiPositiveKeywords"] as? String)?.trim() ?: cam.aiPositiveKeywords,
+            aiNegativeKeywords = (params["aiNegativeKeywords"] as? String)?.trim() ?: cam.aiNegativeKeywords,
+            snapshoturl = (params["snapshotUrl"] as? String)?.trim() ?: cam.snapshoturl,
+            landinfo = (params["landInfo"] as? String)?.trim() ?: cam.landinfo
+        )
+        database.cameraDao().updateCamera(updated)
+
+        val changed = buildList {
+            if (updated.aiPrompt != cam.aiPrompt) add("prompt AI")
+            if (updated.aiPositiveKeywords != cam.aiPositiveKeywords) add("từ khoá cảnh báo")
+            if (updated.aiNegativeKeywords != cam.aiNegativeKeywords) add("từ khoá bình thường")
+            if (updated.snapshoturl != cam.snapshoturl) add("URL ảnh chụp")
+            if (updated.landinfo != cam.landinfo) add("vị trí")
+        }
+        val summary = if (changed.isEmpty()) "Không có thay đổi" else "Đã cập nhật: ${changed.joinToString(", ")}"
+        logger.i("CameraSkill", "configure OK cameraId=$cameraId changed=$changed")
+        return PluginResult.Success(mapOf("message" to "✅ Camera \"${cam.customername}\": $summary"))
+    }
+
+    // ── List cameras: trả về id + tên để LLM map khi user nói tên camera ────────
+    private suspend fun handleListCameras(): PluginResult {
+        val cameras = database.cameraDao().getAllCameras()
+        if (cameras.isEmpty()) return PluginResult.Success(mapOf("message" to "Chưa có camera nào"))
+        val list = cameras.map { c ->
+            mapOf(
+                "id" to c.id,
+                "name" to c.customername,
+                "url" to c.snapshoturl,
+                "active" to (c.manualOff == 0),
+                "online" to (c.isOnline == 1)
+            )
+        }
+        val summary = cameras.joinToString("\n") { "• ${it.customername} (id: ${it.id})" }
+        return PluginResult.Success(mapOf("cameras" to list, "message" to "Danh sách camera:\n$summary"))
+    }
+
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = params["cameraId"] as? String
         val result = scanCamera(cameraId, false)
