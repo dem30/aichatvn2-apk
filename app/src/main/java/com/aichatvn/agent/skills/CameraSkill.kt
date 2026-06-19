@@ -49,7 +49,7 @@ class CameraSkill @Inject constructor(
     
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
     
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     override fun getActions(): List<PluginAction> {
         return listOf(
@@ -609,7 +609,14 @@ class CameraSkill @Inject constructor(
                 
                 if (shouldCallAi) {
                     val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else DEFAULT_AI_PROMPT
-                    aiComment = groqClient.analyzeImage(optimizedBytes, prompt)
+                    aiComment = try {
+                        withTimeout(20_000L) {
+                            groqClient.analyzeImage(optimizedBytes, prompt)
+                        }
+                    } catch (e: TimeoutCancellationException) {
+                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id}, bỏ qua phân tích AI lần này")
+                        "Không thể phân tích (AI timeout)"
+                    }
                     
                     val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
                         camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
@@ -736,32 +743,29 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
-        return getMutexForCamera(camera.id).withLock {
-            val state = learningStates.getOrPut(camera.id) { CameraLearningState() }
-            val now = System.currentTimeMillis()
-            
-            try {
-                val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
-                if (imageBytes == null) {
-                    handleOfflineCamera(camera)
-                    recordOffline(camera.id)
-                    return@withLock mapOf(
-                        "cameraId" to camera.id,
-                        "success" to false,
-                        "error" to "Cannot fetch snapshot"
-                    )
-                }
-                
-                return@withLock processImageWithLearning(camera, imageBytes, isSmartMode)
-                
-            } catch (e: Exception) {
-                logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
-                return@withLock mapOf(
+        // ⚠️ KHÔNG lock mutex ở đây — processImageWithLearning() đã tự lock rồi.
+        // Mutex của Kotlin không reentrant, lock 2 lần liên tiếp => deadlock vĩnh viễn.
+        try {
+            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
+            if (imageBytes == null) {
+                handleOfflineCamera(camera)
+                recordOffline(camera.id)
+                return mapOf(
                     "cameraId" to camera.id,
                     "success" to false,
-                    "error" to (e.message ?: "Unknown error")
+                    "error" to "Cannot fetch snapshot"
                 )
             }
+
+            return processImageWithLearning(camera, imageBytes, isSmartMode)
+
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
+            return mapOf(
+                "cameraId" to camera.id,
+                "success" to false,
+                "error" to (e.message ?: "Unknown error")
+            )
         }
     }
     
@@ -778,7 +782,14 @@ class CameraSkill @Inject constructor(
             
             val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
             val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else DEFAULT_AI_PROMPT
-            val aiComment = groqClient.analyzeImage(optimizedBytes, prompt)
+            val aiComment = try {
+                withTimeout(20_000L) {
+                    groqClient.analyzeImage(optimizedBytes, prompt)
+                }
+            } catch (e: TimeoutCancellationException) {
+                logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id} (daily report)")
+                "Không thể phân tích (AI timeout)"
+            }
             
             mapOf(
                 "cameraId" to camera.id,
