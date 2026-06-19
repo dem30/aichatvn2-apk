@@ -124,7 +124,12 @@ class CameraViewModel @Inject constructor(
                 val camera = database.cameraDao().getCameraById(cameraId)
                 val setting = camera?.let { database.cameraDao().getCustomerSetting(it.customerId) }
 
+                // Lưu trạng thái gốc để restore sau khi test
+                val originalIsOnline = camera?.isOnline ?: 1
+                val originalStatus = camera?.status ?: "online"
                 val wasSmartOff = setting?.smartMode != 1
+
+                // Tạm bật SmartMode nếu đang tắt
                 if (wasSmartOff && camera != null) {
                     database.cameraDao().insertCustomerSetting(
                         CustomerSettingEntity(
@@ -139,16 +144,27 @@ class CameraViewModel @Inject constructor(
 
                 val result = cameraSkill.scanCamera(cameraId, isDailyReport = false)
 
-                if (wasSmartOff && camera != null) {
-                    database.cameraDao().insertCustomerSetting(
-                        CustomerSettingEntity(
-                            customerId = camera.customerId,
-                            smartMode = 0,
-                            isActive = 1,
-                            updatedAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
+                // Restore SmartMode và isOnline/status về trạng thái ban đầu
+                if (camera != null) {
+                    if (wasSmartOff) {
+                        database.cameraDao().insertCustomerSetting(
+                            CustomerSettingEntity(
+                                customerId = camera.customerId,
+                                smartMode = 0,
+                                isActive = 1,
+                                updatedAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
                         )
-                    )
+                    }
+                    // Restore lại trạng thái online/offline gốc
+                    // (scanCamera có thể đã đổi sang offline nếu fetch thất bại)
+                    val current = database.cameraDao().getCameraById(cameraId)
+                    if (current != null && (current.isOnline != originalIsOnline || current.status != originalStatus)) {
+                        database.cameraDao().updateCamera(
+                            current.copy(isOnline = originalIsOnline, status = originalStatus)
+                        )
+                    }
                 }
 
                 when (result) {
@@ -186,8 +202,9 @@ class CameraViewModel @Inject constructor(
             } catch (e: Exception) {
                 _testResult.value = "❌ Exception: ${e.message}"
                 logger.e("CameraViewModel", "testCamera error: ${e.message}", e)
+            } finally {
+                _isLoading.value = false  // Đảm bảo luôn tắt loading dù có exception
             }
-            _isLoading.value = false
         }
     }
 
