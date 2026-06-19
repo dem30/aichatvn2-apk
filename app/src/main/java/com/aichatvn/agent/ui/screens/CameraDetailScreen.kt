@@ -296,11 +296,11 @@ fun CameraDetailScreen(
                         Spacer(Modifier.height(8.dp))
                         val stats = diagnostics
                         if (stats != null) {
-                            StatRow("Mẫu học", "${stats["samples"] ?: 0}")
-                            StatRow("Sự kiện thật", "${stats["realEvents"] ?: 0}")
-                            StatRow("Ngưỡng delta", "${stats["deltaTrigger"] ?: 10}")
-                            StatRow("Ngưỡng diff", "${stats["absDiffTrigger"] ?: 18}")
-                            StatRow("Baseline size", "${stats["baselineSize"] ?: 0}")
+                            CamStatRow("Mẫu học", "${stats["samples"] ?: 0}")
+                            CamStatRow("Sự kiện thật", "${stats["realEvents"] ?: 0}")
+                            CamStatRow("Ngưỡng delta", "${stats["deltaTrigger"] ?: 10}")
+                            CamStatRow("Ngưỡng diff", "${stats["absDiffTrigger"] ?: 18}")
+                            CamStatRow("Baseline size", "${stats["baselineSize"] ?: 0}")
 
                             val inCooldown = stats["inCooldown"] as? Boolean ?: false
                             val circuitOpen = stats["circuitBreakerOpen"] as? Boolean ?: false
@@ -513,7 +513,7 @@ private fun DetailRow(label: String, value: String) {
 }
 
 @Composable
-private fun StatRow(label: String, value: String) {
+private fun CamStatRow(label: String, value: String) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween
