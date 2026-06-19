@@ -22,6 +22,7 @@ import javax.inject.Singleton
 @Singleton
 class TrainingSkill @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val logger: Logger, 
 ) : BaseSkill("training", "Huấn luyện AI quản gia"), Plugin {
     
     private val database by lazy { AppDatabase.getDatabase(context) }

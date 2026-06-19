@@ -43,6 +43,8 @@ class CameraSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
+    private val logger: Logger, 
+    
 ) : BaseSkill("camera", "Quản lý camera"), Plugin {
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)

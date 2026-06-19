@@ -19,9 +19,6 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-
-
-
     @Provides
     @Singleton
     fun provideTuyaManager(
@@ -29,6 +26,7 @@ object AppModule {
         database: AppDatabase,
         logger: Logger
     ): TuyaManager {
+        // ✅ Dùng đúng method name: tuyaDeviceDao()
         return TuyaManager(context, database.tuyaDeviceDao(), logger)
     }
 

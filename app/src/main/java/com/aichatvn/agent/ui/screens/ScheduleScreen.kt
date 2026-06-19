@@ -150,6 +150,7 @@ fun AddScheduleDialog(
 ) {
     var pluginId by remember { mutableStateOf("") }
     var action by remember { mutableStateOf("") }
+    createdAt = System.currentTimeMillis() 
     var cron by remember { mutableStateOf("") }
     var intervalMinutes by remember { mutableStateOf("") }
 
@@ -199,7 +200,19 @@ fun AddScheduleDialog(
                         cron = cron,
                         intervalMinutes = interval,
                         enabled = 1,
-                        lastRunAt = 0
+      // Trong AddScheduleDialog, dòng ~202:
+val schedule = ScheduleEntity(
+    id = UUID.randomUUID().toString(),
+    pluginId = pluginId,
+    action = action,
+    params = "{}",
+    cron = cron,
+    intervalMinutes = interval,
+    enabled = 1,
+    lastRunAt = 0,
+    createdAt = System.currentTimeMillis()  // ✅ THÊM
+)
+onSave(schedule)                  lastRunAt = 0
                     )
                     onSave(schedule)
                 }
