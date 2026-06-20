@@ -169,7 +169,8 @@ kapt("com.google.dagger:hilt-compiler:2.58")
     implementation("androidx.core:core-splashscreen:1.0.1")
 
     // Hilt WorkManager integration
-    // Hilt WorkManager integration
+// Hilt + Compose Navigation integration (cho hiltViewModel())
+implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 implementation("androidx.hilt:hilt-work:1.2.0")
 ksp("androidx.hilt:hilt-compiler:1.2.0")   // đổi từ kapt -> ksp
 }
