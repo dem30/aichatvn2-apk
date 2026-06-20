@@ -3,8 +3,12 @@ package com.aichatvn.agent.core
 import android.content.Context
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.github.ljcamargo.llamacpp.LlamaHelper
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -38,9 +43,13 @@ class LocalRouterEngine @Inject constructor(
         private const val CONNECT_TIMEOUT_MS = 15_000
         private const val READ_TIMEOUT_MS = 30_000
         private const val MAX_RETRY = 2
+
+        private const val MODEL_LOAD_TIMEOUT_MS = 20_000L
+        private const val INFERENCE_TIMEOUT_MS = 12_000L
+        private const val CONTEXT_LENGTH = 2048
     }
 
-    /** ✅ MỚI: trạng thái tải model, UI có thể quan sát để hiện progress bar nếu muốn. */
+    /** Trạng thái tải model, UI có thể quan sát để hiện progress bar nếu muốn. */
     sealed class DownloadState {
         object Idle : DownloadState()
         data class Downloading(val progressPercent: Int) : DownloadState()
@@ -59,8 +68,30 @@ class LocalRouterEngine @Inject constructor(
     private val modelFile: File
         get() = File(context.filesDir, MODEL_FILENAME)
 
+    // ===== INFERENCE ENGINE (llamacpp-kotlin) =====
+
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val llmEvents = MutableSharedFlow<LlamaHelper.LLMEvent>(
+        replay = 0,
+        extraBufferCapacity = 64
+    )
+
+    private val llamaHelper by lazy {
+        LlamaHelper(
+            contentResolver = context.contentResolver,
+            scope = engineScope,
+            sharedFlow = llmEvents
+        )
+    }
+
+    private val modelLoadMutex = Mutex()
+
+    @Volatile
+    private var modelLoaded = false
+
     /**
-     * ✅ MỚI: Gọi MỘT LẦN từ AgentApplication.onCreate() để bắt đầu tải model NGAY KHI MỞ APP.
+     * Gọi MỘT LẦN từ AgentApplication.onCreate() để bắt đầu tải model NGAY KHI MỞ APP.
      * - Chạy trên CoroutineScope của Application (sống cùng vòng đời app), không gắn với
      *   bất kỳ Activity/Composable nào -> không bị huỷ khi xoay màn hình hoặc đổi Composable.
      * - Không chặn UI, không chặn lượt chat đầu tiên (predictIntent không tự tải nữa).
@@ -112,7 +143,7 @@ class LocalRouterEngine @Inject constructor(
     }
 
     /**
-     * ✅ Tải vào file TẠM (.tmp) trước, chỉ rename sang tên thật khi đã tải ĐỦ dung lượng.
+     * Tải vào file TẠM (.tmp) trước, chỉ rename sang tên thật khi đã tải ĐỦ dung lượng.
      * Tránh trường hợp app bị kill nửa đường -> để lại file .gguf dở dang nhưng vẫn
      * "tồn tại" -> lần mở sau lầm tưởng đã tải xong và dùng model hỏng.
      */
@@ -168,16 +199,42 @@ class LocalRouterEngine @Inject constructor(
     }
 
     /**
-     * Trả về intent JSON dự đoán bởi model local.
+     * Load model .gguf vào llama.cpp context (chỉ chạy 1 lần, các lần gọi sau dùng lại context cũ).
+     * Mutex đảm bảo không load song song khi nhiều coroutine gọi predictIntent() cùng lúc.
+     */
+    private suspend fun ensureModelLoaded(): Boolean {
+        if (modelLoaded) return true
+        modelLoadMutex.withLock {
+            if (modelLoaded) return true
+
+            val loadedDeferred = CompletableDeferred<Boolean>()
+            try {
+                llamaHelper.load(
+                    path = modelFile.absolutePath,
+                    contextLength = CONTEXT_LENGTH
+                ) {
+                    // callback: context id trả về khi load xong
+                    loadedDeferred.complete(true)
+                }
+            } catch (e: Exception) {
+                logger.e("LocalRouterEngine", "Load model lỗi: ${e.message}", e)
+                if (!loadedDeferred.isCompleted) loadedDeferred.complete(false)
+            }
+
+            modelLoaded = withTimeoutOrNull(MODEL_LOAD_TIMEOUT_MS) { loadedDeferred.await() } ?: false
+            if (!modelLoaded) {
+                logger.e("LocalRouterEngine", "Load model timeout/thất bại sau ${MODEL_LOAD_TIMEOUT_MS}ms")
+            }
+        }
+        return modelLoaded
+    }
+
+    /**
+     * Trả về intent JSON dự đoán bởi model local (SmolLM2, chạy qua llamacpp-kotlin / llama.cpp).
      *
-     * ⚠️ LƯU Ý: hàm này KHÔNG còn tự kích hoạt tải model (việc tải đã được
-     * AgentApplication.onCreate() khởi động từ lúc mở app). Nếu model chưa tải xong
-     * tại thời điểm gọi, trả fallback "chat" ngay để không làm chậm lượt chat của user.
-     *
-     * ⚠️ LƯU Ý 2: engine hiện CHƯA thực sự load/run file .gguf — thư viện inference
-     * (vd. llamacpp-kotlin) đang bị comment trong build.gradle.kts, nên hàm này luôn
-     * trả SAFE_FALLBACK. Khi tích hợp inference thật, thay đoạn "return SAFE_FALLBACK"
-     * cuối cùng bằng lời gọi model thật (input: prompt, modelFile).
+     * - Nếu model chưa tải xong hoặc load context thất bại -> trả SAFE_FALLBACK ngay,
+     *   không làm chậm lượt chat của user.
+     * - Có timeout tổng INFERENCE_TIMEOUT_MS để tránh treo UI nếu model chạy quá lâu trên máy yếu.
      */
     suspend fun predictIntent(prompt: String): String {
         return try {
@@ -188,11 +245,70 @@ class LocalRouterEngine @Inject constructor(
                 )
                 return SAFE_FALLBACK
             }
-            // TODO: gọi inference thật ở đây khi tích hợp llama.cpp
-            SAFE_FALLBACK
+
+            if (!ensureModelLoaded()) {
+                logger.e("LocalRouterEngine", "Model không load được -> fallback chat")
+                return SAFE_FALLBACK
+            }
+
+            val result = withTimeoutOrNull(INFERENCE_TIMEOUT_MS) { runInference(prompt) }
+            result?.takeIf { it.isNotBlank() } ?: SAFE_FALLBACK
         } catch (e: Exception) {
             logger.e("LocalRouterEngine", e.message ?: "predictIntent error", e)
             SAFE_FALLBACK
         }
+    }
+
+    /**
+     * Chạy 1 lượt generate qua llamaHelper.predict() và gom token (event.word) lại thành chuỗi.
+     * Dừng sớm khi đã thấy 1 object JSON cân bằng dấu { } (đỡ tốn token sinh thừa sau khi
+     * model đã trả xong JSON) hoặc khi model tự phát Done/Error.
+     *
+     * ⚠️ Lib io.github.ljcamargo:llamacpp-kotlin đang ở bản early-alpha (0.2.0), API có thể đổi.
+     * Tên field `event.word` và hành vi dừng giữa chừng của `stopPrediction()` được suy ra từ
+     * README, chưa đối chiếu trực tiếp với source — nên build thử + log thật trước khi tin tưởng
+     * 100%, hoặc mở source LlamaHelper.kt/LlamaContext.kt trong repo để xác nhận lại.
+     */
+    private suspend fun runInference(prompt: String): String {
+        val builder = StringBuilder()
+        val done = CompletableDeferred<Unit>()
+        var openBraces = 0
+        var sawFirstBrace = false
+
+        val collectorJob = engineScope.launch {
+            llmEvents.collect { event ->
+                when (event) {
+                    is LlamaHelper.LLMEvent.Ongoing -> {
+                        val token = event.word ?: ""
+                        builder.append(token)
+                        token.forEach { ch ->
+                            if (ch == '{') {
+                                openBraces++
+                                sawFirstBrace = true
+                            }
+                            if (ch == '}') openBraces--
+                        }
+                        if (sawFirstBrace && openBraces <= 0 && !done.isCompleted) {
+                            llamaHelper.stopPrediction()
+                            done.complete(Unit)
+                        }
+                    }
+                    is LlamaHelper.LLMEvent.Done -> {
+                        if (!done.isCompleted) done.complete(Unit)
+                    }
+                    is LlamaHelper.LLMEvent.Error -> {
+                        logger.e("LocalRouterEngine", "LLMEvent.Error trong lúc generate")
+                        if (!done.isCompleted) done.complete(Unit)
+                    }
+                    else -> { /* Started hoặc event khác: bỏ qua */ }
+                }
+            }
+        }
+
+        llamaHelper.predict(prompt)
+        done.await()
+        collectorJob.cancel()
+
+        return builder.toString()
     }
 }
