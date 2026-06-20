@@ -3,7 +3,7 @@ import android.net.Uri
 import android.content.Context
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.github.ljcamargo.llamacpp.LlamaHelper
+import org.nehuatl.llamacpp.LlamaHelper
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart

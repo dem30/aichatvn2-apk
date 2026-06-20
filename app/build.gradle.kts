@@ -155,8 +155,7 @@ kapt("com.google.dagger:hilt-compiler:2.58")
     // ✅ On-device LLM inference (GGUF, vd. SmolLM2-135M-Instruct) cho LocalRouterEngine.
     // Thư viện còn ở bản alpha sớm, chỉ hỗ trợ arm64-v8a. Kiểm tra phiên bản mới nhất tại
     // https://github.com/ljcamargo/kotlinllamacpp trước khi build release.
-   implementation("io.github.ljcamargo:llamacpp-kotlin:0.1.2")
-
+   implementation("io.github.ljcamargo:llamacpp-kotlin:0.4.0")
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
