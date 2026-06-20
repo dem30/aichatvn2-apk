@@ -1,6 +1,5 @@
 package com.aichatvn.agent.di
 import com.aichatvn.agent.core.ChatHistoryManager
-import com.aichatvn.agent.core.LocalRouterEngine
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
@@ -42,7 +41,7 @@ object AppModule {
     fun provideContext(@ApplicationContext context: Context): Context = context
 
     // ===== SKILLS (CŨNG LÀ PLUGIN) =====
-    
+
     @Provides
     @IntoSet
     @Singleton
@@ -74,23 +73,23 @@ object AppModule {
     fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill
 
     // ===== AGENT KERNEL =====
+    // ✅ Đã bỏ localRouterEngine: AgentKernel giờ định tuyến hoàn toàn qua Groq
+    // (xem GroqClientTool.routeIntent()).
     @Provides
-@Singleton
-fun provideAgentKernel(
-    plugins: Set<@JvmSuppressWildcards Plugin>,
-    groqClient: GroqClientTool,
-    trainingSkill: TrainingSkill,
-    localRouterEngine: LocalRouterEngine,
-    chatHistoryManager: ChatHistoryManager,
-    logger: Logger
-): AgentKernel {
-    return AgentKernel(
-        plugins,
-        groqClient,
-        trainingSkill,
-        localRouterEngine,
-        chatHistoryManager,
-        logger
-    )
-}
+    @Singleton
+    fun provideAgentKernel(
+        plugins: Set<@JvmSuppressWildcards Plugin>,
+        groqClient: GroqClientTool,
+        trainingSkill: TrainingSkill,
+        chatHistoryManager: ChatHistoryManager,
+        logger: Logger
+    ): AgentKernel {
+        return AgentKernel(
+            plugins,
+            groqClient,
+            trainingSkill,
+            chatHistoryManager,
+            logger
+        )
+    }
 }

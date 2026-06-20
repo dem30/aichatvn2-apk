@@ -16,35 +16,39 @@ import javax.inject.Singleton
 import com.aichatvn.agent.data.GroqApiKeyProvider
 
 /**
- * Template cho GroqClientTool đúng cách.
+ * GroqClientTool
  *
  * ĐIỂM QUAN TRỌNG — root cause của 401:
  * KHÔNG inject API key qua constructor hay đọc từ StateFlow.value lúc khởi tạo.
  * DataStore chưa load xong khi Hilt inject → key vẫn là "" → "Bearer " → 401.
- *
  * GIẢI PHÁP: inject GroqApiKeyProvider và gọi getKey() suspend ngay trước mỗi request.
  *
- * Nếu GroqClientTool hiện tại của bạn có dạng:
- *   class GroqClientTool @Inject constructor(
- *       private val apiKey: String,  // ← SAI, key có thể là ""
- *       ...
- *   )
- * hoặc:
- *   private val apiKey = groqApiKey.value  // ← SAI, .value có thể là "" lúc init
- *
- * Thì cần đổi sang pattern dưới đây.
+ * ✅ v2: Thêm routeIntent() — thay thế hoàn toàn vai trò của LocalRouterEngine (SmolLM2 cục bộ,
+ * đã bỏ vì crash SIGILL trên CPU yếu/cũ như Cortex-A53). Dùng model nhỏ + rẻ (MODEL_ROUTER)
+ * riêng cho việc phân loại intent, tách biệt với model chat chính (MODEL_TEXT) để không tốn
+ * chi phí/độ trễ của model lớn cho một việc chỉ cần trả 1 JSON ngắn.
  */
 @Singleton
 class GroqClientTool @Inject constructor(
-    private val apiKeyProvider: GroqApiKeyProvider,  // ← inject provider, không inject key trực tiếp
+    private val apiKeyProvider: GroqApiKeyProvider,
     private val logger: Logger
 ) {
     companion object {
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
-        private const val MODEL_TEXT = "llama-3.3-70b-versatile"
-        private const val MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+        // ⚠️ Groq đã deprecate llama-3.3-70b-versatile, llama-3.1-8b-instant và
+        // meta-llama/llama-4-scout-17b-16e-instruct (thông báo 17/6/2026). Dùng model thay thế
+        // theo khuyến nghị chính thức: https://console.groq.com/docs/deprecations
+        private const val MODEL_TEXT = "openai/gpt-oss-120b"          // chat chính
+        private const val MODEL_VISION = "qwen/qwen3.6-27b"            // phân tích ảnh
+        private const val MODEL_ROUTER = "openai/gpt-oss-20b"          // phân loại intent, nhanh+rẻ
+
         private const val MAX_TOKENS_CHAT = 1000
         private const val MAX_TOKENS_VISION = 500
+        private const val MAX_TOKENS_ROUTER = 200
+
+        private const val SAFE_FALLBACK_INTENT =
+            """{"plugin":"chat","action":"none","params":{}}"""
     }
 
     // Singleton client — không tạo mới mỗi request
@@ -62,7 +66,6 @@ class GroqClientTool @Inject constructor(
         history: List<Map<String, String>> = emptyList(),
         imageUrl: String? = null
     ): String = withContext(Dispatchers.IO) {
-        // FIX: đọc key lazy ngay trước request, không phải lúc khởi tạo
         val apiKey = apiKeyProvider.getKey()
             ?: return@withContext "⚠️ Chưa cấu hình Groq API key. Vào Settings để nhập key."
 
@@ -128,6 +131,64 @@ class GroqClientTool @Inject constructor(
     }
 
     /**
+     * ✅ MỚI: Phân loại intent (device command hay chat thường) bằng model NHỎ + RẺ.
+     *
+     * Thay thế vai trò của LocalRouterEngine.predictIntent() trước đây (SmolLM2 cục bộ).
+     * - Luôn trả JSON hợp lệ (ép response_format = json_object), temperature = 0 để ổn định.
+     * - Không dùng lịch sử/system message riêng — prompt đầu vào (từ AgentKernel) đã tự chứa
+     *   đầy đủ catalog plugin + context + instruction rồi, gửi thẳng làm 1 user message.
+     * - Lỗi mạng / thiếu key / parse lỗi -> trả SAFE_FALLBACK_INTENT ("chat") để caller luôn
+     *   có JSON hợp lệ, không cần try-catch lại ở AgentKernel.
+     */
+    suspend fun routeIntent(prompt: String): String = withContext(Dispatchers.IO) {
+        val apiKey = apiKeyProvider.getKey() ?: return@withContext SAFE_FALLBACK_INTENT
+
+        try {
+            val messages = JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", prompt)
+                })
+            }
+
+            val body = JSONObject().apply {
+                put("model", MODEL_ROUTER)
+                put("messages", messages)
+                put("max_tokens", MAX_TOKENS_ROUTER)
+                put("temperature", 0)
+                put("response_format", JSONObject().apply { put("type", "json_object") })
+            }.toString()
+
+            val response = client.newCall(
+                Request.Builder()
+                    .url(BASE_URL)
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .post(body.toRequestBody("application/json".toMediaType()))
+                    .build()
+            ).execute()
+
+            if (!response.isSuccessful) {
+                logger.e("GroqClientTool", "routeIntent HTTP ${response.code}")
+                return@withContext SAFE_FALLBACK_INTENT
+            }
+
+            val bodyStr = response.body?.string() ?: return@withContext SAFE_FALLBACK_INTENT
+            JSONObject(bodyStr)
+                .getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .getString("content")
+                .trim()
+                .takeIf { it.isNotBlank() } ?: SAFE_FALLBACK_INTENT
+
+        } catch (e: Exception) {
+            logger.e("GroqClientTool", "routeIntent error: ${e.message}", e)
+            SAFE_FALLBACK_INTENT
+        }
+    }
+
+    /**
      * Phân tích ảnh (vision) với prompt.
      */
     suspend fun analyzeImage(imageBytes: ByteArray, prompt: String): String = withContext(Dispatchers.IO) {
@@ -181,7 +242,6 @@ class GroqClientTool @Inject constructor(
         val bodyStr = response.body?.string() ?: ""
 
         if (!response.isSuccessful) {
-            // Log chi tiết để debug
             logger.e("GroqClientTool", "$caller HTTP ${response.code}: $bodyStr")
             return when (response.code) {
                 401 -> "❌ Groq API key không hợp lệ (401). Kiểm tra lại key trong Settings."

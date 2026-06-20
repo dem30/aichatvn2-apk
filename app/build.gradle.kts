@@ -4,7 +4,7 @@ plugins {
     id("kotlin-kapt")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
-  id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // ✅ FIX BUILD: một dependency transitive nào đó đang kéo androidx.core:core(-ktx)
@@ -38,12 +38,9 @@ android {
 
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
 
-        // ✅ kotlinllamacpp hiện chỉ build native lib cho arm64-v8a.
-        // Nếu cần test trên emulator x86_64, build vẫn ra app nhưng LocalRouterEngine
-        // sẽ load model thất bại trên emulator -> tự fallback "chat" (xem LocalRouterEngine.kt).
-        ndk {
-            abiFilters += "arm64-v8a"
-        }
+        // ✅ Đã bỏ giới hạn abiFilters arm64-v8a — không còn native lib (llama.cpp) nào nữa
+        // sau khi chuyển routing sang Groq (xem AgentKernel/GroqClientTool). App giờ build
+        // và chạy được trên mọi ABI, kể cả emulator x86_64.
     }
 
     buildTypes {
@@ -60,13 +57,6 @@ android {
         compose = true
         buildConfig = true
     }
-
-    // ✅ Không nén file model .gguf trong APK -> đọc/copy ra filesDir nhanh hơn nhiều
-    androidResources {
-        noCompress += "gguf"
-    }
-
-    
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -113,8 +103,8 @@ dependencies {
 
     // Room Database
     implementation("androidx.room:room-runtime:2.8.0")
-implementation("androidx.room:room-ktx:2.8.0")
-ksp("androidx.room:room-compiler:2.8.0")
+    implementation("androidx.room:room-ktx:2.8.0")
+    ksp("androidx.room:room-compiler:2.8.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -124,8 +114,8 @@ ksp("androidx.room:room-compiler:2.8.0")
 
     // Hilt DI
     implementation("com.google.dagger:hilt-android:2.58")
-kapt("com.google.dagger:hilt-compiler:2.58")
-    
+    kapt("com.google.dagger:hilt-compiler:2.58")
+
     // Retrofit + OkHttp
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
@@ -152,10 +142,10 @@ kapt("com.google.dagger:hilt-compiler:2.58")
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
-    // ✅ On-device LLM inference (GGUF, vd. SmolLM2-135M-Instruct) cho LocalRouterEngine.
-    // Thư viện còn ở bản alpha sớm, chỉ hỗ trợ arm64-v8a. Kiểm tra phiên bản mới nhất tại
-    // https://github.com/ljcamargo/kotlinllamacpp trước khi build release.
-   implementation("io.github.ljcamargo:llamacpp-kotlin:0.4.0")
+    // ✅ Đã bỏ io.github.ljcamargo:llamacpp-kotlin — không còn LLM cục bộ (LocalRouterEngine
+    // đã xoá), routing + chat giờ qua Groq API (xem GroqClientTool.kt). Lý do bỏ: crash
+    // SIGILL trên CPU yếu/cũ không có dotprod/i8mm (vd Cortex-A53 trên Helio G36).
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
@@ -167,11 +157,12 @@ kapt("com.google.dagger:hilt-compiler:2.58")
     // Splash Screen
     implementation("androidx.core:core-splashscreen:1.0.1")
 
+    // Hilt + Compose Navigation integration (cho hiltViewModel())
+    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+
     // Hilt WorkManager integration
-// Hilt + Compose Navigation integration (cho hiltViewModel())
-implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
-implementation("androidx.hilt:hilt-work:1.2.0")
-ksp("androidx.hilt:hilt-compiler:1.2.0")   // đổi từ kapt -> ksp
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    ksp("androidx.hilt:hilt-compiler:1.2.0")
 }
 
 kapt {
