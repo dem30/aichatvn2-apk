@@ -123,8 +123,8 @@ ksp("androidx.room:room-compiler:2.8.0")
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     // Hilt DI
-    implementation("com.google.dagger:hilt-android:2.51.1")
-kapt("com.google.dagger:hilt-compiler:2.51.1")
+    implementation("com.google.dagger:hilt-android:2.59.2")
+    kapt("com.google.dagger:hilt-compiler:2.59.2")
     
     // Retrofit + OkHttp
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
