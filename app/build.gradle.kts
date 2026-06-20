@@ -4,6 +4,7 @@ plugins {
     id("kotlin-kapt")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
+  id("org.jetbrains.kotlin.plugin.compose")
 }
 
 // ✅ FIX BUILD: một dependency transitive nào đó đang kéo androidx.core:core(-ktx)
@@ -65,9 +66,7 @@ android {
         noCompress += "gguf"
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.10"
-    }
+    
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -113,10 +112,9 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.5")
 
     // Room Database
-    implementation("androidx.room:room-runtime:2.6.0")
-    implementation("androidx.room:room-ktx:2.6.0")
-    implementation("androidx.hilt:hilt-work:1.1.0")
-    ksp("androidx.room:room-compiler:2.6.0")
+    implementation("androidx.room:room-runtime:2.6.1")
+implementation("androidx.room:room-ktx:2.6.1")
+ksp("androidx.room:room-compiler:2.6.1")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -125,10 +123,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     // Hilt DI
-    implementation("com.google.dagger:hilt-android:2.48")
-    kapt("com.google.dagger:hilt-compiler:2.48")
-    implementation("androidx.hilt:hilt-navigation-compose:1.1.0")
-
+    implementation("com.google.dagger:hilt-android:2.51.1")
+kapt("com.google.dagger:hilt-compiler:2.51.1")
+    
     // Retrofit + OkHttp
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
