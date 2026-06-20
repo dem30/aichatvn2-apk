@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
@@ -21,10 +22,20 @@ import java.util.UUID
 import javax.inject.Inject
 import android.util.Base64
 
+/**
+ * ✅ UI model cho 1 chip lệnh gợi ý — text là chuỗi sẽ điền vào ô nhập khi bấm chip.
+ */
+data class QuickCommand(val label: String, val text: String)
+
+/**
+ * ✅ UI model cho 1 tab (= 1 plugin) trong thanh gợi ý lệnh nhanh.
+ */
+data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
+
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    private val chatSkill: ChatSkill,  // ✅ Chỉ inject ChatSkill
-    // ❌ XÓA: private val agentCore: AgentCore,
+    private val chatSkill: ChatSkill,
+    private val agentKernel: AgentKernel, // ✅ THÊM: để build chip lệnh động từ danh sách plugin
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
@@ -34,6 +45,33 @@ class ChatViewModel @Inject constructor(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    /**
+     * ✅ MỚI: Danh sách chip lệnh gợi ý, build TỰ ĐỘNG từ Plugin.getActions() của mỗi
+     * plugin đang visibleInQuickBar (ChatSkill tự ẩn vì visibleInQuickBar=false).
+     *
+     * Không hardcode tên plugin/action ở đây -> thêm plugin mới ở AppModule là tự
+     * xuất hiện 1 tab mới, không cần sửa UI.
+     *
+     * Plugin list cố định theo vòng đời Singleton của Hilt (không đổi lúc runtime),
+     * nên build 1 lần là đủ, không cần StateFlow.
+     */
+    val quickCommandGroups: List<QuickCommandGroup> =
+        agentKernel.getAvailablePluginsForUI().map { plugin ->
+            val commands = plugin.getActions().map { action ->
+                val requiredParams = action.parameters.filter { it.required }
+                val text = if (requiredParams.isEmpty()) {
+                    action.description
+                } else {
+                    // Gợi ý placeholder cho tham số bắt buộc, người dùng tự điền giá trị
+                    // thật trước khi gửi. Ví dụ: "Bật hoặc tắt camera (<customerId>, <active>)"
+                    action.description + " (" +
+                        requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
+                }
+                QuickCommand(label = action.name, text = text)
+            }
+            QuickCommandGroup(tabLabel = plugin.name, commands = commands)
+        }
 
     init {
         viewModelScope.launch {

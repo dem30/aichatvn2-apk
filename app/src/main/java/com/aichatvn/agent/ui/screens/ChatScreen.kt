@@ -27,6 +27,7 @@ import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.ui.viewmodels.ChatViewModel
+import com.aichatvn.agent.ui.viewmodels.QuickCommandGroup
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -216,8 +217,9 @@ fun ChatScreen(
             }
         }
         
-        // ── Gợi ý lệnh nhanh ─────────────────────────────────────────────────
+        // ── Gợi ý lệnh nhanh (tự động từ danh sách plugin, không hardcode) ──────
         QuickCommandBar(
+            groups = viewModel.quickCommandGroups,
             selectedTab = selectedChipTab,
             onTabChange = { selectedChipTab = it },
             onChipClick = { inputText = it }
@@ -295,60 +297,27 @@ fun ChatScreen(
     }
 }
 
-// ── Data lệnh gợi ý theo từng nhóm ───────────────────────────────────────────
-
-private data class QuickCommand(val label: String, val text: String)
-
-private val QUICK_TABS = listOf("📷 Camera", "💡 Đèn", "📧 Email", "❓ Khác")
-
-private val QUICK_COMMANDS = listOf(
-    // 0 — Camera
-    listOf(
-        QuickCommand("Quét camera", "quét tất cả camera"),
-        QuickCommand("Danh sách camera", "danh sách camera"),
-        QuickCommand("Trạng thái camera", "trạng thái camera"),
-        QuickCommand("Bật smart mode", "bật chế độ thông minh camera "),
-        QuickCommand("Tắt smart mode", "tắt chế độ thông minh camera "),
-        QuickCommand("Bật theo dõi", "bật theo dõi camera "),
-        QuickCommand("Tắt theo dõi", "tắt theo dõi camera "),
-        QuickCommand("Đặt từ khoá CB", "đặt từ khoá cảnh báo camera  là: "),
-        QuickCommand("Đặt từ khoá BT", "đặt từ khoá bình thường camera  là: "),
-        QuickCommand("Cập nhật prompt", "cập nhật prompt camera  thành: "),
-        QuickCommand("Thay URL camera", "thay url camera  thành: "),
-    ),
-    // 1 — Đèn
-    listOf(
-        QuickCommand("Bật đèn", "bật đèn "),
-        QuickCommand("Tắt đèn", "tắt đèn "),
-        QuickCommand("Danh sách đèn", "danh sách đèn"),
-        QuickCommand("Trạng thái đèn", "trạng thái đèn"),
-    ),
-    // 2 — Email
-    listOf(
-        QuickCommand("Gửi email", "gửi email đến  nội dung: "),
-        QuickCommand("Báo cáo ngay", "gửi báo cáo camera ngay"),
-    ),
-    // 3 — Khác
-    listOf(
-        QuickCommand("Học lệnh mới", "Học: câu hỏi → câu trả lời"),
-        QuickCommand("Xem log", "xem log hệ thống"),
-        QuickCommand("Xem cảnh báo", "xem alert camera"),
-    )
-)
+// ── Chip lệnh gợi ý: lấy ĐỘNG từ ChatViewModel.quickCommandGroups, build từ
+// Plugin.getActions() của từng skill (xem AgentKernel.getAvailablePluginsForUI()).
+// Không còn list hardcode — thêm plugin mới ở AppModule là tự xuất hiện ở đây.
 
 @Composable
 private fun QuickCommandBar(
+    groups: List<QuickCommandGroup>,
     selectedTab: Int,
     onTabChange: (Int) -> Unit,
     onChipClick: (String) -> Unit
 ) {
+    if (groups.isEmpty()) return
+    val safeTab = selectedTab.coerceIn(0, groups.size - 1)
+
     val tabScrollState = rememberScrollState()
     val chipScrollState = rememberScrollState()
 
     Column {
         HorizontalDivider()
 
-        // Tab nhóm
+        // Tab nhóm (1 tab / plugin)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -356,16 +325,16 @@ private fun QuickCommandBar(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            QUICK_TABS.forEachIndexed { index, label ->
+            groups.forEachIndexed { index, group ->
                 FilterChip(
-                    selected = selectedTab == index,
+                    selected = safeTab == index,
                     onClick = { onTabChange(index) },
-                    label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                    label = { Text(group.tabLabel, style = MaterialTheme.typography.labelSmall) }
                 )
             }
         }
 
-        // Chip lệnh
+        // Chip lệnh (1 chip / action của plugin đang chọn)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -373,7 +342,7 @@ private fun QuickCommandBar(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            QUICK_COMMANDS[selectedTab].forEach { cmd ->
+            groups[safeTab].commands.forEach { cmd ->
                 SuggestionChip(
                     onClick = { onChipClick(cmd.text) },
                     label = { Text(cmd.label, style = MaterialTheme.typography.labelSmall) }

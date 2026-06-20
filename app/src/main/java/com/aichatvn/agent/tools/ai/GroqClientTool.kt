@@ -156,7 +156,10 @@ class GroqClientTool @Inject constructor(
                 put("messages", messages)
                 put("max_tokens", MAX_TOKENS_ROUTER)
                 put("temperature", 0)
-                put("response_format", JSONObject().apply { put("type", "json_object") })
+                // ❌ Đã bỏ "response_format": json_object — không phải model nào trên Groq
+                // cũng hỗ trợ structured JSON mode này, gây HTTP 400. Prompt đã tự yêu cầu
+                // "Output ONLY raw JSON" + parseIntentResponse() đã tự strip markdown nên
+                // không cần ép response_format ở tầng API.
             }.toString()
 
             val response = client.newCall(
@@ -168,12 +171,16 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
+            val bodyStr = response.body?.string() ?: ""
+
             if (!response.isSuccessful) {
-                logger.e("GroqClientTool", "routeIntent HTTP ${response.code}")
+                // ✅ Log đầy đủ body lỗi thật từ Groq (trước đây chỉ log status code,
+                // không thấy được lý do thật -> không debug được).
+                logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
                 return@withContext SAFE_FALLBACK_INTENT
             }
 
-            val bodyStr = response.body?.string() ?: return@withContext SAFE_FALLBACK_INTENT
+            if (bodyStr.isBlank()) return@withContext SAFE_FALLBACK_INTENT
             JSONObject(bodyStr)
                 .getJSONArray("choices")
                 .getJSONObject(0)

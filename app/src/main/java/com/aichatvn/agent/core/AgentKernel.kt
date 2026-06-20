@@ -53,17 +53,22 @@ class AgentKernel @Inject constructor(
         val shortHistory = chatHistoryManager.getRecentTurnsAsText()
         val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
 
-        val compactCatalog = devicePlugins.joinToString("\n") { plugin ->
-            val actions = plugin.getActions().map { action ->
-                val pNames = action.parameters.map { it.name }
-                if (pNames.isEmpty()) action.name else "${action.name}(${pNames.joinToString(",")})"
+        val compactCatalog = devicePlugins.joinToString("\n\n") { plugin ->
+            val actionLines = plugin.getActions().joinToString("\n") { action ->
+                val paramsSig = action.parameters.joinToString(",") { p ->
+                    if (p.required) p.name else "${p.name}?"
+                }
+                val sig = if (paramsSig.isEmpty()) action.name else "${action.name}($paramsSig)"
+                "  - $sig — ${action.description}"
             }
-            "- ${plugin.id}: $actions"
+            "plugin \"${plugin.id}\":\n$actionLines"
         }
 
         val routerPrompt = buildString {
             append("<system>You are an Intent Router. Output ONLY raw JSON matching schema: ")
             append("{\"plugin\": string, \"action\": string, \"params\": object}. ")
+            append("In <plugins>, each line is \"- action(p1,p2?) — description\": p1 is required, ")
+            append("p2? means OPTIONAL (omit the '?' itself from params keys). ")
             append("If the message is general conversation and not a device command, output ")
             append("{\"plugin\": \"chat\", \"action\": \"none\", \"params\": {}}. Do not chat.</system>\n")
             append("<plugins>\n$compactCatalog\n</plugins>\n")
