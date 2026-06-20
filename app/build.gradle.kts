@@ -6,6 +6,18 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// ✅ FIX BUILD: một dependency transitive nào đó đang kéo androidx.core:core(-ktx)
+// lên 1.17.0, bản này yêu cầu compileSdk 36 + AGP 8.9.1+ trong khi project đang dùng
+// compileSdk 34 + AGP 8.2.0 -> lỗi "checkDebugAarMetadata". Ép cứng về bản tương thích
+// (1.13.1 - bản cuối còn hỗ trợ compileSdk 34) cho MỌI configuration để tránh việc
+// Gradle tự chọn bản cao nhất trong dependency graph.
+configurations.all {
+    resolutionStrategy {
+        force("androidx.core:core:1.13.1")
+        force("androidx.core:core-ktx:1.13.1")
+    }
+}
+
 android {
     namespace = "com.aichatvn.agent"
     compileSdk = 34
@@ -87,7 +99,7 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.0")
 
@@ -146,7 +158,7 @@ dependencies {
     // ✅ On-device LLM inference (GGUF, vd. SmolLM2-135M-Instruct) cho LocalRouterEngine.
     // Thư viện còn ở bản alpha sớm, chỉ hỗ trợ arm64-v8a. Kiểm tra phiên bản mới nhất tại
     // https://github.com/ljcamargo/kotlinllamacpp trước khi build release.
-    implementation("io.github.ljcamargo:llamacpp-kotlin:0.2.0")
+   // implementation("io.github.ljcamargo:llamacpp-kotlin:0.2.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
