@@ -1,5 +1,5 @@
 package com.aichatvn.agent.core
-
+import android.net.Uri
 import android.content.Context
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -210,9 +210,10 @@ class LocalRouterEngine @Inject constructor(
             val loadedDeferred = CompletableDeferred<Boolean>()
             try {
                 llamaHelper.load(
-                    path = modelFile.absolutePath,
-                    contextLength = CONTEXT_LENGTH
-                ) {
+    path = Uri.fromFile(modelFile).toString(),
+    contextLength = CONTEXT_LENGTH
+)
+              {
                     // callback: context id trả về khi load xong
                     loadedDeferred.complete(true)
                 }
