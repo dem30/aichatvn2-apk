@@ -3,6 +3,9 @@ package com.aichatvn.agent.tools.ai
 import android.util.Base64
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -14,6 +17,26 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.aichatvn.agent.data.GroqApiKeyProvider
+
+/**
+ * ✅ Snapshot rate-limit Groq đọc từ response header của lượt gọi GẦN NHẤT
+ * (header chuẩn OpenAI-compatible: x-ratelimit-*, retry-after).
+ *
+ * - remaining*/limit*: null nếu Groq không trả header đó cho model/endpoint này.
+ * - resetRequestsSeconds/resetTokensSeconds: số giây CÒN LẠI tính từ thời điểm
+ *   capturedAtMillis (không phải timestamp tuyệt đối) -> UI cần tự đếm ngược từ đó.
+ * - isRateLimited: true nếu lượt gọi gần nhất bị HTTP 429.
+ */
+data class GroqRateLimitInfo(
+    val limitRequests: Int? = null,
+    val remainingRequests: Int? = null,
+    val limitTokens: Int? = null,
+    val remainingTokens: Int? = null,
+    val resetRequestsSeconds: Double? = null,
+    val resetTokensSeconds: Double? = null,
+    val isRateLimited: Boolean = false,
+    val capturedAtMillis: Long = System.currentTimeMillis()
+)
 
 /**
  * GroqClientTool
@@ -56,6 +79,63 @@ class GroqClientTool @Inject constructor(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+
+    // ✅ Rate-limit snapshot từ lượt gọi Groq gần nhất — UI (ChatScreen) quan sát để
+    // hiện label "còn bao nhiêu token / còn cooldown bao lâu".
+    private val _rateLimitInfo = MutableStateFlow<GroqRateLimitInfo?>(null)
+    val rateLimitInfo: StateFlow<GroqRateLimitInfo?> = _rateLimitInfo.asStateFlow()
+
+    /**
+     * Đọc header rate-limit chuẩn OpenAI-compatible từ response (gọi được cả khi
+     * response lỗi 429 — header rate-limit vẫn có trong response lỗi).
+     * Nếu Groq không trả bất kỳ header rate-limit nào (vd lỗi mạng trước khi tới server,
+     * hoặc model/endpoint không hỗ trợ) -> giữ nguyên giá trị cũ, không ghi đè bằng null.
+     */
+    private fun captureRateLimit(response: okhttp3.Response) {
+        val remainingReq = response.header("x-ratelimit-remaining-requests")?.toIntOrNull()
+        val limitReq = response.header("x-ratelimit-limit-requests")?.toIntOrNull()
+        val remainingTok = response.header("x-ratelimit-remaining-tokens")?.toIntOrNull()
+        val limitTok = response.header("x-ratelimit-limit-tokens")?.toIntOrNull()
+        val resetReq = parseDurationToSeconds(response.header("x-ratelimit-reset-requests"))
+        val resetTok = parseDurationToSeconds(response.header("x-ratelimit-reset-tokens"))
+        val retryAfter = response.header("retry-after")?.toDoubleOrNull()
+
+        if (remainingReq == null && remainingTok == null && retryAfter == null) return
+
+        _rateLimitInfo.value = GroqRateLimitInfo(
+            limitRequests = limitReq,
+            remainingRequests = remainingReq,
+            limitTokens = limitTok,
+            remainingTokens = remainingTok,
+            // Khi bị 429, Groq luôn trả retry-after -> ưu tiên dùng số đó cho cooldown
+            // vì nó chính xác hơn x-ratelimit-reset-requests trong tình huống đã limit.
+            resetRequestsSeconds = retryAfter ?: resetReq,
+            resetTokensSeconds = resetTok,
+            isRateLimited = response.code == 429,
+            capturedAtMillis = System.currentTimeMillis()
+        )
+    }
+
+    /** Parse chuỗi duration kiểu "12.5s", "6m59s", "1h2m3s", "250ms" -> tổng số giây. */
+    private fun parseDurationToSeconds(raw: String?): Double? {
+        if (raw.isNullOrBlank()) return null
+        raw.toDoubleOrNull()?.let { return it } // trường hợp header chỉ là số giây thuần (vd retry-after)
+
+        var total = 0.0
+        var matched = false
+        Regex("([\\d.]+)(ms|s|m|h)").findAll(raw).forEach { m ->
+            matched = true
+            val value = m.groupValues[1].toDoubleOrNull() ?: 0.0
+            total += when (m.groupValues[2]) {
+                "ms" -> value / 1000.0
+                "s" -> value
+                "m" -> value * 60
+                "h" -> value * 3600
+                else -> 0.0
+            }
+        }
+        return if (matched) total else null
+    }
 
     /**
      * Chat text với lịch sử hội thoại.
@@ -122,6 +202,7 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
+            captureRateLimit(response)
             parseResponse(response, "chat")
 
         } catch (e: Exception) {
@@ -171,6 +252,7 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
+            captureRateLimit(response)
             val bodyStr = response.body?.string() ?: ""
 
             if (!response.isSuccessful) {
@@ -237,6 +319,7 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
+            captureRateLimit(response)
             parseResponse(response, "analyzeImage")
 
         } catch (e: Exception) {

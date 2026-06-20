@@ -28,6 +28,7 @@ import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.ui.viewmodels.ChatViewModel
 import com.aichatvn.agent.ui.viewmodels.QuickCommandGroup
+import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -41,6 +42,7 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val chatMode by viewModel.chatMode.collectAsState()
+    val groqRateLimit by viewModel.groqRateLimit.collectAsState()
     
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
@@ -88,6 +90,10 @@ fun ChatScreen(
         TopAppBar(
             title = { Text("Trò chuyện với AI") },
             actions = {
+                // ✅ MỚI: label rate-limit Groq — báo người dùng biết còn token/đang cooldown
+                // hay không trước khi họ gửi tin nhắn (gửi lúc hết token/đang limit cũng vô dụng).
+                groqRateLimit?.let { GroqRateLimitLabel(it) }
+
                 IconButton(onClick = { navController.navigate("logs") }) {
                     Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
                 }
@@ -293,6 +299,57 @@ fun ChatScreen(
             ) {
                 Icon(Icons.Default.Send, contentDescription = "Send")
             }
+        }
+    }
+}
+
+// ── Label rate-limit Groq (token còn lại / cooldown request) ───────────────
+// Header chỉ cho biết "còn X giây" TÍNH TỪ LÚC response về -> phải tự đếm ngược
+// ở client dựa theo capturedAtMillis, không phải giá trị tĩnh.
+
+@Composable
+private fun GroqRateLimitLabel(info: GroqRateLimitInfo) {
+    var secondsLeft by remember(info.capturedAtMillis) {
+        val resetSec = maxOf(info.resetRequestsSeconds ?: 0.0, info.resetTokensSeconds ?: 0.0)
+        val elapsed = (System.currentTimeMillis() - info.capturedAtMillis) / 1000.0
+        mutableStateOf((resetSec - elapsed).coerceAtLeast(0.0))
+    }
+
+    LaunchedEffect(info.capturedAtMillis) {
+        while (secondsLeft > 0.0) {
+            delay(1000)
+            secondsLeft = (secondsLeft - 1.0).coerceAtLeast(0.0)
+        }
+    }
+
+    val tokensLow = info.remainingTokens != null && info.remainingTokens <= 0
+    val requestsLow = info.remainingRequests != null && info.remainingRequests <= 0
+    val cooling = secondsLeft > 0.0
+
+    Column(horizontalAlignment = Alignment.End) {
+        if (info.remainingTokens != null) {
+            Text(
+                text = "🪙 ${info.remainingTokens}" +
+                    (info.limitTokens?.let { "/$it" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (tokensLow) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (cooling) {
+            Text(
+                text = "⏳ ${secondsLeft.toInt()}s",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        } else if (info.remainingRequests != null) {
+            Text(
+                text = "📨 ${info.remainingRequests}" +
+                    (info.limitRequests?.let { "/$it" } ?: ""),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (requestsLow) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

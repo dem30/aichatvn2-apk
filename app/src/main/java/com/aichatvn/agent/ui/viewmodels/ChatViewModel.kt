@@ -9,6 +9,8 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.skills.ChatSkill
+import com.aichatvn.agent.tools.ai.GroqClientTool
+import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -35,13 +37,17 @@ data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickComma
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
-    private val agentKernel: AgentKernel, // ✅ THÊM: để build chip lệnh động từ danh sách plugin
+    private val agentKernel: AgentKernel, // ✅ để build chip lệnh động từ danh sách plugin
+    private val groqClient: GroqClientTool, // ✅ để hiện label rate-limit token/cooldown
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
 
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
     val chatMode: StateFlow<ChatMode> = chatSkill.chatMode
+
+    /** ✅ MỚI: rate-limit Groq (token còn lại, cooldown) — null khi chưa gọi Groq lần nào. */
+    val groqRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.rateLimitInfo
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
