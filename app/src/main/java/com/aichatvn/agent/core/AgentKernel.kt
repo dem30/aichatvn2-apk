@@ -10,20 +10,102 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 /**
- * AgentKernel v5 - LLM Routing + QA Context
- * 
- * 1. Search QA context từ TrainingSkill
- * 2. Gọi Groq để phân tích intent (có QA context)
- * 3. Tìm plugin phù hợp
- * 4. Execute
+ * AgentKernel v6 - Local Router (offline) + LLM Routing (Groq) + QA Context
+ *
+ * - tryDeviceCommand(): định tuyến NHANH, OFFLINE bằng LocalRouterEngine (SmolLM2).
+ *   Trả về null nếu không khớp lệnh thiết bị nào -> caller (ChatSkill) tự xử lý như chat thường.
+ * - process(): định tuyến ĐẦY ĐỦ bằng Groq LLM trên toàn bộ danh sách plugin (giữ nguyên,
+ *   dùng cho nơi nào vẫn cần một entry-point gọi thẳng và chấp nhận gọi Groq).
  */
 @Singleton
 class AgentKernel @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
     private val groqClient: GroqClientTool,
     private val trainingSkill: TrainingSkill,  // ✅ THÊM: để search QA
+    private val localRouterEngine: LocalRouterEngine, // ✅ THÊM: định tuyến local offline
+    private val chatHistoryManager: ChatHistoryManager, // ✅ THÊM: nhớ ngắn hạn (2 lượt gần nhất + thiết bị cuối)
     private val logger: Logger
 ) {
+
+    /**
+     * ✅ Danh sách plugin hiển thị ra UI (quick bar gợi ý lệnh)
+     */
+    fun getAvailablePluginsForUI(): List<Plugin> {
+        return plugins.filter { it.visibleInQuickBar }
+    }
+
+    /**
+     * ✅ MỚI: Thử định tuyến lệnh điều khiển thiết bị bằng mô hình LOCAL (SmolLM2), OFFLINE.
+     *
+     * - Không gọi Groq ở đây (giữ nhanh, hoạt động cả khi mất mạng).
+     * - Trả về null khi: không có plugin thiết bị nào đăng ký, model trả JSON không hợp lệ,
+     *   model tự xác định đây là hội thoại thường ("chat"), hoặc plugin không tồn tại/bị ẩn.
+     *   -> Khi trả về null, caller (ChatSkill) PHẢI tự xử lý tiếp như chat thường.
+     */
+    suspend fun tryDeviceCommand(userMessage: String, username: String = "default_user"): PluginResult? {
+        val devicePlugins = plugins.filter { it.visibleInQuickBar }
+        if (devicePlugins.isEmpty()) return null // Không có plugin thiết bị nào để định tuyến
+
+        val qaContext = buildQAContext(userMessage, username)
+        val shortHistory = chatHistoryManager.getRecentTurnsAsText()
+        val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
+
+        val compactCatalog = devicePlugins.joinToString("\n") { plugin ->
+            val actions = plugin.getActions().map { action ->
+                val pNames = action.parameters.map { it.name }
+                if (pNames.isEmpty()) action.name else "${action.name}(${pNames.joinToString(",")})"
+            }
+            "- ${plugin.id}: $actions"
+        }
+
+        val localPrompt = buildString {
+            append("<system>You are an Intent Router. Output ONLY raw JSON matching schema: ")
+            append("{\"plugin\": string, \"action\": string, \"params\": object}. ")
+            append("If the message is general conversation and not a device command, output ")
+            append("{\"plugin\": \"chat\", \"action\": \"none\", \"params\": {}}. Do not chat.</system>\n")
+            append("<plugins>\n$compactCatalog\n</plugins>\n")
+            append("<context>\nlast_device: \"$lastDevice\"\n")
+            if (qaContext.isNotEmpty()) append("qa_match: \"$qaContext\"\n")
+            append("</context>\n")
+            append("<history>\n$shortHistory\n</history>\n")
+            append("<input>User: $userMessage</input>\n")
+            append("<output>")
+        }
+
+        val localResultJson = try {
+            localRouterEngine.predictIntent(localPrompt)
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "LocalRouterEngine error: ${e.message}", e)
+            return null
+        }
+
+        val intent = parseIntentResponse(localResultJson, userMessage) ?: return null
+
+        // Model tự nhận đây là hội thoại thường -> để ChatSkill xử lý chat
+        if (intent.pluginId.isBlank() || intent.pluginId == "chat") return null
+
+        val targetPlugin = devicePlugins.find { it.id == intent.pluginId } ?: return null
+
+        logger.d("AgentKernel", "🔥 Khớp lệnh local: ${intent.pluginId} -> ${intent.action}")
+
+        intent.params["device"]?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
+
+        val executionResult = try {
+            targetPlugin.execute(intent.action, intent.params)
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Execute error: ${e.message}", e)
+            PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
+        }
+
+        val replyForHistory = when (executionResult) {
+            is PluginResult.Success -> (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
+            is PluginResult.Failure -> executionResult.error
+            is PluginResult.NeedMoreInfo -> executionResult.question
+        }
+        chatHistoryManager.addTurn(userMessage, replyForHistory)
+
+        return executionResult
+    }
 
     suspend fun process(userMessage: String): PluginResult {
         logger.d("AgentKernel", "Processing: '$userMessage'")
@@ -63,9 +145,9 @@ class AgentKernel @Inject constructor(
      * Gọi trainingSkill.fuzzyMatchQuestion() để tìm Q&A liên quan
      * Trả về context để đưa vào LLM prompt
      */
-    private suspend fun buildQAContext(message: String): String {
+    private suspend fun buildQAContext(message: String, username: String = "default_user"): String {
         return try {
-            val result = trainingSkill.fuzzyMatchQuestion(message, "default_user", 0.5f)
+            val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.5f)
             when (result) {
                 is PluginResult.Success -> {
                     @Suppress("UNCHECKED_CAST")

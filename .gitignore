@@ -11,3 +11,4 @@ local.properties
 *.keystore
 !debug.keystore
 secrets.properties
+app/src/main/assets/*.gguf

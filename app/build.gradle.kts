@@ -24,6 +24,13 @@ android {
         buildConfigField("String", "RESEND_SENDER", "\"${System.getenv("RESEND_SENDER") ?: ""}\"")
 
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
+
+        // ✅ kotlinllamacpp hiện chỉ build native lib cho arm64-v8a.
+        // Nếu cần test trên emulator x86_64, build vẫn ra app nhưng LocalRouterEngine
+        // sẽ load model thất bại trên emulator -> tự fallback "chat" (xem LocalRouterEngine.kt).
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -39,6 +46,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // ✅ Không nén file model .gguf trong APK -> đọc/copy ra filesDir nhanh hơn nhiều
+    androidResources {
+        noCompress += "gguf"
     }
 
     composeOptions {
@@ -130,6 +142,11 @@ dependencies {
 
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.0.0")
+
+    // ✅ On-device LLM inference (GGUF, vd. SmolLM2-135M-Instruct) cho LocalRouterEngine.
+    // Thư viện còn ở bản alpha sớm, chỉ hỗ trợ arm64-v8a. Kiểm tra phiên bản mới nhất tại
+    // https://github.com/ljcamargo/kotlinllamacpp trước khi build release.
+    implementation("io.github.ljcamargo:llamacpp-kotlin:0.2.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

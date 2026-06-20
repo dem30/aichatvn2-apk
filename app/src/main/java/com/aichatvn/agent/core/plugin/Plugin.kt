@@ -5,6 +5,11 @@ import com.aichatvn.agent.core.AgentKernel
 interface Plugin {
     val id: String
     val name: String
+
+    // ✅ Mặc định true; các skill hệ thống/chat override thành false để ẩn khỏi
+    // catalog định tuyến local (AgentKernel.tryDeviceCommand) và UI quick bar.
+    val visibleInQuickBar: Boolean get() = true
+
     suspend fun initialize()
     suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult
     suspend fun shutdown()

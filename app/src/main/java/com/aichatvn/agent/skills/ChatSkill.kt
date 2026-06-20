@@ -40,6 +40,10 @@ class ChatSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
+    // ✅ ChatSkill là điểm vào hội thoại, không phải lệnh thiết bị -> ẩn khỏi
+    // catalog định tuyến local của AgentKernel và khỏi UI gợi ý động.
+    override val visibleInQuickBar: Boolean = false
+
     private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
     val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()
 
@@ -130,39 +134,6 @@ class ChatSkill @Inject constructor(
     }
 
     /**
-     * ✅ PHÁT HIỆN LỆNH ĐIỀU KHIỂN
-     * 
-     * Nếu là lệnh điều khiển → gọi AgentKernel
-     * AgentKernel sẽ tự search QA context
-     */
-    private fun isDeviceControlIntent(message: String): Boolean {
-        val lower = message.lowercase()
-
-        val actionVerbs = listOf("bật", "tắt", "khởi động lại", "ngưng", "dừng hẳn", "reset", "gửi")
-        val systemObjects = listOf("camera", "đèn", "light", "đèn led", "chế độ thông minh", "smart mode", "giám sát")
-        val sendCommands = listOf("gửi mail", "gửi email", "gửi thông báo", "send email", "send mail")
-        val queryCommands = listOf("trạng thái", "status", "bao nhiêu", "danh sách camera", "xem log", "xem alert")
-
-        // ✅ Lệnh cấu hình camera (mới)
-        val configCommands = listOf(
-            "đặt từ khoá", "cập nhật từ khoá", "thêm từ khoá", "đổi từ khoá",
-            "đặt prompt", "cập nhật prompt", "thay prompt", "đổi prompt",
-            "cập nhật url", "thay url", "đổi url", "url camera",
-            "cấu hình camera", "cập nhật camera", "thiết lập camera",
-            "từ khoá cảnh báo", "từ khoá bình thường",
-            "đặt vị trí", "cập nhật vị trí"
-        )
-
-        val hasAction = actionVerbs.any { lower.contains(it) }
-        val hasObject = systemObjects.any { lower.contains(it) }
-        val hasSendCommand = sendCommands.any { lower.contains(it) }
-        val hasQueryCommand = queryCommands.any { lower.contains(it) }
-        val hasConfigCommand = configCommands.any { lower.contains(it) }
-
-        return (hasAction && hasObject) || hasSendCommand || hasQueryCommand || hasConfigCommand
-    }
-
-    /**
      * ✅ HÀM PHỐI HỢP VỚI TRAININGSKILL
      * 
      * Build QA context cho Groq chat (không phải lệnh điều khiển)
@@ -249,8 +220,10 @@ class ChatSkill @Inject constructor(
             // ROUTING:
             // 1. Lệnh học → TrainingSkill
             // 2. Có ảnh → Groq vision
-            // 3. Lệnh điều khiển → AgentKernel (tự search QA)
-            // 4. Chat thuần → Groq (có QA context)
+            // 3. Thử AgentKernel.tryDeviceCommand() (local router SmolLM2)
+            //    - khớp lệnh thiết bị → thực thi offline
+            //    - không khớp (null) → rơi xuống (4)
+            // 4. Chat thuần → Groq / QA (có QA context)
             // ============================================================
             
             val responseText: String
@@ -307,67 +280,68 @@ class ChatSkill @Inject constructor(
                     "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                 }
             }
-            // ✅ 3. LỆNH ĐIỀU KHIỂN → AGENTKERNEL (TỰ SEARCH QA)
-            else if (isDeviceControlIntent(message)) {
-                usedMode = "device_control"
-                logger.d("ChatSkill", "Routing to AgentKernel for device control: '$message'")
-                
-                val kernelResult = agentKernel.process(message)
-                responseText = when (kernelResult) {
-                    is PluginResult.Success -> {
-                        val data = kernelResult.data as? Map<*, *>
-                        data?.get("message") as? String ?: "✅ Đã thực hiện"
-                    }
-                    is PluginResult.Failure -> kernelResult.error
-                    else -> "Không thể xử lý lệnh"
-                }
-            }
-            // ✅ 4. CHAT THUẦN → GROQ (CÓ QA CONTEXT)
+            // ✅ 3+4. THỬ ĐỊNH TUYẾN LỆNH THIẾT BỊ (AgentKernel + LocalRouterEngine).
+            // Nếu local router không khớp lệnh nào -> rơi xuống chat thường (Groq/QA, có QA context)
             else {
-                usedMode = _chatMode.value.name
-                val currentMode = _chatMode.value
-                val historySnapshot = _messages.value.takeLast(10).map {
-                    mapOf("role" to it.role, "content" to it.content)
-                }
-                
-                // ✅ Lấy QA context cho chat
-                val qaContext = buildQAContext(message, username)
-                val fullContext = if (qaContext.isNotEmpty()) {
-                    "$qaContext\n\n$extraContext"
+                val deviceResult = agentKernel.tryDeviceCommand(message, username)
+
+                if (deviceResult != null) {
+                    usedMode = "device_control"
+                    logger.d("ChatSkill", "Routed to AgentKernel local router: '$message'")
+                    responseText = when (deviceResult) {
+                        is PluginResult.Success -> {
+                            val data = deviceResult.data as? Map<*, *>
+                            data?.get("message") as? String ?: "✅ Đã thực hiện"
+                        }
+                        is PluginResult.Failure -> deviceResult.error
+                        is PluginResult.NeedMoreInfo -> deviceResult.question
+                    }
                 } else {
-                    extraContext
-                }
-                
-                responseText = try {
-                    withTimeout(30_000L) {
-                        when (currentMode) {
-                            ChatMode.QA -> {
-                                val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
-                                when (qaResult) {
-                                    is PluginResult.Success -> {
-                                        @Suppress("UNCHECKED_CAST")
-                                        val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
-                                        val qa = matches.firstOrNull()?.get("qa") as? com.aichatvn.agent.data.model.QAEntity
-                                        qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
+                    usedMode = _chatMode.value.name
+                    val currentMode = _chatMode.value
+                    val historySnapshot = _messages.value.takeLast(10).map {
+                        mapOf("role" to it.role, "content" to it.content)
+                    }
+
+                    // ✅ Lấy QA context cho chat
+                    val qaContext = buildQAContext(message, username)
+                    val fullContext = if (qaContext.isNotEmpty()) {
+                        "$qaContext\n\n$extraContext"
+                    } else {
+                        extraContext
+                    }
+
+                    responseText = try {
+                        withTimeout(30_000L) {
+                            when (currentMode) {
+                                ChatMode.QA -> {
+                                    val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
+                                    when (qaResult) {
+                                        is PluginResult.Success -> {
+                                            @Suppress("UNCHECKED_CAST")
+                                            val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
+                                            val qa = matches.firstOrNull()?.get("qa") as? com.aichatvn.agent.data.model.QAEntity
+                                            qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
+                                        }
+                                        is PluginResult.Failure -> {
+                                            "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này."
+                                        }
+                                        else -> "Không thể xử lý"
                                     }
-                                    is PluginResult.Failure -> {
-                                        "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này."
-                                    }
-                                    else -> "Không thể xử lý"
+                                }
+                                ChatMode.COMBINED, ChatMode.GROQ -> {
+                                    groqClient.chat(
+                                        message = message,
+                                        extraContext = fullContext,
+                                        history = historySnapshot,
+                                        imageUrl = null
+                                    )
                                 }
                             }
-                            ChatMode.COMBINED, ChatMode.GROQ -> {
-                                groqClient.chat(
-                                    message = message,
-                                    extraContext = fullContext,
-                                    history = historySnapshot,
-                                    imageUrl = null
-                                )
-                            }
                         }
+                    } catch (e: TimeoutCancellationException) {
+                        "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                     }
-                } catch (e: TimeoutCancellationException) {
-                    "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                 }
             }
 
