@@ -1,5 +1,6 @@
 package com.aichatvn.agent.di
-
+import com.aichatvn.agent.core.ChatHistoryManager
+import com.aichatvn.agent.core.LocalRouterEngine
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
@@ -73,15 +74,23 @@ object AppModule {
     fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill
 
     // ===== AGENT KERNEL =====
-    
     @Provides
-    @Singleton
-    fun provideAgentKernel(
-        plugins: Set<@JvmSuppressWildcards Plugin>,
-        groqClient: GroqClientTool,
-        trainingSkill: TrainingSkill,
-        logger: Logger
-    ): AgentKernel {
-        return AgentKernel(plugins, groqClient, trainingSkill, logger)
-    }
+@Singleton
+fun provideAgentKernel(
+    plugins: Set<@JvmSuppressWildcards Plugin>,
+    groqClient: GroqClientTool,
+    trainingSkill: TrainingSkill,
+    localRouterEngine: LocalRouterEngine,
+    chatHistoryManager: ChatHistoryManager,
+    logger: Logger
+): AgentKernel {
+    return AgentKernel(
+        plugins,
+        groqClient,
+        trainingSkill,
+        localRouterEngine,
+        chatHistoryManager,
+        logger
+    )
+}
 }
