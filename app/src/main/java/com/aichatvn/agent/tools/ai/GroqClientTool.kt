@@ -22,7 +22,7 @@ import com.aichatvn.agent.data.GroqApiKeyProvider
  * ✅ Snapshot rate-limit Groq đọc từ response header của lượt gọi GẦN NHẤT
  * (header chuẩn OpenAI-compatible: x-ratelimit-*, retry-after).
  *
- * - remaining*/limit*: null nếu Groq không trả header đó cho model/endpoint này.
+ * - remaining/limit: null nếu Groq không trả header đó cho model/endpoint này.
  * - resetRequestsSeconds/resetTokensSeconds: số giây CÒN LẠI tính từ thời điểm
  *   capturedAtMillis (không phải timestamp tuyệt đối) -> UI cần tự đếm ngược từ đó.
  * - isRateLimited: true nếu lượt gọi gần nhất bị HTTP 429.
