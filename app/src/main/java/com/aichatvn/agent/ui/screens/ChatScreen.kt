@@ -2,8 +2,11 @@ package com.aichatvn.agent.ui.screens
 
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -20,7 +23,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -43,6 +48,7 @@ fun ChatScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val chatMode by viewModel.chatMode.collectAsState()
     val groqRateLimit by viewModel.groqRateLimit.collectAsState()
+    val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
     
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
@@ -92,7 +98,9 @@ fun ChatScreen(
             actions = {
                 // ✅ MỚI: label rate-limit Groq — báo người dùng biết còn token/đang cooldown
                 // hay không trước khi họ gửi tin nhắn (gửi lúc hết token/đang limit cũng vô dụng).
-                groqRateLimit?.let { GroqRateLimitLabel(it) }
+                // Truyền CẢ 2 model: "chat" (chỉ gọi khi tin nhắn KHÔNG phải lệnh) và "router"
+                // (gọi ở MỌI tin nhắn) — xem comment trong GroqRateLimitLabel để hiểu vì sao.
+                GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
                 IconButton(onClick = { navController.navigate("logs") }) {
                     Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
@@ -307,12 +315,26 @@ fun ChatScreen(
 // "Cooldown" chỉ được hiển thị khi THẬT SỰ bị Groq từ chối (HTTP 429), lấy từ mốc thời
 // gian TUYỆT ĐỐI info.cooldownUntilMillis (xem GroqRateLimitInfo). Vì luôn tính lại bằng
 // (cooldownUntilMillis - thời gian hiện tại) ở MỌI lần tick, giá trị hiển thị đúng ngay cả
-// khi app vừa được mở lại sau khi bị tắt hẳn hoặc đưa vào background một lúc lâu - không
-// còn cần "bù" lại số giây đã trôi qua như cách đếm dần (decrement) trước đây.
+// khi app vừa được mở lại sau khi bị tắt hẳn hoặc đưa vào background một lúc lâu.
+//
+// ⚠️ Hiển thị 2 DÒNG riêng cho 2 model: "💬" (model chat - chỉ gọi khi tin nhắn KHÔNG phải
+// lệnh thiết bị) và "⚡" (model router - gọi ở MỌI tin nhắn để phân loại lệnh/chat). 2 model
+// có quota riêng trên Groq nên số liệu khác nhau là BÌNH THƯỜNG, không phải lỗi - tách dòng
+// rõ ràng để không còn gây hiểu nhầm như khi gộp chung 1 số trước đây.
 
 @Composable
-private fun GroqRateLimitLabel(info: GroqRateLimitInfo) {
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+private fun GroqRateLimitLabel(chatInfo: GroqRateLimitInfo?, routerInfo: GroqRateLimitInfo?) {
+    if (chatInfo == null && routerInfo == null) return
+
+    Column(horizontalAlignment = Alignment.End) {
+        chatInfo?.let { GroqRateLimitRow(icon = "💬", info = it) }
+        routerInfo?.let { GroqRateLimitRow(icon = "⚡", info = it) }
+    }
+}
+
+@Composable
+private fun GroqRateLimitRow(icon: String, info: GroqRateLimitInfo) {
+    var nowMillis by remember(info.cooldownUntilMillis) { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(info.cooldownUntilMillis) {
         while (info.cooldownUntilMillis != null && nowMillis < info.cooldownUntilMillis) {
             delay(1000)
@@ -323,37 +345,25 @@ private fun GroqRateLimitLabel(info: GroqRateLimitInfo) {
     val secondsLeft = info.cooldownUntilMillis
         ?.let { ((it - nowMillis) / 1000.0).coerceAtLeast(0.0) }
         ?: 0.0
-
-    val tokensLow = info.remainingTokens != null && info.remainingTokens <= 0
-    val requestsLow = info.remainingRequests != null && info.remainingRequests <= 0
     val cooling = secondsLeft > 0.0
+    val requestsLow = info.remainingRequests != null && info.remainingRequests <= 0
+    val tokensLow = info.remainingTokens != null && info.remainingTokens <= 0
 
-    Column(horizontalAlignment = Alignment.End) {
-        if (info.remainingTokens != null) {
-            Text(
-                text = "🪙 ${info.remainingTokens}" +
-                    (info.limitTokens?.let { "/$it" } ?: ""),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (tokensLow) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        if (cooling) {
-            Text(
-                text = "⏳ ${secondsLeft.toInt()}s",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error
-            )
-        } else if (info.remainingRequests != null) {
-            Text(
-                text = "📨 ${info.remainingRequests}" +
-                    (info.limitRequests?.let { "/$it" } ?: ""),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (requestsLow) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
+    // Ưu tiên hiện: đang cooldown thật (429) > số request còn lại > số token còn lại.
+    val label = when {
+        cooling -> "⏳${secondsLeft.toInt()}s"
+        info.remainingRequests != null ->
+            "${info.remainingRequests}" + (info.limitRequests?.let { "/$it" } ?: "")
+        info.remainingTokens != null -> "🪙${info.remainingTokens}"
+        else -> null
+    } ?: return
+
+    Text(
+        text = "$icon $label",
+        style = MaterialTheme.typography.labelSmall,
+        color = if (cooling || requestsLow || tokensLow) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }
 
 // ── Chip lệnh gợi ý: lấy ĐỘNG từ ChatViewModel.quickCommandGroups, build từ
@@ -411,11 +421,29 @@ private fun QuickCommandBar(
     }
 }
 
+// Giữ (long-press) vào bong bóng tin nhắn để copy nội dung — combinedClickable cần
+// @OptIn vì API này còn experimental ở Compose Foundation.
+// ✅ MỚI: map id plugin -> nhãn thân thiện hiển thị trên badge "lệnh" của tin nhắn.
+// Plugin nào không có trong danh sách (vd thêm plugin mới sau này) vẫn hiện được nhờ
+// nhánh else, không cần sửa hàm này mỗi khi thêm plugin.
+private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin) {
+    "learn" -> "📚 Học"
+    "camera" -> "📷 Camera"
+    "light" -> "💡 Đèn"
+    "email" -> "📧 Email"
+    "notification" -> "🔔 Thông báo"
+    "schedule" -> "⏰ Lịch"
+    "training" -> "📚 Học"
+    else -> "⚡ ${sourcePlugin.replaceFirstChar { it.uppercase() }}"
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(message: ChatMessageEntity) {
     val isUser = message.role == "user"
     val context = LocalContext.current
-    
+    val clipboardManager = LocalClipboardManager.current
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
@@ -433,11 +461,42 @@ fun ChatBubble(message: ChatMessageEntity) {
                 else 
                     MaterialTheme.colorScheme.secondaryContainer
             ),
-            modifier = Modifier.widthIn(max = 280.dp)
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = {
+                        clipboardManager.setText(AnnotatedString(message.content))
+                        Toast.makeText(context, "Đã sao chép tin nhắn", Toast.LENGTH_SHORT).show()
+                    }
+                )
         ) {
             Column(
                 modifier = Modifier.padding(12.dp)
             ) {
+                // ✅ MỚI: badge nhỏ góc trên-phải báo đây là kết quả của 1 LỆNH điều khiển
+                // (sourcePlugin != null) - giúp phân biệt với câu trả lời chat tự do.
+                // Chỉ hiện cho tin nhắn của assistant, không bao giờ hiện ở tin nhắn user.
+                if (!isUser && message.sourcePlugin != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer
+                        ) {
+                            Text(
+                                text = pluginBadgeLabel(message.sourcePlugin),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+
                 if (message.type == "image" && message.fileUrl != null) {
                     val bitmap = remember(message.fileUrl) {
                         try {

@@ -28,7 +28,15 @@ data class ChatMessageEntity(
     val role: String, // "user" or "assistant"
     val type: String, // "text" or "image" or "file"
     val fileUrl: String? = null,
-    val timestamp: Long
+    val timestamp: Long,
+    // ✅ MỚI: nguồn gốc câu trả lời CỦA ASSISTANT.
+    // - null            -> chat thường (Groq trả lời tự do / QA)
+    // - "learn"         -> lệnh học Q&A ("Học:"/"Dạy:")
+    // - id của 1 plugin (vd "camera", "light", "email"...) -> đây là kết quả THỰC THI
+    //   1 lệnh điều khiển thiết bị qua AgentKernel.tryDeviceCommand()
+    // Dùng để UI gắn badge "⚡ lệnh" lên góc tin nhắn, giúp người dùng phân biệt được AI
+    // đang trả lời tự do hay vừa thực thi 1 lệnh thật sự. Tin nhắn role="user" luôn để null.
+    val sourcePlugin: String? = null
 )
 
 // ==================== Q&A ====================

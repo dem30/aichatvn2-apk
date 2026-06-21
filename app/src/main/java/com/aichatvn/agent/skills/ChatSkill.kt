@@ -228,6 +228,9 @@ class ChatSkill @Inject constructor(
             
             val responseText: String
             val usedMode: String
+            // ✅ MỚI: id plugin đã thực thi lệnh (null = chat thường) - lưu vào
+            // ChatMessageEntity.sourcePlugin để UI gắn badge "⚡ lệnh".
+            var usedPluginId: String? = null
             
             // ✅ 1. LỆNH HỌC
             if (message.startsWith("Học:") || message.startsWith("Dạy:")) {
@@ -242,6 +245,7 @@ class ChatSkill @Inject constructor(
                         else -> "❌ Không thể học"
                     }
                     usedMode = "learn"
+                    usedPluginId = "learn"
                 } else {
                     responseText = "❌ Cú pháp: Học: câu hỏi → câu trả lời"
                     usedMode = "learn_error"
@@ -287,14 +291,15 @@ class ChatSkill @Inject constructor(
 
                 if (deviceResult != null) {
                     usedMode = "device_control"
-                    logger.d("ChatSkill", "Routed to AgentKernel local router: '$message'")
-                    responseText = when (deviceResult) {
+                    usedPluginId = deviceResult.pluginId
+                    logger.d("ChatSkill", "Routed to AgentKernel local router: '$message' -> plugin=${deviceResult.pluginId}")
+                    responseText = when (val result = deviceResult.result) {
                         is PluginResult.Success -> {
-                            val data = deviceResult.data as? Map<*, *>
+                            val data = result.data as? Map<*, *>
                             data?.get("message") as? String ?: "✅ Đã thực hiện"
                         }
-                        is PluginResult.Failure -> deviceResult.error
-                        is PluginResult.NeedMoreInfo -> deviceResult.question
+                        is PluginResult.Failure -> result.error
+                        is PluginResult.NeedMoreInfo -> result.question
                     }
                 } else {
                     usedMode = _chatMode.value.name
@@ -354,7 +359,8 @@ class ChatSkill @Inject constructor(
                 content = responseText,
                 role = "assistant",
                 type = "text",
-                timestamp = System.currentTimeMillis()
+                timestamp = System.currentTimeMillis(),
+                sourcePlugin = usedPluginId
             )
             database.chatMessageDao().insertMessage(assistantMessage)
 

@@ -46,8 +46,12 @@ class ChatViewModel @Inject constructor(
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
     val chatMode: StateFlow<ChatMode> = chatSkill.chatMode
 
-    /** ✅ MỚI: rate-limit Groq (token còn lại, cooldown) — null khi chưa gọi Groq lần nào. */
+    /** ✅ rate-limit Groq của model CHAT (token còn lại, cooldown) — null khi chưa gọi Groq lần nào. */
     val groqRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.rateLimitInfo
+
+    /** ✅ MỚI: rate-limit Groq của model ROUTER (phân loại lệnh) — cập nhật ở MỌI tin nhắn,
+     *  kể cả khi tin nhắn đó cuối cùng là lệnh thiết bị (không gọi tới model chat). */
+    val groqRouterRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.routerRateLimitInfo
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()

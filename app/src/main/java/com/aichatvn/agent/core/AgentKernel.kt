@@ -45,7 +45,7 @@ class AgentKernel @Inject constructor(
      *   model tự xác định đây là hội thoại thường ("chat"), hoặc plugin không tồn tại/bị ẩn.
      *   -> Khi trả về null, caller (ChatSkill) PHẢI tự xử lý tiếp như chat thường.
      */
-    suspend fun tryDeviceCommand(userMessage: String, username: String = "default_user"): PluginResult? {
+    suspend fun tryDeviceCommand(userMessage: String, username: String = "default_user"): DeviceCommandResult? {
         val devicePlugins = plugins.filter { it.visibleInQuickBar }
         if (devicePlugins.isEmpty()) return null // Không có plugin thiết bị nào để định tuyến
 
@@ -107,7 +107,7 @@ class AgentKernel @Inject constructor(
         }
         chatHistoryManager.addTurn(userMessage, replyForHistory)
 
-        return executionResult
+        return DeviceCommandResult(pluginId = targetPlugin.id, result = executionResult)
     }
 
     suspend fun process(userMessage: String): PluginResult {
@@ -306,6 +306,17 @@ class AgentKernel @Inject constructor(
         val pluginId: String,
         val action: String,
         val params: Map<String, Any> = emptyMap()
+    )
+
+    /**
+     * ✅ Kết quả của tryDeviceCommand() - bọc thêm pluginId vì PluginResult (Success/Failure/
+     * NeedMoreInfo) không tự mang theo thông tin "lệnh này thuộc plugin nào". Caller (ChatSkill)
+     * cần pluginId để gắn nhãn nguồn gốc tin nhắn (ChatMessageEntity.sourcePlugin) cho UI hiển
+     * thị badge "⚡ lệnh".
+     */
+    data class DeviceCommandResult(
+        val pluginId: String,
+        val result: PluginResult
     )
 
     sealed class PluginResult {

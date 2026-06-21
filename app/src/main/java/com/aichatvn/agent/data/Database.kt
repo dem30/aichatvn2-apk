@@ -235,7 +235,7 @@ interface ScheduleDao {
         ScheduleEntity::class,
         TuyaDeviceEntity::class
     ],
-    version = 4,  // ✅ THÊM
+    version = 5,  // ✅ THÊM cột sourcePlugin (chat_messages) cho tính năng tag lệnh/chat thường
 
     exportSchema = false
 )
@@ -301,6 +301,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // ✅ THÊM MIGRATION 4 -> 5: thêm cột sourcePlugin cho tính năng tag lệnh/chat thường
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN sourcePlugin TEXT")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -308,7 +315,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)  // ✅ THÊM
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5)  // ✅ THÊM
                     .build()
                 INSTANCE = instance
                 instance

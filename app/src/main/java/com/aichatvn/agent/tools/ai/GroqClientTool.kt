@@ -110,10 +110,49 @@ class GroqClientTool @Inject constructor(
 
     // ✅ Rate-limit dành cho UI chính (ChatScreen) - CHỈ lấy từ model dùng để trả lời
     // người dùng (text hoặc vision khi gửi ảnh), KHÔNG lẫn quota của MODEL_ROUTER.
+    //
+    // ⚠️ LÝ DO LABEL "KHÔNG REALTIME" BẠN GẶP: routeIntent() (MODEL_ROUTER) được gọi ở
+    // MỌI tin nhắn (AgentKernel.tryDeviceCommand() luôn chạy trước để xác định có phải lệnh
+    // hay không), còn chat() (MODEL_TEXT/MODEL_VISION) CHỈ được gọi khi tin nhắn KHÔNG phải
+    // lệnh thiết bị. Nếu bạn test chủ yếu bằng các câu lệnh điều khiển, rateLimitInfo (chat)
+    // sẽ đứng yên suốt phiên vì chat() chưa từng được gọi lại - không phải do lỗi đồng bộ,
+    // mà do đúng model đó chưa thực sự được gọi. Để label luôn "sống" trong mọi trường hợp,
+    // expose thêm routerRateLimitInfo (cập nhật ở MỌI tin nhắn) để UI hiển thị song song.
     private val _chatRateLimitInfo = MutableStateFlow(
         _rateLimitByModel.value[MODEL_TEXT] ?: _rateLimitByModel.value[MODEL_VISION]
     )
     val rateLimitInfo: StateFlow<GroqRateLimitInfo?> = _chatRateLimitInfo.asStateFlow()
+
+    // ✅ MỚI: Rate-limit của MODEL_ROUTER (phân loại intent) - cập nhật ở MỌI tin nhắn,
+    // kể cả khi tin nhắn đó cuối cùng là lệnh thiết bị. Dùng để UI có 1 chỉ số luôn "động".
+    private val _routerRateLimitInfo = MutableStateFlow(_rateLimitByModel.value[MODEL_ROUTER])
+    val routerRateLimitInfo: StateFlow<GroqRateLimitInfo?> = _routerRateLimitInfo.asStateFlow()
+
+    // ✅ FIX đồng bộ đa-instance (phòng hờ): trước đây _chatRateLimitInfo CHỈ được set bên
+    // trong captureRateLimit(), tức là chỉ instance nào TỰ gọi chat()/routeIntent() mới thấy
+    // số mới ngay; nếu có bất kỳ chỗ nào khác trong DI graph cầm một instance GroqClientTool
+    // khác thì instance đó đứng yên cho tới khi tự nó gọi API hoặc app khởi động lại. Đăng ký
+    // listener trực tiếp trên SharedPreferences giúp MỌI instance trong cùng process đồng bộ
+    // ngay khi có bất kỳ instance nào ghi file.
+    // Lưu ý: phải giữ listener bằng 1 property (không tạo lambda ẩn danh truyền thẳng vào
+    // registerOnSharedPreferenceChangeListener) vì Android chỉ giữ WeakReference tới listener -
+    // nếu không có biến nào giữ tham chiếu mạnh, nó có thể bị GC và ngừng nhận sự kiện.
+    private val prefsListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key !in PERSISTED_MODELS) return@OnSharedPreferenceChangeListener
+            val raw = prefs.getString(key, null) ?: return@OnSharedPreferenceChangeListener
+            val info = parseRateLimitJson(raw) ?: return@OnSharedPreferenceChangeListener
+
+            _rateLimitByModel.value = _rateLimitByModel.value + (key to info)
+            when (key) {
+                MODEL_TEXT, MODEL_VISION -> _chatRateLimitInfo.value = info
+                MODEL_ROUTER -> _routerRateLimitInfo.value = info
+            }
+        }
+
+    init {
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+    }
 
     private fun loadPersistedRateLimits(): Map<String, GroqRateLimitInfo> {
         val map = mutableMapOf<String, GroqRateLimitInfo>()
@@ -192,8 +231,9 @@ class GroqClientTool @Inject constructor(
         )
 
         _rateLimitByModel.value = _rateLimitByModel.value + (model to info)
-        if (model == MODEL_TEXT || model == MODEL_VISION) {
-            _chatRateLimitInfo.value = info
+        when (model) {
+            MODEL_TEXT, MODEL_VISION -> _chatRateLimitInfo.value = info
+            MODEL_ROUTER -> _routerRateLimitInfo.value = info
         }
         persistRateLimit(info)
     }
