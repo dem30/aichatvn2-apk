@@ -304,23 +304,25 @@ fun ChatScreen(
 }
 
 // ── Label rate-limit Groq (token còn lại / cooldown request) ───────────────
-// Header chỉ cho biết "còn X giây" TÍNH TỪ LÚC response về -> phải tự đếm ngược
-// ở client dựa theo capturedAtMillis, không phải giá trị tĩnh.
+// "Cooldown" chỉ được hiển thị khi THẬT SỰ bị Groq từ chối (HTTP 429), lấy từ mốc thời
+// gian TUYỆT ĐỐI info.cooldownUntilMillis (xem GroqRateLimitInfo). Vì luôn tính lại bằng
+// (cooldownUntilMillis - thời gian hiện tại) ở MỌI lần tick, giá trị hiển thị đúng ngay cả
+// khi app vừa được mở lại sau khi bị tắt hẳn hoặc đưa vào background một lúc lâu - không
+// còn cần "bù" lại số giây đã trôi qua như cách đếm dần (decrement) trước đây.
 
 @Composable
 private fun GroqRateLimitLabel(info: GroqRateLimitInfo) {
-    var secondsLeft by remember(info.capturedAtMillis) {
-        val resetSec = maxOf(info.resetRequestsSeconds ?: 0.0, info.resetTokensSeconds ?: 0.0)
-        val elapsed = (System.currentTimeMillis() - info.capturedAtMillis) / 1000.0
-        mutableStateOf((resetSec - elapsed).coerceAtLeast(0.0))
-    }
-
-    LaunchedEffect(info.capturedAtMillis) {
-        while (secondsLeft > 0.0) {
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(info.cooldownUntilMillis) {
+        while (info.cooldownUntilMillis != null && nowMillis < info.cooldownUntilMillis) {
             delay(1000)
-            secondsLeft = (secondsLeft - 1.0).coerceAtLeast(0.0)
+            nowMillis = System.currentTimeMillis()
         }
     }
+
+    val secondsLeft = info.cooldownUntilMillis
+        ?.let { ((it - nowMillis) / 1000.0).coerceAtLeast(0.0) }
+        ?: 0.0
 
     val tokensLow = info.remainingTokens != null && info.remainingTokens <= 0
     val requestsLow = info.remainingRequests != null && info.remainingRequests <= 0

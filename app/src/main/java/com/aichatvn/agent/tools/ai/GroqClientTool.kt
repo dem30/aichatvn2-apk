@@ -1,7 +1,9 @@
 package com.aichatvn.agent.tools.ai
 
+import android.content.Context
 import android.util.Base64
 import com.aichatvn.agent.utils.Logger
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,22 +21,27 @@ import javax.inject.Singleton
 import com.aichatvn.agent.data.GroqApiKeyProvider
 
 /**
- * ✅ Snapshot rate-limit Groq đọc từ response header của lượt gọi GẦN NHẤT
- * (header chuẩn OpenAI-compatible: x-ratelimit-*, retry-after).
+ * Snapshot rate-limit Groq cho MỘT model cụ thể, đọc từ response header của lượt gọi
+ * GẦN NHẤT tới model đó (header chuẩn OpenAI-compatible: x-ratelimit-*, retry-after).
  *
- * - remaining/limit: null nếu Groq không trả header đó cho model/endpoint này.
- * - resetRequestsSeconds/resetTokensSeconds: số giây CÒN LẠI tính từ thời điểm
- *   capturedAtMillis (không phải timestamp tuyệt đối) -> UI cần tự đếm ngược từ đó.
- * - isRateLimited: true nếu lượt gọi gần nhất bị HTTP 429.
+ * - remaining / limit: thông tin quota còn lại, null nếu Groq không trả header đó.
+ * - isRateLimited + cooldownUntilMillis: CHỈ có giá trị khi lượt gọi gần nhất bị HTTP 429
+ *   thật sự (lấy từ header retry-after). KHÔNG dùng x-ratelimit-reset-requests cho việc
+ *   này vì header đó xuất hiện trên MỌI response kể cả thành công (200) - nó chỉ cho biết
+ *   "cửa sổ quota tiếp theo bắt đầu lúc nào", không có nghĩa là đang bị chặn. Trộn 2 khái
+ *   niệm này từng làm UI hiện cooldown ngay cả khi chat hoàn toàn bình thường.
+ * - cooldownUntilMillis là mốc thời gian TUYỆT ĐỐI (epoch millis), không phải số giây còn
+ *   lại tính từ lúc capture -> UI tính lại (cooldownUntilMillis - now) mỗi lần hiển thị,
+ *   nên luôn đúng kể cả khi app vừa được mở lại sau khi bị tắt/đưa vào background.
  */
 data class GroqRateLimitInfo(
+    val model: String,
     val limitRequests: Int? = null,
     val remainingRequests: Int? = null,
     val limitTokens: Int? = null,
     val remainingTokens: Int? = null,
-    val resetRequestsSeconds: Double? = null,
-    val resetTokensSeconds: Double? = null,
     val isRateLimited: Boolean = false,
+    val cooldownUntilMillis: Long? = null,
     val capturedAtMillis: Long = System.currentTimeMillis()
 )
 
@@ -43,23 +50,33 @@ data class GroqRateLimitInfo(
  *
  * ĐIỂM QUAN TRỌNG — root cause của 401:
  * KHÔNG inject API key qua constructor hay đọc từ StateFlow.value lúc khởi tạo.
- * DataStore chưa load xong khi Hilt inject → key vẫn là "" → "Bearer " → 401.
+ * DataStore chưa load xong khi Hilt inject -> key vẫn là "" -> "Bearer " -> 401.
  * GIẢI PHÁP: inject GroqApiKeyProvider và gọi getKey() suspend ngay trước mỗi request.
  *
- * ✅ v2: Thêm routeIntent() — thay thế hoàn toàn vai trò của LocalRouterEngine (SmolLM2 cục bộ,
+ * v2: Thêm routeIntent() - thay thế hoàn toàn vai trò của LocalRouterEngine (SmolLM2 cục bộ,
  * đã bỏ vì crash SIGILL trên CPU yếu/cũ như Cortex-A53). Dùng model nhỏ + rẻ (MODEL_ROUTER)
  * riêng cho việc phân loại intent, tách biệt với model chat chính (MODEL_TEXT) để không tốn
  * chi phí/độ trễ của model lớn cho một việc chỉ cần trả 1 JSON ngắn.
+ *
+ * v3: Sửa rate-limit label:
+ *  1) MODEL_TEXT/MODEL_VISION (chat với người dùng) và MODEL_ROUTER (phân loại intent nội bộ)
+ *     có quota RIÊNG trên Groq -> lưu rate-limit theo từng model (rateLimitByModel), UI chỉ
+ *     đọc của model chat chính (rateLimitInfo) thay vì 1 giá trị chung bị 2 model ghi đè nhau.
+ *  2) Persist snapshot xuống SharedPreferences -> mở lại app vẫn còn label, không cần chat
+ *     mới có.
+ *  3) Cooldown chỉ tính khi bị 429 thật (xem GroqRateLimitInfo), không lẫn với thời gian
+ *     reset quota thông thường.
  */
 @Singleton
 class GroqClientTool @Inject constructor(
     private val apiKeyProvider: GroqApiKeyProvider,
-    private val logger: Logger
+    private val logger: Logger,
+    @ApplicationContext private val context: Context
 ) {
     companion object {
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-        // ⚠️ Groq đã deprecate llama-3.3-70b-versatile, llama-3.1-8b-instant và
+        // Groq đã deprecate llama-3.3-70b-versatile, llama-3.1-8b-instant và
         // meta-llama/llama-4-scout-17b-16e-instruct (thông báo 17/6/2026). Dùng model thay thế
         // theo khuyến nghị chính thức: https://console.groq.com/docs/deprecations
         private const val MODEL_TEXT = "openai/gpt-oss-120b"          // chat chính
@@ -72,51 +89,116 @@ class GroqClientTool @Inject constructor(
 
         private const val SAFE_FALLBACK_INTENT =
             """{"plugin":"chat","action":"none","params":{}}"""
+
+        private const val PREFS_NAME = "groq_rate_limit_prefs"
+        private val PERSISTED_MODELS = listOf(MODEL_TEXT, MODEL_VISION, MODEL_ROUTER)
     }
 
-    // Singleton client — không tạo mới mỗi request
+    // Singleton client - không tạo mới mỗi request
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // ✅ Rate-limit snapshot từ lượt gọi Groq gần nhất — UI (ChatScreen) quan sát để
-    // hiện label "còn bao nhiêu token / còn cooldown bao lâu".
-    private val _rateLimitInfo = MutableStateFlow<GroqRateLimitInfo?>(null)
-    val rateLimitInfo: StateFlow<GroqRateLimitInfo?> = _rateLimitInfo.asStateFlow()
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    // ✅ Rate-limit theo TỪNG model (key = tên model) - đọc lại từ disk lúc khởi tạo nên
+    // có giá trị ngay cả khi vừa mở app, chưa chat lần nào trong phiên này.
+    private val _rateLimitByModel =
+        MutableStateFlow<Map<String, GroqRateLimitInfo>>(loadPersistedRateLimits())
+    val rateLimitByModel: StateFlow<Map<String, GroqRateLimitInfo>> = _rateLimitByModel.asStateFlow()
+
+    // ✅ Rate-limit dành cho UI chính (ChatScreen) - CHỈ lấy từ model dùng để trả lời
+    // người dùng (text hoặc vision khi gửi ảnh), KHÔNG lẫn quota của MODEL_ROUTER.
+    private val _chatRateLimitInfo = MutableStateFlow(
+        _rateLimitByModel.value[MODEL_TEXT] ?: _rateLimitByModel.value[MODEL_VISION]
+    )
+    val rateLimitInfo: StateFlow<GroqRateLimitInfo?> = _chatRateLimitInfo.asStateFlow()
+
+    private fun loadPersistedRateLimits(): Map<String, GroqRateLimitInfo> {
+        val map = mutableMapOf<String, GroqRateLimitInfo>()
+        for (model in PERSISTED_MODELS) {
+            val raw = prefs.getString(model, null) ?: continue
+            parseRateLimitJson(raw)?.let { map[model] = it }
+        }
+        return map
+    }
+
+    private fun persistRateLimit(info: GroqRateLimitInfo) {
+        try {
+            prefs.edit().putString(info.model, rateLimitToJson(info)).apply()
+        } catch (e: Exception) {
+            logger.e("GroqClientTool", "persistRateLimit error: ${e.message}", e)
+        }
+    }
+
+    private fun rateLimitToJson(info: GroqRateLimitInfo): String = JSONObject().apply {
+        put("model", info.model)
+        put("limitRequests", info.limitRequests ?: JSONObject.NULL)
+        put("remainingRequests", info.remainingRequests ?: JSONObject.NULL)
+        put("limitTokens", info.limitTokens ?: JSONObject.NULL)
+        put("remainingTokens", info.remainingTokens ?: JSONObject.NULL)
+        put("isRateLimited", info.isRateLimited)
+        put("cooldownUntilMillis", info.cooldownUntilMillis ?: JSONObject.NULL)
+        put("capturedAtMillis", info.capturedAtMillis)
+    }.toString()
+
+    private fun parseRateLimitJson(raw: String): GroqRateLimitInfo? = try {
+        val o = JSONObject(raw)
+        GroqRateLimitInfo(
+            model = o.getString("model"),
+            limitRequests = if (o.isNull("limitRequests")) null else o.getInt("limitRequests"),
+            remainingRequests = if (o.isNull("remainingRequests")) null else o.getInt("remainingRequests"),
+            limitTokens = if (o.isNull("limitTokens")) null else o.getInt("limitTokens"),
+            remainingTokens = if (o.isNull("remainingTokens")) null else o.getInt("remainingTokens"),
+            isRateLimited = o.optBoolean("isRateLimited", false),
+            cooldownUntilMillis = if (o.isNull("cooldownUntilMillis")) null else o.getLong("cooldownUntilMillis"),
+            capturedAtMillis = o.optLong("capturedAtMillis", System.currentTimeMillis())
+        )
+    } catch (e: Exception) {
+        null
+    }
 
     /**
-     * Đọc header rate-limit chuẩn OpenAI-compatible từ response (gọi được cả khi
-     * response lỗi 429 — header rate-limit vẫn có trong response lỗi).
-     * Nếu Groq không trả bất kỳ header rate-limit nào (vd lỗi mạng trước khi tới server,
-     * hoặc model/endpoint không hỗ trợ) -> giữ nguyên giá trị cũ, không ghi đè bằng null.
+     * Đọc header rate-limit chuẩn OpenAI-compatible từ response (gọi được cả khi response
+     * lỗi 429 - header rate-limit vẫn có trong response lỗi) và cập nhật state cho đúng
+     * model vừa được gọi.
      */
-    private fun captureRateLimit(response: okhttp3.Response) {
+    private fun captureRateLimit(response: okhttp3.Response, model: String) {
         val remainingReq = response.header("x-ratelimit-remaining-requests")?.toIntOrNull()
         val limitReq = response.header("x-ratelimit-limit-requests")?.toIntOrNull()
         val remainingTok = response.header("x-ratelimit-remaining-tokens")?.toIntOrNull()
         val limitTok = response.header("x-ratelimit-limit-tokens")?.toIntOrNull()
-        val resetReq = parseDurationToSeconds(response.header("x-ratelimit-reset-requests"))
-        val resetTok = parseDurationToSeconds(response.header("x-ratelimit-reset-tokens"))
-        val retryAfter = response.header("retry-after")?.toDoubleOrNull()
+        val retryAfterSeconds = parseDurationToSeconds(response.header("retry-after"))
+        val isLimited = response.code == 429
 
-        if (remainingReq == null && remainingTok == null && retryAfter == null) return
+        if (remainingReq == null && remainingTok == null && !isLimited) return
 
-        _rateLimitInfo.value = GroqRateLimitInfo(
+        val now = System.currentTimeMillis()
+        val info = GroqRateLimitInfo(
+            model = model,
             limitRequests = limitReq,
             remainingRequests = remainingReq,
             limitTokens = limitTok,
             remainingTokens = remainingTok,
-            // Khi bị 429, Groq luôn trả retry-after -> ưu tiên dùng số đó cho cooldown
-            // vì nó chính xác hơn x-ratelimit-reset-requests trong tình huống đã limit.
-            resetRequestsSeconds = retryAfter ?: resetReq,
-            resetTokensSeconds = resetTok,
-            isRateLimited = response.code == 429,
-            capturedAtMillis = System.currentTimeMillis()
+            isRateLimited = isLimited,
+            // Chỉ set cooldown khi THẬT SỰ bị 429 và có retry-after -> mốc tuyệt đối được
+            // phép gọi lại. Các lượt gọi thành công bình thường sẽ có cooldownUntilMillis = null,
+            // nên UI sẽ không còn hiện nhãn "đang chờ" một cách sai lệch nữa.
+            cooldownUntilMillis = if (isLimited && retryAfterSeconds != null) {
+                now + (retryAfterSeconds * 1000).toLong()
+            } else null,
+            capturedAtMillis = now
         )
+
+        _rateLimitByModel.value = _rateLimitByModel.value + (model to info)
+        if (model == MODEL_TEXT || model == MODEL_VISION) {
+            _chatRateLimitInfo.value = info
+        }
+        persistRateLimit(info)
     }
 
-    /** Parse chuỗi duration kiểu "12.5s", "6m59s", "1h2m3s", "250ms" -> tổng số giây. */
+    /** Parse chuỗi duration kiểu "12.5s", "6m59s", "1h2m3s", "250ms", hoặc số giây thuần -> tổng số giây. */
     private fun parseDurationToSeconds(raw: String?): Double? {
         if (raw.isNullOrBlank()) return null
         raw.toDoubleOrNull()?.let { return it } // trường hợp header chỉ là số giây thuần (vd retry-after)
@@ -202,7 +284,7 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
-            captureRateLimit(response)
+            captureRateLimit(response, model)
             parseResponse(response, "chat")
 
         } catch (e: Exception) {
@@ -212,11 +294,11 @@ class GroqClientTool @Inject constructor(
     }
 
     /**
-     * ✅ MỚI: Phân loại intent (device command hay chat thường) bằng model NHỎ + RẺ.
+     * MỚI: Phân loại intent (device command hay chat thường) bằng model NHỎ + RẺ.
      *
      * Thay thế vai trò của LocalRouterEngine.predictIntent() trước đây (SmolLM2 cục bộ).
-     * - Luôn trả JSON hợp lệ (ép response_format = json_object), temperature = 0 để ổn định.
-     * - Không dùng lịch sử/system message riêng — prompt đầu vào (từ AgentKernel) đã tự chứa
+     * - Luôn trả JSON hợp lệ, temperature = 0 để ổn định.
+     * - Không dùng lịch sử/system message riêng - prompt đầu vào (từ AgentKernel) đã tự chứa
      *   đầy đủ catalog plugin + context + instruction rồi, gửi thẳng làm 1 user message.
      * - Lỗi mạng / thiếu key / parse lỗi -> trả SAFE_FALLBACK_INTENT ("chat") để caller luôn
      *   có JSON hợp lệ, không cần try-catch lại ở AgentKernel.
@@ -237,7 +319,7 @@ class GroqClientTool @Inject constructor(
                 put("messages", messages)
                 put("max_tokens", MAX_TOKENS_ROUTER)
                 put("temperature", 0)
-                // ❌ Đã bỏ "response_format": json_object — không phải model nào trên Groq
+                // Đã bỏ "response_format": json_object - không phải model nào trên Groq
                 // cũng hỗ trợ structured JSON mode này, gây HTTP 400. Prompt đã tự yêu cầu
                 // "Output ONLY raw JSON" + parseIntentResponse() đã tự strip markdown nên
                 // không cần ép response_format ở tầng API.
@@ -252,11 +334,11 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
-            captureRateLimit(response)
+            captureRateLimit(response, MODEL_ROUTER)
             val bodyStr = response.body?.string() ?: ""
 
             if (!response.isSuccessful) {
-                // ✅ Log đầy đủ body lỗi thật từ Groq (trước đây chỉ log status code,
+                // Log đầy đủ body lỗi thật từ Groq (trước đây chỉ log status code,
                 // không thấy được lý do thật -> không debug được).
                 logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
                 return@withContext SAFE_FALLBACK_INTENT
@@ -319,7 +401,7 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute()
 
-            captureRateLimit(response)
+            captureRateLimit(response, MODEL_VISION)
             parseResponse(response, "analyzeImage")
 
         } catch (e: Exception) {
