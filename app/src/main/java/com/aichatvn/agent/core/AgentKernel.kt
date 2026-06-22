@@ -124,7 +124,31 @@ class AgentKernel @Inject constructor(
             append("<output>")
         }
 
-        val routerResultJson = groqClient.routeIntent(routerPrompt)
+        // ✅ Đưa danh sách schedule hiện tại (với index + id thật) vào prompt để LLM
+        // biết id UUID cụ thể khi user nói "xoá lịch số 1" hay "xoá lịch camera".
+        val schedulesContext = try {
+            val schedPlugin = devicePlugins.find { it.id == "schedule" }
+            val result = schedPlugin?.execute("list", emptyMap())
+            @Suppress("UNCHECKED_CAST")
+            val list = (result as? PluginResult.Success)?.data as? List<*>
+            if (!list.isNullOrEmpty()) {
+                val lines = list.mapIndexed { i, s ->
+                    val e = s as? com.aichatvn.agent.data.model.ScheduleEntity
+                        ?: return@mapIndexed ""
+                    "#${i + 1} id=${e.id} ${e.pluginId}.${e.action} " +
+                        if (e.cron.isNotEmpty()) e.cron else "${e.intervalMinutes}m"
+                }.filter { it.isNotEmpty() }
+                if (lines.isNotEmpty())
+                    "<schedules>\n${lines.joinToString("\n")}\n</schedules>\n"
+                else ""
+            } else ""
+        } catch (_: Exception) { "" }
+
+        val fullPrompt = if (schedulesContext.isNotEmpty())
+            routerPrompt.replace("<input>", "$schedulesContext<input>")
+        else routerPrompt
+
+        val routerResultJson = groqClient.routeIntent(fullPrompt)
         val rawIntent = parseIntentResponse(routerResultJson, userMessage) ?: return null
 
         if (rawIntent.pluginId.isBlank() || rawIntent.pluginId == "chat") return null

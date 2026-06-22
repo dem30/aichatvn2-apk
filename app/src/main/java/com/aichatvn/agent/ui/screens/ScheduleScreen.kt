@@ -2,7 +2,6 @@ package com.aichatvn.agent.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -71,8 +70,12 @@ fun ScheduleScreen(
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(schedules) { schedule ->
+                // ✅ Dùng index-based items để truyền số thứ tự vào ScheduleCard.
+                // User thấy "#1", "#2"... → có thể nói "xoá lịch số 1" với AI.
+                items(schedules.size) { index ->
+                    val schedule = schedules[index]
                     ScheduleCard(
+                        index = index + 1,
                         schedule = schedule,
                         onToggle = { viewModel.toggleSchedule(it) },
                         onDelete = { viewModel.deleteSchedule(it) }
@@ -96,6 +99,7 @@ fun ScheduleScreen(
 
 @Composable
 fun ScheduleCard(
+    index: Int,                     // ✅ Số thứ tự hiển thị cho user và AI
     schedule: ScheduleEntity,
     onToggle: (String) -> Unit,
     onDelete: (String) -> Unit
@@ -116,8 +120,9 @@ fun ScheduleCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
+                // ✅ Hiện "#1 · camera.scan" thay vì chỉ "camera.scan"
                 Text(
-                    "${schedule.pluginId}.${schedule.action}",
+                    "#$index · ${schedule.pluginId}.${schedule.action}",
                     style = MaterialTheme.typography.titleSmall
                 )
                 Text(
@@ -163,15 +168,12 @@ fun AddScheduleDialog(
     var selectedPlugin by remember { mutableStateOf<Plugin?>(null) }
     var selectedAction by remember { mutableStateOf<PluginAction?>(null) }
 
-    // ✅ Giá trị tham số động theo action đang chọn (key = tên tham số).
-    // Tách riêng boolean vì Switch cần Boolean, không tiện dùng chung String map.
     val paramValues = remember { mutableStateMapOf<String, String>() }
     val paramBooleans = remember { mutableStateMapOf<String, Boolean>() }
 
     var cron by remember { mutableStateOf("") }
     var intervalMinutes by remember { mutableStateOf("") }
 
-    // Đổi plugin -> reset action + tham số cũ, tránh giữ lại params của plugin trước
     fun selectPlugin(p: Plugin) {
         selectedPlugin = p
         selectedAction = null
@@ -208,7 +210,6 @@ fun AddScheduleDialog(
                     .heightIn(max = 480.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // ───── Dropdown chọn Plugin ─────
                 ExposedDropdownMenuBox(
                     expanded = pluginExpanded,
                     onExpandedChange = { pluginExpanded = it }
@@ -239,7 +240,6 @@ fun AddScheduleDialog(
                     }
                 }
 
-                // ───── Dropdown chọn Action (chỉ hiện sau khi đã chọn Plugin) ─────
                 selectedPlugin?.let { plugin ->
                     ExposedDropdownMenuBox(
                         expanded = actionExpanded,
@@ -272,7 +272,6 @@ fun AddScheduleDialog(
                     }
                 }
 
-                // ───── Tham số động theo action đang chọn (vd to/subject/body của email) ─────
                 selectedAction?.parameters?.forEach { param ->
                     if (param.type == "boolean") {
                         Row(
@@ -336,10 +335,6 @@ fun AddScheduleDialog(
                     val action = selectedAction ?: return@TextButton
                     val interval = intervalMinutes.toIntOrNull() ?: 0
 
-                    // ✅ Build params đúng KIỂU dữ liệu theo PluginParameter.type (không phải
-                    // luôn là String) - để khi scheduler chạy job và gọi plugin.execute(),
-                    // các chỗ cast "params["active"] as? Boolean" hay "as? Number" không bị
-                    // null vì nhận nhầm String "true"/"5".
                     val paramsJson = JSONObject().apply {
                         action.parameters.forEach { p ->
                             when (p.type) {
