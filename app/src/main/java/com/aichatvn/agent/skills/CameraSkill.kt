@@ -258,8 +258,7 @@ class CameraSkill @Inject constructor(
                     append("📷 Đã quét $processed camera")
                     if (skippedCb > 0) append(" ($skippedCb camera bị bỏ qua do lỗi liên tiếp)")
                     if (skippedIn > 0) append(" ($skippedIn camera không hoạt động)")
-                    append(".
-")
+                    append(".\n")
 
                     for (r in results) {
                         val cam = r as? Map<*, *> ?: continue
@@ -267,23 +266,18 @@ class CameraSkill @Inject constructor(
                         val success = cam["success"] as? Boolean ?: false
                         if (!success) {
                             val err = cam["error"] as? String ?: "lỗi không xác định"
-                            append("• Camera $id: ❌ $err
-")
+                            append("• Camera $id: ❌ $err\n")
                             continue
                         }
                         val hasChange = cam["hasChange"] as? Boolean ?: false
                         val isSuspicious = cam["isSuspicious"] as? Boolean ?: false
                         val aiComment = cam["aiComment"] as? String
                         when {
-                            isSuspicious -> append("• Camera $id: 🚨 CẢNH BÁO — ${aiComment ?: "phát hiện bất thường"} (email đã gửi)
-")
+                            isSuspicious -> append("• Camera $id: 🚨 CẢNH BÁO — ${aiComment ?: "phát hiện bất thường"} (email đã gửi)\n")
                             hasChange && aiComment != null && aiComment != "No analysis" ->
-                                append("• Camera $id: 🔄 Có biến động — $aiComment
-")
-                            hasChange -> append("• Camera $id: 🔄 Có biến động nhỏ, AI đánh giá bình thường
-")
-                            else -> append("• Camera $id: ✅ Bình thường
-")
+                                append("• Camera $id: 🔄 Có biến động — $aiComment\n")
+                            hasChange -> append("• Camera $id: 🔄 Có biến động nhỏ, AI đánh giá bình thường\n")
+                            else -> append("• Camera $id: ✅ Bình thường\n")
                         }
                     }
                 }.trimEnd()
@@ -307,32 +301,22 @@ class CameraSkill @Inject constructor(
         val cb = circuitBreakers[cameraId]
 
         val text = buildString {
-            append("📷 Camera: ${cam.customername} (id: ${cam.id})
-")
-            append("• Trạng thái kết nối: ${if (cam.isOnline == 1) "🟢 Online" else "🔴 Offline"}
-")
-            append("• Theo dõi: ${if (cam.manualOff == 0) "Bật" else "Tắt (thủ công)"}
-")
-            append("• Khách hàng: ${cam.customerId} — ${if (setting?.isActive == 1) "Active" else "Inactive"}
-")
-            append("• AI Smart Mode: ${if (setting?.smartMode == 1) "Bật" else "Tắt"}
-")
-            if (cam.landinfo != null) append("• Vị trí: ${cam.landinfo}
-")
+            append("📷 Camera: ${cam.customername} (id: ${cam.id})\n")
+            append("• Trạng thái kết nối: ${if (cam.isOnline == 1) "🟢 Online" else "🔴 Offline"}\n")
+            append("• Theo dõi: ${if (cam.manualOff == 0) "Bật" else "Tắt (thủ công)"}\n")
+            append("• Khách hàng: ${cam.customerId} — ${if (setting?.isActive == 1) "Active" else "Inactive"}\n")
+            append("• AI Smart Mode: ${if (setting?.smartMode == 1) "Bật" else "Tắt"}\n")
+            if (cam.landinfo != null) append("• Vị trí: ${cam.landinfo}\n")
             if (diag != null) {
-                append("• Ngưỡng học (delta/diff): ${diag.deltaTrigger}/${diag.absDiffTrigger}
-")
-                append("• Sự kiện thật: ${diag.realEvents} | Mẫu học: ${diag.falseDeltas.size}
-")
+                append("• Ngưỡng học (delta/diff): ${diag.deltaTrigger}/${diag.absDiffTrigger}\n")
+                append("• Sự kiện thật: ${diag.realEvents} | Mẫu học: ${diag.falseDeltas.size}\n")
                 val inCooldown = diag.cooldownUntil > System.currentTimeMillis()
                 if (inCooldown) {
                     val remaining = (diag.cooldownUntil - System.currentTimeMillis()) / 60000
-                    append("• Cooldown: còn $remaining phút
-")
+                    append("• Cooldown: còn $remaining phút\n")
                 }
             }
-            if (cb?.isOpen == true) append("• ⚠️ Circuit Breaker OPEN (offline ${cb.offlineCount} lần liên tiếp)
-")
+            if (cb?.isOpen == true) append("• ⚠️ Circuit Breaker OPEN (offline ${cb.offlineCount} lần liên tiếp)\n")
         }.trimEnd()
 
         return PluginResult.Success(mapOf("message" to text))
@@ -355,16 +339,16 @@ class CameraSkill @Inject constructor(
         val newManualOff = if (active) 0 else 1
         if (cam.manualOff == newManualOff) {
             val state = if (active) "đang bật" else "đang tắt"
-            return PluginResult.Success(mapOf("message" to "📷 Camera "${cam.customername}" đã $state rồi, không cần thay đổi."))
+            return PluginResult.Success(mapOf("message" to "📷 Camera \"${cam.customername}\" đã $state rồi, không cần thay đổi."))
         }
 
         database.cameraDao().updateCamera(cam.copy(manualOff = newManualOff))
         logger.i("CameraSkill", "set_active cameraId=$cameraId active=$active (manualOff=$newManualOff)")
 
         val msg = if (active)
-            "✅ Đã bật theo dõi camera "${cam.customername}" — sẽ được quét ở lần scan tiếp theo."
+            "✅ Đã bật theo dõi camera \"${cam.customername}\" — sẽ được quét ở lần scan tiếp theo."
         else
-            "✅ Đã tắt theo dõi camera "${cam.customername}" — sẽ không quét cho đến khi bật lại."
+            "✅ Đã tắt theo dõi camera \"${cam.customername}\" — sẽ không quét cho đến khi bật lại."
         return PluginResult.Success(mapOf("message" to msg))
     }
     
@@ -410,7 +394,7 @@ class CameraSkill @Inject constructor(
             is PluginResult.Success -> {
                 val state = if (enabled) "bật" else "tắt"
                 PluginResult.Success(mapOf(
-                    "message" to "✅ Đã $state AI Smart Mode cho camera "$cameraName" — AI sẽ ${if (enabled) "phân tích ảnh và gửi cảnh báo khi phát hiện bất thường." else "không được gọi, chỉ so sánh ảnh bằng pHash."}"
+                    "message" to "✅ Đã $state AI Smart Mode cho camera \"$cameraName\" — AI sẽ ${if (enabled) "phân tích ảnh và gửi cảnh báo khi phát hiện bất thường." else "không được gọi, chỉ so sánh ảnh bằng pHash."}"
                 ))
             }
             is PluginResult.Failure -> result
