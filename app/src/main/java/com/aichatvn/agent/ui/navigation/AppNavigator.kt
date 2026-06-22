@@ -22,9 +22,9 @@ import com.aichatvn.agent.ui.screens.*
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
     object Chat       : Screen("chat",        R.string.tab_chat,        Icons.Default.Chat)
-    object Camera     : Screen("camera",      R.string.tab_camera,      Icons.Default.Videocam)
+    object Customer   : Screen("customer",    R.string.tab_camera,      Icons.Default.People)
     object Training   : Screen("training",    R.string.tab_training,    Icons.Default.School)
-    object Schedule   : Screen("schedule",    R.string.tab_schedule,    Icons.Default.Schedule)  // ✅ THÊM
+    object Schedule   : Screen("schedule",    R.string.tab_schedule,    Icons.Default.Schedule)
     object Diagnostics: Screen("diagnostics", R.string.tab_diagnostics, Icons.Default.MonitorHeart)
     object Logs       : Screen("logs",        R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",    R.string.tab_settings,    Icons.Default.Settings)
@@ -38,12 +38,12 @@ fun AppNavigator() {
     val currentRoute = navBackStackEntry?.destination?.route
 
     val screens = listOf(
-        Screen.Dashboard, 
-        Screen.Chat, 
-        Screen.Camera, 
-        Screen.Training, 
-        Screen.Schedule,  // ✅ THÊM
-        Screen.Diagnostics, 
+        Screen.Dashboard,
+        Screen.Chat,
+        Screen.Customer,
+        Screen.Training,
+        Screen.Schedule,
+        Screen.Diagnostics,
         Screen.Settings
     )
 
@@ -76,14 +76,20 @@ fun AppNavigator() {
         ) {
             composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
             composable(Screen.Chat.route)        { ChatScreen(navController) }
-            composable(Screen.Camera.route)      { CameraScreen(navController) }
+            composable(Screen.Customer.route)    { CustomerScreen(navController) }
             composable(Screen.Training.route)    { TrainingScreen(navController) }
-            composable(Screen.Schedule.route)    { ScheduleScreen(navController) }  // ✅ THÊM
+            composable(Screen.Schedule.route)    { ScheduleScreen(navController) }
             composable(Screen.Diagnostics.route) { DiagnosticsScreen(navController) }
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
 
-            // Lịch sử cảnh báo — "alert_history" (toàn bộ) hoặc "alert_history?cameraId=xxx" (lọc theo camera)
+            // Camera theo khách hàng
+            composable(
+                route = "customer_cameras/{customerId}",
+                arguments = listOf(navArgument("customerId") { type = NavType.StringType })
+            ) { CustomerCameraScreen(navController) }
+
+            // Lịch sử cảnh báo
             composable(
                 route = "alert_history?cameraId={cameraId}",
                 arguments = listOf(

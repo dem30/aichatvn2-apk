@@ -55,37 +55,33 @@ class CameraSkill @Inject constructor(
         return listOf(
             PluginAction(
                 name = "scan",
-                description = "Quét camera để phát hiện thay đổi",
+                description = "Quét camera để phát hiện thay đổi và phân tích AI",
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera (để trống quét tất cả)", false)
                 )
             ),
             PluginAction(
-                name = "list",
-                description = "Liệt kê danh sách camera",
-                parameters = emptyList()
-            ),
-            PluginAction(
                 name = "status",
-                description = "Xem trạng thái camera",
+                description = "Xem trạng thái chi tiết của 1 camera (online/offline, smart mode, ngưỡng học)",
                 parameters = listOf(
-                    PluginParameter("customerId", "string", "Mã khách hàng", false)
+                    PluginParameter("cameraId", "string", "Mã camera (id)", true)
                 )
             ),
             PluginAction(
                 name = "set_active",
-                description = "Bật hoặc tắt camera",
+                description = "Bật hoặc tắt theo dõi của 1 camera cụ thể. Dùng khi user nói: bật/tắt camera X.",
                 parameters = listOf(
-                    PluginParameter("customerId", "string", "Mã camera", true),
-                    PluginParameter("active", "boolean", "true: bật, false: tắt", true)
+                    PluginParameter("cameraId", "string", "Mã camera (id)", true),
+                    PluginParameter("active", "boolean", "true: bật theo dõi, false: tắt theo dõi", true)
                 )
             ),
             PluginAction(
                 name = "set_smart_mode",
-                description = "Bật hoặc tắt chế độ thông minh AI",
+                description = "Bật hoặc tắt chế độ AI phân tích ảnh cho camera. Chấp nhận cameraId hoặc customerId.",
                 parameters = listOf(
-                    PluginParameter("customerId", "string", "Mã camera", true),
-                    PluginParameter("enabled", "boolean", "true: bật, false: tắt", true)
+                    PluginParameter("cameraId", "string", "Mã camera (id) — ưu tiên dùng cái này", false),
+                    PluginParameter("customerId", "string", "Mã khách hàng (dùng nếu không có cameraId)", false),
+                    PluginParameter("enabled", "boolean", "true: bật AI, false: tắt AI", true)
                 )
             ),
             PluginAction(
@@ -94,7 +90,7 @@ class CameraSkill @Inject constructor(
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera (id)", true),
                     PluginParameter("aiPrompt", "string", "Prompt AI mới cho camera này", false),
-                    PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo, cách nhau bằng dấu phẩy. Ví dụ: cháy, khói, người lạ", false),
+                    PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo, cách nhau bằng dấu phẩy. Ví dụ: cảnh báo, khói, người lạ", false),
                     PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường, cách nhau bằng dấu phẩy. Ví dụ: bình thường, không có gì", false),
                     PluginParameter("snapshotUrl", "string", "URL ảnh chụp mới", false),
                     PluginParameter("landInfo", "string", "Thông tin vị trí / ghi chú", false)
@@ -102,7 +98,7 @@ class CameraSkill @Inject constructor(
             ),
             PluginAction(
                 name = "list_cameras",
-                description = "Liệt kê tất cả camera kèm id, tên, trạng thái. Dùng để tra cứu cameraId trước khi cấu hình.",
+                description = "Liệt kê tất cả camera kèm id, tên, trạng thái online/offline. Dùng để tra cứu cameraId trước khi cấu hình hoặc điều khiển.",
                 parameters = emptyList()
             )
         )
@@ -188,7 +184,6 @@ class CameraSkill @Inject constructor(
         
         return when (action) {
             "scan" -> handleScan(params)
-            "list" -> handleList()
             "list_cameras" -> handleListCameras()
             "status" -> handleStatus(params)
             "set_active" -> handleSetActive(params)
@@ -246,66 +241,178 @@ class CameraSkill @Inject constructor(
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = params["cameraId"] as? String
         val result = scanCamera(cameraId, false)
-        
+
         return when (result) {
             is PluginResult.Success -> {
                 val data = result.data as? Map<*, *>
-                val processed = data?.get("processed") ?: 0
-                PluginResult.Success(mapOf("message" to "Đã quét $processed camera thành công"))
+                val processed = data?.get("processed") as? Int ?: 0
+                val results = data?.get("results") as? List<*> ?: emptyList<Any>()
+                val skippedCb = data?.get("skippedCircuitBreaker") as? Int ?: 0
+                val skippedIn = data?.get("skippedInactive") as? Int ?: 0
+                val warning = data?.get("warning") as? String
+
+                if (warning != null) return PluginResult.Success(mapOf("message" to warning))
+
+                // Tóm tắt kết quả từng camera để AI trả lời có nghĩa cho người dùng
+                val summary = buildString {
+                    append("📷 Đã quét $processed camera")
+                    if (skippedCb > 0) append(" ($skippedCb camera bị bỏ qua do lỗi liên tiếp)")
+                    if (skippedIn > 0) append(" ($skippedIn camera không hoạt động)")
+                    append(".
+")
+
+                    for (r in results) {
+                        val cam = r as? Map<*, *> ?: continue
+                        val id = cam["cameraId"] as? String ?: continue
+                        val success = cam["success"] as? Boolean ?: false
+                        if (!success) {
+                            val err = cam["error"] as? String ?: "lỗi không xác định"
+                            append("• Camera $id: ❌ $err
+")
+                            continue
+                        }
+                        val hasChange = cam["hasChange"] as? Boolean ?: false
+                        val isSuspicious = cam["isSuspicious"] as? Boolean ?: false
+                        val aiComment = cam["aiComment"] as? String
+                        when {
+                            isSuspicious -> append("• Camera $id: 🚨 CẢNH BÁO — ${aiComment ?: "phát hiện bất thường"} (email đã gửi)
+")
+                            hasChange && aiComment != null && aiComment != "No analysis" ->
+                                append("• Camera $id: 🔄 Có biến động — $aiComment
+")
+                            hasChange -> append("• Camera $id: 🔄 Có biến động nhỏ, AI đánh giá bình thường
+")
+                            else -> append("• Camera $id: ✅ Bình thường
+")
+                        }
+                    }
+                }.trimEnd()
+
+                PluginResult.Success(mapOf("message" to summary))
             }
             is PluginResult.Failure -> PluginResult.Failure(result.error)
             else -> PluginResult.Failure("Quét thất bại")
         }
     }
     
-    private suspend fun handleList(): PluginResult {
-        return getCamerasPaginated(1, 100)
-    }
-    
     private suspend fun handleStatus(params: Map<String, Any>): PluginResult {
-        val customerId = params["customerId"] as? String
-        if (customerId != null) {
-            val result = getCamerasPaginated(1, 100)
-            if (result is PluginResult.Success) {
-                val cameras = (result.data as? Map<*, *>)?.get("cameras") as? List<*>
-                val camera = cameras?.find { 
-                    (it as? Map<*, *>)?.get("id") == customerId 
+        val cameraId = params["cameraId"] as? String
+            ?: return PluginResult.Failure("Thiếu cameraId. Dùng action list_cameras để xem danh sách.")
+
+        val cam = database.cameraDao().getCameraById(cameraId)
+            ?: return PluginResult.Failure("Không tìm thấy camera id=$cameraId. Dùng list_cameras để xem danh sách đúng.")
+
+        val setting = database.cameraDao().getCustomerSetting(cam.customerId)
+        val diag = learningStates[cameraId]
+        val cb = circuitBreakers[cameraId]
+
+        val text = buildString {
+            append("📷 Camera: ${cam.customername} (id: ${cam.id})
+")
+            append("• Trạng thái kết nối: ${if (cam.isOnline == 1) "🟢 Online" else "🔴 Offline"}
+")
+            append("• Theo dõi: ${if (cam.manualOff == 0) "Bật" else "Tắt (thủ công)"}
+")
+            append("• Khách hàng: ${cam.customerId} — ${if (setting?.isActive == 1) "Active" else "Inactive"}
+")
+            append("• AI Smart Mode: ${if (setting?.smartMode == 1) "Bật" else "Tắt"}
+")
+            if (cam.landinfo != null) append("• Vị trí: ${cam.landinfo}
+")
+            if (diag != null) {
+                append("• Ngưỡng học (delta/diff): ${diag.deltaTrigger}/${diag.absDiffTrigger}
+")
+                append("• Sự kiện thật: ${diag.realEvents} | Mẫu học: ${diag.falseDeltas.size}
+")
+                val inCooldown = diag.cooldownUntil > System.currentTimeMillis()
+                if (inCooldown) {
+                    val remaining = (diag.cooldownUntil - System.currentTimeMillis()) / 60000
+                    append("• Cooldown: còn $remaining phút
+")
                 }
-                if (camera != null) {
-                    return PluginResult.Success(camera)
-                }
-                return PluginResult.Failure("Không tìm thấy camera $customerId")
             }
-            return PluginResult.Failure((result as? PluginResult.Failure)?.error ?: "Lỗi lấy thông tin")
-        }
-        return PluginResult.Success(getDiagnostics())
+            if (cb?.isOpen == true) append("• ⚠️ Circuit Breaker OPEN (offline ${cb.offlineCount} lần liên tiếp)
+")
+        }.trimEnd()
+
+        return PluginResult.Success(mapOf("message" to text))
     }
     
     private suspend fun handleSetActive(params: Map<String, Any>): PluginResult {
-        val customerId = params["customerId"] as? String
-            ?: return PluginResult.Failure("Bạn muốn bật/tắt camera nào?")
-        
+        val cameraId = params["cameraId"] as? String
+            ?: return PluginResult.Failure("Bạn muốn bật/tắt camera nào? Dùng list_cameras để xem danh sách.")
+
         val active = params["active"] as? Boolean
-            ?: return PluginResult.Failure("Bạn muốn bật hay tắt camera $customerId?")
-        
-        val result = setCustomerActive(customerId, active)
-        return when (result) {
-            is PluginResult.Success -> result
-            is PluginResult.Failure -> result
-            else -> PluginResult.Failure("Không thể thực hiện")
+            ?: (params["active"] as? String)?.lowercase()?.let { it == "true" }
+            ?: return PluginResult.Failure("Bạn muốn bật hay tắt camera $cameraId?")
+
+        val cam = database.cameraDao().getCameraById(cameraId)
+            ?: return PluginResult.Failure("Không tìm thấy camera id=$cameraId. Dùng list_cameras để xem danh sách đúng.")
+
+        // manualOff=0 là đang theo dõi (active), manualOff=1 là đã tắt thủ công.
+        // Tách biệt với CustomerSettingEntity.isActive — cái đó là kill switch ở cấp khách hàng,
+        // không phải toggle từng camera riêng lẻ.
+        val newManualOff = if (active) 0 else 1
+        if (cam.manualOff == newManualOff) {
+            val state = if (active) "đang bật" else "đang tắt"
+            return PluginResult.Success(mapOf("message" to "📷 Camera "${cam.customername}" đã $state rồi, không cần thay đổi."))
         }
+
+        database.cameraDao().updateCamera(cam.copy(manualOff = newManualOff))
+        logger.i("CameraSkill", "set_active cameraId=$cameraId active=$active (manualOff=$newManualOff)")
+
+        val msg = if (active)
+            "✅ Đã bật theo dõi camera "${cam.customername}" — sẽ được quét ở lần scan tiếp theo."
+        else
+            "✅ Đã tắt theo dõi camera "${cam.customername}" — sẽ không quét cho đến khi bật lại."
+        return PluginResult.Success(mapOf("message" to msg))
     }
     
     private suspend fun handleSetSmartMode(params: Map<String, Any>): PluginResult {
-        val customerId = params["customerId"] as? String
-            ?: return PluginResult.Failure("Bạn muốn bật/tắt chế độ thông minh cho camera nào?")
-        
         val enabled = params["enabled"] as? Boolean
-            ?: return PluginResult.Failure("Bạn muốn bật hay tắt chế độ thông minh?")
-        
-        val result = setSmartMode(customerId, enabled)
+            ?: (params["enabled"] as? String)?.lowercase()?.let { it == "true" }
+            ?: return PluginResult.Failure("Bạn muốn bật hay tắt AI smart mode?")
+
+        // Ưu tiên cameraId (user thường nói "camera X"), lookup ngược ra customerId.
+        // Fallback customerId nếu AI gửi thẳng.
+        val resolvedCustomerId: String
+        val cameraName: String
+
+        val cameraId = params["cameraId"] as? String
+        if (cameraId != null) {
+            val cam = database.cameraDao().getCameraById(cameraId)
+                ?: return PluginResult.Failure("Không tìm thấy camera id=$cameraId. Dùng list_cameras để xem danh sách đúng.")
+            resolvedCustomerId = cam.customerId
+            cameraName = cam.customername
+        } else {
+            val customerId = params["customerId"] as? String
+                ?: return PluginResult.Failure("Thiếu cameraId hoặc customerId. Dùng list_cameras để xem danh sách.")
+            // Xác nhận customerId tồn tại
+            val setting = database.cameraDao().getCustomerSetting(customerId)
+            if (setting == null) {
+                // Thử tìm như cameraId phòng trường hợp LLM nhầm field
+                val cam = database.cameraDao().getCameraById(customerId)
+                if (cam != null) {
+                    resolvedCustomerId = cam.customerId
+                    cameraName = cam.customername
+                } else {
+                    return PluginResult.Failure("Không tìm thấy customerId=$customerId và cũng không phải cameraId hợp lệ.")
+                }
+            } else {
+                resolvedCustomerId = customerId
+                val cameras = database.cameraDao().getCamerasByCustomer(customerId)
+                cameraName = cameras.firstOrNull()?.customername ?: customerId
+            }
+        }
+
+        val result = setSmartMode(resolvedCustomerId, enabled)
         return when (result) {
-            is PluginResult.Success -> result
+            is PluginResult.Success -> {
+                val state = if (enabled) "bật" else "tắt"
+                PluginResult.Success(mapOf(
+                    "message" to "✅ Đã $state AI Smart Mode cho camera "$cameraName" — AI sẽ ${if (enabled) "phân tích ảnh và gửi cảnh báo khi phát hiện bất thường." else "không được gọi, chỉ so sánh ảnh bằng pHash."}"
+                ))
+            }
             is PluginResult.Failure -> result
             else -> PluginResult.Failure("Không thể thực hiện")
         }

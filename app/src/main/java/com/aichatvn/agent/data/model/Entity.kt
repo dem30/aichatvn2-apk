@@ -53,6 +53,19 @@ data class QAEntity(
     val timestamp: Long
 )
 
+// ==================== CUSTOMER ====================
+
+@Entity(tableName = "customers")
+data class CustomerEntity(
+    @PrimaryKey
+    val id: String,          // = customerId, khớp với CameraConfigEntity.customerId
+    val name: String,
+    val email: String,
+    val address: String = "",
+    val note: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 // ==================== CAMERA ====================
 
 @Entity(tableName = "cameras")

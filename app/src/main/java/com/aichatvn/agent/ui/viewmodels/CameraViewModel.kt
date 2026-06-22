@@ -112,6 +112,7 @@ class CameraViewModel @Inject constructor(
                 mapOf("customerId" to customerId, "enabled" to newMode)
             )
             loadCameras()
+            loadSmartModes()
             logger.i("CameraViewModel", "SmartMode $customerId → $newMode")
         }
     }
@@ -124,9 +125,6 @@ class CameraViewModel @Inject constructor(
                 val camera = database.cameraDao().getCameraById(cameraId)
                 val setting = camera?.let { database.cameraDao().getCustomerSetting(it.customerId) }
 
-                // Lưu trạng thái gốc để restore sau khi test
-                val originalIsOnline = camera?.isOnline ?: 1
-                val originalStatus = camera?.status ?: "online"
                 val wasSmartOff = setting?.smartMode != 1
 
                 // Tạm bật SmartMode nếu đang tắt
@@ -135,7 +133,7 @@ class CameraViewModel @Inject constructor(
                         CustomerSettingEntity(
                             customerId = camera.customerId,
                             smartMode = 1,
-                            isActive = 1,
+                            isActive = setting?.isActive ?: 1,
                             updatedAt = System.currentTimeMillis(),
                             timestamp = System.currentTimeMillis()
                         )
@@ -151,20 +149,13 @@ class CameraViewModel @Inject constructor(
                             CustomerSettingEntity(
                                 customerId = camera.customerId,
                                 smartMode = 0,
-                                isActive = 1,
+                                isActive = setting?.isActive ?: 1,
                                 updatedAt = System.currentTimeMillis(),
                                 timestamp = System.currentTimeMillis()
                             )
                         )
                     }
-                    // Restore lại trạng thái online/offline gốc
-                    // (scanCamera có thể đã đổi sang offline nếu fetch thất bại)
-                    val current = database.cameraDao().getCameraById(cameraId)
-                    if (current != null && (current.isOnline != originalIsOnline || current.status != originalStatus)) {
-                        database.cameraDao().updateCamera(
-                            current.copy(isOnline = originalIsOnline, status = originalStatus)
-                        )
-                    }
+
                 }
 
                 when (result) {

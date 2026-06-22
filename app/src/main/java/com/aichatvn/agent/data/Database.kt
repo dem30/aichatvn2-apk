@@ -25,6 +25,29 @@ class Converters {
     }
 }
 
+// ==================== CUSTOMER DAO ====================
+
+@Dao
+interface CustomerDao {
+    @Query("SELECT * FROM customers ORDER BY name ASC")
+    fun getAllCustomersFlow(): Flow<List<CustomerEntity>>
+
+    @Query("SELECT * FROM customers ORDER BY name ASC")
+    suspend fun getAllCustomers(): List<CustomerEntity>
+
+    @Query("SELECT * FROM customers WHERE id = :customerId")
+    suspend fun getCustomerById(customerId: String): CustomerEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCustomer(customer: CustomerEntity)
+
+    @Update
+    suspend fun updateCustomer(customer: CustomerEntity)
+
+    @Query("DELETE FROM customers WHERE id = :customerId")
+    suspend fun deleteCustomer(customerId: String)
+}
+
 // ==================== DAOS ====================
 
 @Dao
@@ -233,9 +256,10 @@ interface ScheduleDao {
         CustomerSettingEntity::class,
         AlertEntity::class,
         ScheduleEntity::class,
-        TuyaDeviceEntity::class
+        TuyaDeviceEntity::class,
+        CustomerEntity::class
     ],
-    version = 5,  // ✅ THÊM cột sourcePlugin (chat_messages) cho tính năng tag lệnh/chat thường
+    version = 6,
 
     exportSchema = false
 )
@@ -246,8 +270,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun qaDao(): QADao
     abstract fun cameraDao(): CameraDao
     abstract fun alertDao(): AlertDao
-    abstract fun scheduleDao(): ScheduleDao  // ✅ THÊM
-    abstract fun tuyaDeviceDao(): TuyaDeviceDao   // 👈 THÊM DÒNG NÀY
+    abstract fun scheduleDao(): ScheduleDao
+    abstract fun tuyaDeviceDao(): TuyaDeviceDao
+    abstract fun customerDao(): CustomerDao
 
     companion object {
         @Volatile
@@ -308,6 +333,23 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // MIGRATION 5 -> 6: thêm bảng customers
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `customers` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `email` TEXT NOT NULL,
+                        `address` TEXT NOT NULL DEFAULT '',
+                        `note` TEXT NOT NULL DEFAULT '',
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -315,7 +357,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5)  // ✅ THÊM
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance
