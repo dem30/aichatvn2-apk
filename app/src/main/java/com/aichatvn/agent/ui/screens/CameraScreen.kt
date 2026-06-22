@@ -122,7 +122,8 @@ fun CameraScreen(
                         CameraCard(
                             camera = camera,
                             isAdmin = isAdmin,
-                            isSmartMode = (smartModes[camera.customerId] ?: false) && (camera.smartMode == 1),
+                            isSmartMode = camera.smartMode == 1,
+                            isMasterSmartOff = !(smartModes[camera.customerId] ?: false),
                             onEdit = { selectedCamera = camera },
                             onDelete = { viewModel.deleteCamera(camera.id) },
                             onToggleActive = { viewModel.toggleCameraActive(camera.id) },
@@ -157,6 +158,7 @@ fun CameraCard(
     camera: CameraConfigEntity,
     isAdmin: Boolean,
     isSmartMode: Boolean,
+    isMasterSmartOff: Boolean = false,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onToggleActive: () -> Unit,
@@ -268,18 +270,23 @@ fun CameraCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("AI Smart Mode", style = MaterialTheme.typography.labelMedium)
                         Text(
-                            if (isSmartMode) "Bật — AI phân tích & gửi email khi có biến động"
-                            else "Tắt — chỉ so sánh ảnh, không gọi AI",
+                            when {
+                                isMasterSmartOff -> "⚠️ Master OFF — bật tổng ở TopBar để có hiệu lực"
+                                isSmartMode -> "Bật — AI phân tích & gửi email khi có biến động"
+                                else -> "Tắt — chỉ so sánh ảnh, không gọi AI"
+                            },
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isMasterSmartOff) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
                         checked = isSmartMode,
-                        onCheckedChange = { onToggleSmartMode() }
+                        onCheckedChange = { onToggleSmartMode() },
+                        enabled = true   // luôn bấm được dù master off
                     )
                 }
 
@@ -358,50 +365,46 @@ fun CameraDialog(
                     OutlinedButton(
                         onClick = {
                             locationError = null
-                            try {
-                                val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
-                                val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                if (!hasFine && !hasCoarse) { locationError = "Chưa cấp quyền vị trí"; return@OutlinedButton }
-                                // Thử cache trước
-                                var best: android.location.Location? = null
-                                for (p in lm.getProviders(true)) {
-                                    val l = lm.getLastKnownLocation(p) ?: continue
-                                    if (best == null || l.accuracy < best!!.accuracy) best = l
-                                }
-                                if (best != null) {
-                                    val coord = "${best.latitude},${best.longitude}"
-                                    landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
-                                } else {
-                                    // Không có cache → request 1 lần
-                                    val provider = when {
-                                        lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) -> android.location.LocationManager.GPS_PROVIDER
-                                        lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER) -> android.location.LocationManager.NETWORK_PROVIDER
-                                        else -> null
-                                    }
-                                    if (provider == null) {
-                                        locationError = "GPS và mạng đều tắt, vào Settings bật lên"
+                            val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            if (!hasFine && !hasCoarse) { locationError = "Chưa cấp quyền vị trí"; return@OutlinedButton }
+                            gpsLoading = true
+                            locationError = "Đang lấy vị trí..."
+                            val fusedClient = com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context)
+                            fusedClient.lastLocation
+                                .addOnSuccessListener { loc ->
+                                    if (loc != null) {
+                                        val coord = "${loc.latitude},${loc.longitude}"
+                                        landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
+                                        locationError = null
+                                        gpsLoading = false
                                     } else {
-                                        gpsLoading = true
-                                        locationError = "Đang lấy vị trí..."
-                                        lm.requestSingleUpdate(provider, object : android.location.LocationListener {
-                                            override fun onLocationChanged(loc: android.location.Location) {
-                                                val coord = "${loc.latitude},${loc.longitude}"
-                                                landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
-                                                locationError = null
+                                        // lastLocation null → request fresh
+                                        val req = com.google.android.gms.location.CurrentLocationRequest.Builder()
+                                            .setPriority(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY)
+                                            .setMaxUpdateAgeMillis(0)
+                                            .build()
+                                        fusedClient.getCurrentLocation(req, null)
+                                            .addOnSuccessListener { freshLoc ->
+                                                if (freshLoc != null) {
+                                                    val coord = "${freshLoc.latitude},${freshLoc.longitude}"
+                                                    landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
+                                                    locationError = null
+                                                } else {
+                                                    locationError = "Không lấy được vị trí, bật GPS rồi thử lại"
+                                                }
                                                 gpsLoading = false
                                             }
-                                            @Deprecated("Deprecated in Java")
-                                            override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
-                                            override fun onProviderEnabled(p: String) {}
-                                            override fun onProviderDisabled(p: String) {
-                                                locationError = "Provider $p bị tắt"
+                                            .addOnFailureListener { e ->
+                                                locationError = "Lỗi: ${e.message}"
                                                 gpsLoading = false
                                             }
-                                        }, android.os.Looper.getMainLooper())
                                     }
                                 }
-                            } catch (e: Exception) { locationError = "Lỗi: ${e.message}"; gpsLoading = false }
+                                .addOnFailureListener { e ->
+                                    locationError = "Lỗi: ${e.message}"
+                                    gpsLoading = false
+                                }
                         },
                         modifier = Modifier.weight(1f),
                         enabled = !gpsLoading
