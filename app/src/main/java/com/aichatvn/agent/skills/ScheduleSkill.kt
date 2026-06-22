@@ -36,12 +36,17 @@ class ScheduleSkill @Inject constructor(
         return listOf(
             PluginAction(
                 name = "add",
-                description = "Thêm lịch trình mới",
+                description = "Thêm lịch trình mới để tự động gọi 1 action của plugin khác theo cron/interval. " +
+                    "QUAN TRỌNG: param 'params' phải chứa ĐẦY ĐỦ các tham số bắt buộc của action đích " +
+                    "(pluginId.action), tra đúng theo schema action đó trong danh sách plugin — " +
+                    "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
+                    "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
                 parameters = listOf(
-                    PluginParameter("pluginId", "string", "Tên plugin (camera, light, email)", true),
-                    PluginParameter("action", "string", "Hành động (scan, set, send)", true),
+                    PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true),
+                    PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true),
                     PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false),
-                    PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false)
+                    PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false),
+                    PluginParameter("params", "object", "Tham số cho action đích theo đúng schema của plugin đó", false)
                 )
             ),
             PluginAction(
@@ -91,11 +96,25 @@ class ScheduleSkill @Inject constructor(
             return failure("Cần cron hoặc intervalMinutes")
         }
         
+        // ✅ Generic: 'params' lồng bên trong dùng cho MỌI plugin đích (email, camera, light...).
+        // Trước đây dùng params.getOrDefault("params","{}").toString() → nếu giá trị là
+        // Map<String,Any> (kết quả parse JSON từ router) thì .toString() ra chuỗi kiểu
+        // "{to=a@b.com, subject=Test}" — KHÔNG phải JSON hợp lệ. TaskScheduler.runSchedule()
+        // sau đó gọi JSONObject(schedule.params) sẽ throw JSONException, bị catch âm thầm,
+        // lịch coi như chạy nhưng không làm gì cả, không ai biết lỗi ở đâu.
+        @Suppress("UNCHECKED_CAST")
+        val nestedParams: Map<String, Any> = when (val raw = params["params"]) {
+            is Map<*, *> -> raw as Map<String, Any>
+            null -> emptyMap()
+            else -> emptyMap() // giá trị lạ (string/number...) -> bỏ qua, coi như không có params
+        }
+        val paramsJson = JSONObject(nestedParams).toString()
+
         val schedule = ScheduleEntity(
             id = UUID.randomUUID().toString(),
             pluginId = pluginId,
             action = action,
-            params = params.getOrDefault("params", "{}").toString(),
+            params = paramsJson,
             cron = cron,
             intervalMinutes = intervalMinutes,
             enabled = 1,

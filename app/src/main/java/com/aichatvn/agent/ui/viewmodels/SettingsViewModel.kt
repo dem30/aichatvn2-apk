@@ -10,10 +10,19 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.aichatvn.agent.data.dataStore
+import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.CameraConfigEntity
+import com.aichatvn.agent.data.model.CustomerEntity
+import com.aichatvn.agent.data.model.CustomerSettingEntity
+import com.aichatvn.agent.data.model.QAEntity
+import com.aichatvn.agent.data.model.ScheduleEntity
+import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.utils.Logger
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -31,6 +40,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val database: AppDatabase,
     private val emailSkill: EmailSkill,
     private val tuyaManager: TuyaManager,
     private val logger: Logger
@@ -261,32 +271,64 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ─── Export Settings ─────────────────────────────────────────────────────
+    // ✅ v2: export CẢ DataStore settings VÀ toàn bộ dữ liệu cấu hình trong Room DB
+    // (schedules, cameras, customer_settings, customers, tuya_devices, qa_data).
+    // KHÔNG export chat_messages/alerts vì đó là lịch sử phát sinh liên tục,
+    // không phải cấu hình cần khôi phục khi setup máy mới.
 
     suspend fun exportSettings(context: Context): String {
         return withContext(Dispatchers.IO) {
             try {
                 val prefs = context.dataStore.data.first()
-                
-                val json = JSONObject().apply {
+                val gson = Gson()
+
+                val settingsJson = JSONObject().apply {
                     put("groq_api_key", prefs[GROQ_API_KEY] ?: "")
                     put("resend_api_key", prefs[RESEND_API_KEY] ?: "")
                     put("resend_sender", prefs[RESEND_SENDER] ?: "")
                     put("tuya_client_id", prefs[TUYA_CLIENT_ID] ?: "")
                     put("tuya_client_secret", prefs[TUYA_CLIENT_SECRET] ?: "")
                     put("dark_mode", prefs[DARK_MODE] ?: false)
-                    put("exported_at", System.currentTimeMillis())
                 }
-                
+
+                val schedules = database.scheduleDao().getAllSchedules()
+                val cameras = database.cameraDao().getAllCameras()
+                val customers = database.customerDao().getAllCustomers()
+                val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
+                val qaList = database.qaDao().getAllQAs(username = "default_user")
+                // CustomerSettingEntity không có DAO list-all riêng -> lấy theo từng customer
+                val customerSettings = customers.mapNotNull { c ->
+                    database.cameraDao().getCustomerSetting(c.id)
+                }
+
+                val dataJson = JSONObject().apply {
+                    put("schedules", JSONArray(gson.toJson(schedules)))
+                    put("cameras", JSONArray(gson.toJson(cameras)))
+                    put("customer_settings", JSONArray(gson.toJson(customerSettings)))
+                    put("customers", JSONArray(gson.toJson(customers)))
+                    put("tuya_devices", JSONArray(gson.toJson(tuyaDevices)))
+                    put("qa_data", JSONArray(gson.toJson(qaList)))
+                }
+
+                val json = JSONObject().apply {
+                    put("export_version", 2)
+                    put("exported_at", System.currentTimeMillis())
+                    put("settings", settingsJson)
+                    put("data", dataJson)
+                }
+
                 val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 if (!dir.exists()) {
                     dir.mkdirs()
                 }
                 val file = File(dir, "aichatvn_settings_${System.currentTimeMillis()}.json")
                 file.writeText(json.toString(2))
-                
-                _exportResult.value = "✅ Đã lưu: ${file.absolutePath}"
+
+                val total = schedules.size + cameras.size + customers.size + tuyaDevices.size + qaList.size
+                _exportResult.value = "✅ Đã lưu ($total bản ghi dữ liệu): ${file.absolutePath}"
                 file.absolutePath
             } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Export error: ${e.message}", e)
                 _exportResult.value = "❌ Lỗi: ${e.message}"
                 ""
             }
@@ -294,19 +336,28 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ─── Import Settings ─────────────────────────────────────────────────────
+    // ✅ v2: import lại CẢ DataStore settings VÀ dữ liệu DB nếu file export có
+    // chứa "data" (file export cũ chỉ có settings vẫn import được bình thường,
+    // chỉ là không có gì để khôi phục ở phần data).
+    // Ghi đè theo PRIMARY KEY (REPLACE) -> dữ liệu trùng id sẽ được cập nhật,
+    // dữ liệu khác id được giữ nguyên (merge), không xoá sạch DB hiện tại trước khi import.
 
     suspend fun importSettings(context: Context, jsonString: String): String {
         return withContext(Dispatchers.IO) {
             try {
                 val json = JSONObject(jsonString)
-                
-                val groqKey = json.optString("groq_api_key", "")
-                val resendKey = json.optString("resend_api_key", "")
-                val resendSender = json.optString("resend_sender", "")
-                val tuyaClientId = json.optString("tuya_client_id", "")
-                val tuyaClientSecret = json.optString("tuya_client_secret", "")
-                val darkMode = json.optBoolean("dark_mode", false)
-                
+                val gson = Gson()
+
+                // Hỗ trợ cả format cũ (field settings ở top-level) và format mới (lồng trong "settings")
+                val settingsJson = json.optJSONObject("settings") ?: json
+
+                val groqKey = settingsJson.optString("groq_api_key", "")
+                val resendKey = settingsJson.optString("resend_api_key", "")
+                val resendSender = settingsJson.optString("resend_sender", "")
+                val tuyaClientId = settingsJson.optString("tuya_client_id", "")
+                val tuyaClientSecret = settingsJson.optString("tuya_client_secret", "")
+                val darkMode = settingsJson.optBoolean("dark_mode", false)
+
                 context.dataStore.edit { prefs ->
                     if (groqKey.isNotEmpty()) prefs[GROQ_API_KEY] = groqKey
                     if (resendKey.isNotEmpty()) prefs[RESEND_API_KEY] = resendKey
@@ -315,13 +366,66 @@ class SettingsViewModel @Inject constructor(
                     if (tuyaClientSecret.isNotEmpty()) prefs[TUYA_CLIENT_SECRET] = tuyaClientSecret
                     prefs[DARK_MODE] = darkMode
                 }
-                
+
                 _tuyaClientId.value = tuyaClientId
                 _tuyaClientSecret.value = tuyaClientSecret
-                
-                _importResult.value = "✅ Import thành công!"
-                "✅ Import thành công!"
+
+                var restoredCount = 0
+                val dataJson = json.optJSONObject("data")
+                if (dataJson != null) {
+                    dataJson.optJSONArray("customers")?.let { arr ->
+                        val type = object : TypeToken<List<CustomerEntity>>() {}.type
+                        val list: List<CustomerEntity> = gson.fromJson(arr.toString(), type)
+                        list.forEach { database.customerDao().insertCustomer(it) }
+                        restoredCount += list.size
+                    }
+                    dataJson.optJSONArray("cameras")?.let { arr ->
+                        val type = object : TypeToken<List<CameraConfigEntity>>() {}.type
+                        val list: List<CameraConfigEntity> = gson.fromJson(arr.toString(), type)
+                        list.forEach { database.cameraDao().insertCamera(it) }
+                        restoredCount += list.size
+                    }
+                    dataJson.optJSONArray("customer_settings")?.let { arr ->
+                        val type = object : TypeToken<List<CustomerSettingEntity>>() {}.type
+                        val list: List<CustomerSettingEntity> = gson.fromJson(arr.toString(), type)
+                        list.forEach { database.cameraDao().insertCustomerSetting(it) }
+                        restoredCount += list.size
+                    }
+                    dataJson.optJSONArray("schedules")?.let { arr ->
+                        val type = object : TypeToken<List<ScheduleEntity>>() {}.type
+                        val list: List<ScheduleEntity> = gson.fromJson(arr.toString(), type)
+                        list.forEach { database.scheduleDao().insertSchedule(it) }
+                        restoredCount += list.size
+                    }
+                    dataJson.optJSONArray("tuya_devices")?.let { arr ->
+                        val type = object : TypeToken<List<TuyaDeviceEntity>>() {}.type
+                        val list: List<TuyaDeviceEntity> = gson.fromJson(arr.toString(), type)
+                        database.tuyaDeviceDao().insertAllDevices(list)
+                        restoredCount += list.size
+                    }
+                    dataJson.optJSONArray("qa_data")?.let { arr ->
+                        val type = object : TypeToken<List<QAEntity>>() {}.type
+                        val list: List<QAEntity> = gson.fromJson(arr.toString(), type)
+                        list.forEach { database.qaDao().insertQA(it) }
+                        restoredCount += list.size
+                    }
+                }
+
+                // ✅ Kick lại lịch ngay sau khi import schedules, để các lịch khôi phục
+                // chạy đúng theo lastRunAt/interval mới mà không phải chờ chu kỳ check 5 phút.
+                if (dataJson?.has("schedules") == true) {
+                    com.aichatvn.agent.scheduler.TaskScheduler.runNow(context)
+                }
+
+                val message = if (restoredCount > 0)
+                    "✅ Import thành công! Đã khôi phục $restoredCount bản ghi dữ liệu."
+                else
+                    "✅ Import thành công! (file chỉ chứa settings, không có dữ liệu DB)"
+
+                _importResult.value = message
+                message
             } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Import error: ${e.message}", e)
                 _importResult.value = "❌ Lỗi: ${e.message}"
                 "❌ Lỗi: ${e.message}"
             }

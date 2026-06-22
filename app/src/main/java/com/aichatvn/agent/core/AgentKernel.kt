@@ -109,6 +109,10 @@ class AgentKernel @Inject constructor(
             append("- param keys with '?' are optional; omit the '?' from the key name.\n")
             append("- If general conversation (not a command), output ")
             append("{\"plugin\":\"chat\",\"action\":\"none\",\"params\":{}}.\n")
+            append("- If plugin == \"schedule\" and action == \"add\": params.params PHẢI chứa ĐẦY ĐỦ ")
+            append("tham số bắt buộc của action đích (params.pluginId + params.action), tra đúng tên ")
+            append("param theo schema action đó trong <plugins> ở trên. Quy tắc này áp dụng cho MỌI ")
+            append("plugin đích (email, camera, light...), không chỉ riêng một loại.\n")
             append("- Do NOT add explanation. Output JSON only.</system>\n")
             append("<plugins>\n$compactCatalog\n</plugins>\n")
             if (qaFacts.isNotEmpty()) {
@@ -263,6 +267,13 @@ class AgentKernel @Inject constructor(
         if (qaMatches.isEmpty()) return params
 
         return params.mapValues { (key, value) ->
+            // ✅ Generic: schedule.add lồng tham số thật của plugin đích trong key "params"
+            // (vd email cần "to", camera cần "camera"...). Đệ quy vào đây để alias QA cũng
+            // resolve được cho MỌI plugin đích, không chỉ tham số ở cấp 1.
+            if (key == "params" && value is Map<*, *>) {
+                @Suppress("UNCHECKED_CAST")
+                return@mapValues resolveAliasParams(value as Map<String, Any>, qaMatches)
+            }
             // Chỉ xử lý param key thuộc danh sách alias
             if (key !in ALIAS_PARAM_KEYS) return@mapValues value
             if (value !is String) return@mapValues value
@@ -302,6 +313,9 @@ class AgentKernel @Inject constructor(
                 append("Ví dụ: 'vinh' = 'vinh@gmail.com' → param to = 'vinh@gmail.com'.\n")
                 append("Ví dụ: 'lịch hôm nay' = 'mỗi 10 phút' → param interval/schedule = 'mỗi 10 phút'.\n\n")
             }
+            append("⚠️ NẾU plugin=\"schedule\" và action=\"add\": params.params PHẢI chứa đầy đủ tham số ")
+            append("bắt buộc của action đích (params.pluginId + params.action) theo đúng schema action đó ")
+            append("trong DANH SÁCH PLUGIN ở trên. Áp dụng cho mọi plugin đích, không riêng email.\n\n")
             append("CÂU: \"$message\"\n\n")
             append("Trả về JSON thuần túy:\n")
             append("{\"plugin\": \"tên_plugin\", \"action\": \"tên_action\", \"params\": { ... }}")
