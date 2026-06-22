@@ -371,13 +371,53 @@ fun CameraDetailScreen(
                                         singleLine = true
                                     )
                                     Spacer(Modifier.height(6.dp))
+                                    val gpsContext = androidx.compose.ui.platform.LocalContext.current
+                                    var gpsLoading by remember { mutableStateOf(false) }
+                                    var gpsError by remember { mutableStateOf<String?>(null) }
                                     OutlinedTextField(
                                         value = draft.landInfo,
                                         onValueChange = { v -> viewModel.updateConfigDraft { copy(landInfo = v) } },
                                         label = { Text("Vị trí / Ghi chú") },
                                         modifier = Modifier.fillMaxWidth(),
-                                        singleLine = true
+                                        singleLine = true,
+                                        trailingIcon = {
+                                            IconButton(
+                                                onClick = {
+                                                    gpsError = null
+                                                    val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(gpsContext, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                                    val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(gpsContext, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                                    if (!hasFine && !hasCoarse) { gpsError = "Chưa cấp quyền vị trí"; return@IconButton }
+                                                    gpsLoading = true
+                                                    val fusedClient = com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(gpsContext)
+                                                    fusedClient.lastLocation
+                                                        .addOnSuccessListener { loc ->
+                                                            if (loc != null) {
+                                                                viewModel.updateConfigDraft { copy(landInfo = "${loc.latitude},${loc.longitude}") }
+                                                                gpsLoading = false
+                                                            } else {
+                                                                val req = com.google.android.gms.location.CurrentLocationRequest.Builder()
+                                                                    .setPriority(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY)
+                                                                    .setMaxUpdateAgeMillis(0)
+                                                                    .build()
+                                                                fusedClient.getCurrentLocation(req, null)
+                                                                    .addOnSuccessListener { fresh ->
+                                                                        if (fresh != null) viewModel.updateConfigDraft { copy(landInfo = "${fresh.latitude},${fresh.longitude}") }
+                                                                        else gpsError = "Không lấy được vị trí"
+                                                                        gpsLoading = false
+                                                                    }
+                                                                    .addOnFailureListener { e -> gpsError = e.message; gpsLoading = false }
+                                                            }
+                                                        }
+                                                        .addOnFailureListener { e -> gpsError = e.message; gpsLoading = false }
+                                                },
+                                                enabled = !gpsLoading
+                                            ) {
+                                                if (gpsLoading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                                else Icon(Icons.Default.MyLocation, contentDescription = "Lấy vị trí")
+                                            }
+                                        }
                                     )
+                                    if (gpsError != null) Text(gpsError ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
                                     Spacer(Modifier.height(6.dp))
                                     OutlinedTextField(
                                         value = draft.aiPrompt,

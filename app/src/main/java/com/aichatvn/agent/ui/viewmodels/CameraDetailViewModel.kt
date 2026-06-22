@@ -119,8 +119,7 @@ class CameraDetailViewModel @Inject constructor(
             val cam = database.cameraDao().getCameraById(cameraId)
             _camera.value = cam
             cam?.let {
-                val setting = database.cameraDao().getCustomerSetting(it.customerId)
-                _smartMode.value = setting?.smartMode == 1
+                _smartMode.value = it.smartMode == 1
             }
         }
     }
@@ -339,8 +338,9 @@ class CameraDetailViewModel @Inject constructor(
         viewModelScope.launch {
             val cam = _camera.value ?: return@launch
             val newMode = !_smartMode.value
-            cameraSkill.setSmartMode(cam.customerId, newMode)
+            database.cameraDao().updateCameraSmartMode(cam.id, if (newMode) 1 else 0)
             _smartMode.value = newMode
+            logger.i("CameraDetailViewModel", "CameraSmartMode ${cam.id} → $newMode")
         }
     }
 
