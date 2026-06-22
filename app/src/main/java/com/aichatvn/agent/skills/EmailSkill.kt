@@ -182,9 +182,15 @@ class EmailSkill @Inject constructor(
             OutputStreamWriter(connection.outputStream).use { it.write(json) }
 
             val code = connection.responseCode
-            val responseBody = connection.inputStream.bufferedReader().readText()
 
+            // ✅ FIX: KHÔNG đọc connection.inputStream trước khi biết code thành công.
+            // HttpURLConnection ném FileNotFoundException khi gọi getInputStream() trên
+            // response lỗi (4xx/5xx) — body lỗi CHỈ đọc được qua errorStream. Code cũ đọc
+            // inputStream trước rồi mới if/else nên mọi lỗi HTTP đều bị crash ra ngoài
+            // catch(Exception) phía dưới, mất hết message lỗi thật từ Resend (vd "domain
+            // not verified") và chỉ còn lại "FileNotFoundException: <url>".
             if (code in 200..299) {
+                val responseBody = connection.inputStream.bufferedReader().readText()
                 logger.i("EmailSkill", "✅ Email gửi thành công tới $to (HTTP $code)")
                 PluginResult.Success(
                     mapOf(
@@ -194,9 +200,8 @@ class EmailSkill @Inject constructor(
                     )
                 )
             } else {
-                val errorBody = runCatching {
-                    connection.errorStream?.bufferedReader()?.readText() ?: responseBody
-                }.getOrDefault(responseBody)
+                val errorBody = connection.errorStream?.bufferedReader()?.readText()
+                    ?: "Không có nội dung lỗi từ server"
                 logger.e("EmailSkill", "❌ Resend API lỗi HTTP $code: $errorBody")
                 PluginResult.Failure("Gửi email thất bại (HTTP $code): $errorBody")
             }
