@@ -274,7 +274,7 @@ fun CameraCard(
                         Text("AI Smart Mode", style = MaterialTheme.typography.labelMedium)
                         Text(
                             when {
-                                isMasterSmartOff -> "⚠️ Master OFF — bật tổng ở TopBar để có hiệu lực"
+                                isMasterSmartOff -> "⚠️ Master tắt — bật tổng ở TopBar để có hiệu lực"
                                 isSmartMode -> "Bật — AI phân tích & gửi email khi có biến động"
                                 else -> "Tắt — chỉ so sánh ảnh, không gọi AI"
                             },
@@ -286,7 +286,7 @@ fun CameraCard(
                     Switch(
                         checked = isSmartMode,
                         onCheckedChange = { onToggleSmartMode() },
-                        enabled = true   // luôn bấm được dù master off
+                        enabled = true
                     )
                 }
 
@@ -332,6 +332,11 @@ fun CameraDialog(
     var aiPositiveKeywords by remember { mutableStateOf(camera?.aiPositiveKeywords ?: "cảnh báo") }
     var aiNegativeKeywords by remember { mutableStateOf(camera?.aiNegativeKeywords ?: "bình thường") }
 
+    // Khai báo ở đây để callback GPS có thể update UI đúng
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var locationError by remember { mutableStateOf<String?>(null) }
+    var gpsLoading by remember { mutableStateOf(false) }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (camera == null) "Thêm Camera" else "Sửa Camera") },
@@ -357,10 +362,6 @@ fun CameraDialog(
                 OutlinedTextField(value = aiPositiveKeywords, onValueChange = { aiPositiveKeywords = it }, label = { Text("Từ khóa cảnh báo (phân cách bằng dấu phẩy)") }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("cảnh báo, phát hiện, xâm nhập") })
                 OutlinedTextField(value = aiNegativeKeywords, onValueChange = { aiNegativeKeywords = it }, label = { Text("Từ khóa bình thường (phân cách bằng dấu phẩy)") }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("bình thường, không có") })
 
-                val context = androidx.compose.ui.platform.LocalContext.current
-                var locationError by remember { mutableStateOf<String?>(null) }
-                var gpsLoading by remember { mutableStateOf(false) }
-
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
                         onClick = {
@@ -369,42 +370,33 @@ fun CameraDialog(
                             val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
                             if (!hasFine && !hasCoarse) { locationError = "Chưa cấp quyền vị trí"; return@OutlinedButton }
                             gpsLoading = true
-                            locationError = "Đang lấy vị trí..."
                             val fusedClient = com.google.android.gms.location.LocationServices.getFusedLocationProviderClient(context)
                             fusedClient.lastLocation
                                 .addOnSuccessListener { loc ->
                                     if (loc != null) {
-                                        val coord = "${loc.latitude},${loc.longitude}"
-                                        landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
+                                        landInfo = if (landInfo.isBlank()) "${loc.latitude},${loc.longitude}"
+                                                   else "$landInfo\nVị trí: ${loc.latitude},${loc.longitude}"
                                         locationError = null
                                         gpsLoading = false
                                     } else {
-                                        // lastLocation null → request fresh
                                         val req = com.google.android.gms.location.CurrentLocationRequest.Builder()
                                             .setPriority(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY)
                                             .setMaxUpdateAgeMillis(0)
                                             .build()
                                         fusedClient.getCurrentLocation(req, null)
-                                            .addOnSuccessListener { freshLoc ->
-                                                if (freshLoc != null) {
-                                                    val coord = "${freshLoc.latitude},${freshLoc.longitude}"
-                                                    landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
-                                                    locationError = null
+                                            .addOnSuccessListener { fresh ->
+                                                if (fresh != null) {
+                                                    landInfo = if (landInfo.isBlank()) "${fresh.latitude},${fresh.longitude}"
+                                                               else "$landInfo\nVị trí: ${fresh.latitude},${fresh.longitude}"
                                                 } else {
                                                     locationError = "Không lấy được vị trí, bật GPS rồi thử lại"
                                                 }
                                                 gpsLoading = false
                                             }
-                                            .addOnFailureListener { e ->
-                                                locationError = "Lỗi: ${e.message}"
-                                                gpsLoading = false
-                                            }
+                                            .addOnFailureListener { e -> locationError = "Lỗi: ${e.message}"; gpsLoading = false }
                                     }
                                 }
-                                .addOnFailureListener { e ->
-                                    locationError = "Lỗi: ${e.message}"
-                                    gpsLoading = false
-                                }
+                                .addOnFailureListener { e -> locationError = "Lỗi: ${e.message}"; gpsLoading = false }
                         },
                         modifier = Modifier.weight(1f),
                         enabled = !gpsLoading
