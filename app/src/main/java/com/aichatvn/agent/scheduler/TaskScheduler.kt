@@ -26,7 +26,7 @@ class TaskScheduler @AssistedInject constructor(
 
     companion object {
         const val WORK_NAME = "aichatvn_scheduler"  // public: BootReceiver cần dùng
-        private const val CHECK_INTERVAL_MINUTES = 5L
+        private const val CHECK_INTERVAL_MINUTES = 15L  // ✅ FIX: WorkManager minimum = 15 phút; giá trị < 15 bị clamp silently
 
         fun schedule(context: Context) {
             val constraints = Constraints.Builder()
@@ -149,39 +149,34 @@ class TaskScheduler @AssistedInject constructor(
 // ============================================================
 
 object CronParser {
-    private val patterns = listOf(
-        Regex("""^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$"""),
-        Regex("""^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$"""),
-        Regex("""^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$""")
-    )
-    
+    // ✅ FIX: bỏ pattern thứ 3 (trùng pattern thứ 1)
+    // Pattern 1: "MINUTE HOUR * * *"  (vd: "0 8 * * *")
+    // Pattern 2: "*/N * * * *"        (vd: "*/30 * * * *")
+    private val dailyPattern  = Regex("""^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$""")
+    private val intervalPattern = Regex("""^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$""")
+
     fun matches(cron: String, timestamp: Long): Boolean {
         val calendar = java.util.Calendar.getInstance().apply {
             timeInMillis = timestamp
         }
-        
-        val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+        val hour   = calendar.get(java.util.Calendar.HOUR_OF_DAY)
         val minute = calendar.get(java.util.Calendar.MINUTE)
-        
-        for (pattern in patterns) {
-            val match = pattern.matchEntire(cron.trim())
-            if (match != null) {
-                val groups = match.groupValues
-                when {
-                    cron.contains("*/") -> {
-                        val interval = groups[1].toIntOrNull() ?: continue
-                        val totalMinutes = hour * 60 + minute
-                        return totalMinutes % interval == 0
-                    }
-                    groups.size >= 3 -> {
-                        val cronMinute = groups[1].toIntOrNull() ?: continue
-                        val cronHour = groups[2].toIntOrNull() ?: continue
-                        return minute == cronMinute && hour == cronHour
-                    }
-                }
-            }
+
+        // "*/N * * * *" — chạy mỗi N phút kể từ 00:00
+        intervalPattern.matchEntire(cron.trim())?.let { m ->
+            val interval = m.groupValues[1].toIntOrNull() ?: return false
+            // ✅ FIX: tính totalMinutes từ đầu ngày (00:00), không phải từ giờ hiện tại
+            val totalMinutes = hour * 60 + minute
+            return totalMinutes % interval == 0
         }
-        
+
+        // "MINUTE HOUR * * *" — chạy đúng giờ:phút mỗi ngày
+        dailyPattern.matchEntire(cron.trim())?.let { m ->
+            val cronMinute = m.groupValues[1].toIntOrNull() ?: return false
+            val cronHour   = m.groupValues[2].toIntOrNull() ?: return false
+            return minute == cronMinute && hour == cronHour
+        }
+
         return false
     }
 }

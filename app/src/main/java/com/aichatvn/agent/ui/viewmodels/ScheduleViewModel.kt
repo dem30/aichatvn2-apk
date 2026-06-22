@@ -9,6 +9,7 @@ import com.aichatvn.agent.skills.ScheduleSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import javax.inject.Inject
 
 @HiltViewModel
@@ -36,7 +37,16 @@ class ScheduleViewModel @Inject constructor(
 
     fun addSchedule(schedule: ScheduleEntity) {
         viewModelScope.launch {
-            // Gọi plugin execute để thêm
+            // ✅ FIX: schedule.params là JSON String — phải parse thành Map<String,Any>
+            // trước khi truyền vào execute(). ScheduleSkill.handleAdd() expect key "params"
+            // là Map<*,*>; nếu nhận String thì nestedParams = emptyMap() → params mất hết.
+            val paramsMap: Map<String, Any> = try {
+                val json = JSONObject(schedule.params.ifBlank { "{}" })
+                buildMap {
+                    json.keys().forEach { k -> put(k, json.get(k)) }
+                }
+            } catch (_: Exception) { emptyMap() }
+
             scheduleSkill.execute(
                 "add",
                 mapOf(
@@ -44,7 +54,7 @@ class ScheduleViewModel @Inject constructor(
                     "action" to schedule.action,
                     "cron" to schedule.cron,
                     "intervalMinutes" to schedule.intervalMinutes,
-                    "params" to schedule.params
+                    "params" to paramsMap   // ✅ Map, không phải String
                 )
             )
             loadSchedules()
