@@ -85,7 +85,7 @@ class GroqClientTool @Inject constructor(
 
         private const val MAX_TOKENS_CHAT = 1000
         private const val MAX_TOKENS_VISION = 500
-        private const val MAX_TOKENS_ROUTER = 200
+        private const val MAX_TOKENS_ROUTER = 500
 
         private const val SAFE_FALLBACK_INTENT =
             """{"plugin":"chat","action":"none","params":{}}"""
