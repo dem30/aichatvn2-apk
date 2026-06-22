@@ -122,11 +122,11 @@ fun CameraScreen(
                         CameraCard(
                             camera = camera,
                             isAdmin = isAdmin,
-                            isSmartMode = smartModes[camera.customerId] ?: false,
+                            isSmartMode = (smartModes[camera.customerId] ?: false) && (camera.smartMode == 1),
                             onEdit = { selectedCamera = camera },
                             onDelete = { viewModel.deleteCamera(camera.id) },
                             onToggleActive = { viewModel.toggleCameraActive(camera.id) },
-                            onToggleSmartMode = { viewModel.toggleSmartMode(camera.customerId) },
+                            onToggleSmartMode = { viewModel.toggleCameraSmartMode(camera.id) },
                             onTest = { viewModel.testCamera(camera.id) },
                             onOpenDetail = { navController.navigate("camera_detail/${camera.id}") }
                         )
@@ -352,6 +352,7 @@ fun CameraDialog(
 
                 val context = androidx.compose.ui.platform.LocalContext.current
                 var locationError by remember { mutableStateOf<String?>(null) }
+                var gpsLoading by remember { mutableStateOf(false) }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
@@ -360,20 +361,57 @@ fun CameraDialog(
                             try {
                                 val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
                                 val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                if (!hasFine) { locationError = "Chưa cấp quyền vị trí"; return@OutlinedButton }
+                                val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                if (!hasFine && !hasCoarse) { locationError = "Chưa cấp quyền vị trí"; return@OutlinedButton }
+                                // Thử cache trước
                                 var best: android.location.Location? = null
                                 for (p in lm.getProviders(true)) {
                                     val l = lm.getLastKnownLocation(p) ?: continue
                                     if (best == null || l.accuracy < best!!.accuracy) best = l
                                 }
                                 if (best != null) {
-                                    val coord = "${best!!.latitude},${best!!.longitude}"
+                                    val coord = "${best.latitude},${best.longitude}"
                                     landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
-                                } else locationError = "GPS chưa có dữ liệu, mở Maps rồi thử lại"
-                            } catch (e: Exception) { locationError = "Lỗi: ${e.message}" }
+                                } else {
+                                    // Không có cache → request 1 lần
+                                    val provider = when {
+                                        lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) -> android.location.LocationManager.GPS_PROVIDER
+                                        lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER) -> android.location.LocationManager.NETWORK_PROVIDER
+                                        else -> null
+                                    }
+                                    if (provider == null) {
+                                        locationError = "GPS và mạng đều tắt, vào Settings bật lên"
+                                    } else {
+                                        gpsLoading = true
+                                        locationError = "Đang lấy vị trí..."
+                                        lm.requestSingleUpdate(provider, object : android.location.LocationListener {
+                                            override fun onLocationChanged(loc: android.location.Location) {
+                                                val coord = "${loc.latitude},${loc.longitude}"
+                                                landInfo = if (landInfo.isBlank()) coord else "$landInfo\nVị trí: $coord"
+                                                locationError = null
+                                                gpsLoading = false
+                                            }
+                                            @Deprecated("Deprecated in Java")
+                                            override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {}
+                                            override fun onProviderEnabled(p: String) {}
+                                            override fun onProviderDisabled(p: String) {
+                                                locationError = "Provider $p bị tắt"
+                                                gpsLoading = false
+                                            }
+                                        }, android.os.Looper.getMainLooper())
+                                    }
+                                }
+                            } catch (e: Exception) { locationError = "Lỗi: ${e.message}"; gpsLoading = false }
                         },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("📍 Lấy vị trí") }
+                        modifier = Modifier.weight(1f),
+                        enabled = !gpsLoading
+                    ) {
+                        if (gpsLoading) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(if (gpsLoading) "Đang lấy..." else "📍 Lấy vị trí")
+                    }
 
                     OutlinedButton(
                         onClick = {

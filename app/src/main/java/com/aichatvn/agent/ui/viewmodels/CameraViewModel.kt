@@ -117,6 +117,16 @@ class CameraViewModel @Inject constructor(
         }
     }
 
+    fun toggleCameraSmartMode(cameraId: String) {
+        viewModelScope.launch {
+            val camera = database.cameraDao().getCameraById(cameraId) ?: return@launch
+            val newMode = if (camera.smartMode == 1) 0 else 1
+            database.cameraDao().updateCameraSmartMode(cameraId, newMode)
+            loadCameras()
+            logger.i("CameraViewModel", "CameraSmartMode $cameraId → $newMode")
+        }
+    }
+
     fun testCamera(cameraId: String) {
         viewModelScope.launch {
             _isLoading.value = true

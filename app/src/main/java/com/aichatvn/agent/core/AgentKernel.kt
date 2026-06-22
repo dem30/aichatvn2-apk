@@ -10,86 +10,137 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
+private val EMAIL_REGEX = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+
 /**
- * AgentKernel v7 - Routing TOÀN BỘ qua Groq (đã bỏ SmolLM2 cục bộ / LocalRouterEngine
- * do crash SIGILL trên CPU yếu/cũ như Cortex-A53, không tương thích llama.cpp ARM tối ưu).
+ * AgentKernel v8
  *
- * - tryDeviceCommand(): định tuyến NHANH bằng Groq model NHỎ (MODEL_ROUTER trong
- *   GroqClientTool, vd openai/gpt-oss-20b) — vẫn rẻ + nhanh hơn gọi model chat lớn,
- *   nhưng không còn offline. Trả về null nếu không khớp lệnh thiết bị nào -> caller
- *   (ChatSkill) tự xử lý như chat thường.
- * - process(): định tuyến ĐẦY ĐỦ bằng Groq model chat lớn trên toàn bộ danh sách plugin
- *   (giữ nguyên, dùng cho nơi nào vẫn cần một entry-point gọi thẳng).
+ * Điểm thay đổi so với v7:
+ *
+ * 1. QA được đưa vào router prompt dưới dạng KEY=VALUE CỤ THỂ thay vì text thô.
+ *    Router nhỏ không cần "hiểu" — chỉ cần copy đúng giá trị vào đúng param.
+ *
+ * 2. resolveParamsWithQA() chỉ apply với ALIAS_PARAM_KEYS (email, device, camera...) —
+ *    tức là chỉ replace các param mà ngữ nghĩa rõ ràng là "định danh". Không replace
+ *    blindly cho mọi param string, tránh case "lịch hôm nay → mỗi 10 phút" đè lên
+ *    param sai key (vd `to`, `subject`).
+ *
+ * 3. QA loại "metadata/config" (Q: lịch hôm nay, A: mỗi 10 phút) được router nhỏ
+ *    dùng TRỰC TIẾP từ <qa_facts> trong prompt — model nhận "lịch hôm nay = mỗi 10 phút"
+ *    và tự điền vào param đúng (interval, schedule, cron...) theo plugin schema.
  */
 @Singleton
 class AgentKernel @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
     private val groqClient: GroqClientTool,
-    private val trainingSkill: TrainingSkill,  // ✅ để search QA
-    private val chatHistoryManager: ChatHistoryManager, // ✅ nhớ ngắn hạn (2 lượt gần nhất + thiết bị cuối)
+    private val trainingSkill: TrainingSkill,
+    private val chatHistoryManager: ChatHistoryManager,
     private val logger: Logger
 ) {
 
-    /**
-     * ✅ Danh sách plugin hiển thị ra UI (quick bar gợi ý lệnh)
-     */
-    fun getAvailablePluginsForUI(): List<Plugin> {
-        return plugins.filter { it.visibleInQuickBar }
+    companion object {
+        /**
+         * Các param key mà resolveParamsWithQA() được phép replace.
+         * Chỉ gồm "định danh" (email, device ID, camera ID...) — KHÔNG gồm
+         * "metadata" như interval, schedule, subject, body vì những thứ đó
+         * router phải tự điền đúng key từ QA facts trong prompt.
+         */
+        private val ALIAS_PARAM_KEYS = setOf(
+            "to", "email", "recipient",          // email
+            "device", "device_id", "deviceId",   // thiết bị Tuya
+            "camera", "camera_id", "cameraId"    // camera
+        )
     }
 
-    /**
-     * ✅ Thử định tuyến lệnh điều khiển thiết bị bằng Groq model NHỎ (nhanh + rẻ).
-     *
-     * - Không dùng model chat lớn ở đây (giữ nhanh + rẻ).
-     * - Trả về null khi: không có plugin thiết bị nào đăng ký, model trả JSON không hợp lệ,
-     *   model tự xác định đây là hội thoại thường ("chat"), hoặc plugin không tồn tại/bị ẩn.
-     *   -> Khi trả về null, caller (ChatSkill) PHẢI tự xử lý tiếp như chat thường.
-     */
-    suspend fun tryDeviceCommand(userMessage: String, username: String = "default_user"): DeviceCommandResult? {
-        val devicePlugins = plugins.filter { it.visibleInQuickBar }
-        if (devicePlugins.isEmpty()) return null // Không có plugin thiết bị nào để định tuyến
+    fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.visibleInQuickBar }
 
-        val qaContext = buildQAContext(userMessage, username)
-        val shortHistory = chatHistoryManager.getRecentTurnsAsText()
-        val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
+    // ─────────────────────────────────────────────────────────────────────────
+    // tryDeviceCommand — định tuyến NHANH bằng router nhỏ
+    // ─────────────────────────────────────────────────────────────────────────
+
+    suspend fun tryDeviceCommand(
+        userMessage: String,
+        username: String = "default_user"
+    ): DeviceCommandResult? {
+        val devicePlugins = plugins.filter { it.visibleInQuickBar }
+        if (devicePlugins.isEmpty()) return null
+
+        val rawQAMatches = buildRawQAMatches(userMessage, username)
+        val shortHistory  = chatHistoryManager.getRecentTurnsAsText()
+        val lastDevice    = chatHistoryManager.lastMentionedDeviceId ?: "none"
 
         val compactCatalog = devicePlugins.joinToString("\n\n") { plugin ->
             val actionLines = plugin.getActions().joinToString("\n") { action ->
                 val paramsSig = action.parameters.joinToString(",") { p ->
                     if (p.required) p.name else "${p.name}?"
                 }
-                val sig = if (paramsSig.isEmpty()) action.name else "${action.name}($paramsSig)"
+                val sig = if (paramsSig.isEmpty()) action.name
+                          else "${action.name}($paramsSig)"
                 "  - $sig — ${action.description}"
             }
             "plugin \"${plugin.id}\":\n$actionLines"
         }
 
+        // ✅ QA được format thành KEY=VALUE rõ ràng thay vì text thô.
+        // Router nhỏ không cần suy luận — chỉ cần nhìn vào <qa_facts> và
+        // copy đúng value vào đúng param theo plugin schema.
+        //
+        // Ví dụ với 2 QA khác loại:
+        //   Q:"vinh"        A:"vinh@gmail.com"  → "vinh = vinh@gmail.com"
+        //   Q:"lịch hôm nay" A:"mỗi 10 phút"   → "lịch hôm nay = mỗi 10 phút"
+        //
+        // Router thấy user nói "gửi mail cho vinh lịch hôm nay":
+        //   → to = vinh@gmail.com   (từ qa_facts "vinh")
+        //   → interval = mỗi 10 phút (từ qa_facts "lịch hôm nay", điền vào param schedule)
+        val qaFacts = if (rawQAMatches.isEmpty()) ""
+        else rawQAMatches.joinToString("\n") { qa ->
+            "${qa.question} = ${qa.answer}"
+        }
+
         val routerPrompt = buildString {
-            append("<system>You are an Intent Router. Output ONLY raw JSON matching schema: ")
-            append("{\"plugin\": string, \"action\": string, \"params\": object}. ")
-            append("In <plugins>, each line is \"- action(p1,p2?) — description\": p1 is required, ")
-            append("p2? means OPTIONAL (omit the '?' itself from params keys). ")
-            append("If the message is general conversation and not a device command, output ")
-            append("{\"plugin\": \"chat\", \"action\": \"none\", \"params\": {}}. Do not chat.</system>\n")
+            append("<system>You are an Intent Router. Output ONLY raw JSON: ")
+            append("{\"plugin\": string, \"action\": string, \"params\": object}.\n")
+            append("Rules:\n")
+            append("- Use <qa_facts> to resolve aliases and fill param values.\n")
+            append("  Example: if qa_facts says \"vinh = vinh@gmail.com\" and user says \"send to vinh\", ")
+            append("set params.to = \"vinh@gmail.com\".\n")
+            append("  Example: if qa_facts says \"lịch hôm nay = mỗi 10 phút\" and user says ")
+            append("\"get schedule\", set the relevant schedule/interval param = \"mỗi 10 phút\".\n")
+            append("- param keys with '?' are optional; omit the '?' from the key name.\n")
+            append("- If general conversation (not a command), output ")
+            append("{\"plugin\":\"chat\",\"action\":\"none\",\"params\":{}}.\n")
+            append("- Do NOT add explanation. Output JSON only.</system>\n")
             append("<plugins>\n$compactCatalog\n</plugins>\n")
-            append("<context>\nlast_device: \"$lastDevice\"\n")
-            if (qaContext.isNotEmpty()) append("qa_match: \"$qaContext\"\n")
-            append("</context>\n")
+            if (qaFacts.isNotEmpty()) {
+                append("<qa_facts>\n$qaFacts\n</qa_facts>\n")
+            }
+            append("<context>last_device: \"$lastDevice\"</context>\n")
             append("<history>\n$shortHistory\n</history>\n")
             append("<input>User: $userMessage</input>\n")
             append("<output>")
         }
 
         val routerResultJson = groqClient.routeIntent(routerPrompt)
+        val rawIntent = parseIntentResponse(routerResultJson, userMessage) ?: return null
 
-        val intent = parseIntentResponse(routerResultJson, userMessage) ?: return null
+        if (rawIntent.pluginId.isBlank() || rawIntent.pluginId == "chat") return null
 
-        // Model tự nhận đây là hội thoại thường -> để ChatSkill xử lý chat
-        if (intent.pluginId.isBlank() || intent.pluginId == "chat") return null
+        val targetPlugin = devicePlugins.find { it.id == rawIntent.pluginId } ?: return null
 
-        val targetPlugin = devicePlugins.find { it.id == intent.pluginId } ?: return null
+        // ✅ resolveParamsWithQA chỉ chạy như "lưới an toàn" cho ALIAS_PARAM_KEYS.
+        // Nếu router nhỏ đã điền đúng (vd to="vinh@gmail.com") → hàm này bỏ qua.
+        // Nếu router nhỏ vẫn để alias (to="vinh") → hàm này resolve lại.
+        // Param loại metadata (interval, schedule...) KHÔNG bị đụng tới ở đây —
+        // router đã điền đúng từ <qa_facts> rồi.
+        val intent = rawIntent.copy(
+            params = resolveAliasParams(rawIntent.params, rawQAMatches)
+        )
 
-        logger.d("AgentKernel", "🔥 Khớp lệnh: ${intent.pluginId} -> ${intent.action}")
+        if (rawIntent.params != intent.params) {
+            logger.d("AgentKernel", "🔄 Alias fallback resolved: ${rawIntent.params} → ${intent.params}")
+        }
+
+        logger.d("AgentKernel", "🔥 Khớp lệnh: ${intent.pluginId} -> ${intent.action} | params=${intent.params}")
 
         intent.params["device"]?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
@@ -101,7 +152,8 @@ class AgentKernel @Inject constructor(
         }
 
         val replyForHistory = when (executionResult) {
-            is PluginResult.Success -> (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
+            is PluginResult.Success ->
+                (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
@@ -110,30 +162,24 @@ class AgentKernel @Inject constructor(
         return DeviceCommandResult(pluginId = targetPlugin.id, result = executionResult)
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // process — định tuyến ĐẦY ĐỦ bằng model chat lớn (entry-point cũ)
+    // ─────────────────────────────────────────────────────────────────────────
+
     suspend fun process(userMessage: String): PluginResult {
         logger.d("AgentKernel", "Processing: '$userMessage'")
 
-        // ✅ BƯỚC 1: TÌM QA CONTEXT
         val qaContext = buildQAContext(userMessage)
-        if (qaContext.isNotEmpty()) {
-            logger.d("AgentKernel", "Found QA context:\n$qaContext")
-        }
+        if (qaContext.isNotEmpty()) logger.d("AgentKernel", "Found QA context:\n$qaContext")
 
-        // ✅ BƯỚC 2: LLM Routing - CÓ QA CONTEXT
         val intent = resolveIntentWithLLM(userMessage, qaContext)
-        if (intent == null) {
-            return PluginResult.Failure("Không hiểu yêu cầu")
-        }
+            ?: return PluginResult.Failure("Không hiểu yêu cầu")
 
-        logger.d("AgentKernel", "Intent resolved: plugin=${intent.pluginId}, action=${intent.action}, params=${intent.params}")
+        logger.d("AgentKernel", "Intent: plugin=${intent.pluginId}, action=${intent.action}, params=${intent.params}")
 
-        // BƯỚC 3: Find plugin
         val plugin = findPlugin(intent)
-        if (plugin == null) {
-            return PluginResult.Failure("Không tìm thấy plugin cho: ${intent.pluginId}")
-        }
+            ?: return PluginResult.Failure("Không tìm thấy plugin cho: ${intent.pluginId}")
 
-        // BƯỚC 4: Execute
         return try {
             plugin.execute(intent.action, intent.params)
         } catch (e: Exception) {
@@ -142,13 +188,40 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // QA helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * ✅ HÀM PHỐI HỢP VỚI TRAININGSKILL
-     *
-     * Gọi trainingSkill.fuzzyMatchQuestion() để tìm Q&A liên quan
-     * Trả về context để đưa vào LLM prompt
+     * Trả về List<QAEntity> thô — dùng cho resolveAliasParams() và build qaFacts string.
      */
-    private suspend fun buildQAContext(message: String, username: String = "default_user"): String {
+    private suspend fun buildRawQAMatches(
+        message: String,
+        username: String = "default_user"
+    ): List<QAEntity> {
+        return try {
+            val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.5f)
+            when (result) {
+                is PluginResult.Success -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val matches = result.data as? List<Map<String, Any>> ?: return emptyList()
+                    matches.mapNotNull { it["qa"] as? QAEntity }
+                }
+                else -> emptyList()
+            }
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "buildRawQAMatches error: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Trả về String đã format (cho resolveIntentWithLLM / process()).
+     */
+    private suspend fun buildQAContext(
+        message: String,
+        username: String = "default_user"
+    ): String {
         return try {
             val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.5f)
             when (result) {
@@ -156,13 +229,10 @@ class AgentKernel @Inject constructor(
                     @Suppress("UNCHECKED_CAST")
                     val matches = result.data as? List<Map<String, Any>> ?: return ""
                     if (matches.isEmpty()) return ""
-
                     matches.joinToString("\n") { match ->
-                        val qa = match["qa"] as? QAEntity
-                        val similarity = match["similarity"] as? Float ?: 0f
-                        if (qa != null) {
-                            "📚 ${qa.question} → ${qa.answer} (độ tương tự: ${String.format("%.2f", similarity)})"
-                        } else ""
+                        val qa  = match["qa"] as? QAEntity ?: return@joinToString ""
+                        val sim = match["similarity"] as? Float ?: 0f
+                        "📚 ${qa.question} → ${qa.answer} (độ tương tự: ${String.format("%.2f", sim)})"
                     }
                 }
                 else -> ""
@@ -173,46 +243,76 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Alias resolver — CHỈ cho ALIAS_PARAM_KEYS, dùng làm lưới an toàn
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * ✅ THÊM QA CONTEXT VÀO PROMPT
+     * Chỉ replace param value nếu:
+     *   1. key nằm trong ALIAS_PARAM_KEYS (to, device, camera...)
+     *   2. value là String chưa hợp lệ (chưa phải email thật / device ID thật)
+     *   3. Tìm thấy QA match theo question ⊇ value hoặc value ⊇ question
      *
-     * QA context giúp Groq hiểu:
-     * - "anh B" → "bvb@gmail.com"
-     * - "camera cổng" → "camera_01"
-     * - "báo cáo 7h" → "gửi email hàng ngày"
+     * KHÔNG đụng đến các param khác (interval, schedule, subject, body...) —
+     * những thứ đó router đã lấy từ <qa_facts> trong prompt.
      */
+    private fun resolveAliasParams(
+        params: Map<String, Any>,
+        qaMatches: List<QAEntity>
+    ): Map<String, Any> {
+        if (qaMatches.isEmpty()) return params
+
+        return params.mapValues { (key, value) ->
+            // Chỉ xử lý param key thuộc danh sách alias
+            if (key !in ALIAS_PARAM_KEYS) return@mapValues value
+            if (value !is String) return@mapValues value
+            // Nếu đã là email hợp lệ → bỏ qua
+            if (EMAIL_REGEX.matches(value)) return@mapValues value
+
+            val matched = qaMatches.firstOrNull { qa ->
+                qa.question.contains(value, ignoreCase = true) ||
+                value.contains(qa.question, ignoreCase = true)
+            }
+
+            if (matched != null) {
+                logger.d(
+                    "AgentKernel",
+                    "🔄 Alias resolved: [$key] \"$value\" → \"${matched.answer}\""
+                )
+                matched.answer
+            } else {
+                value
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // LLM routing (dùng cho process())
+    // ─────────────────────────────────────────────────────────────────────────
+
     private suspend fun resolveIntentWithLLM(message: String, qaContext: String = ""): Intent? {
         val availablePlugins = getAvailablePluginsDescription()
 
         val prompt = buildString {
             append("Bạn là bộ phân tích ý định cho AI quản gia.\n\n")
-            append("DANH SÁCH PLUGIN:\n")
-            append(availablePlugins)
-            append("\n\n")
-
+            append("DANH SÁCH PLUGIN:\n$availablePlugins\n\n")
             if (qaContext.isNotEmpty()) {
-                append("📚 KIẾN THỨC ĐÃ HỌC (từ Q&A):\n")
-                append(qaContext)
-                append("\n\n")
-                append("⚠️ QUAN TRỌNG: Dùng kiến thức trên để map tên riêng.\n")
-                append("Ví dụ: 'anh B' trong Q&A = 'bvb@gmail.com' thì tham số 'to' phải là 'bvb@gmail.com'.\n\n")
+                append("📚 KIẾN THỨC ĐÃ HỌC (từ Q&A):\n$qaContext\n\n")
+                append("⚠️ QUAN TRỌNG: Dùng kiến thức trên để map tên riêng VÀ điền giá trị param.\n")
+                append("Ví dụ: 'vinh' = 'vinh@gmail.com' → param to = 'vinh@gmail.com'.\n")
+                append("Ví dụ: 'lịch hôm nay' = 'mỗi 10 phút' → param interval/schedule = 'mỗi 10 phút'.\n\n")
             }
-
             append("CÂU: \"$message\"\n\n")
             append("Trả về JSON thuần túy:\n")
-            append("{\n")
-            append("  \"plugin\": \"tên_plugin\",\n")
-            append("  \"action\": \"tên_action\",\n")
-            append("  \"params\": { ... }\n")
-            append("}")
+            append("{\"plugin\": \"tên_plugin\", \"action\": \"tên_action\", \"params\": { ... }}")
         }
 
         return try {
             val response = groqClient.chat(
-                message = prompt,
+                message      = prompt,
                 extraContext = "Bạn là AI phân tích intent, chỉ trả về JSON.",
-                history = emptyList(),
-                imageUrl = null
+                history      = emptyList(),
+                imageUrl     = null
             )
             parseIntentResponse(response, message)
         } catch (e: Exception) {
@@ -221,31 +321,25 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Utilities
+    // ─────────────────────────────────────────────────────────────────────────
+
     private fun parseIntentResponse(response: String, originalMessage: String): Intent? {
         return try {
-            val cleaned = response
-                .trim()
+            val cleaned = response.trim()
                 .removePrefix("```json")
                 .removePrefix("```")
                 .removeSuffix("```")
                 .trim()
-
-            val json = JSONObject(cleaned)
-
-            val pluginId = json.optString("plugin", "").takeIf { it.isNotEmpty() }
-            val action = json.optString("action", "").takeIf { it.isNotEmpty() }
-
-            if (pluginId == null || action == null) {
-                logger.w("AgentKernel", "Invalid intent response: plugin or action missing")
-                return null
-            }
-
+            val json     = JSONObject(cleaned)
+            val pluginId = json.optString("plugin", "").takeIf { it.isNotEmpty() } ?: return null
+            val action   = json.optString("action",  "").takeIf { it.isNotEmpty() } ?: return null
             Intent(
                 pluginId = pluginId,
-                action = action,
-                params = json.optJSONObject("params")?.toMap() ?: emptyMap()
+                action   = action,
+                params   = json.optJSONObject("params")?.toMap() ?: emptyMap()
             )
-
         } catch (e: Exception) {
             logger.e("AgentKernel", "Parse intent error: ${e.message}, response: $response")
             null
@@ -254,7 +348,6 @@ class AgentKernel @Inject constructor(
 
     private fun getAvailablePluginsDescription(): String {
         if (plugins.isEmpty()) return "Không có plugin nào được cài đặt."
-
         return plugins.joinToString("\n\n") { plugin ->
             buildString {
                 append("📦 ${plugin.id} - ${plugin.name}\n")
@@ -262,20 +355,16 @@ class AgentKernel @Inject constructor(
                     append("  • action=\"${action.name}\" — ${action.description}\n")
                     val required = action.parameters.filter { it.required }
                     val optional = action.parameters.filter { !it.required }
-                    if (required.isNotEmpty()) {
+                    if (required.isNotEmpty())
                         append("    params bắt buộc: ${required.joinToString { "\"${it.name}\"(${it.type})" }}\n")
-                    }
-                    if (optional.isNotEmpty()) {
+                    if (optional.isNotEmpty())
                         append("    params tuỳ chọn: ${optional.joinToString { "\"${it.name}\"(${it.type})" }}\n")
-                    }
                 }
             }
         }
     }
 
-    private fun findPlugin(intent: Intent): Plugin? {
-        return plugins.find { it.id == intent.pluginId }
-    }
+    private fun findPlugin(intent: Intent): Plugin? = plugins.find { it.id == intent.pluginId }
 
     private fun JSONObject.toMap(): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
@@ -286,13 +375,10 @@ class AgentKernel @Inject constructor(
                 is org.json.JSONArray -> {
                     val list = mutableListOf<Any>()
                     for (i in 0 until value.length()) {
-                        val item = value.get(i)
-                        list.add(
-                            when (item) {
-                                is JSONObject -> item.toMap()
-                                else -> item
-                            }
-                        )
+                        list.add(when (val item = value.get(i)) {
+                            is JSONObject -> item.toMap()
+                            else -> item
+                        })
                     }
                     list
                 }
@@ -302,18 +388,16 @@ class AgentKernel @Inject constructor(
         return map
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Data classes & sealed results
+    // ─────────────────────────────────────────────────────────────────────────
+
     data class Intent(
         val pluginId: String,
         val action: String,
         val params: Map<String, Any> = emptyMap()
     )
 
-    /**
-     * ✅ Kết quả của tryDeviceCommand() - bọc thêm pluginId vì PluginResult (Success/Failure/
-     * NeedMoreInfo) không tự mang theo thông tin "lệnh này thuộc plugin nào". Caller (ChatSkill)
-     * cần pluginId để gắn nhãn nguồn gốc tin nhắn (ChatMessageEntity.sourcePlugin) cho UI hiển
-     * thị badge "⚡ lệnh".
-     */
     data class DeviceCommandResult(
         val pluginId: String,
         val result: PluginResult

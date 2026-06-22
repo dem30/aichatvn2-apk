@@ -2,6 +2,7 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
@@ -104,9 +105,14 @@ class ScheduleSkill @Inject constructor(
         
         database.scheduleDao().insertSchedule(schedule)
         loadSchedules()
-        
+
+        // ✅ Kick WorkManager ngay sau khi lưu lịch mới — tránh chờ đến lần check
+        // tiếp theo (CHECK_INTERVAL_MINUTES = 5 phút). runNow() enqueue OneTimeWork
+        // chạy ngay, periodic work vẫn tiếp tục chạy đúng lịch sau đó.
+        TaskScheduler.runNow(context)
+
         return success(
-            message = "✅ Đã thêm lịch trình: $pluginId.$action ${if(cron.isNotEmpty()) "($cron)" else "($intervalMinutes phút)"}",
+            message = "✅ Đã tạo lịch: $pluginId.$action sẽ chạy ${if(cron.isNotEmpty()) "theo cron ($cron)" else "mỗi $intervalMinutes phút"}",
             data = mapOf("schedule" to schedule)
         )
     }

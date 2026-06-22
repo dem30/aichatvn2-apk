@@ -10,9 +10,8 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    
-    <!-- ✅ WorkManager không cần foreground service -->
-    <!-- ❌ Đã xóa: FOREGROUND_SERVICE, RECEIVE_BOOT_COMPLETED -->
+    <!-- ✅ Cần thiết để TaskScheduler sống sót sau reboot thiết bị -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
     <!-- For USB OTG Serial -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
@@ -46,7 +45,21 @@
         
         <!-- ✅ WorkManager tự động quản lý sau boot -->
         <!-- ❌ Đã xóa: CameraScanService -->
-        <!-- ❌ Đã xóa: BootReceiver -->
+
+        <!--
+            BootReceiver: khôi phục TaskScheduler periodic work sau khi thiết bị reboot
+            hoặc app được update (MY_PACKAGE_REPLACED). WorkManager periodic work bị hủy
+            khi thiết bị tắt nguồn — receiver này đảm bảo lịch trình tiếp tục chạy.
+        -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         
         <!-- WorkManager - giữ lại để tránh conflict -->
         <provider

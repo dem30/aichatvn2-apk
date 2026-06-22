@@ -25,7 +25,7 @@ class TaskScheduler @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     companion object {
-        private const val WORK_NAME = "aichatvn_scheduler"
+        const val WORK_NAME = "aichatvn_scheduler"  // public: BootReceiver cần dùng
         private const val CHECK_INTERVAL_MINUTES = 5L
 
         fun schedule(context: Context) {
@@ -55,6 +55,15 @@ class TaskScheduler @AssistedInject constructor(
 
         fun cancel(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+        }
+
+        /**
+         * Gọi từ Application.onCreate() và BootReceiver.onReceive() để đảm bảo
+         * periodic worker luôn chạy sau khi app khởi động hoặc thiết bị reboot.
+         * Dùng KEEP: nếu worker đang chạy rồi thì không restart (tránh mất interval).
+         */
+        fun ensureRunning(context: Context) {
+            schedule(context)  // schedule() đã dùng KEEP policy
         }
     }
 

@@ -3,17 +3,24 @@ package com.aichatvn.agent.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.ui.viewmodels.ScheduleViewModel
+import org.json.JSONObject
 import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,6 +84,7 @@ fun ScheduleScreen(
 
     if (showAddDialog) {
         AddScheduleDialog(
+            plugins = viewModel.schedulablePlugins,
             onDismiss = { showAddDialog = false },
             onSave = { schedule ->
                 viewModel.addSchedule(schedule)
@@ -114,7 +122,7 @@ fun ScheduleCard(
                 )
                 Text(
                     when {
-                        schedule.cron.isNotEmpty() -> "⏰ $schedule.cron"
+                        schedule.cron.isNotEmpty() -> "⏰ ${schedule.cron}"
                         schedule.intervalMinutes > 0 -> "🔄 ${schedule.intervalMinutes} phút/lần"
                         else -> "⏸ Không có lịch"
                     },
@@ -145,58 +153,208 @@ fun ScheduleCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddScheduleDialog(
+    plugins: List<Plugin>,
     onDismiss: () -> Unit,
     onSave: (ScheduleEntity) -> Unit
 ) {
-    var pluginId by remember { mutableStateOf("") }
-    var action by remember { mutableStateOf("") }
+    var pluginExpanded by remember { mutableStateOf(false) }
+    var actionExpanded by remember { mutableStateOf(false) }
+
+    var selectedPlugin by remember { mutableStateOf<Plugin?>(null) }
+    var selectedAction by remember { mutableStateOf<PluginAction?>(null) }
+
+    // ✅ Giá trị tham số động theo action đang chọn (key = tên tham số).
+    // Tách riêng boolean vì Switch cần Boolean, không tiện dùng chung String map.
+    val paramValues = remember { mutableStateMapOf<String, String>() }
+    val paramBooleans = remember { mutableStateMapOf<String, Boolean>() }
+
     var cron by remember { mutableStateOf("") }
     var intervalMinutes by remember { mutableStateOf("") }
+
+    // Đổi plugin -> reset action + tham số cũ, tránh giữ lại params của plugin trước
+    fun selectPlugin(p: Plugin) {
+        selectedPlugin = p
+        selectedAction = null
+        paramValues.clear()
+        paramBooleans.clear()
+    }
+
+    fun selectAction(a: PluginAction) {
+        selectedAction = a
+        paramValues.clear()
+        paramBooleans.clear()
+        a.parameters.forEach { p ->
+            if (p.type == "boolean") paramBooleans[p.name] = false else paramValues[p.name] = ""
+        }
+    }
+
+    val requiredParamsFilled = selectedAction?.parameters
+        ?.filter { it.required }
+        ?.all { p -> p.type == "boolean" || !paramValues[p.name].isNullOrBlank() }
+        ?: true
+
+    val canSave = selectedPlugin != null &&
+        selectedAction != null &&
+        requiredParamsFilled &&
+        (cron.isNotBlank() || (intervalMinutes.toIntOrNull() ?: 0) > 0)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Thêm lịch trình mới") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = pluginId,
-                    onValueChange = { pluginId = it },
-                    label = { Text("Plugin ID") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = action,
-                    onValueChange = { action = it },
-                    label = { Text("Action") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = cron,
-                    onValueChange = { cron = it },
-                    label = { Text("Cron (VD: 0 8 * * *)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = intervalMinutes,
-                    onValueChange = { intervalMinutes = it },
-                    label = { Text("Khoảng cách (phút)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                // ───── Dropdown chọn Plugin ─────
+                ExposedDropdownMenuBox(
+                    expanded = pluginExpanded,
+                    onExpandedChange = { pluginExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = selectedPlugin?.name ?: "",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Plugin") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = pluginExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = pluginExpanded,
+                        onDismissRequest = { pluginExpanded = false }
+                    ) {
+                        plugins.forEach { plugin ->
+                            DropdownMenuItem(
+                                text = { Text(plugin.name) },
+                                onClick = {
+                                    selectPlugin(plugin)
+                                    pluginExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // ───── Dropdown chọn Action (chỉ hiện sau khi đã chọn Plugin) ─────
+                selectedPlugin?.let { plugin ->
+                    ExposedDropdownMenuBox(
+                        expanded = actionExpanded,
+                        onExpandedChange = { actionExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = selectedAction?.let { "${it.name} — ${it.description}" } ?: "",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Hành động") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = actionExpanded) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = actionExpanded,
+                            onDismissRequest = { actionExpanded = false }
+                        ) {
+                            plugin.getActions().forEach { act ->
+                                DropdownMenuItem(
+                                    text = { Text("${act.name} — ${act.description}") },
+                                    onClick = {
+                                        selectAction(act)
+                                        actionExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ───── Tham số động theo action đang chọn (vd to/subject/body của email) ─────
+                selectedAction?.parameters?.forEach { param ->
+                    if (param.type == "boolean") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("${param.name}${if (param.required) " *" else ""}")
+                                Text(
+                                    param.description,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = paramBooleans[param.name] ?: false,
+                                onCheckedChange = { paramBooleans[param.name] = it }
+                            )
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = paramValues[param.name] ?: "",
+                            onValueChange = { paramValues[param.name] = it },
+                            label = { Text("${param.name}${if (param.required) " *" else ""} — ${param.description}") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = param.type != "string" || param.name != "body",
+                            keyboardOptions = if (param.type == "number")
+                                KeyboardOptions(keyboardType = KeyboardType.Number)
+                            else KeyboardOptions.Default
+                        )
+                    }
+                }
+
+                if (selectedAction != null) {
+                    Divider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text("Khi nào chạy (chọn 1 trong 2)", style = MaterialTheme.typography.labelMedium)
+                    OutlinedTextField(
+                        value = cron,
+                        onValueChange = { cron = it },
+                        label = { Text("Cron (VD: 0 8 * * *)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = intervalMinutes,
+                        onValueChange = { intervalMinutes = it },
+                        label = { Text("Hoặc khoảng cách (phút)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
+                enabled = canSave,
                 onClick = {
+                    val plugin = selectedPlugin ?: return@TextButton
+                    val action = selectedAction ?: return@TextButton
                     val interval = intervalMinutes.toIntOrNull() ?: 0
+
+                    // ✅ Build params đúng KIỂU dữ liệu theo PluginParameter.type (không phải
+                    // luôn là String) - để khi scheduler chạy job và gọi plugin.execute(),
+                    // các chỗ cast "params["active"] as? Boolean" hay "as? Number" không bị
+                    // null vì nhận nhầm String "true"/"5".
+                    val paramsJson = JSONObject().apply {
+                        action.parameters.forEach { p ->
+                            when (p.type) {
+                                "boolean" -> put(p.name, paramBooleans[p.name] ?: false)
+                                "number" -> paramValues[p.name]?.toDoubleOrNull()?.let { put(p.name, it) }
+                                else -> paramValues[p.name]?.takeIf { it.isNotBlank() }?.let { put(p.name, it) }
+                            }
+                        }
+                    }.toString()
+
                     val schedule = ScheduleEntity(
                         id = UUID.randomUUID().toString(),
-                        pluginId = pluginId,
-                        action = action,
-                        params = "{}",
+                        pluginId = plugin.id,
+                        action = action.name,
+                        params = paramsJson,
                         cron = cron,
                         intervalMinutes = interval,
                         enabled = 1,

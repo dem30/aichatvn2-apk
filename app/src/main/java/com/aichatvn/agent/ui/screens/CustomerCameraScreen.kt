@@ -44,8 +44,12 @@ class CustomerCameraViewModel @Inject constructor(
     private val _cameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
     val cameras: StateFlow<List<CameraConfigEntity>> = _cameras.asStateFlow()
 
-    private val _smartModes = MutableStateFlow<Map<String, Boolean>>(emptyMap())
-    val smartModes: StateFlow<Map<String, Boolean>> = _smartModes.asStateFlow()
+    private val _masterSmartMode = MutableStateFlow(false)
+    val masterSmartMode: StateFlow<Boolean> = _masterSmartMode.asStateFlow()
+
+    // key=cameraId, value=camera.smartMode==1
+    private val _cameraSmartModes = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val cameraSmartModes: StateFlow<Map<String, Boolean>> = _cameraSmartModes.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -75,7 +79,8 @@ class CustomerCameraViewModel @Inject constructor(
                         )
                     )
                 }
-                _smartModes.value = mapOf(customerId to (setting?.smartMode == 1))
+                _masterSmartMode.value = setting?.smartMode == 1
+                _cameraSmartModes.value = cams.associate { it.id to (it.smartMode == 1) }
             } finally {
                 _isLoading.value = false
             }
@@ -107,13 +112,22 @@ class CustomerCameraViewModel @Inject constructor(
         }
     }
 
-    fun toggleSmartMode() {
+    fun toggleMasterSmartMode() {
         viewModelScope.launch {
-            val current = _smartModes.value[customerId] ?: false
-            val newMode = !current
+            val newMode = !_masterSmartMode.value
             cameraSkill.execute("set_smart_mode", mapOf("customerId" to customerId, "enabled" to newMode))
-            _smartModes.value = mapOf(customerId to newMode)
-            logger.i("CustomerCameraViewModel", "SmartMode $customerId → $newMode")
+            _masterSmartMode.value = newMode
+            logger.i("CustomerCameraViewModel", "MasterSmartMode $customerId → $newMode")
+        }
+    }
+
+    fun toggleCameraSmartMode(cameraId: String) {
+        viewModelScope.launch {
+            val current = _cameraSmartModes.value[cameraId] ?: true
+            val newMode = !current
+            database.cameraDao().updateCameraSmartMode(cameraId, if (newMode) 1 else 0)
+            _cameraSmartModes.value = _cameraSmartModes.value.toMutableMap().apply { put(cameraId, newMode) }
+            logger.i("CustomerCameraViewModel", "CameraSmartMode $cameraId → $newMode")
         }
     }
 
@@ -199,7 +213,8 @@ fun CustomerCameraScreen(
     val customer by viewModel.customer.collectAsState()
     val cameras by viewModel.cameras.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val smartModes by viewModel.smartModes.collectAsState()
+    val masterSmartMode by viewModel.masterSmartMode.collectAsState()
+    val cameraSmartModes by viewModel.cameraSmartModes.collectAsState()
     val testResult by viewModel.testResult.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
@@ -242,13 +257,11 @@ fun CustomerCameraScreen(
                     }
                 },
                 actions = {
-                    // Toggle Smart Mode cho cả khách hàng
-                    val isSmartOn = smartModes[viewModel.customerId] ?: false
-                    IconButton(onClick = { viewModel.toggleSmartMode() }) {
+                    IconButton(onClick = { viewModel.toggleMasterSmartMode() }) {
                         Icon(
-                            if (isSmartOn) Icons.Default.Psychology else Icons.Default.PsychologyAlt,
-                            contentDescription = if (isSmartOn) "Tắt AI" else "Bật AI",
-                            tint = if (isSmartOn) MaterialTheme.colorScheme.primary
+                            if (masterSmartMode) Icons.Default.Psychology else Icons.Default.PsychologyAlt,
+                            contentDescription = if (masterSmartMode) "Tắt AI (tổng)" else "Bật AI (tổng)",
+                            tint = if (masterSmartMode) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -279,14 +292,15 @@ fun CustomerCameraScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(cameras, key = { it.id }) { camera ->
+                        val camSmartOn = cameraSmartModes[camera.id] ?: true
                         CameraCard(
                             camera = camera,
                             isAdmin = true,
-                            isSmartMode = smartModes[camera.customerId] ?: false,
+                            isSmartMode = masterSmartMode && camSmartOn,
                             onEdit = { selectedCamera = camera },
                             onDelete = { viewModel.deleteCamera(camera.id) },
                             onToggleActive = { viewModel.toggleCameraActive(camera.id) },
-                            onToggleSmartMode = { viewModel.toggleSmartMode() },
+                            onToggleSmartMode = { viewModel.toggleCameraSmartMode(camera.id) },
                             onTest = { viewModel.testCamera(camera.id) },
                             onOpenDetail = { navController.navigate("camera_detail/${camera.id}") }
                         )

@@ -176,6 +176,9 @@ interface CameraDao {
     
     @Query("DELETE FROM customer_settings WHERE customerId = :customerId")
     suspend fun deleteCustomerSetting(customerId: String)
+
+    @Query("UPDATE cameras SET smartMode = :enabled WHERE id = :cameraId")
+    suspend fun updateCameraSmartMode(cameraId: String, enabled: Int)
 }
 
 @Dao
@@ -259,7 +262,7 @@ interface ScheduleDao {
         TuyaDeviceEntity::class,
         CustomerEntity::class
     ],
-    version = 6,
+    version = 7,
 
     exportSchema = false
 )
@@ -350,6 +353,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // MIGRATION 6 -> 7: thêm cột smartMode per-camera
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cameras ADD COLUMN smartMode INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -357,7 +367,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build()
                 INSTANCE = instance
                 instance

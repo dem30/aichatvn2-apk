@@ -82,6 +82,7 @@ data class CameraConfigEntity(
     val status: String = "online",
     val isOnline: Int = 1,
     val manualOff: Int = 0,
+    val smartMode: Int = 1,        // per-camera AI flag; master = CustomerSettingEntity.smartMode
     val aiPrompt: String = "",
     val aiPositiveKeywords: String = "",
     val aiNegativeKeywords: String = ""

@@ -2,6 +2,8 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.ScheduleSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -11,10 +13,20 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ScheduleViewModel @Inject constructor(
-    private val scheduleSkill: ScheduleSkill
+    private val scheduleSkill: ScheduleSkill,
+    private val agentKernel: AgentKernel // ✅ MỚI: để build dropdown Plugin/Action cho UI
 ) : ViewModel() {
 
     val schedules: StateFlow<List<ScheduleEntity>> = scheduleSkill.schedules
+
+    /**
+     * ✅ MỚI: Danh sách plugin có thể lên lịch, dùng cho dropdown trong AddScheduleDialog.
+     * Loại "schedule" ra khỏi danh sách - không có lý do gì để lên lịch tự gọi lại chính
+     * ScheduleSkill (add/list/delete/toggle lịch trình khác), tránh gây nhiễu UI.
+     * Plugin list cố định theo vòng đời Singleton -> build 1 lần là đủ, không cần StateFlow.
+     */
+    val schedulablePlugins: List<Plugin> =
+        agentKernel.getAvailablePluginsForUI().filter { it.id != "schedule" }
 
     fun loadSchedules() {
         viewModelScope.launch {

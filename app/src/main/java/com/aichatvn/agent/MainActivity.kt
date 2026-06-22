@@ -8,7 +8,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -32,8 +31,8 @@ class MainActivity : ComponentActivity() {
 
         logger.i("MainActivity", "🚀 App khởi động - v3")
 
-        // Schedule tasks
-        TaskScheduler.schedule(this)
+        // ✅ TaskScheduler đã được khởi động trong MainApplication.onCreate() —
+        // không gọi lại ở đây vì Activity có thể recreate nhiều lần.
 
         setContent {
             // ✅ Xin CAMERA + POST_NOTIFICATIONS (Android 13+)

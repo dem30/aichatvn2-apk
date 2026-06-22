@@ -658,7 +658,7 @@ class CameraSkill @Inject constructor(
                 val result = if (isDailyReport) {
                     scanForDailyReport(camera)
                 } else {
-                    scanWithLearning(camera, customerSetting.smartMode == 1)
+                    scanWithLearning(camera, customerSetting.smartMode == 1 && camera.smartMode == 1)
                 }
                 results.add(result)
             }
@@ -696,7 +696,7 @@ class CameraSkill @Inject constructor(
                 return PluginResult.Success(mapOf("skipped" to true))
             }
             
-            val result = processImageWithLearning(camera, imageBytes, customerSetting?.smartMode == 1)
+            val result = processImageWithLearning(camera, imageBytes, customerSetting?.smartMode == 1 && camera.smartMode == 1)
             PluginResult.Success(result)
             
         } catch (e: Exception) {
