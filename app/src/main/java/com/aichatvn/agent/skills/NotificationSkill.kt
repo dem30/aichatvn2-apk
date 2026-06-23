@@ -31,12 +31,10 @@ class NotificationSkill @Inject constructor(
 
     override suspend fun initialize() {
         createNotificationChannel()
-        logger.d("NotificationSkill", "✅ Notification channel created")
+        logger.i("NotificationSkill", "✅ Notification channel initialized")
     }
 
     override suspend fun shutdown() {}
-
-    // ==================== PLUGIN IMPLEMENTATION ====================
 
     override fun getActions(): List<PluginAction> {
         return listOf(
@@ -44,8 +42,8 @@ class NotificationSkill @Inject constructor(
                 name = "send",
                 description = "Gửi thông báo",
                 parameters = listOf(
-                    PluginParameter("title", "string", "Tiêu đề thông báo", true),
-                    PluginParameter("message", "string", "Nội dung thông báo", true)
+                    PluginParameter("title", "string", "Tiêu đề", true),
+                    PluginParameter("message", "string", "Nội dung", true)
                 )
             )
         )
@@ -59,20 +57,18 @@ class NotificationSkill @Inject constructor(
     }
 
     private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
-        val title = params["title"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu title")
-        val message = params["message"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu message")
+        val title = params["title"] as? String 
+            ?: return AgentKernel.PluginResult.Failure("Thiếu title")
+        
+        val message = params["message"] as? String 
+            ?: return AgentKernel.PluginResult.Failure("Thiếu message")
 
-        val notificationId = sendNotification(title, message)
+        val id = sendNotification(title, message)
 
         return AgentKernel.PluginResult.Success(
-            mapOf(
-                "notificationId" to notificationId,
-                "message" to "Đã gửi thông báo: $title"
-            )
+            mapOf("notificationId" to id, "status" to "sent")
         )
     }
-
-    // ==================== CORE METHODS ====================
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -87,6 +83,7 @@ class NotificationSkill @Inject constructor(
                 setShowBadge(true)
             }
             notificationManager.createNotificationChannel(channel)
+            logger.i("NotificationSkill", "Channel '$CHANNEL_ID' created successfully")
         }
     }
 
@@ -98,16 +95,18 @@ class NotificationSkill @Inject constructor(
         val id = notificationCounter.getAndIncrement()
 
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)  // ✅ Dùng icon của app (nếu có)
+            .setSmallIcon(R.drawable.ic_notification)     // ← Dùng icon của app
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)  // Âm thanh + rung
             .build()
 
         notificationManager.notify(id, notification)
-        logger.i("NotificationSkill", "📢 Sent notification: $title")
+        
+        logger.i("NotificationSkill", "📢 Notification sent | ID=$id | Title: $title")
         return id
     }
 
@@ -118,6 +117,6 @@ class NotificationSkill @Inject constructor(
     companion object {
         private const val CHANNEL_ID = "aichatvn_alerts"
         private const val CHANNEL_NAME = "Cảnh báo an ninh"
-        private const val CHANNEL_DESCRIPTION = "Thông báo cảnh báo từ camera giám sát"
+        private const val CHANNEL_DESCRIPTION = "Thông báo cảnh báo từ AI Chat VN"
     }
 }
