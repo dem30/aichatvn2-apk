@@ -57,13 +57,15 @@ class ChatViewModel @Inject constructor(
     private val _voiceModeActive = MutableStateFlow(true)
     val voiceModeActive: StateFlow<Boolean> = _voiceModeActive.asStateFlow()
 
-    val voiceManager: VoiceAssistantManager by lazy {
+    // Tách delegate ra để kiểm tra isInitialized() đúng cách trong onCleared()
+    private val _voiceManagerDelegate = lazy {
         VoiceAssistantManager(
             context = context,
             onListeningStateChange = { listening -> _isListening.value = listening },
             onTextRecognized = { text -> sendMessage(text) }
         )
     }
+    val voiceManager: VoiceAssistantManager by _voiceManagerDelegate
 
     // ── Quick commands ────────────────────────────────────────────────────────
 
@@ -224,7 +226,7 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        if (::voiceManager.isInitialized) {
+        if (_voiceManagerDelegate.isInitialized()) {
             voiceManager.destroy()
         }
     }
