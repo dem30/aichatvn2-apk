@@ -228,7 +228,7 @@ class AgentKernel @Inject constructor(
         username: String = "default_user"
     ): List<QAEntity> {
         return try {
-            val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.5f)
+            val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.7f)
             when (result) {
                 is PluginResult.Success -> {
                     @Suppress("UNCHECKED_CAST")

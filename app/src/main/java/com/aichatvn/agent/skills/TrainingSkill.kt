@@ -24,7 +24,10 @@ class TrainingSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     logger: Logger, 
 ) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
-    
+
+    // Ẩn khỏi router prompt — lệnh học được xử lý riêng qua "Học:" / "Dạy:" trong ChatSkill
+    override val visibleInQuickBar: Boolean = false
+
     private val database by lazy { AppDatabase.getDatabase(context) }
     
     private val _qaList = MutableStateFlow<List<QAEntity>>(emptyList())

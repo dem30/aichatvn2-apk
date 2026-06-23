@@ -139,7 +139,7 @@ class ChatSkill @Inject constructor(
      * Build QA context cho Groq chat (không phải lệnh điều khiển)
      */
     private suspend fun buildQAContext(message: String, username: String): String {
-        val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.5f)
+        val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.7f)
         return when (result) {
             is PluginResult.Success -> {
                 val data = result.data

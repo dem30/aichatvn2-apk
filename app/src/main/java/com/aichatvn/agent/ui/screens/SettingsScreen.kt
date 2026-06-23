@@ -509,10 +509,13 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
             )
             Spacer(Modifier.height(6.dp))
+            val promptScrollState = rememberScrollState()
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 300.dp)
                     .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                    .verticalScroll(promptScrollState)
                     .padding(8.dp)
             ) {
                 Text(
