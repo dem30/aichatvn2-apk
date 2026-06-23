@@ -13,6 +13,8 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,7 +33,6 @@ class NotificationSkill @Inject constructor(
 
     override suspend fun initialize() {
         createNotificationChannel()
-        logger.i("NotificationSkill", "✅ Notification channel initialized")
     }
 
     override suspend fun shutdown() {}
@@ -57,11 +58,8 @@ class NotificationSkill @Inject constructor(
     }
 
     private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
-        val title = params["title"] as? String 
-            ?: return AgentKernel.PluginResult.Failure("Thiếu title")
-        
-        val message = params["message"] as? String 
-            ?: return AgentKernel.PluginResult.Failure("Thiếu message")
+        val title = params["title"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu title")
+        val message = params["message"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu message")
 
         val id = sendNotification(title, message)
 
@@ -79,44 +77,49 @@ class NotificationSkill @Inject constructor(
             ).apply {
                 description = CHANNEL_DESCRIPTION
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 200, 500)
+                vibrationPattern = longArrayOf(0, 400, 200, 400)
                 setShowBadge(true)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(channel)
-            logger.i("NotificationSkill", "Channel '$CHANNEL_ID' created successfully")
+            logger.i("NotificationSkill", "Channel '$CHANNEL_ID' created (IMPORTANCE_HIGH)")
         }
     }
 
-    fun sendNotification(
-        title: String,
-        message: String,
-        channelId: String = CHANNEL_ID
-    ): Int {
-        val id = notificationCounter.getAndIncrement()
-
-        val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)     // ← Dùng icon của app
-            .setContentTitle(title)
-            .setContentText(message)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)  // Âm thanh + rung
-            .build()
-
-        notificationManager.notify(id, notification)
-        
-        logger.i("NotificationSkill", "📢 Notification sent | ID=$id | Title: $title")
-        return id
+    suspend fun sendNotification(
+    title: String,
+    message: String,
+    channelId: String = CHANNEL_ID
+): Int = withContext(Dispatchers.Main) {
+    // ✅ Bảo vệ: Luôn đảm bảo channel tồn tại trước khi notify
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (notificationManager.getNotificationChannel(channelId) == null) {
+            createNotificationChannel()
+        }
     }
 
-    fun cancelNotification(id: Int) {
-        notificationManager.cancel(id)
-    }
+    val id = notificationCounter.getAndIncrement()
+
+    val notification = NotificationCompat.Builder(context, channelId)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setContentTitle(title)
+        .setContentText(message)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setDefaults(NotificationCompat.DEFAULT_ALL)
+        .setAutoCancel(true)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .build()
+
+    notificationManager.notify(id, notification)
+    
+    logger.i("NotificationSkill", "📢 NOTIFICATION POSTED | ID=$id | Title: $title")
+    id
+}
 
     companion object {
         private const val CHANNEL_ID = "aichatvn_alerts"
         private const val CHANNEL_NAME = "Cảnh báo an ninh"
-        private const val CHANNEL_DESCRIPTION = "Thông báo cảnh báo từ AI Chat VN"
+        private const val CHANNEL_DESCRIPTION = "Thông báo từ AI Chat VN"
     }
 }
