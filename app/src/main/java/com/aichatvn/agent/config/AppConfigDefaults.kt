@@ -53,7 +53,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MODEL_VISION,
-            value = "meta-llama/llama-4-maverick-17b-128e-instruct",
+            value = "meta-llama/llama-4-scout-17b-16e-instruct",
             type = "string",
             pluginId = "groq",
             label = "Model vision (phân tích ảnh)",
@@ -77,7 +77,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_VISION,
-            value = "150",
+            value = "200",
             type = "int",
             pluginId = "groq",
             label = "Max tokens – vision",
@@ -85,7 +85,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_ROUTER,
-            value = "500",
+            value = "1000",
             type = "int",
             pluginId = "groq",
             label = "Max tokens – router",

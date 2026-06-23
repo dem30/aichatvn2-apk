@@ -8,8 +8,8 @@ import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.R
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
-import com.aichatvn.agent.core.plugin.PluginAction          // ✅ THÊM
-import com.aichatvn.agent.core.plugin.PluginParameter       // ✅ THÊM
+import com.aichatvn.agent.core.plugin.PluginAction
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -29,14 +29,14 @@ class NotificationSkill @Inject constructor(
 
     private val notificationCounter = AtomicInteger(1001)
 
-    // ==================== PLUGIN IMPLEMENTATION ====================
-
-    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
-        return when (action) {
-            "send" -> handleSend(params)
-            else -> failure("Action không xác định: $action")
-        }
+    override suspend fun initialize() {
+        createNotificationChannel()
+        logger.d("NotificationSkill", "✅ Notification channel created")
     }
+
+    override suspend fun shutdown() {}
+
+    // ==================== PLUGIN IMPLEMENTATION ====================
 
     override fun getActions(): List<PluginAction> {
         return listOf(
@@ -51,28 +51,28 @@ class NotificationSkill @Inject constructor(
         )
     }
 
+    override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
+        return when (action) {
+            "send" -> handleSend(params)
+            else -> AgentKernel.PluginResult.Failure("Action không xác định: $action")
+        }
+    }
+
     private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
-        val title = params["title"] as? String
-            ?: return needMoreInfo(listOf("title"), "Bạn muốn gửi thông báo với tiêu đề gì?")
-        
-        val message = params["message"] as? String
-            ?: return needMoreInfo(listOf("message"), "Nội dung thông báo là gì?")
-        
+        val title = params["title"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu title")
+        val message = params["message"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu message")
+
         val notificationId = sendNotification(title, message)
-        
-        return success(
-            message = "✅ Đã gửi thông báo: $title",
-            data = mapOf("notificationId" to notificationId)
+
+        return AgentKernel.PluginResult.Success(
+            mapOf(
+                "notificationId" to notificationId,
+                "message" to "Đã gửi thông báo: $title"
+            )
         )
     }
 
-    // ==================== CORE SKILL METHODS ====================
-
-    override suspend fun initialize() {
-        createNotificationChannel()
-    }
-
-    override suspend fun shutdown() {}
+    // ==================== CORE METHODS ====================
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -84,19 +84,21 @@ class NotificationSkill @Inject constructor(
                 description = CHANNEL_DESCRIPTION
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 500, 200, 500)
+                setShowBadge(true)
             }
             notificationManager.createNotificationChannel(channel)
         }
     }
 
-    suspend fun sendNotification(
+    fun sendNotification(
         title: String,
         message: String,
         channelId: String = CHANNEL_ID
     ): Int {
         val id = notificationCounter.getAndIncrement()
+
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)  // ✅ SỬA
+            .setSmallIcon(R.drawable.ic_notification)  // ✅ Dùng icon của app (nếu có)
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
@@ -105,6 +107,7 @@ class NotificationSkill @Inject constructor(
             .build()
 
         notificationManager.notify(id, notification)
+        logger.i("NotificationSkill", "📢 Sent notification: $title")
         return id
     }
 

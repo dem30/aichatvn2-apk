@@ -73,11 +73,11 @@ class GroqClientTool @Inject constructor(
 
         // Fallback — chỉ dùng khi DB chưa seed xong
         private const val DEFAULT_MODEL_TEXT    = "openai/gpt-oss-120b"
-        private const val DEFAULT_MODEL_VISION  = "meta-llama/llama-4-maverick-17b-128e-instruct"
+        private const val DEFAULT_MODEL_VISION  = "meta-llama/llama-4-scout-17b-16e-instruct"
         private const val DEFAULT_MODEL_ROUTER  = "openai/gpt-oss-20b"
-        private const val DEFAULT_MAX_TOKENS_CHAT   = 1000
-        private const val DEFAULT_MAX_TOKENS_VISION = 500
-        private const val DEFAULT_MAX_TOKENS_ROUTER = 500
+        private const val DEFAULT_MAX_TOKENS_CHAT   = 500
+        private const val DEFAULT_MAX_TOKENS_VISION = 200
+        private const val DEFAULT_MAX_TOKENS_ROUTER = 1000
 
         private const val SAFE_FALLBACK_INTENT =
             """{"plugin":"chat","action":"none","params":{}}"""
