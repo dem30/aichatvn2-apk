@@ -14,6 +14,8 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,8 +47,8 @@ class CameraSkill @Inject constructor(
     private val groqClient: GroqClientTool,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
-    logger: Logger, 
-    
+    private val configProvider: AppConfigProvider,
+    logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -158,16 +160,23 @@ class CameraSkill @Inject constructor(
     
     private val _diagnostics = MutableStateFlow<Map<String, Any>>(emptyMap())
     val diagnostics: StateFlow<Map<String, Any>> = _diagnostics.asStateFlow()
+
+    // ── Config helpers (lấy từ AppConfigProvider, có fallback) ───────────────────
+    private suspend fun defaultAiPrompt()       = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT, "Camera giám sát. Mô tả những gì bạn thấy, ghi cảnh báo nếu phát hiện bất thường.")
+    private suspend fun defaultPositiveKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW, "cảnh báo").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    private suspend fun defaultNegativeKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW, "bình thường").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, 3 * 60 * 60 * 1000L)
+    private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
+    private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
+    private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
+    private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
     
     companion object {
-        private const val DEFAULT_AI_PROMPT = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả."
-        private val DEFAULT_POSITIVE_KEYWORDS = listOf("cảnh báo")
-        private val DEFAULT_NEGATIVE_KEYWORDS = listOf("bình thường")
-        private const val COOLDOWN_DURATION_MS = 3 * 60 * 60 * 1000L
-        private const val CIRCUIT_BREAKER_THRESHOLD = 3
-        private const val CIRCUIT_BREAKER_RESET_MS = 30 * 60 * 1000L
-        private const val DAILY_REPORT_HOUR = 20
-        private const val MAX_DAILY_EVENTS_PER_CAMERA = 50
+        // DEFAULT_AI_PROMPT, DEFAULT_POSITIVE/NEGATIVE_KEYWORDS, COOLDOWN_DURATION_MS,
+        // MAX_DAILY_EVENTS_PER_CAMERA moved to AppConfigDefaults / AppConfigProvider.
+        private const val CIRCUIT_BREAKER_THRESHOLD_DEFAULT = 3
+        private const val CIRCUIT_BREAKER_RESET_MS_DEFAULT = 30 * 60 * 1000L
+        private const val DAILY_REPORT_HOUR_DEFAULT = 20
 
         private val TIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault())
@@ -461,7 +470,7 @@ class CameraSkill @Inject constructor(
                 val now = System.currentTimeMillis()
                 val calendar = Calendar.getInstance().apply {
                     timeInMillis = now
-                    set(Calendar.HOUR_OF_DAY, DAILY_REPORT_HOUR)
+                    set(Calendar.HOUR_OF_DAY, DAILY_REPORT_HOUR_DEFAULT)
                     set(Calendar.MINUTE, 0)
                     set(Calendar.SECOND, 0)
                     set(Calendar.MILLISECOND, 0)
@@ -521,11 +530,11 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun sendDailySummaryEmail(to: String, customerId: String, events: List<Map<String, Any>>) {
-        val subject = "📋 BÁO CÁO GIÁM SÁT ĐẤT ĐAI ĐỊNH KỲ - $customerId - ${DATE_FORMATTER.format(Instant.now())}"
+        val subject = "📋 BÁO CÁO GIÁM SÁT ĐỊNH KỲ - $customerId - ${DATE_FORMATTER.format(Instant.now())}"
         
         val body = buildString {
             append("<html><body style='font-family: Arial, sans-serif;'>")
-            append("<h2>BÁO CÁO GIÁM SÁT ĐẤT ĐAI</h2>")
+            append("<h2>BÁO CÁO GIÁM SÁT </h2>")
             append("<p>Xin chào Quý khách hàng <b>$customerId</b>,</p>")
             append("<p>Hệ thống gửi báo cáo hôm nay (${events.size} camera có sự kiện):</p>")
             
@@ -563,7 +572,7 @@ class CameraSkill @Inject constructor(
 
         val elapsed = System.currentTimeMillis() - cb.offlineSince
 
-        if (elapsed > CIRCUIT_BREAKER_RESET_MS) {
+        if (elapsed > CIRCUIT_BREAKER_RESET_MS_DEFAULT) {
             if (!cb.halfOpenAttempted) {
                 cb.halfOpenAttempted = true
                 logger.i("CameraSkill", "🔁 Circuit Breaker HALF-OPEN for camera $cameraId - thử lại...")
@@ -582,7 +591,7 @@ class CameraSkill @Inject constructor(
         val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
         cb.offlineCount++
         cb.halfOpenAttempted = false
-        if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD) {
+        if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD_DEFAULT) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
             logger.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $cameraId (offline ${cb.offlineCount} times)")
@@ -763,7 +772,7 @@ class CameraSkill @Inject constructor(
                 var isSuspicious = false
                 
                 if (shouldCallAi) {
-                    val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else DEFAULT_AI_PROMPT
+                    val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
                     val aiResult: String = try {
                         withTimeout(20_000L) {
                             groqClient.analyzeImage(optimizedBytes, prompt)
@@ -777,12 +786,12 @@ class CameraSkill @Inject constructor(
                     val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
                         camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
                     } else {
-                        DEFAULT_POSITIVE_KEYWORDS
+                        defaultPositiveKw()
                     }
                     val negativeKeywords = if (camera.aiNegativeKeywords.isNotEmpty()) {
                         camera.aiNegativeKeywords.split(",").map { it.trim().lowercase() }
                     } else {
-                        DEFAULT_NEGATIVE_KEYWORDS
+                        defaultNegativeKw()
                     }
                     
                     val textClean = aiComment.lowercase()
@@ -792,11 +801,11 @@ class CameraSkill @Inject constructor(
                     
                     if (isSuspicious) {
                         state.realEvents++
-                        state.cooldownUntil = now + COOLDOWN_DURATION_MS
+                        state.cooldownUntil = now + cooldownDurationMs()
                         
                         val cameraDailyEvents = dailyEvents.getOrPut(camera.id) { mutableListOf() }
                         cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
-                        if (cameraDailyEvents.size > MAX_DAILY_EVENTS_PER_CAMERA) {
+                        if (cameraDailyEvents.size > maxDailyEvents()) {
                             cameraDailyEvents.removeAt(0)
                         }
                         
@@ -937,7 +946,7 @@ class CameraSkill @Inject constructor(
             }
             
             val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
-            val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else DEFAULT_AI_PROMPT
+            val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
             val aiComment = try {
                 withTimeout(20_000L) {
                     groqClient.analyzeImage(optimizedBytes, prompt)

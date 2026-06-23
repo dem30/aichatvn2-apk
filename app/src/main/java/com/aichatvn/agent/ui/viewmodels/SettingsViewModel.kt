@@ -9,8 +9,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
@@ -20,6 +23,8 @@ import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TuyaManager
+import com.aichatvn.agent.tools.ai.GroqClientTool
+import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.utils.Logger
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -43,6 +48,8 @@ class SettingsViewModel @Inject constructor(
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
     private val tuyaManager: TuyaManager,
+    private val groqClient: GroqClientTool,
+    private val configProvider: AppConfigProvider,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -51,10 +58,8 @@ class SettingsViewModel @Inject constructor(
         val RESEND_API_KEY = stringPreferencesKey("resend_api_key")
         val RESEND_SENDER  = stringPreferencesKey("resend_sender")
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
-        
         val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
         val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
-        val TUYA_DATA_CENTER = stringPreferencesKey("tuya_data_center")
     }
 
     private val httpClient = OkHttpClient.Builder()
@@ -62,12 +67,11 @@ class SettingsViewModel @Inject constructor(
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // ─── Groq ────────────────────────────────────────────────────────────────
+    // ─── DataStore keys ──────────────────────────────────────────────────────
     val groqApiKey: StateFlow<String> = context.dataStore.data
         .map { it[GROQ_API_KEY] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
-    // ─── Resend ──────────────────────────────────────────────────────────────
     val resendApiKey: StateFlow<String> = context.dataStore.data
         .map { it[RESEND_API_KEY] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
@@ -76,19 +80,16 @@ class SettingsViewModel @Inject constructor(
         .map { it[RESEND_SENDER] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
-    // ─── Dark mode ──────────────────────────────────────────────────────────
     val darkMode: StateFlow<Boolean> = context.dataStore.data
         .map { it[DARK_MODE] ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    // ─── Tuya ──────────────────────────────────────────────────────────────
     private val _tuyaClientId = MutableStateFlow("")
     val tuyaClientId: StateFlow<String> = _tuyaClientId.asStateFlow()
 
     private val _tuyaClientSecret = MutableStateFlow("")
     val tuyaClientSecret: StateFlow<String> = _tuyaClientSecret.asStateFlow()
 
-    // ─── Expose trạng thái key ──────────────────────────────────────────────
     val isGroqKeyConfigured: StateFlow<Boolean> = groqApiKey
         .map { it.isNotBlank() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -101,15 +102,45 @@ class SettingsViewModel @Inject constructor(
         id.isNotBlank() && secret.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    // ─── Export result ──────────────────────────────────────────────────────
+    // ─── AppConfig ───────────────────────────────────────────────────────────
+    /** Toàn bộ config realtime — UI bind trực tiếp */
+    val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
+
+    /** Prompt log 5 entries gần nhất từ GroqClientTool */
+    val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
+
+    // ─── UI state cho config editing ─────────────────────────────────────────
+    private val _configSaveResult = MutableStateFlow<String?>(null)
+    val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
+
+    fun saveConfig(key: String, value: String) {
+        viewModelScope.launch {
+            configProvider.set(key, value)
+            _configSaveResult.value = "✅ Đã lưu"
+            kotlinx.coroutines.delay(1500)
+            _configSaveResult.value = null
+        }
+    }
+
+    fun resetConfig(key: String) {
+        viewModelScope.launch {
+            val default = AppConfigDefaults.all().firstOrNull { it.key == key } ?: return@launch
+            configProvider.upsert(default)
+            _configSaveResult.value = "🔄 Đã reset về mặc định"
+            kotlinx.coroutines.delay(1500)
+            _configSaveResult.value = null
+        }
+    }
+
+    fun clearConfigSaveResult() { _configSaveResult.value = null }
+
+    // ─── Export/Import ────────────────────────────────────────────────────────
     private val _exportResult = MutableStateFlow<String?>(null)
     val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
-    // ─── Import result ──────────────────────────────────────────────────────
     private val _importResult = MutableStateFlow<String?>(null)
     val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
-    // ─── Init ────────────────────────────────────────────────────────────────
     init {
         viewModelScope.launch {
             val prefs = context.dataStore.data.first()
@@ -118,12 +149,10 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun clearImportResult() { 
-        _importResult.value = null 
-    }
+    fun clearImportResult() { _importResult.value = null }
+    fun clearExportResult() { _exportResult.value = null }
 
     // ─── Save ─────────────────────────────────────────────────────────────────
-
     fun saveGroqApiKey(key: String) {
         viewModelScope.launch {
             context.dataStore.edit { it[GROQ_API_KEY] = key.trim() }
@@ -137,7 +166,6 @@ class SettingsViewModel @Inject constructor(
                 it[RESEND_API_KEY] = apiKey.trim()
                 it[RESEND_SENDER] = sender.trim()
             }
-            logger.i("SettingsViewModel", "Resend settings saved")
         }
     }
 
@@ -149,7 +177,6 @@ class SettingsViewModel @Inject constructor(
             }
             _tuyaClientId.value = clientId.trim()
             _tuyaClientSecret.value = clientSecret.trim()
-            logger.i("SettingsViewModel", "Tuya config saved")
         }
     }
 
@@ -160,122 +187,80 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ─── Test Groq ────────────────────────────────────────────────────────────
-
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
         val trimmedKey = apiKey.trim()
         if (trimmedKey.isEmpty()) {
-            viewModelScope.launch(Dispatchers.Main) {
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                 onResult(false, "❌ API key trống — vui lòng nhập key trước khi test")
             }
             return
         }
-
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
             try {
-                val requestBodyJson = JSONObject().apply {
-                    put("model", "llama-3.3-70b-versatile")
+                saveGroqApiKey(trimmedKey)
+                kotlinx.coroutines.delay(200)
+                val body = JSONObject().apply {
+                    put("model", "openai/gpt-oss-20b")
                     put("messages", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("role", "user")
-                            put("content", "Test connection. Reply with 'OK'")
-                        })
+                        put(JSONObject().apply { put("role", "user"); put("content", "Hi") })
                     })
-                    put("max_tokens", 10)
+                    put("max_tokens", 5)
                 }.toString()
-
-                val request = Request.Builder()
-                    .url("https://api.groq.com/openai/v1/chat/completions")
-                    .addHeader("Authorization", "Bearer $trimmedKey")
-                    .addHeader("Content-Type", "application/json")
-                    .post(requestBodyJson.toRequestBody("application/json".toMediaType()))
-                    .build()
-
-                val response = httpClient.newCall(request).execute()
-                val success = response.isSuccessful
-
-                val message = when {
-                    success -> "✅ Kết nối thành công!"
-                    response.code == 401 -> "❌ 401 Unauthorized — API key sai hoặc hết hạn"
-                    response.code == 429 -> "⚠️ 429 Rate limit — key hợp lệ nhưng đang bị throttle"
-                    else -> "❌ Lỗi API: ${response.code}"
-                }
-
-                response.close()
-                withContext(Dispatchers.Main) { onResult(success, message) }
-
-            } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Groq test error: ${e.message}", e)
-                withContext(Dispatchers.Main) {
-                    onResult(false, "❌ Lỗi kết nối: ${e.message}")
-                }
-            }
-        }
-    }
-
-    // ─── Test Tuya ───────────────────────────────────────────────────────────
-
-    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
-        if (clientId.isBlank() || clientSecret.isBlank()) {
-            return "❌ Vui lòng nhập Client ID và Client Secret"
-        }
-        
-        return withContext(Dispatchers.IO) {
-            try {
-                context.dataStore.edit { 
-                    it[TUYA_CLIENT_ID] = clientId.trim()
-                    it[TUYA_CLIENT_SECRET] = clientSecret.trim()
-                }
-                
-                val token = tuyaManager.getAccessToken()
-                if (token.isNotBlank()) {
-                    "✅ Kết nối Tuya thành công!"
-                } else {
-                    "❌ Không lấy được token"
+                val response = httpClient.newCall(
+                    Request.Builder()
+                        .url("https://api.groq.com/openai/v1/chat/completions")
+                        .addHeader("Authorization", "Bearer $trimmedKey")
+                        .addHeader("Content-Type", "application/json")
+                        .post(body.toRequestBody("application/json".toMediaType()))
+                        .build()
+                ).execute()
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    if (response.isSuccessful) onResult(true, "✅ Kết nối Groq thành công!")
+                    else onResult(false, "❌ HTTP ${response.code}: ${response.body?.string()?.take(200)}")
                 }
             } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Tuya test error: ${e.message}", e)
-                "❌ Lỗi: ${e.message}"
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onResult(false, "❌ Lỗi: ${e.message}")
+                }
             }
         }
     }
 
     // ─── Test Email ───────────────────────────────────────────────────────────
-
     suspend fun testSendEmail(to: String): String {
-        if (to.isBlank()) return "❌ Vui lòng nhập email nhận test"
         return withContext(Dispatchers.IO) {
             try {
                 val result = emailSkill.sendEmail(
-                    to      = to,
-                    subject = "✅ Test email từ AIChatVN2",
-                    body    = """
-                        <html><body>
-                        <h2>Test thành công! 🎉</h2>
-                        <p>Email gửi qua <b>Resend API</b> hoạt động bình thường.</p>
-                        <p><small>Thời gian: ${java.util.Date()}</small></p>
-                        </body></html>
-                    """.trimIndent()
+                    to = to,
+                    subject = "🧪 Test từ AIChatVN2",
+                    body = "<p>Email test thành công từ AIChatVN2.</p>",
+                    imageBytes = null
                 )
                 when (result) {
-                    is PluginResult.Success -> 
-                        "✅ ${(result.data as? Map<*, *>)?.get("message") ?: "Gửi thành công tới $to"}"
-                    is PluginResult.Failure -> 
-                        "❌ ${result.error}"
-                    else -> "❌ Gửi email thất bại"
+                    is PluginResult.Success -> "✅ Email đã gửi tới $to"
+                    is PluginResult.Failure -> "❌ Lỗi: ${result.error}"
+                    else -> "❌ Không xác định"
                 }
             } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Test email error: ${e.message}", e)
-                "❌ Gửi email thất bại: ${e.message}"
+                "❌ Exception: ${e.message}"
             }
         }
     }
 
-    // ─── Export Settings ─────────────────────────────────────────────────────
-    // ✅ v2: export CẢ DataStore settings VÀ toàn bộ dữ liệu cấu hình trong Room DB
-    // (schedules, cameras, customer_settings, customers, tuya_devices, qa_data).
-    // KHÔNG export chat_messages/alerts vì đó là lịch sử phát sinh liên tục,
-    // không phải cấu hình cần khôi phục khi setup máy mới.
+    // ─── Test Tuya ────────────────────────────────────────────────────────────
+    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                val devices = tuyaManager.fetchDevicesFromCloud(clientId, clientSecret)
+                if (devices != null) "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
+                else "❌ Không thể kết nối Tuya (null response)"
+            } catch (e: Exception) {
+                "❌ Lỗi Tuya: ${e.message}"
+            }
+        }
+    }
 
+    // ─── Export ───────────────────────────────────────────────────────────────
     suspend fun exportSettings(context: Context): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -283,49 +268,48 @@ class SettingsViewModel @Inject constructor(
                 val gson = Gson()
 
                 val settingsJson = JSONObject().apply {
-                    put("groq_api_key", prefs[GROQ_API_KEY] ?: "")
-                    put("resend_api_key", prefs[RESEND_API_KEY] ?: "")
-                    put("resend_sender", prefs[RESEND_SENDER] ?: "")
-                    put("tuya_client_id", prefs[TUYA_CLIENT_ID] ?: "")
-                    put("tuya_client_secret", prefs[TUYA_CLIENT_SECRET] ?: "")
-                    put("dark_mode", prefs[DARK_MODE] ?: false)
+                    put("groq_api_key",      prefs[GROQ_API_KEY] ?: "")
+                    put("resend_api_key",    prefs[RESEND_API_KEY] ?: "")
+                    put("resend_sender",     prefs[RESEND_SENDER] ?: "")
+                    put("tuya_client_id",    prefs[TUYA_CLIENT_ID] ?: "")
+                    put("tuya_client_secret",prefs[TUYA_CLIENT_SECRET] ?: "")
+                    put("dark_mode",         prefs[DARK_MODE] ?: false)
                 }
 
-                val schedules = database.scheduleDao().getAllSchedules()
-                val cameras = database.cameraDao().getAllCameras()
-                val customers = database.customerDao().getAllCustomers()
-                val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
-                val qaList = database.qaDao().getAllQAs(username = "default_user")
-                // CustomerSettingEntity không có DAO list-all riêng -> lấy theo từng customer
+                val schedules       = database.scheduleDao().getAllSchedules()
+                val cameras         = database.cameraDao().getAllCameras()
+                val customers       = database.customerDao().getAllCustomers()
+                val tuyaDevices     = database.tuyaDeviceDao().getAllDevices()
+                val qaList          = database.qaDao().getAllQAs(username = "default_user")
                 val customerSettings = customers.mapNotNull { c ->
                     database.cameraDao().getCustomerSetting(c.id)
                 }
+                val appConfigs = configProvider.getAll()
 
                 val dataJson = JSONObject().apply {
-                    put("schedules", JSONArray(gson.toJson(schedules)))
-                    put("cameras", JSONArray(gson.toJson(cameras)))
+                    put("schedules",         JSONArray(gson.toJson(schedules)))
+                    put("cameras",           JSONArray(gson.toJson(cameras)))
                     put("customer_settings", JSONArray(gson.toJson(customerSettings)))
-                    put("customers", JSONArray(gson.toJson(customers)))
-                    put("tuya_devices", JSONArray(gson.toJson(tuyaDevices)))
-                    put("qa_data", JSONArray(gson.toJson(qaList)))
+                    put("customers",         JSONArray(gson.toJson(customers)))
+                    put("tuya_devices",      JSONArray(gson.toJson(tuyaDevices)))
+                    put("qa_data",           JSONArray(gson.toJson(qaList)))
+                    put("app_config",        JSONArray(gson.toJson(appConfigs)))
                 }
 
                 val json = JSONObject().apply {
-                    put("export_version", 2)
+                    put("export_version", 3)
                     put("exported_at", System.currentTimeMillis())
                     put("settings", settingsJson)
                     put("data", dataJson)
                 }
 
                 val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!dir.exists()) {
-                    dir.mkdirs()
-                }
+                if (!dir.exists()) dir.mkdirs()
                 val file = File(dir, "aichatvn_settings_${System.currentTimeMillis()}.json")
                 file.writeText(json.toString(2))
 
-                val total = schedules.size + cameras.size + customers.size + tuyaDevices.size + qaList.size
-                _exportResult.value = "✅ Đã lưu ($total bản ghi dữ liệu): ${file.absolutePath}"
+                val total = schedules.size + cameras.size + customers.size + tuyaDevices.size + qaList.size + appConfigs.size
+                _exportResult.value = "✅ Đã lưu ($total bản ghi): ${file.absolutePath}"
                 file.absolutePath
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Export error: ${e.message}", e)
@@ -335,93 +319,81 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ─── Import Settings ─────────────────────────────────────────────────────
-    // ✅ v2: import lại CẢ DataStore settings VÀ dữ liệu DB nếu file export có
-    // chứa "data" (file export cũ chỉ có settings vẫn import được bình thường,
-    // chỉ là không có gì để khôi phục ở phần data).
-    // Ghi đè theo PRIMARY KEY (REPLACE) -> dữ liệu trùng id sẽ được cập nhật,
-    // dữ liệu khác id được giữ nguyên (merge), không xoá sạch DB hiện tại trước khi import.
-
+    // ─── Import ───────────────────────────────────────────────────────────────
     suspend fun importSettings(context: Context, jsonString: String): String {
         return withContext(Dispatchers.IO) {
             try {
                 val json = JSONObject(jsonString)
                 val gson = Gson()
-
-                // Hỗ trợ cả format cũ (field settings ở top-level) và format mới (lồng trong "settings")
                 val settingsJson = json.optJSONObject("settings") ?: json
 
-                val groqKey = settingsJson.optString("groq_api_key", "")
-                val resendKey = settingsJson.optString("resend_api_key", "")
-                val resendSender = settingsJson.optString("resend_sender", "")
-                val tuyaClientId = settingsJson.optString("tuya_client_id", "")
-                val tuyaClientSecret = settingsJson.optString("tuya_client_secret", "")
-                val darkMode = settingsJson.optBoolean("dark_mode", false)
+                val groqKey         = settingsJson.optString("groq_api_key", "")
+                val resendKey       = settingsJson.optString("resend_api_key", "")
+                val resendSenderVal = settingsJson.optString("resend_sender", "")
+                val tuyaClientIdVal = settingsJson.optString("tuya_client_id", "")
+                val tuyaSecretVal   = settingsJson.optString("tuya_client_secret", "")
+                val darkModeVal     = settingsJson.optBoolean("dark_mode", false)
 
                 context.dataStore.edit { prefs ->
-                    if (groqKey.isNotEmpty()) prefs[GROQ_API_KEY] = groqKey
-                    if (resendKey.isNotEmpty()) prefs[RESEND_API_KEY] = resendKey
-                    if (resendSender.isNotEmpty()) prefs[RESEND_SENDER] = resendSender
-                    if (tuyaClientId.isNotEmpty()) prefs[TUYA_CLIENT_ID] = tuyaClientId
-                    if (tuyaClientSecret.isNotEmpty()) prefs[TUYA_CLIENT_SECRET] = tuyaClientSecret
-                    prefs[DARK_MODE] = darkMode
+                    if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]       = groqKey
+                    if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY]     = resendKey
+                    if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]      = resendSenderVal
+                    if (tuyaClientIdVal.isNotEmpty()) prefs[TUYA_CLIENT_ID]     = tuyaClientIdVal
+                    if (tuyaSecretVal.isNotEmpty())   prefs[TUYA_CLIENT_SECRET] = tuyaSecretVal
+                    prefs[DARK_MODE] = darkModeVal
                 }
-
-                _tuyaClientId.value = tuyaClientId
-                _tuyaClientSecret.value = tuyaClientSecret
+                _tuyaClientId.value = tuyaClientIdVal
+                _tuyaClientSecret.value = tuyaSecretVal
 
                 var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
                 if (dataJson != null) {
                     dataJson.optJSONArray("customers")?.let { arr ->
-                        val type = object : TypeToken<List<CustomerEntity>>() {}.type
-                        val list: List<CustomerEntity> = gson.fromJson(arr.toString(), type)
+                        val list: List<CustomerEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CustomerEntity>>() {}.type)
                         list.forEach { database.customerDao().insertCustomer(it) }
                         restoredCount += list.size
                     }
                     dataJson.optJSONArray("cameras")?.let { arr ->
-                        val type = object : TypeToken<List<CameraConfigEntity>>() {}.type
-                        val list: List<CameraConfigEntity> = gson.fromJson(arr.toString(), type)
+                        val list: List<CameraConfigEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CameraConfigEntity>>() {}.type)
                         list.forEach { database.cameraDao().insertCamera(it) }
                         restoredCount += list.size
                     }
                     dataJson.optJSONArray("customer_settings")?.let { arr ->
-                        val type = object : TypeToken<List<CustomerSettingEntity>>() {}.type
-                        val list: List<CustomerSettingEntity> = gson.fromJson(arr.toString(), type)
+                        val list: List<CustomerSettingEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CustomerSettingEntity>>() {}.type)
                         list.forEach { database.cameraDao().insertCustomerSetting(it) }
                         restoredCount += list.size
                     }
                     dataJson.optJSONArray("schedules")?.let { arr ->
-                        val type = object : TypeToken<List<ScheduleEntity>>() {}.type
-                        val list: List<ScheduleEntity> = gson.fromJson(arr.toString(), type)
+                        val list: List<ScheduleEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<ScheduleEntity>>() {}.type)
                         list.forEach { database.scheduleDao().insertSchedule(it) }
                         restoredCount += list.size
                     }
                     dataJson.optJSONArray("tuya_devices")?.let { arr ->
-                        val type = object : TypeToken<List<TuyaDeviceEntity>>() {}.type
-                        val list: List<TuyaDeviceEntity> = gson.fromJson(arr.toString(), type)
+                        val list: List<TuyaDeviceEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<TuyaDeviceEntity>>() {}.type)
                         database.tuyaDeviceDao().insertAllDevices(list)
                         restoredCount += list.size
                     }
                     dataJson.optJSONArray("qa_data")?.let { arr ->
-                        val type = object : TypeToken<List<QAEntity>>() {}.type
-                        val list: List<QAEntity> = gson.fromJson(arr.toString(), type)
+                        val list: List<QAEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<QAEntity>>() {}.type)
                         list.forEach { database.qaDao().insertQA(it) }
+                        restoredCount += list.size
+                    }
+                    // ✅ Import app_config (chỉ ghi nếu có trong file export)
+                    dataJson.optJSONArray("app_config")?.let { arr ->
+                        val list: List<AppConfigEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<AppConfigEntity>>() {}.type)
+                        list.forEach { configProvider.upsert(it) }
                         restoredCount += list.size
                     }
                 }
 
-                // ✅ Kick lại lịch ngay sau khi import schedules, để các lịch khôi phục
-                // chạy đúng theo lastRunAt/interval mới mà không phải chờ chu kỳ check 5 phút.
                 if (dataJson?.has("schedules") == true) {
                     com.aichatvn.agent.scheduler.TaskScheduler.runNow(context)
                 }
 
                 val message = if (restoredCount > 0)
-                    "✅ Import thành công! Đã khôi phục $restoredCount bản ghi dữ liệu."
+                    "✅ Import thành công! Đã khôi phục $restoredCount bản ghi."
                 else
-                    "✅ Import thành công! (file chỉ chứa settings, không có dữ liệu DB)"
-
+                    "✅ Import thành công! (chỉ có settings, không có dữ liệu DB)"
                 _importResult.value = message
                 message
             } catch (e: Exception) {
@@ -430,10 +402,6 @@ class SettingsViewModel @Inject constructor(
                 "❌ Lỗi: ${e.message}"
             }
         }
-    }
-
-    fun clearExportResult() {
-        _exportResult.value = null
     }
 
     override fun onCleared() {

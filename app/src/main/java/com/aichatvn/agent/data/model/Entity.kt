@@ -136,3 +136,27 @@ data class ScheduleEntity(
     val lastRunAt: Long = 0L,
     val createdAt: Long
 )
+// ==================== APP CONFIG ====================
+
+/**
+ * Bảng key-value lưu tất cả cấu hình của các plugin.
+ *
+ * key         : định danh duy nhất, dạng "pluginId.paramName" (vd "camera.cooldownMs")
+ * value       : giá trị dưới dạng String (mọi kiểu đều serialise về String)
+ * type        : "string" | "int" | "long" | "boolean" | "float"
+ * pluginId    : plugin sở hữu tham số (dùng để nhóm trên UI, vd "camera", "groq")
+ * label       : tên hiển thị ngắn gọn (vd "Cooldown (ms)")
+ * description : mô tả mục đích, hiện bên dưới label trên UI Settings
+ * updatedAt   : timestamp lần sửa gần nhất (millis)
+ */
+@Entity(tableName = "app_config")
+data class AppConfigEntity(
+    @PrimaryKey
+    val key: String,
+    val value: String,
+    val type: String = "string",   // string | int | long | boolean | float
+    val pluginId: String = "global",
+    val label: String = "",
+    val description: String = "",
+    val updatedAt: Long = System.currentTimeMillis()
+)

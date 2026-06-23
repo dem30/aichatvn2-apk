@@ -4,6 +4,7 @@ import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -71,6 +72,18 @@ object AppModule {
     @IntoSet
     @Singleton
     fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill
+
+    @Provides
+    @Singleton
+    fun provideAppConfigProvider(
+        @ApplicationContext context: Context,
+        logger: Logger
+    ): AppConfigProvider = AppConfigProvider(context, logger)
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
 
     // ===== AGENT KERNEL =====
     // ✅ Đã bỏ localRouterEngine: AgentKernel giờ định tuyến hoàn toàn qua Groq

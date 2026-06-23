@@ -249,6 +249,33 @@ interface ScheduleDao {
     suspend fun toggleSchedule(id: String, enabled: Int)
 }
 
+
+// ==================== APP CONFIG DAO ====================
+
+@Dao
+interface AppConfigDao {
+    @Query("SELECT * FROM app_config ORDER BY pluginId ASC, key ASC")
+    fun getAllConfigsFlow(): Flow<List<AppConfigEntity>>
+
+    @Query("SELECT * FROM app_config WHERE pluginId = :pluginId ORDER BY key ASC")
+    fun getConfigsByPluginFlow(pluginId: String): Flow<List<AppConfigEntity>>
+
+    @Query("SELECT * FROM app_config WHERE key = :key")
+    suspend fun getConfig(key: String): AppConfigEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(config: AppConfigEntity)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(config: AppConfigEntity)
+
+    @Query("DELETE FROM app_config WHERE key = :key")
+    suspend fun delete(key: String)
+
+    @Query("SELECT * FROM app_config ORDER BY pluginId ASC, key ASC")
+    suspend fun getAll(): List<AppConfigEntity>
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -260,9 +287,10 @@ interface ScheduleDao {
         AlertEntity::class,
         ScheduleEntity::class,
         TuyaDeviceEntity::class,
+        AppConfigEntity::class,
         CustomerEntity::class
     ],
-    version = 7,
+    version = 8,
 
     exportSchema = false
 )
@@ -276,6 +304,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun scheduleDao(): ScheduleDao
     abstract fun tuyaDeviceDao(): TuyaDeviceDao
     abstract fun customerDao(): CustomerDao
+    abstract fun appConfigDao(): AppConfigDao
 
     companion object {
         @Volatile
@@ -360,6 +389,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+
+        // MIGRATION 7 -> 8: thêm bảng app_config (key-value store cho plugin config)
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `app_config` (
+                        `key` TEXT NOT NULL,
+                        `value` TEXT NOT NULL,
+                        `type` TEXT NOT NULL DEFAULT 'string',
+                        `pluginId` TEXT NOT NULL DEFAULT 'global',
+                        `label` TEXT NOT NULL DEFAULT '',
+                        `description` TEXT NOT NULL DEFAULT '',
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`key`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_app_config_pluginId` ON `app_config` (`pluginId`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -367,7 +416,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .build()
                 INSTANCE = instance
                 instance
