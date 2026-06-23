@@ -3,7 +3,6 @@ package com.aichatvn.agent
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
-import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -28,44 +27,47 @@ class MainActivity : ComponentActivity() {
     lateinit var logger: com.aichatvn.agent.utils.Logger
 
     @OptIn(ExperimentalPermissionsApi::class)
-override fun onCreate(savedInstanceState: Bundle?) {
-    installSplashScreen()
-    enableEdgeToEdge()
-    super.onCreate(savedInstanceState)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
 
-    logger.i("MainActivity", "🚀 App khởi động - v3")
+        logger.i("MainActivity", "🚀 App khởi động - v3")
 
-    setContent {
-        // ✅ Xin CAMERA + POST_NOTIFICATIONS + LOCATION
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            listOf(
-                Manifest.permission.CAMERA,
-                Manifest.permission.POST_NOTIFICATIONS,
-                Manifest.permission.ACCESS_FINE_LOCATION,      // ← Thêm
-                Manifest.permission.ACCESS_COARSE_LOCATION     // ← Thêm
-            )
-        } else {
-            listOf(
-                Manifest.permission.CAMERA,
-                Manifest.permission.ACCESS_FINE_LOCATION,      // ← Thêm
-                Manifest.permission.ACCESS_COARSE_LOCATION     // ← Thêm
-            )
-        }
+        // ✅ TaskScheduler đã được khởi động trong MainApplication.onCreate()
 
-        val permissionState = rememberMultiplePermissionsState(permissions)
-
-        LaunchedEffect(Unit) {
-            if (!permissionState.allPermissionsGranted) {
-                permissionState.launchMultiplePermissionRequest()
+        setContent {
+            // ✅ Xin CAMERA + POST_NOTIFICATIONS + LOCATION
+            val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                listOf(
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            } else {
+                listOf(
+                    Manifest.permission.CAMERA,
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
             }
-        }
 
-        val darkMode by dataStore.data
-            .map { it[booleanPreferencesKey("dark_mode")] ?: false }
-            .collectAsState(initial = false)
+            val permissionState = rememberMultiplePermissionsState(permissions)
 
-        AIChatVN2Theme(darkTheme = darkMode) {
-            AppNavigator()
+            LaunchedEffect(Unit) {
+                if (!permissionState.allPermissionsGranted) {
+                    permissionState.launchMultiplePermissionRequest()
+                }
+            }
+
+            val darkMode by dataStore.data
+                .map { it[booleanPreferencesKey("dark_mode")] ?: false }
+                .collectAsState(initial = false)
+
+            AIChatVN2Theme(darkTheme = darkMode) {
+                AppNavigator()
+            }
         }
     }
 }
