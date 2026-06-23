@@ -425,7 +425,7 @@ private fun ConfigItemRow(
             }
         }
         Text(
-            "Loại: ${entity.type}  •  Sửa lần cuối: ${formatTimestamp(entity.updatedAt)}",
+            "Loại: ${entity.type}  •  Sửa lần cuối: ${fmtTs(entity.updatedAt)}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
         )
@@ -500,7 +500,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                         Text(entry.caller, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = callerColor)
                     }
                 }
-                Text(formatTimestamp(entry.sentAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                Text(fmtTs(entry.sentAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
             }
             Spacer(Modifier.height(2.dp))
             Text(
@@ -527,7 +527,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
 
 // ─────────────────────────── Helpers ─────────────────────────────────────────
 
-private fun formatTimestamp(millis: Long): String {
+private fun fmtTs(millis: Long): String {
     if (millis <= 0) return "—"
     return SimpleDateFormat("HH:mm:ss dd/MM", Locale.getDefault()).format(Date(millis))
 }

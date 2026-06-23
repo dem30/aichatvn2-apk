@@ -248,17 +248,22 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ─── Test Tuya ────────────────────────────────────────────────────────────
-    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
-        return withContext(Dispatchers.IO) {
-            try {
-                val devices = tuyaManager.fetchDevicesFromCloud(clientId, clientSecret)
-                if (devices != null) "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
-                else "❌ Không thể kết nối Tuya (null response)"
-            } catch (e: Exception) {
-                "❌ Lỗi Tuya: ${e.message}"
+    // THÀNH:
+suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
+    return withContext(Dispatchers.IO) {
+        try {
+            // Save credentials trước để TuyaManager đọc từ DataStore
+            context.dataStore.edit { prefs ->
+                prefs[TUYA_CLIENT_ID] = clientId.trim()
+                prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
             }
+            val devices = tuyaManager.scanDevices()
+            "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
+        } catch (e: Exception) {
+            "❌ Lỗi Tuya: ${e.message}"
         }
     }
+}
 
     // ─── Export ───────────────────────────────────────────────────────────────
     suspend fun exportSettings(context: Context): String {
