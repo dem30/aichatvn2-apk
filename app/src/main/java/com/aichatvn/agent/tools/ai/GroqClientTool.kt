@@ -38,27 +38,60 @@ data class GroqRateLimitInfo(
 /**
  * Một entry trong log prompt gần nhất.
  *
- * caller  : "chat" | "routeIntent" | "analyzeImage"
- * model   : tên model Groq thực tế đã dùng
- * prompt  : nội dung prompt (message user gửi lên, đã trim; system context được gộp vào nếu có)
- * sentAt  : epoch millis khi gửi request
+ * id               : id duy nhất, dùng để cập nhật entry sau khi có response (token usage)
+ * caller           : "chat" | "routeIntent" | "analyzeImage"
+ * model            : tên model Groq thực tế đã dùng
+ * prompt           : TOÀN BỘ nội dung request body gửi lên Groq (system + history + user,
+ *                     đã pretty-print JSON; ảnh base64 được rút gọn thành placeholder để
+ *                     không phình bộ nhớ — không ảnh hưởng việc đếm token text)
+ * response         : nội dung Groq trả về (null nếu request đang chờ / lỗi trước khi có response)
+ * promptTokens     : usage.prompt_tokens từ response Groq (null nếu chưa có / request lỗi)
+ * completionTokens : usage.completion_tokens từ response Groq
+ * totalTokens      : usage.total_tokens từ response Groq
+ * sentAt           : epoch millis khi gửi request
  */
 data class PromptLogEntry(
+    val id: String = java.util.UUID.randomUUID().toString(),
     val caller: String,
     val model: String,
     val prompt: String,
+    val response: String? = null,
+    val promptTokens: Int? = null,
+    val completionTokens: Int? = null,
+    val totalTokens: Int? = null,
     val sentAt: Long = System.currentTimeMillis()
+)
+
+/** Usage token parse từ response Groq (chuẩn OpenAI-compatible: usage.{prompt,completion,total}_tokens) */
+private data class GroqUsage(
+    val promptTokens: Int? = null,
+    val completionTokens: Int? = null,
+    val totalTokens: Int? = null
+)
+
+/** Kết quả parse response Groq: text đã làm sạch + usage token (nếu có) */
+private data class GroqParsedResponse(
+    val text: String,
+    val usage: GroqUsage?
 )
 
 // ─────────────────────────── TOOL ────────────────────────────────────
 
 /**
- * GroqClientTool v4
+ * GroqClientTool v5
+ *
+ * Thay đổi so với v4:
+ *  - PromptLogEntry giờ lưu TOÀN BỘ request body (system + history + qa_facts + input,
+ *    không còn cắt ở 2000 ký tự) để người dùng kiểm soát chính xác token mỗi request.
+ *  - Thêm response + promptTokens/completionTokens/totalTokens (từ usage.* trong response
+ *    Groq) — log được cập nhật (update theo id) sau khi nhận response, không chỉ log
+ *    trước khi gửi như trước.
+ *  - Tăng PROMPT_LOG_SIZE 5 → 10 để chắc chắn luôn giữ được ít nhất 5 request gần nhất,
+ *    bất kể là lệnh điều khiển (routeIntent) hay chat thường (chat/analyzeImage).
  *
  * Thay đổi so với v3:
  *  - Inject AppConfigProvider để đọc model / max_tokens động từ DB thay vì hardcode.
- *  - Thêm _promptLog: StateFlow<List<PromptLogEntry>> — lưu 5 prompt gần nhất
- *    (chat + routeIntent + analyzeImage), dùng cho UI Settings hiển thị debug.
+ *  - Thêm _promptLog: StateFlow<List<PromptLogEntry>> dùng cho UI Settings hiển thị debug.
  *  - Các model/token constants cũ giữ lại làm FALLBACK nếu DB chưa có giá trị.
  */
 @Singleton
@@ -87,7 +120,14 @@ class GroqClientTool @Inject constructor(
             DEFAULT_MODEL_TEXT, DEFAULT_MODEL_VISION, DEFAULT_MODEL_ROUTER
         )
 
-        private const val PROMPT_LOG_SIZE = 5
+        // Giữ tối thiểu 5 request gần nhất theo yêu cầu; để dư 10 cho an toàn
+        // (1 lượt chat có thể sinh ra 2 request: routeIntent + chat thường).
+        private const val PROMPT_LOG_SIZE = 10
+
+        // Cap an toàn để tránh 1 request bất thường (vd lịch sử quá dài) làm phình
+        // StateFlow trong bộ nhớ / treo UI Compose. Trong điều kiện bình thường,
+        // request sẽ KHÔNG bị cắt — cap này chỉ là lưới an toàn cuối.
+        private const val PROMPT_LOG_MAX_CHARS = 20_000
     }
 
     private val client = OkHttpClient.Builder()
@@ -110,19 +150,110 @@ class GroqClientTool @Inject constructor(
     private val _routerRateLimitInfo = MutableStateFlow(_rateLimitByModel.value[DEFAULT_MODEL_ROUTER])
     val routerRateLimitInfo: StateFlow<GroqRateLimitInfo?> = _routerRateLimitInfo.asStateFlow()
 
-    // ── Prompt log (5 entries gần nhất) ───────────────────────────────
+    // ── Prompt log (≥5 entries gần nhất, kèm response + token usage) ──
     private val _promptLog = MutableStateFlow<List<PromptLogEntry>>(emptyList())
     /**
-     * StateFlow chứa tối đa 5 prompt gần nhất gửi đến Groq.
-     * UI Settings bind trực tiếp để hiển thị debug box.
+     * StateFlow chứa tối đa PROMPT_LOG_SIZE request gần nhất gửi đến Groq
+     * (chat + routeIntent + analyzeImage — không phân biệt loại).
+     * UI Settings bind trực tiếp để hiển thị debug box: toàn bộ nội dung gửi đi
+     * + nội dung trả về + số token (prompt/completion/total) của mỗi request.
      */
     val promptLog: StateFlow<List<PromptLogEntry>> = _promptLog.asStateFlow()
 
-    private fun logPrompt(caller: String, model: String, prompt: String) {
-        val entry = PromptLogEntry(caller = caller, model = model, prompt = prompt.take(2000))
+    /**
+     * Log prompt NGAY khi gửi request (trước khi có response) — để vẫn thấy được
+     * request trong log dù sau đó network lỗi / timeout. Trả về id để update lại
+     * entry này với response + token usage khi nhận được kết quả.
+     */
+    private fun logPrompt(caller: String, model: String, prompt: String): String {
+        val entry = PromptLogEntry(
+            caller = caller,
+            model = model,
+            prompt = prompt.take(PROMPT_LOG_MAX_CHARS)
+        )
         val current = _promptLog.value.toMutableList()
         current.add(0, entry)
         _promptLog.value = current.take(PROMPT_LOG_SIZE)
+        return entry.id
+    }
+
+    /** Cập nhật entry đã log trước đó (theo id) với response + token usage thực tế. */
+    private fun updatePromptLogResult(id: String, responseText: String?, usage: GroqUsage?) {
+        val current = _promptLog.value.toMutableList()
+        val idx = current.indexOfFirst { it.id == id }
+        if (idx == -1) return
+        current[idx] = current[idx].copy(
+            response = responseText?.take(PROMPT_LOG_MAX_CHARS),
+            promptTokens = usage?.promptTokens,
+            completionTokens = usage?.completionTokens,
+            totalTokens = usage?.totalTokens
+        )
+        _promptLog.value = current
+    }
+
+    /** Parse usage.{prompt,completion,total}_tokens (chuẩn OpenAI-compatible) từ response body Groq. */
+    private fun parseUsage(bodyStr: String): GroqUsage? = try {
+        val usageObj = JSONObject(bodyStr).optJSONObject("usage")
+        if (usageObj == null) null
+        else GroqUsage(
+            promptTokens = if (usageObj.has("prompt_tokens")) usageObj.optInt("prompt_tokens") else null,
+            completionTokens = if (usageObj.has("completion_tokens")) usageObj.optInt("completion_tokens") else null,
+            totalTokens = if (usageObj.has("total_tokens")) usageObj.optInt("total_tokens") else null
+        )
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Pretty-print TOÀN BỘ messages array sẽ gửi cho Groq (system + history + user),
+     * để hiển thị trong prompt log. Ảnh base64 trong "image_url" được rút gọn thành
+     * placeholder kích thước — base64 không phải nội dung text cần kiểm soát token,
+     * và để full sẽ làm log phình to vô ích (1 ảnh ~vài trăm KB base64).
+     */
+    private fun sanitizeMessagesForLog(messages: JSONArray): String {
+        val sanitized = JSONArray()
+        for (i in 0 until messages.length()) {
+            val msg = messages.getJSONObject(i)
+            val role = msg.optString("role")
+            val content = msg.opt("content")
+            val newMsg = JSONObject().put("role", role)
+            when (content) {
+                is JSONArray -> {
+                    val newContent = JSONArray()
+                    for (j in 0 until content.length()) {
+                        val part = content.optJSONObject(j) ?: continue
+                        if (part.optString("type") == "image_url") {
+                            val url = part.optJSONObject("image_url")?.optString("url") ?: ""
+                            val sizeKb = url.length / 1024
+                            newContent.put(JSONObject().apply {
+                                put("type", "image_url")
+                                put("image_url", "[base64 image omitted, ~${sizeKb}KB]")
+                            })
+                        } else {
+                            newContent.put(part)
+                        }
+                    }
+                    newMsg.put("content", newContent)
+                }
+                else -> newMsg.put("content", content ?: "")
+            }
+            sanitized.put(newMsg)
+        }
+        return try {
+            sanitized.toString(2)
+        } catch (e: Exception) {
+            sanitized.toString()
+        }
+    }
+
+    /** Build chuỗi log cho TOÀN BỘ request body (model + messages + max_tokens...). */
+    private fun requestBodyForLog(model: String, messages: JSONArray, extra: Map<String, Any?> = emptyMap()): String {
+        return buildString {
+            append("model: $model\n")
+            extra.forEach { (k, v) -> if (v != null) append("$k: $v\n") }
+            append("messages:\n")
+            append(sanitizeMessagesForLog(messages))
+        }
     }
 
     // ── SharedPrefs listener (multi-instance sync) ─────────────────────
@@ -297,8 +428,13 @@ class GroqClientTool @Inject constructor(
                 put("content", userContent)
             })
 
-            // Log prompt
-            logPrompt("chat", model, if (extraContext.isNotBlank()) "[system] $extraContext\n[user] $message" else message)
+            // Log TOÀN BỘ request (model + max_tokens + messages đầy đủ system/history/user)
+            // trước khi gửi — id dùng để update lại với response + token usage sau.
+            val logId = logPrompt(
+                "chat",
+                model,
+                requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens))
+            )
 
             val body = JSONObject().apply {
                 put("model", model)
@@ -316,7 +452,9 @@ class GroqClientTool @Inject constructor(
             ).execute()
 
             captureRateLimit(response, model)
-            parseResponse(response, "chat")
+            val parsed = parseResponse(response, "chat")
+            updatePromptLogResult(logId, parsed.text, parsed.usage)
+            parsed.text
 
         } catch (e: Exception) {
             logger.e("GroqClientTool", "chat error: ${e.message}", e)
@@ -333,11 +471,16 @@ class GroqClientTool @Inject constructor(
             val model     = modelRouter()
             val maxTokens = maxTokensRouter()
 
-            logPrompt("routeIntent", model, prompt)
-
             val messages = JSONArray().apply {
                 put(JSONObject().apply { put("role", "user"); put("content", prompt) })
             }
+
+            val logId = logPrompt(
+                "routeIntent",
+                model,
+                requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens, "temperature" to 0))
+            )
+
             val body = JSONObject().apply {
                 put("model", model)
                 put("messages", messages)
@@ -356,20 +499,28 @@ class GroqClientTool @Inject constructor(
 
             captureRateLimit(response, model)
             val bodyStr = response.body?.string() ?: ""
+            val usage = parseUsage(bodyStr)
 
             if (!response.isSuccessful) {
                 logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
+                updatePromptLogResult(logId, "❌ HTTP ${response.code}", usage)
                 return@withContext SAFE_FALLBACK_INTENT
             }
-            if (bodyStr.isBlank()) return@withContext SAFE_FALLBACK_INTENT
+            if (bodyStr.isBlank()) {
+                updatePromptLogResult(logId, "❌ Empty response", usage)
+                return@withContext SAFE_FALLBACK_INTENT
+            }
 
-            JSONObject(bodyStr)
+            val resultText = JSONObject(bodyStr)
                 .getJSONArray("choices")
                 .getJSONObject(0)
                 .getJSONObject("message")
                 .getString("content")
                 .trim()
                 .takeIf { it.isNotBlank() } ?: SAFE_FALLBACK_INTENT
+
+            updatePromptLogResult(logId, resultText, usage)
+            resultText
 
         } catch (e: Exception) {
             logger.e("GroqClientTool", "routeIntent error: ${e.message}", e)
@@ -387,8 +538,6 @@ class GroqClientTool @Inject constructor(
             val model     = modelVision()
             val maxTokens = maxTokensVision()
 
-            logPrompt("analyzeImage", model, prompt)
-
             val base64  = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
             val dataUrl = "data:image/jpeg;base64,$base64"
 
@@ -404,6 +553,13 @@ class GroqClientTool @Inject constructor(
                     })
                 })
             }
+
+            val logId = logPrompt(
+                "analyzeImage",
+                model,
+                requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens))
+            )
+
             val body = JSONObject().apply {
                 put("model", model)
                 put("messages", messages)
@@ -420,7 +576,9 @@ class GroqClientTool @Inject constructor(
             ).execute()
 
             captureRateLimit(response, model)
-            parseResponse(response, "analyzeImage")
+            val parsed = parseResponse(response, "analyzeImage")
+            updatePromptLogResult(logId, parsed.text, parsed.usage)
+            parsed.text
 
         } catch (e: Exception) {
             logger.e("GroqClientTool", "analyzeImage error: ${e.message}", e)
@@ -430,17 +588,19 @@ class GroqClientTool @Inject constructor(
 
     // ─────────────────────────── PARSE ───────────────────────────────
 
-    private fun parseResponse(response: okhttp3.Response, caller: String): String {
+    private fun parseResponse(response: okhttp3.Response, caller: String): GroqParsedResponse {
         val bodyStr = response.body?.string() ?: ""
+        val usage = parseUsage(bodyStr)
         if (!response.isSuccessful) {
             logger.e("GroqClientTool", "$caller HTTP ${response.code}: $bodyStr")
-            return when (response.code) {
+            val errText = when (response.code) {
                 401  -> "❌ Groq API key không hợp lệ (401). Kiểm tra lại key trong Settings."
                 429  -> "⚠️ Groq rate limit — thử lại sau ít phút."
                 else -> "Lỗi API: ${response.code}"
             }
+            return GroqParsedResponse(errText, usage)
         }
-        return try {
+        val text = try {
             val raw = JSONObject(bodyStr)
                 .getJSONArray("choices")
                 .getJSONObject(0)
@@ -454,5 +614,6 @@ class GroqClientTool @Inject constructor(
             logger.e("GroqClientTool", "$caller parse error: ${e.message}, body=$bodyStr")
             "Không thể đọc phản hồi từ AI."
         }
+        return GroqParsedResponse(text, usage)
     }
 }

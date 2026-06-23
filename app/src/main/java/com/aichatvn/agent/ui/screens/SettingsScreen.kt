@@ -443,7 +443,7 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text("🔍 Prompt gần nhất gửi Groq", style = MaterialTheme.typography.titleMedium)
+        Text("🔍 Request gửi Groq (kèm token)", style = MaterialTheme.typography.titleMedium)
         IconButton(onClick = { expanded = !expanded }) {
             Icon(
                 imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -454,8 +454,8 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
 
     if (!expanded) {
         Text(
-            if (promptLog.isEmpty()) "Chưa có prompt nào trong phiên này"
-            else "${promptLog.size} prompt gần nhất — bấm mũi tên để xem",
+            if (promptLog.isEmpty()) "Chưa có request nào trong phiên này"
+            else "${promptLog.size} request gần nhất (toàn bộ nội dung gửi/nhận + token) — bấm mũi tên để xem",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -464,7 +464,7 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
 
     if (promptLog.isEmpty()) {
         Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-            Text("Chưa có prompt nào. Gửi 1 tin nhắn để xem log ở đây.", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+            Text("Chưa có request nào. Gửi 1 tin nhắn để xem log ở đây.", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
         }
         return
     }
@@ -503,12 +503,33 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                 Text(fmtTs(entry.sentAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
             }
             Spacer(Modifier.height(2.dp))
-            Text(
-                entry.model,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    entry.model,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                )
+                if (entry.totalTokens != null) {
+                    Text(
+                        "• ${entry.promptTokens ?: "?"}→${entry.completionTokens ?: "?"} = ${entry.totalTokens} tokens",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Text(
+                        "• đang chờ / không có usage",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
+                }
+            }
             Spacer(Modifier.height(6.dp))
+            Text(
+                "Gửi đi:",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+            Spacer(Modifier.height(2.dp))
             val promptScrollState = rememberScrollState()
             Box(
                 modifier = Modifier
@@ -523,6 +544,30 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            if (entry.response != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Groq trả về:",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+                Spacer(Modifier.height(2.dp))
+                val responseScrollState = rememberScrollState()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                        .verticalScroll(responseScrollState)
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = entry.response,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

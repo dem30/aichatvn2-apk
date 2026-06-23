@@ -106,7 +106,7 @@ class SettingsViewModel @Inject constructor(
     /** Toàn bộ config realtime — UI bind trực tiếp */
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
 
-    /** Prompt log 5 entries gần nhất từ GroqClientTool */
+    /** Prompt log ≥5 entries gần nhất từ GroqClientTool — gồm full request + response + token usage */
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
 
     // ─── UI state cho config editing ─────────────────────────────────────────
