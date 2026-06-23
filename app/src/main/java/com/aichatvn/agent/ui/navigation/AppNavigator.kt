@@ -71,7 +71,7 @@ fun AppNavigator() {
     ) { paddingValues ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Dashboard.route,
+            startDestination = Screen.Chat.route,  // ✅ Vào thẳng Chat để voice hoạt động ngay
             modifier = Modifier.padding(paddingValues)
         ) {
             composable(Screen.Dashboard.route)   { DashboardScreen(navController) }

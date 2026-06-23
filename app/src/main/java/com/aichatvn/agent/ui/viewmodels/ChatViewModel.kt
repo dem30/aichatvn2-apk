@@ -12,11 +12,14 @@ import com.aichatvn.agent.skills.ChatSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
 import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.utils.VoiceAssistantManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -24,70 +27,140 @@ import java.util.UUID
 import javax.inject.Inject
 import android.util.Base64
 
-/**
- * ✅ UI model cho 1 chip lệnh gợi ý — text là chuỗi sẽ điền vào ô nhập khi bấm chip.
- */
 data class QuickCommand(val label: String, val text: String)
-
-/**
- * ✅ UI model cho 1 tab (= 1 plugin) trong thanh gợi ý lệnh nhanh.
- */
 data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
-    private val agentKernel: AgentKernel, // ✅ để build chip lệnh động từ danh sách plugin
-    private val groqClient: GroqClientTool, // ✅ để hiện label rate-limit token/cooldown
+    private val agentKernel: AgentKernel,
+    private val groqClient: GroqClientTool,
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
 
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
     val chatMode: StateFlow<ChatMode> = chatSkill.chatMode
-
-    /** ✅ rate-limit Groq của model CHAT (token còn lại, cooldown) — null khi chưa gọi Groq lần nào. */
     val groqRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.rateLimitInfo
-
-    /** ✅ MỚI: rate-limit Groq của model ROUTER (phân loại lệnh) — cập nhật ở MỌI tin nhắn,
-     *  kể cả khi tin nhắn đó cuối cùng là lệnh thiết bị (không gọi tới model chat). */
     val groqRouterRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.routerRateLimitInfo
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    /**
-     * ✅ MỚI: Danh sách chip lệnh gợi ý, build TỰ ĐỘNG từ Plugin.getActions() của mỗi
-     * plugin đang visibleInQuickBar (ChatSkill tự ẩn vì visibleInQuickBar=false).
-     *
-     * Không hardcode tên plugin/action ở đây -> thêm plugin mới ở AppModule là tự
-     * xuất hiện 1 tab mới, không cần sửa UI.
-     *
-     * Plugin list cố định theo vòng đời Singleton của Hilt (không đổi lúc runtime),
-     * nên build 1 lần là đủ, không cần StateFlow.
-     */
+    // ── Voice ────────────────────────────────────────────────────────────────
+
+    private val _isListening = MutableStateFlow(false)
+    val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
+
+    // true = chế độ hands-free đang bật (loop liên tục)
+    // false = đã tắt thủ công (người chăm sóc tắt hộ)
+    private val _voiceModeActive = MutableStateFlow(true)
+    val voiceModeActive: StateFlow<Boolean> = _voiceModeActive.asStateFlow()
+
+    val voiceManager: VoiceAssistantManager by lazy {
+        VoiceAssistantManager(
+            context = context,
+            onListeningStateChange = { listening -> _isListening.value = listening },
+            onTextRecognized = { text -> sendMessage(text) }
+        )
+    }
+
+    // ── Quick commands ────────────────────────────────────────────────────────
+
     val quickCommandGroups: List<QuickCommandGroup> =
         agentKernel.getAvailablePluginsForUI().map { plugin ->
             val commands = plugin.getActions().map { action ->
                 val requiredParams = action.parameters.filter { it.required }
-                val text = if (requiredParams.isEmpty()) {
-                    action.description
-                } else {
-                    // Gợi ý placeholder cho tham số bắt buộc, người dùng tự điền giá trị
-                    // thật trước khi gửi. Ví dụ: "Bật hoặc tắt camera (<customerId>, <active>)"
-                    action.description + " (" +
-                        requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
-                }
+                val text = if (requiredParams.isEmpty()) action.description
+                else action.description + " (" +
+                    requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
                 QuickCommand(label = action.name, text = text)
             }
             QuickCommandGroup(tabLabel = plugin.name, commands = commands)
         }
 
+    // ── Init ─────────────────────────────────────────────────────────────────
+
     init {
         viewModelScope.launch {
             chatSkill.initialize()
+            startVoiceSession()   // Khởi động voice ngay sau khi chat ready
+        }
+        observeAndSpeak()
+    }
+
+    /**
+     * Khởi động phiên voice:
+     * 1. Chờ TTS sẵn sàng (tối đa 3 giây)
+     * 2. Đọc lời chào
+     * 3. Bắt đầu lắng nghe lần đầu
+     */
+    private fun startVoiceSession() {
+        viewModelScope.launch {
+            // Chờ TTS init xong — dùng while thay vì repeat để thoát đúng
+            var waited = 0
+            while (!voiceManager.ttsHelper.isReady && waited < 3000) {
+                delay(100)
+                waited += 100
+            }
+            if (!_voiceModeActive.value) return@launch
+
+            if (voiceManager.ttsHelper.isReady) {
+                voiceManager.ttsHelper.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
+                    if (_voiceModeActive.value) voiceManager.startListening()
+                }
+            } else {
+                // TTS chưa sẵn sàng sau 3 giây → bắt đầu nghe luôn, không chào
+                voiceManager.startListening()
+            }
         }
     }
+
+    /**
+     * Observe messages: khi AI trả lời xong → TTS đọc to → startListening() lại.
+     * Đây là vòng lặp hands-free chính.
+     *
+     * drop(1): bỏ qua emit đầu tiên (tin nhắn cũ load từ DB).
+     */
+    private fun observeAndSpeak() {
+        viewModelScope.launch {
+            messages.drop(1).collect { msgs ->
+                val last = msgs.lastOrNull() ?: return@collect
+                if (last.role != "assistant") return@collect
+                if (!_voiceModeActive.value) return@collect
+
+                val tts = voiceManager.ttsHelper
+                if (!tts.isReady) return@collect
+
+                tts.speak(last.content) {
+                    // TTS đọc xong → startListening() lại để tiếp tục loop
+                    // VoiceAssistantManager tự xử lý silence/error restart
+                    // nên ở đây chỉ cần gọi khi voiceMode còn bật
+                    if (_voiceModeActive.value) {
+                        viewModelScope.launch {
+                            delay(300)
+                            voiceManager.startListening()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Voice controls (cho nút toggle trên UI, người chăm sóc dùng) ─────────
+
+    fun toggleVoiceMode() {
+        val next = !_voiceModeActive.value
+        _voiceModeActive.value = next
+        if (next) {
+            voiceManager.startListening()
+        } else {
+            voiceManager.stopListening()
+            voiceManager.ttsHelper.stop()
+        }
+    }
+
+    // ── Chat actions ──────────────────────────────────────────────────────────
 
     fun setChatMode(mode: ChatMode) {
         chatSkill.setChatMode(mode)
@@ -126,7 +199,6 @@ class ChatViewModel @Inject constructor(
                 else -> message
             }
 
-            // ✅ LUÔN gọi ChatSkill - ChatSkill tự routing
             val response = chatSkill.processQuery(
                 message = userMessageContent,
                 username = "default_user",
@@ -145,6 +217,15 @@ class ChatViewModel @Inject constructor(
     fun clearHistory() {
         viewModelScope.launch {
             chatSkill.clearHistory("default_user")
+        }
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    override fun onCleared() {
+        super.onCleared()
+        if (::voiceManager.isInitialized) {
+            voiceManager.destroy()
         }
     }
 }

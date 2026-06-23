@@ -31,30 +31,31 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-
         logger.i("MainActivity", "🚀 App khởi động - v3")
 
-        // ✅ TaskScheduler đã được khởi động trong MainApplication.onCreate()
-
         setContent {
-            // ✅ Xin CAMERA + POST_NOTIFICATIONS + LOCATION
+            // ✅ Danh sách quyền — RECORD_AUDIO thêm vào đây, không dùng ActivityCompat riêng
             val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 listOf(
                     Manifest.permission.CAMERA,
                     Manifest.permission.POST_NOTIFICATIONS,
                     Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.RECORD_AUDIO
                 )
             } else {
                 listOf(
                     Manifest.permission.CAMERA,
                     Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.RECORD_AUDIO
                 )
             }
 
             val permissionState = rememberMultiplePermissionsState(permissions)
 
+            // ✅ Chỉ dùng 1 cách xin quyền duy nhất: Accompanist (Compose-native)
+            // Không dùng ActivityCompat.requestPermissions() — gọi 2 cách cùng lúc gây conflict
             LaunchedEffect(Unit) {
                 if (!permissionState.allPermissionsGranted) {
                     permissionState.launchMultiplePermissionRequest()

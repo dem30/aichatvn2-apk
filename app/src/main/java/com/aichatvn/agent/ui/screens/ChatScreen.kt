@@ -36,6 +36,7 @@ import com.aichatvn.agent.ui.viewmodels.QuickCommandGroup
 import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+// Icons.Default.Mic / MicOff có sẵn trong material-icons-extended
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,6 +50,8 @@ fun ChatScreen(
     val chatMode by viewModel.chatMode.collectAsState()
     val groqRateLimit by viewModel.groqRateLimit.collectAsState()
     val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
+    val isListening by viewModel.isListening.collectAsState()         // ✅ Mic đang bật?
+    val voiceModeActive by viewModel.voiceModeActive.collectAsState() // ✅ Hands-free bật?
     
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
@@ -184,6 +187,41 @@ fun ChatScreen(
             )
         }
         
+        // ✅ Banner trạng thái voice — người chăm sóc thấy rõ mic đang ở trạng thái nào
+        Surface(
+            modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+            color = when {
+                isListening -> MaterialTheme.colorScheme.errorContainer
+                voiceModeActive -> MaterialTheme.colorScheme.tertiaryContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+        ) {
+            Row(
+                modifier = androidx.compose.ui.Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = when {
+                        isListening -> "🎙️ Đang nghe..."
+                        voiceModeActive -> "✅ Hands-free bật — đang chờ"
+                        else -> "🔇 Hands-free tắt"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                // Nút toggle cho người chăm sóc — không ảnh hưởng người dùng chính
+                TextButton(onClick = { viewModel.toggleVoiceMode() }) {
+                    Text(
+                        text = if (voiceModeActive) "Tắt mic" else "Bật mic",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -280,7 +318,24 @@ fun ChatScreen(
             ) {
                 Icon(Icons.Default.Image, contentDescription = "Chọn ảnh")
             }
-            
+
+            // ✅ Nút Mic: toggle hands-free on/off — dành cho người chăm sóc hoặc
+            // trường hợp người dùng muốn dừng. Đổi màu rõ ràng theo trạng thái.
+            IconButton(
+                onClick = { viewModel.toggleVoiceMode() },
+                enabled = !isLoading
+            ) {
+                Icon(
+                    imageVector = if (voiceModeActive) Icons.Default.MicOff else Icons.Default.Mic,
+                    contentDescription = if (voiceModeActive) "Tắt hands-free" else "Bật hands-free",
+                    tint = when {
+                        isListening -> MaterialTheme.colorScheme.error
+                        voiceModeActive -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+
             OutlinedTextField(
                 value = inputText,
                 onValueChange = { inputText = it },
