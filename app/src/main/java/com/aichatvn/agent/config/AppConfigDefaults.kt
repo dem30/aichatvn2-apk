@@ -53,7 +53,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MODEL_VISION,
-            value = "qwen/qwen3.6-27b",
+            value = "meta-llama/llama-4-maverick-17b-128e-instruct",
             type = "string",
             pluginId = "groq",
             label = "Model vision (phân tích ảnh)",

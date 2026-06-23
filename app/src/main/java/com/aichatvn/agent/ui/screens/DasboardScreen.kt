@@ -168,7 +168,7 @@ fun DashboardScreen(
 
             // Đi tới quản lý camera
             OutlinedButton(
-                onClick = { navController.navigate("camera") },
+                onClick = { navController.navigate("customer") },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))

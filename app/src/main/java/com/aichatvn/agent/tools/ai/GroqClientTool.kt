@@ -73,7 +73,7 @@ class GroqClientTool @Inject constructor(
 
         // Fallback — chỉ dùng khi DB chưa seed xong
         private const val DEFAULT_MODEL_TEXT    = "openai/gpt-oss-120b"
-        private const val DEFAULT_MODEL_VISION  = "qwen/qwen3.6-27b"
+        private const val DEFAULT_MODEL_VISION  = "meta-llama/llama-4-maverick-17b-128e-instruct"
         private const val DEFAULT_MODEL_ROUTER  = "openai/gpt-oss-20b"
         private const val DEFAULT_MAX_TOKENS_CHAT   = 1000
         private const val DEFAULT_MAX_TOKENS_VISION = 500
@@ -441,11 +441,14 @@ class GroqClientTool @Inject constructor(
             }
         }
         return try {
-            JSONObject(bodyStr)
+            val raw = JSONObject(bodyStr)
                 .getJSONArray("choices")
                 .getJSONObject(0)
                 .getJSONObject("message")
                 .getString("content")
+                .trim()
+            // Strip <think>...</think> — Qwen3, DeepSeek R1 và các model thinking mode
+            raw.replace(Regex("<think>[\\s\\S]*?</think>", setOf(RegexOption.IGNORE_CASE)), "")
                 .trim()
         } catch (e: Exception) {
             logger.e("GroqClientTool", "$caller parse error: ${e.message}, body=$bodyStr")
