@@ -2,28 +2,28 @@ package com.aichatvn.agent.utils
 
 import android.content.Context
 import android.os.CountDownTimer
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * VoiceAssistantManager
  *
  * Loop hands-free không bao giờ chết:
  * - Có kết quả STT → onTextRecognized() → ViewModel gọi speakResponse(aiReply)
- *   → TTS đọc xong → Manager tự startListening() lại.
- *   Vòng lặp được đóng kín bên trong Manager, KHÔNG phụ thuộc ViewModel
- *   nhớ gọi lại startListening() thủ công (đây là nguyên nhân kẹt của bản cũ).
- * - Im lặng thật (lỗi mềm: NO_MATCH/TIMEOUT) → nghe lại NGAY, không delay
- * - Lỗi thật (mạng, mic, busy...) → backoff tăng dần, có giới hạn
- * - Đang có partial result (người dùng còn nói) → watchdog được reset, không bị ngắt giữa câu
- * - Nếu ViewModel KHÔNG gọi speakResponse() (ví dụ lỗi AI), safety timer tự
- *   restart sau RESULT_NO_TTS_TIMEOUT_MS để không bao giờ bị kẹt vĩnh viễn.
+ *   → TTS đọc xong (trên main thread) → tự startListening() lại.
+ * - Im lặng (NO_MATCH/TIMEOUT) → nghe lại NGAY
+ * - Lỗi thật → backoff tăng dần
+ * - Watchdog: nếu recognizer treo → tự restart
+ * - Safety timer: nếu ViewModel quên gọi speakResponse() → tự restart sau 15s
  *
- * Luồng chuẩn:
- *   startListening()
- *     → onResult → onTextRecognized(text)     [ViewModel xử lý AI]
- *       → ViewModel gọi speakResponse(reply)  [Manager phát TTS]
- *         → TTS onDone → startListening()     [tự lặp lại]
- *
- * Chỉ dừng khi stopListening() / destroy() được gọi.
+ * Fix so với bản trước:
+ * - isListening dùng AtomicBoolean thay vì @Volatile để đảm bảo thread-safe
+ *   khi đọc+ghi đồng thời từ main thread và coroutine dispatcher.
+ * - Mọi scheduleRestart() đều chạy trên main thread (Handler mainLooper).
+ *   TextToSpeechHelper đã đảm bảo onDone về main thread — nhưng thêm
+ *   mainHandler.post() ở đây làm lớp bảo vệ thứ 2, tránh SpeechRecognizer
+ *   bị gọi từ wrong thread.
  */
 class VoiceAssistantManager(
     context: Context,
@@ -36,24 +36,26 @@ class VoiceAssistantManager(
     private val sttHelper = SpeechRecognizerHelper(context)
     val ttsHelper = TextToSpeechHelper(context)
 
-    // Watchdog: lưới an toàn khi recognizer "treo" không bắn callback nào
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var watchdogTimer: CountDownTimer? = null
-
-    // Safety timer: restart listening nếu ViewModel quên gọi speakResponse()
-    private var safetyRestartHandler: android.os.Handler? = null
-    private var safetyRestartRunnable: Runnable? = null
 
     @Volatile private var destroyed = false
     @Volatile private var hardErrorRetryCount = 0
 
-    // Guard chống startListening() chạy đồng thời 2 lần
-    @Volatile private var isListening = false
+    // AtomicBoolean: compareAndSet() đảm bảo chỉ 1 thread thắng race, không bao giờ double-start
+    private val isListening = AtomicBoolean(false)
+
+    // Safety timer
+    private var safetyRunnable: Runnable? = null
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun startListening() {
-        if (destroyed || isListening) return
-        isListening = true
+        if (destroyed) return
+        // compareAndSet(false, true): chỉ tiếp tục nếu isListening đang là false
+        // Nếu đang true (đã nghe) → return ngay, không double-start
+        if (!isListening.compareAndSet(false, true)) return
+
         onListeningStateChange(true)
 
         sttHelper.startListening(
@@ -64,30 +66,28 @@ class VoiceAssistantManager(
             onResult = { text ->
                 stopWatchdog()
                 hardErrorRetryCount = 0
-                isListening = false
+                isListening.set(false)
                 onListeningStateChange(false)
-
-                // Báo ViewModel xử lý AI. ViewModel nên gọi speakResponse() để khép vòng.
-                // Nếu quên gọi, safety timer sẽ tự restart sau RESULT_NO_TTS_TIMEOUT_MS.
+                // Báo ViewModel. ViewModel gọi speakResponse() để khép vòng.
+                // Safety timer đề phòng ViewModel quên gọi.
                 onTextRecognized(text)
                 scheduleSafetyRestart()
             },
             onSoftError = {
                 stopWatchdog()
                 hardErrorRetryCount = 0
-                isListening = false
+                isListening.set(false)
                 onListeningStateChange(false)
                 onSilence()
                 if (!destroyed) startListening()
             },
             onHardError = { reason ->
                 stopWatchdog()
-                isListening = false
+                isListening.set(false)
                 onListeningStateChange(false)
                 onListenError(reason)
                 hardErrorRetryCount = (hardErrorRetryCount + 1).coerceAtMost(MAX_HARD_ERROR_STEPS)
-                val delay = HARD_ERROR_BASE_DELAY_MS * hardErrorRetryCount
-                scheduleRestart(delayMs = delay)
+                scheduleRestart(HARD_ERROR_BASE_DELAY_MS * hardErrorRetryCount)
             }
         )
 
@@ -95,30 +95,29 @@ class VoiceAssistantManager(
     }
 
     /**
-     * ViewModel gọi hàm này để phát TTS sau khi AI trả lời.
-     * Sau khi TTS đọc xong, Manager tự startListening() lại — khép vòng lặp.
-     *
-     * Gọi hàm này sẽ huỷ safety timer (tránh startListening() bị gọi 2 lần).
+     * ViewModel gọi sau khi có câu trả lời AI.
+     * Manager phát TTS → onDone (main thread) → startListening() tự động.
      */
     fun speakResponse(text: String) {
-        cancelSafetyRestart()       // TTS tự lo restart, safety timer không cần nữa
-        ttsHelper.stop()            // huỷ TTS đang phát dở (nếu có)
+        cancelSafetyRestart()
+        ttsHelper.stop()
         if (destroyed) return
 
         if (text.isBlank()) {
-            scheduleRestart(delayMs = 300L)
+            scheduleRestart(300L)
             return
         }
 
         ttsHelper.speak(text) {
-            if (!destroyed) scheduleRestart(delayMs = 300L)
+            // TextToSpeechHelper đảm bảo callback này chạy trên main thread
+            if (!destroyed) scheduleRestart(300L)
         }
     }
 
     fun stopListening() {
         cancelSafetyRestart()
         stopWatchdog()
-        isListening = false
+        isListening.set(false)
         sttHelper.cancelListening()
         onListeningStateChange(false)
     }
@@ -127,7 +126,7 @@ class VoiceAssistantManager(
         destroyed = true
         cancelSafetyRestart()
         stopWatchdog()
-        isListening = false
+        isListening.set(false)
         sttHelper.destroy()
         ttsHelper.shutdown()
     }
@@ -139,11 +138,10 @@ class VoiceAssistantManager(
         watchdogTimer = object : CountDownTimer(WATCHDOG_TIMEOUT_MS, WATCHDOG_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
-                // Recognizer treo, không bắn callback nào → tự restart
-                isListening = false
+                isListening.set(false)
                 onListeningStateChange(false)
                 onSilence()
-                scheduleRestart(delayMs = 200L)
+                scheduleRestart(200L)
             }
         }.start()
     }
@@ -157,38 +155,27 @@ class VoiceAssistantManager(
 
     private fun scheduleRestart(delayMs: Long) {
         if (destroyed) return
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        mainHandler.postDelayed({
             if (!destroyed) startListening()
         }, delayMs)
     }
 
-    /**
-     * Safety timer: nếu sau RESULT_NO_TTS_TIMEOUT_MS mà speakResponse() chưa được gọi
-     * (ViewModel bị lỗi, hoặc quên gọi), tự restart để không kẹt vĩnh viễn.
-     */
     private fun scheduleSafetyRestart() {
         cancelSafetyRestart()
-        val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        val runnable = Runnable {
-            if (!destroyed && !isListening) startListening()
-        }
-        safetyRestartHandler = handler
-        safetyRestartRunnable = runnable
-        handler.postDelayed(runnable, RESULT_NO_TTS_TIMEOUT_MS)
+        val r = Runnable { if (!destroyed && !isListening.get()) startListening() }
+        safetyRunnable = r
+        mainHandler.postDelayed(r, RESULT_NO_TTS_TIMEOUT_MS)
     }
 
     private fun cancelSafetyRestart() {
-        safetyRestartRunnable?.let { safetyRestartHandler?.removeCallbacks(it) }
-        safetyRestartHandler = null
-        safetyRestartRunnable = null
+        safetyRunnable?.let { mainHandler.removeCallbacks(it) }
+        safetyRunnable = null
     }
 
     companion object {
-        private const val WATCHDOG_TIMEOUT_MS = 25_000L
-        private const val HARD_ERROR_BASE_DELAY_MS = 800L
-        private const val MAX_HARD_ERROR_STEPS = 5   // backoff tối đa 800ms × 5 = 4s
-
-        // Nếu sau thời gian này mà speakResponse() vẫn chưa được gọi → tự restart
-        private const val RESULT_NO_TTS_TIMEOUT_MS = 15_000L
+        private const val WATCHDOG_TIMEOUT_MS        = 25_000L
+        private const val HARD_ERROR_BASE_DELAY_MS   = 800L
+        private const val MAX_HARD_ERROR_STEPS       = 5
+        private const val RESULT_NO_TTS_TIMEOUT_MS   = 15_000L
     }
 }
