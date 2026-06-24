@@ -266,6 +266,39 @@ class ChatViewModel @Inject constructor(
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    /**
+     * Gọi từ ChatScreen khi Activity/Fragment resume (quay lại foreground).
+     *
+     * Khi app vào background, Android thu hồi audio focus và terminate SpeechRecognizer
+     * session âm thầm — không có callback báo lại. VoiceAssistantManager không biết
+     * điều này → vẫn nghĩ đang listen → loop timeout cứ restart nhưng recognizer đã chết.
+     *
+     * Fix: khi resume, destroy recognizer cũ (dù nó đã chết, destroy() an toàn) rồi
+     * startListening() lại từ đầu — tạo session hoàn toàn mới với audio focus mới.
+     */
+    fun onResume() {
+        if (!_voiceModeActive.value) return
+        // stopListening() trước để dọn sạch state cũ (timer, pending restart, recognizer chết)
+        voiceManager.stopListening()
+        // Delay nhỏ để audio system release hoàn toàn trước khi claim lại
+        viewModelScope.launch(Dispatchers.Main) {
+            delay(300)
+            if (_voiceModeActive.value) voiceManager.startListening()
+        }
+    }
+
+    /**
+     * Gọi từ ChatScreen khi Activity/Fragment pause (vào background / màn hình khác).
+     *
+     * Dừng SpeechRecognizer chủ động thay vì để Android kill nó — tránh trạng thái
+     * "nhận giọng nói nhưng không có AI xử lý" khi user đang ở app khác.
+     * TTS cũng stop để không phát âm thanh khi app không ở foreground.
+     */
+    fun onPause() {
+        voiceManager.stopListening()
+        voiceManager.ttsHelper.stop()
+    }
+
     override fun onCleared() {
         super.onCleared()
         voiceManager.destroy()

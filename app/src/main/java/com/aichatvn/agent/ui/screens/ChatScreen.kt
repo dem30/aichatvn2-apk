@@ -20,6 +20,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -90,6 +93,24 @@ fun ChatScreen(
             isTyping = false
             typingMessage = ""
         }
+    }
+
+    // ✅ FIX: Observe lifecycle để restart SpeechRecognizer khi quay lại foreground.
+    // Android kill SpeechRecognizer session âm thầm khi app vào background — không có
+    // callback báo lại → app hiện "Đang nghe" nhưng mic thật ra đã chết.
+    // onPause: dừng chủ động (tránh nhận giọng nói khi không ở foreground).
+    // onResume: tạo session mới hoàn toàn với audio focus mới.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.onResume()
+                Lifecycle.Event.ON_PAUSE  -> viewModel.onPause()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     
     Box(
