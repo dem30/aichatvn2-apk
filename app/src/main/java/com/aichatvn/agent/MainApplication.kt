@@ -7,7 +7,10 @@ import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.HiltAndroidApp
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
 
@@ -21,24 +24,23 @@ class MainApplication : Application(), Configuration.Provider {
     lateinit var logger: Logger
 
     @Inject
-    lateinit var plugins: Set<@JvmSuppressWildcards Plugin>   // ← Thêm dòng này
+    lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
+
+    // Sử dụng CoroutineScope ở cấp độ ứng dụng để tránh nghẽn luồng Main
+    private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
         logger.d("MainApplication", "App khởi động - Khởi tạo plugins")
 
-        // Khởi tạo tất cả plugins (NotificationSkill, CameraSkill, ...)
+        // Khởi tạo các plugins bất đồng bộ (Asynchronously)
         initializePlugins()
 
-        // ✅ TaskScheduler vẫn giữ nguyên
         TaskScheduler.ensureRunning(this)
     }
 
-    /**
-     * Khởi tạo tất cả plugin một lần khi app start
-     */
     private fun initializePlugins() {
-        runBlocking {
+        applicationScope.launch {
             plugins.forEach { plugin ->
                 try {
                     plugin.initialize()

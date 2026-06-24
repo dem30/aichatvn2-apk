@@ -1,31 +1,27 @@
 package com.aichatvn.agent.utils
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = null
 
+    @Volatile
     var isReady = false
         private set
 
-    // ✅ FIX #4: Trước đây mọi speak() dùng CÙNG utteranceId "ai_speak" và set lại
-    // UtteranceProgressListener mỗi lần gọi. Nếu 2 lệnh speak() xảy ra gần nhau (vd: lời
-    // chào đang đọc thì observeAndSpeak() phát hiện tin nhắn assistant khác và speak() lần
-    // nữa), QUEUE_FLUSH sẽ ngắt utterance đầu nhưng onDone của lượt đầu có thể KHÔNG được
-    // gọi → đứt vòng lặp hands-free (không tự startListening() lại được).
-    // Giờ: listener chỉ được đăng ký 1 LẦN DUY NHẤT trong onInit(), mỗi speak() dùng
-    // utteranceId riêng biệt, map callback theo id. QUEUE_FLUSH đảm bảo bất kỳ utterance nào
-    // trước đó đã bị huỷ — nên ta chủ động clear callback cũ (sẽ không bao giờ nhận được
-    // onDone) ngay khi đăng ký utterance mới, để không giữ tham chiếu treo.
     private val callbacks = mutableMapOf<String, () -> Unit>()
-    private var utteranceCounter = 0
+    private val utteranceCounter = AtomicInteger(0)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
-        tts = TextToSpeech(context, this)
+        tts = TextToSpeech(context.applicationContext, this)
     }
 
     override fun onInit(status: Int) {
@@ -51,7 +47,12 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     private fun completeCallback(utteranceId: String?) {
         if (utteranceId == null) return
         val callback = synchronized(callbacks) { callbacks.remove(utteranceId) }
-        callback?.invoke()
+        callback?.let {
+            // Đảm bảo callback chạy trên Main Thread để gọi startListening() an toàn
+            mainHandler.post {
+                it.invoke()
+            }
+        }
     }
 
     fun speak(text: String, onDone: (() -> Unit)? = null) {
@@ -59,10 +60,8 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
             onDone?.invoke()
             return
         }
-        val utteranceId = "ai_speak_${utteranceCounter++}"
+        val utteranceId = "ai_speak_${utteranceCounter.getAndIncrement()}"
         synchronized(callbacks) {
-            // QUEUE_FLUSH huỷ mọi utterance đang chờ/đang đọc trước đó — callback cũ
-            // (nếu có) sẽ không bao giờ nhận được onDone, nên dọn luôn để không treo.
             callbacks.clear()
             if (onDone != null) callbacks[utteranceId] = onDone
         }
@@ -70,12 +69,20 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     }
 
     fun stop() {
-        tts?.stop()
+        try {
+            tts?.stop()
+        } catch (e: Exception) {
+            // Bỏ qua
+        }
         synchronized(callbacks) { callbacks.clear() }
     }
 
     fun shutdown() {
-        tts?.shutdown()
+        try {
+            tts?.shutdown()
+        } catch (e: Exception) {
+            // Bỏ qua
+        }
         isReady = false
         synchronized(callbacks) { callbacks.clear() }
     }

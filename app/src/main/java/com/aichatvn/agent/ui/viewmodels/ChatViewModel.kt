@@ -1,7 +1,12 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
@@ -22,11 +27,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
-import android.util.Base64
 
 data class QuickCommand(val label: String, val text: String)
 data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
@@ -63,15 +70,22 @@ class ChatViewModel @Inject constructor(
 
     private var consecutiveRouterFailures = 0
 
-    // ✅ FIX: Khởi tạo voiceManager NGAY (không lazy) để TTS bắt đầu init sớm nhất có thể.
-    // Trước đây dùng `by lazy` → TTS chỉ bắt đầu init khi voiceManager được truy cập lần đầu,
-    // thường là trong startVoiceSession() → check isReady ngay lập tức → luôn false vì TTS
-    // init là async (callback TextToSpeech.OnInitListener) chưa kịp chạy → bỏ qua lời chào,
-    // hoặc gọi startListening() trong khi TTS chưa sẵn sàng gây xung đột audio session.
+    // Điểm tối ưu lớn nhất: Ngăn chặn gửi nhiều câu hỏi đồng thời lên AI nhờ cờ nguyên tử
+    private val isProcessingQuery = AtomicBoolean(false)
+
     val voiceManager: VoiceAssistantManager = VoiceAssistantManager(
         context = context,
         onListeningStateChange = { listening -> _isListening.value = listening },
-        onTextRecognized = { text -> sendMessage(text) }
+        onTextRecognized = { text -> sendMessage(text) },
+        onMaxSTTFailuresReached = { errorMsg ->
+            logger.e("ChatViewModel", "Ngắt luồng voice do lỗi Mic liên tiếp: $errorMsg")
+            viewModelScope.launch(Dispatchers.Main) {
+                _voiceModeActive.value = false
+                _pausedDueToError.value = true
+                voiceManager.stopListening()
+                voiceManager.ttsHelper.speak("Đã tạm dừng nhận diện giọng nói do thiết bị lỗi microphone liên tiếp. Vui lòng kiểm tra quyền truy cập hoặc micro.")
+            }
+        }
     )
 
     // ── Quick commands ────────────────────────────────────────────────────────
@@ -90,8 +104,7 @@ class ChatViewModel @Inject constructor(
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
-    // Khai báo trước init để dùng được trong init block
-    @Volatile private var isInForeground = true   // app khởi động = đang ở foreground
+    @Volatile private var isInForeground = true
 
     init {
         viewModelScope.launch {
@@ -101,54 +114,32 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Khởi động phiên voice:
-     * 1. Chờ TTS sẵn sàng — poll với timeout 5 giây (TTS init thường < 1 giây)
-     * 2. Đọc lời chào
-     * 3. Bắt đầu lắng nghe trong callback onDone của lời chào
-     *
-     * ✅ FIX: Chạy trên Dispatchers.Main để SpeechRecognizer.createSpeechRecognizer()
-     * và startListening() luôn được gọi trên Main thread — yêu cầu bắt buộc của Android.
-     * Vi phạm → silently fail (không throw, không crash, chỉ không nhận giọng nói).
-     */
     private fun startVoiceSession() {
         viewModelScope.launch(Dispatchers.Main) {
-            if (!_voiceModeActive.value) return@launch
+            if (!_voiceModeActive.value || !isInForeground) return@launch
 
-            // ✅ FIX: Poll isReady với timeout 5 giây thay vì 3 giây.
-            // TTS.OnInitListener chạy trên Main thread — nếu ta đang block Main thread
-            // bằng delay() thì Dispatchers.Main scheduler vẫn xử lý được vì delay() suspend
-            // (không block thread thật), cho phép TTS callback chạy xen vào giữa các delay.
             var waited = 0
             while (!voiceManager.ttsHelper.isReady && waited < 5_000) {
                 delay(100)
                 waited += 100
+                if (!isInForeground || !_voiceModeActive.value) return@launch
             }
 
-            if (!_voiceModeActive.value) return@launch
+            if (!_voiceModeActive.value || !isInForeground) return@launch
 
             if (voiceManager.ttsHelper.isReady) {
-                // ✅ startListening() gọi trong onDone callback — KHÔNG gọi trực tiếp ở đây.
-                // onDone chạy sau khi TTS đọc xong → đảm bảo mic không tranh audio session với TTS.
                 voiceManager.ttsHelper.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
-                    if (_voiceModeActive.value) voiceManager.startListening()
+                    if (_voiceModeActive.value && isInForeground) {
+                        voiceManager.startListening()
+                    }
                 }
             } else {
-                // TTS không sẵn sàng sau 5 giây (thiết bị không có TTS engine?) → nghe luôn
                 voiceManager.startListening()
             }
         }
     }
 
-    /**
-     * Observe messages: khi AI trả lời xong → TTS đọc to → startListening() lại.
-     * Đây là vòng lặp hands-free chính.
-     *
-     * drop(1): bỏ qua emit đầu tiên (lịch sử cũ load từ DB).
-     */
     private fun observeAndSpeak() {
-        // ✅ FIX: Dùng Dispatchers.Main để startListening() trong TTS onDone callback
-        // luôn được dispatch đúng thread — TTS onDone có thể gọi từ thread bất kỳ.
         viewModelScope.launch(Dispatchers.Main) {
             messages.drop(1).collect { msgs ->
                 val last = msgs.lastOrNull() ?: return@collect
@@ -156,7 +147,13 @@ class ChatViewModel @Inject constructor(
                 if (!_voiceModeActive.value) return@collect
 
                 val tts = voiceManager.ttsHelper
-                if (!tts.isReady) return@collect
+                if (!tts.isReady) {
+                    logger.w("ChatViewModel", "TTS chưa sẵn sàng, kích hoạt nghe lại nhằm duy trì vòng lặp.")
+                    if (_voiceModeActive.value && isInForeground) {
+                        voiceManager.startListening()
+                    }
+                    return@collect
+                }
 
                 if (last.sourcePlugin == "router_error") {
                     consecutiveRouterFailures++
@@ -178,11 +175,9 @@ class ChatViewModel @Inject constructor(
                 }
 
                 tts.speak(last.content) {
-                    if (_voiceModeActive.value) {
-                        // onDone callback có thể ở thread bất kỳ — post về Main qua Handler
-                        // thay vì launch coroutine để tránh phụ thuộc vào scope availability.
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            if (_voiceModeActive.value) {
+                    if (_voiceModeActive.value && isInForeground) {
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (_voiceModeActive.value && isInForeground) {
                                 voiceManager.startListening()
                             }
                         }, 300L)
@@ -218,46 +213,93 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessageWithImage(message: String, imageUri: Uri?) {
+        // Tối ưu Agent: Khóa luồng yêu cầu ngay lập tức để tránh các yêu cầu trùng lặp
+        if (!isProcessingQuery.compareAndSet(false, true)) {
+            logger.w("ChatViewModel", "Đang xử lý yêu cầu cũ, bỏ qua yêu cầu trùng lặp.")
+            return
+        }
+
         viewModelScope.launch {
             _isLoading.value = true
 
             var fileUrl: String? = null
             var base64Image: String? = null
 
-            imageUri?.let { uri ->
-                try {
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    val imageBytes = inputStream?.readBytes()
-                    inputStream?.close()
-                    if (imageBytes != null) {
-                        val tempFile = File(context.cacheDir, "chat_img_${UUID.randomUUID()}.jpg")
-                        FileOutputStream(tempFile).use { it.write(imageBytes) }
-                        fileUrl = tempFile.absolutePath
-                        base64Image = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+            try {
+                imageUri?.let { uri ->
+                    try {
+                        val imageBytes = withContext(Dispatchers.IO) {
+                            getDownscaledImageBytes(context, uri)
+                        }
+
+                        if (imageBytes != null) {
+                            withContext(Dispatchers.IO) {
+                                val tempFile = File(context.cacheDir, "chat_img_${UUID.randomUUID()}.jpg")
+                                FileOutputStream(tempFile).use { it.write(imageBytes) }
+                                fileUrl = tempFile.absolutePath
+                                base64Image = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.e("ChatViewModel", "Lỗi xử lý ảnh: ${e.message}", e)
                     }
-                } catch (e: Exception) {
-                    logger.e("ChatViewModel", "Lỗi xử lý ảnh: ${e.message}", e)
+                }
+
+                val userMessageContent = when {
+                    base64Image != null && message.isNotBlank() -> "[Hình ảnh] $message"
+                    base64Image != null -> "[Hình ảnh]"
+                    else -> message
+                }
+
+                val response = chatSkill.processQuery(
+                    message = userMessageContent,
+                    username = "default_user",
+                    fileUrl = fileUrl,
+                    imageBase64 = base64Image
+                )
+
+                if (response is PluginResult.Failure) {
+                    logger.e("ChatViewModel", "Error: ${response.error}")
+                }
+            } finally {
+                _isLoading.value = false
+                isProcessingQuery.set(false) // Giải phóng khóa xử lý sau khi hoàn tất
+            }
+        }
+    }
+
+    private fun getDownscaledImageBytes(context: Context, uri: Uri, maxDimension: Int = 1024): ByteArray? {
+        return try {
+            val options = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            context.contentResolver.openInputStream(uri).use {
+                BitmapFactory.decodeStream(it, null, options)
+            }
+
+            var inSampleSize = 1
+            if (options.outHeight > maxDimension || options.outWidth > maxDimension) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while (halfHeight / inSampleSize >= maxDimension && halfWidth / inSampleSize >= maxDimension) {
+                    inSampleSize *= 2
                 }
             }
 
-            val userMessageContent = when {
-                base64Image != null && message.isNotBlank() -> "[Hình ảnh] $message"
-                base64Image != null -> "[Hình ảnh]"
-                else -> message
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = inSampleSize
             }
 
-            val response = chatSkill.processQuery(
-                message = userMessageContent,
-                username = "default_user",
-                fileUrl = fileUrl,
-                imageBase64 = base64Image
-            )
+            val bitmap = context.contentResolver.openInputStream(uri).use {
+                BitmapFactory.decodeStream(it, null, decodeOptions)
+            } ?: return null
 
-            if (response is PluginResult.Failure) {
-                logger.e("ChatViewModel", "Error: ${response.error}")
-            }
-
-            _isLoading.value = false
+            val outputStream = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+            bitmap.recycle()
+            outputStream.toByteArray()
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -269,29 +311,20 @@ class ChatViewModel @Inject constructor(
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    /**
-     * Gọi từ ChatScreen khi app vào foreground (ON_START).
-     * ON_START chỉ bắn khi thật sự quay lại từ background — không bắn khi
-     * dialog/keyboard xuất hiện, khác với ON_RESUME bắn liên tục.
-     */
     fun onForeground() {
-        if (isInForeground) return   // tránh double-call
+        if (isInForeground) return
         isInForeground = true
         if (!_voiceModeActive.value) return
 
-        // Destroy recognizer cũ (có thể đã bị Android kill âm thầm khi background)
-        // rồi tạo session mới hoàn toàn với audio focus mới.
         voiceManager.stopListening()
         viewModelScope.launch(Dispatchers.Main) {
-            delay(400)  // chờ audio system release sau khi app trở lại foreground
-            if (_voiceModeActive.value && isInForeground) voiceManager.startListening()
+            delay(400)
+            if (_voiceModeActive.value && isInForeground) {
+                voiceManager.startListening()
+            }
         }
     }
 
-    /**
-     * Gọi từ ChatScreen khi app vào background (ON_STOP).
-     * Dừng mic + TTS chủ động — tránh nhận/phát âm khi user đang ở app khác.
-     */
     fun onBackground() {
         isInForeground = false
         voiceManager.stopListening()
