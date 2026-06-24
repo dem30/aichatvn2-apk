@@ -119,7 +119,10 @@ class ChatViewModel @Inject constructor(
      * 3. Bắt đầu lắng nghe lần đầu
      */
     private fun startVoiceSession() {
-        viewModelScope.launch {
+        // ✅ FIX: Dùng Dispatchers.Main để đảm bảo SpeechRecognizer được tạo trên đúng
+        // Main thread — Android yêu cầu điều này tuyệt đối, vi phạm = silently fail
+        // (app hiện "Đang nghe" nhưng mic thật ra không mở, không có âm thanh "tút").
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
             // Chờ TTS init xong — dùng while thay vì repeat để thoát đúng
             var waited = 0
             while (!voiceManager.ttsHelper.isReady && waited < 3000) {
@@ -185,14 +188,12 @@ class ChatViewModel @Inject constructor(
                 }
 
                 tts.speak(last.content) {
-                    // TTS đọc xong → startListening() lại để tiếp tục loop
-                    // VoiceAssistantManager tự xử lý silence/error restart
-                    // nên ở đây chỉ cần gọi khi voiceMode còn bật
+                    // TTS onDone callback có thể chạy trên bất kỳ thread nào.
+                    // ✅ FIX: Dùng Dispatchers.Main để startListening() luôn chạy trên
+                    // Main thread — đây là điều kiện bắt buộc của Android SpeechRecognizer.
                     if (_voiceModeActive.value) {
-                        viewModelScope.launch {
+                        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                             delay(300)
-                            // ✅ Kiểm tra lại sau delay — phòng trường hợp người chăm sóc
-                            // tắt hands-free đúng lúc TTS đang đọc (trong 300ms chờ này).
                             if (_voiceModeActive.value) {
                                 voiceManager.startListening()
                             }

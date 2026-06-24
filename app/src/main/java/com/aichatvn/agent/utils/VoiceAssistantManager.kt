@@ -2,6 +2,7 @@ package com.aichatvn.agent.utils
 
 import android.content.Context
 import android.os.CountDownTimer
+import android.os.Looper
 
 /**
  * VoiceAssistantManager
@@ -38,6 +39,14 @@ class VoiceAssistantManager(
 
     fun startListening() {
         if (destroyed) return
+        // ✅ FIX: SpeechRecognizer yêu cầu Main thread tuyệt đối. Nếu caller đang ở
+        // thread khác (vd: TTS onDone callback), post về Main để đảm bảo an toàn.
+        // Nếu đã ở Main thread rồi, mainHandler.post() vẫn hoạt động đúng (chỉ queue
+        // thêm 1 frame, không gây vấn đề gì).
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            restartHandler.post { startListening() }
+            return
+        }
         cancelPendingRestart()
         onListeningStateChange(true)
 
