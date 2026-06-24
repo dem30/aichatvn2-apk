@@ -31,6 +31,26 @@ enum class ChatMode {
     COMBINED
 }
 
+/**
+ * Cảnh báo ngắn LUÔN chèn vào extraContext khi rơi xuống chat thường (Groq/COMBINED) —
+ * vì app này là AI quản gia điều khiển thiết bị, model lớn dễ "đồng thuận" và bịa ra
+ * là đã thực hiện hành động vật lý nếu không được nhắc rõ là nó không có quyền đó.
+ * Cố tình ngắn (~1 câu) để không tốn nhiều token mỗi lượt.
+ */
+private const val ANTI_HALLUCINATION_GUARD =
+    "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
+    "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
+    "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được."
+
+/**
+ * Chỉ chèn thêm khi router ĐÃ THỬ định tuyến lệnh nhưng thất bại (RouterOutcome.RouterFailed) —
+ * cho model lớn biết rõ là có 1 lệnh vừa KHÔNG chạy được, để nó báo lại cho user thay vì bịa.
+ */
+private fun routerFailedNotice(reason: String) =
+    "⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định " +
+    "được chính xác (lý do nội bộ: $reason). Hãy báo cho user là lệnh CHƯA thực hiện được và " +
+    "hỏi họ nói rõ hơn (tên thiết bị/hành động), ĐỪNG khẳng định đã làm."
+
 @Singleton
 class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -267,7 +287,8 @@ class ChatSkill @Inject constructor(
                     } catch (e: Exception) { null }
                 } else null
                 
-                val historySnapshot = _messages.value.takeLast(10).map {
+                // ✅ Giảm từ 10 → 6 message thô (≈3 lượt) — đủ ngữ cảnh cho ảnh, đỡ tốn token.
+                val historySnapshot = _messages.value.takeLast(6).map {
                     mapOf("role" to it.role, "content" to it.content)
                 }
                 
@@ -285,67 +306,81 @@ class ChatSkill @Inject constructor(
                 }
             }
             // ✅ 3+4. THỬ ĐỊNH TUYẾN LỆNH THIẾT BỊ (AgentKernel + LocalRouterEngine).
-            // Nếu local router không khớp lệnh nào -> rơi xuống chat thường (Groq/QA, có QA context)
+            // RouterOutcome phân biệt rõ 3 case — quan trọng để biết khi nào cần
+            // chèn cảnh báo "lệnh thất bại" cho model lớn (tránh nó bịa).
             else {
-                val deviceResult = agentKernel.tryDeviceCommand(message, username)
+                when (val outcome = agentKernel.tryDeviceCommand(message, username)) {
 
-                if (deviceResult != null) {
-                    usedMode = "device_control"
-                    usedPluginId = deviceResult.pluginId
-                    logger.d("ChatSkill", "Routed to AgentKernel local router: '$message' -> plugin=${deviceResult.pluginId}")
-                    responseText = when (val result = deviceResult.result) {
-                        is PluginResult.Success -> {
-                            val data = result.data as? Map<*, *>
-                            data?.get("message") as? String ?: "✅ Đã thực hiện"
+                    is AgentKernel.RouterOutcome.Matched -> {
+                        usedMode = "device_control"
+                        usedPluginId = outcome.result.pluginId
+                        logger.d("ChatSkill", "Routed to AgentKernel local router: '$message' -> plugin=${outcome.result.pluginId}")
+                        responseText = when (val result = outcome.result.result) {
+                            is PluginResult.Success -> {
+                                val data = result.data as? Map<*, *>
+                                data?.get("message") as? String ?: "✅ Đã thực hiện"
+                            }
+                            is PluginResult.Failure -> result.error
+                            is PluginResult.NeedMoreInfo -> result.question
                         }
-                        is PluginResult.Failure -> result.error
-                        is PluginResult.NeedMoreInfo -> result.question
-                    }
-                } else {
-                    usedMode = _chatMode.value.name
-                    val currentMode = _chatMode.value
-                    val historySnapshot = _messages.value.takeLast(10).map {
-                        mapOf("role" to it.role, "content" to it.content)
                     }
 
-                    // ✅ Lấy QA context cho chat
-                    val qaContext = buildQAContext(message, username)
-                    val fullContext = if (qaContext.isNotEmpty()) {
-                        "$qaContext\n\n$extraContext"
-                    } else {
-                        extraContext
-                    }
+                    is AgentKernel.RouterOutcome.NotACommand,
+                    is AgentKernel.RouterOutcome.RouterFailed -> {
+                        val routerFailed = outcome is AgentKernel.RouterOutcome.RouterFailed
+                        usedMode = _chatMode.value.name
+                        val currentMode = _chatMode.value
+                        // ✅ Giảm từ 10 → 6 message thô (≈3 lượt) — đỡ tốn token,
+                        // không gửi thêm gì khác ngoài cảnh báo chống bịa (rất ngắn).
+                        val historySnapshot = _messages.value.takeLast(6).map {
+                            mapOf("role" to it.role, "content" to it.content)
+                        }
 
-                    responseText = try {
-                        withTimeout(30_000L) {
-                            when (currentMode) {
-                                ChatMode.QA -> {
-                                    val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
-                                    when (qaResult) {
-                                        is PluginResult.Success -> {
-                                            @Suppress("UNCHECKED_CAST")
-                                            val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
-                                            val qa = matches.firstOrNull()?.get("qa") as? com.aichatvn.agent.data.model.QAEntity
-                                            qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
+                        // ✅ Lấy QA context cho chat
+                        val qaContext = buildQAContext(message, username)
+                        val guard = if (routerFailed) {
+                            ANTI_HALLUCINATION_GUARD + "\n" +
+                                routerFailedNotice((outcome as AgentKernel.RouterOutcome.RouterFailed).reason)
+                        } else {
+                            ANTI_HALLUCINATION_GUARD
+                        }
+                        val fullContext = buildString {
+                            append(guard)
+                            if (qaContext.isNotEmpty()) append("\n\n$qaContext")
+                            if (extraContext.isNotEmpty()) append("\n\n$extraContext")
+                        }
+
+                        responseText = try {
+                            withTimeout(30_000L) {
+                                when (currentMode) {
+                                    ChatMode.QA -> {
+                                        val qaResult = trainingSkill.fuzzyMatchQuestion(message, username, 0.6f)
+                                        when (qaResult) {
+                                            is PluginResult.Success -> {
+                                                @Suppress("UNCHECKED_CAST")
+                                                val matches = qaResult.data as? List<Map<String, Any>> ?: emptyList()
+                                                val qa = matches.firstOrNull()?.get("qa") as? com.aichatvn.agent.data.model.QAEntity
+                                                qa?.answer ?: "Không tìm thấy câu trả lời phù hợp."
+                                            }
+                                            is PluginResult.Failure -> {
+                                                "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này."
+                                            }
+                                            else -> "Không thể xử lý"
                                         }
-                                        is PluginResult.Failure -> {
-                                            "Xin lỗi, tôi không tìm thấy câu trả lời cho câu hỏi này."
-                                        }
-                                        else -> "Không thể xử lý"
+                                    }
+                                    ChatMode.COMBINED, ChatMode.GROQ -> {
+                                        groqClient.chat(
+                                            message = message,
+                                            extraContext = fullContext,
+                                            history = historySnapshot,
+                                            imageUrl = null
+                                        )
                                     }
                                 }
-                                ChatMode.COMBINED, ChatMode.GROQ -> {
-                                    groqClient.chat(
-                                        message = message,
-                                        extraContext = fullContext,
-                                        history = historySnapshot,
-                                        imageUrl = null
-                                    )
-                                }
                             }
+                        } catch (e: TimeoutCancellationException) {
+                            "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                         }
-                    } catch (e: TimeoutCancellationException) {
-                        "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                     }
                 }
             }

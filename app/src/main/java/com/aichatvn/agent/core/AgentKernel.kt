@@ -13,7 +13,21 @@ import kotlin.jvm.JvmSuppressWildcards
 private val EMAIL_REGEX = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 
 /**
- * AgentKernel v8
+ * AgentKernel v9
+ *
+ * Điểm thay đổi so với v8:
+ *
+ * 1. tryDeviceCommand() trả về RouterOutcome (Matched / NotACommand / RouterFailed)
+ *    thay vì DeviceCommandResult? — phân biệt rõ "đây là chat thường" (NotACommand)
+ *    với "router CỐ định tuyến nhưng thất bại" (RouterFailed). ChatSkill dùng
+ *    RouterFailed để chèn 1 cảnh báo ngắn cho model lớn, tránh nó bịa ra là đã
+ *    thực hiện hành động khi thực ra lệnh chưa chạy được.
+ *
+ * 2. Pending intent rõ ràng: khi plugin trả NeedMoreInfo, lưu lại pluginId/action/
+ *    params đã biết/param còn thiếu vào ChatHistoryManager. Lượt chat kế tiếp ưu
+ *    tiên thử điền param còn thiếu bằng 1 prompt SIÊU GỌN (không gửi lại toàn bộ
+ *    catalog plugin/qa_facts/schedules) thay vì để router đoán lại từ đầu — vừa
+ *    chính xác hơn vừa tiết kiệm token.
  *
  * Điểm thay đổi so với v7:
  *
@@ -61,9 +75,21 @@ class AgentKernel @Inject constructor(
     suspend fun tryDeviceCommand(
         userMessage: String,
         username: String = "default_user"
-    ): DeviceCommandResult? {
+    ): RouterOutcome {
         val devicePlugins = plugins.filter { it.visibleInQuickBar }
-        if (devicePlugins.isEmpty()) return null
+        if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
+
+        // ✅ Nếu đang có 1 lệnh chờ bổ sung param (NeedMoreInfo từ lượt trước),
+        // ưu tiên thử điền param còn thiếu bằng prompt SIÊU GỌN trước — KHÔNG
+        // gọi lại router đầy đủ (catalog + qa_facts + schedules) để tiết kiệm
+        // token và tránh đoán sai lại từ đầu.
+        val pending = chatHistoryManager.getActivePendingIntent()
+        if (pending != null) {
+            val resolved = tryResolvePendingIntent(pending, userMessage, devicePlugins)
+            if (resolved != null) return RouterOutcome.Matched(resolved)
+            // resolved == null: pending không còn hợp lệ (plugin/action biến mất)
+            // hoặc user rõ ràng hỏi việc khác → rơi tiếp xuống flow router bình thường.
+        }
 
         val rawQAMatches = buildRawQAMatches(userMessage, username)
         val shortHistory  = chatHistoryManager.getRecentTurnsAsText()
@@ -149,11 +175,16 @@ class AgentKernel @Inject constructor(
         else routerPrompt
 
         val routerResultJson = groqClient.routeIntent(fullPrompt)
-        val rawIntent = parseIntentResponse(routerResultJson, userMessage) ?: return null
+        val rawIntent = parseIntentResponse(routerResultJson, userMessage)
+            ?: return RouterOutcome.RouterFailed("Không parse được JSON từ router: $routerResultJson")
 
-        if (rawIntent.pluginId.isBlank() || rawIntent.pluginId == "chat") return null
+        if (rawIntent.pluginId.isBlank()) {
+            return RouterOutcome.RouterFailed("Router trả về plugin rỗng")
+        }
+        if (rawIntent.pluginId == "chat") return RouterOutcome.NotACommand
 
-        val targetPlugin = devicePlugins.find { it.id == rawIntent.pluginId } ?: return null
+        val targetPlugin = devicePlugins.find { it.id == rawIntent.pluginId }
+            ?: return RouterOutcome.RouterFailed("Router trả về plugin không tồn tại: ${rawIntent.pluginId}")
 
         // ✅ resolveParamsWithQA chỉ chạy như "lưới an toàn" cho ALIAS_PARAM_KEYS.
         // Nếu router nhỏ đã điền đúng (vd to="vinh@gmail.com") → hàm này bỏ qua.
@@ -179,9 +210,148 @@ class AgentKernel @Inject constructor(
             PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
         }
 
+        // ✅ Lưu/xoá pending intent: nếu thiếu param thì lưu lại để lượt sau resume
+        // bằng prompt gọn; nếu đã xong (Success/Failure) thì xoá để không bị kẹt.
+        when (executionResult) {
+            is PluginResult.NeedMoreInfo -> chatHistoryManager.setPendingIntent(
+                PendingIntent(
+                    pluginId = targetPlugin.id,
+                    action = intent.action,
+                    knownParams = intent.params,
+                    missingParams = executionResult.missingParams,
+                    askedQuestion = executionResult.question
+                )
+            )
+            else -> chatHistoryManager.clearPendingIntent()
+        }
+
         val replyForHistory = when (executionResult) {
             is PluginResult.Success ->
                 (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
+            is PluginResult.Failure -> executionResult.error
+            is PluginResult.NeedMoreInfo -> executionResult.question
+        }
+        chatHistoryManager.addTurn(userMessage, replyForHistory)
+
+        return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.id, result = executionResult))
+    }
+
+    /**
+     * Thử điền các param còn thiếu của 1 pending intent bằng prompt SIÊU GỌN
+     * (chỉ gồm: action cần param gì, câu hỏi đã hỏi, câu trả lời của user) —
+     * KHÔNG gửi lại catalog plugin / qa_facts / schedules như router đầy đủ.
+     *
+     * Trả về null nếu: plugin/action không còn tồn tại, hoặc model xác định
+     * câu trả lời của user KHÔNG liên quan đến câu hỏi đang chờ (user hỏi việc
+     * khác) — cả 2 trường hợp đều nên rơi xuống flow router bình thường.
+     */
+    private suspend fun tryResolvePendingIntent(
+        pending: PendingIntent,
+        userMessage: String,
+        devicePlugins: List<Plugin>
+    ): DeviceCommandResult? {
+        val targetPlugin = devicePlugins.find { it.id == pending.pluginId } ?: run {
+            chatHistoryManager.clearPendingIntent()
+            return null
+        }
+        if (targetPlugin.getActions().none { it.name == pending.action }) {
+            chatHistoryManager.clearPendingIntent()
+            return null
+        }
+
+        // Cancel rẻ — không cần LLM, chặn các câu kiểu "thôi", "khỏi cần", "huỷ đi"
+        val lower = userMessage.trim().lowercase()
+        val cancelWords = listOf("không cần", "huỷ", "hủy", "thôi khỏi", "bỏ qua", "quên đi", "khỏi cần")
+        if (cancelWords.any { lower.contains(it) }) {
+            chatHistoryManager.clearPendingIntent()
+            chatHistoryManager.addTurn(userMessage, "Đã huỷ lệnh trước đó.")
+            return DeviceCommandResult(
+                pluginId = pending.pluginId,
+                result = PluginResult.Success(mapOf("message" to "Đã huỷ lệnh trước đó."))
+            )
+        }
+
+        val fillPrompt = buildString {
+            append("<system>Output ONLY raw JSON, KHÔNG giải thích.\n")
+            append("User đang trả lời 1 câu hỏi bổ sung thông tin cho lệnh còn thiếu param.\n")
+            append("Nếu trả lời của user CUNG CẤP được giá trị cho (các) param còn thiếu, output:\n")
+            append("{\"params\": {${pending.missingParams.joinToString(",") { "\"$it\": \"giá_trị\"" }}}}\n")
+            append("Nếu trả lời của user là 1 yêu cầu/câu hỏi KHÁC, KHÔNG liên quan câu hỏi đang chờ, output:\n")
+            append("{\"unrelated\": true}</system>\n")
+            append("<param_can_dien>${pending.missingParams.joinToString(", ")}</param_can_dien>\n")
+            append("<cau_hoi_da_hoi>${pending.askedQuestion}</cau_hoi_da_hoi>\n")
+            append("<tra_loi_cua_user>$userMessage</tra_loi_cua_user>\n")
+            append("<output>")
+        }
+
+        val rawJson = groqClient.routeIntent(fillPrompt)
+        val parsed = try {
+            val cleaned = rawJson.trim()
+                .removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            JSONObject(cleaned)
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "tryResolvePendingIntent parse error: $rawJson")
+            null
+        }
+
+        if (parsed == null) {
+            // Không parse được — coi như chưa điền thêm gì, hỏi lại câu cũ (không tốn LLM thêm)
+            return DeviceCommandResult(
+                pluginId = pending.pluginId,
+                result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
+            )
+        }
+
+        if (parsed.optBoolean("unrelated", false)) {
+            chatHistoryManager.clearPendingIntent()
+            return null
+        }
+
+        val filled = parsed.optJSONObject("params")?.toMap() ?: emptyMap()
+        val stillMissing = pending.missingParams.filter { key ->
+            val v = filled[key]
+            v == null || v.toString().equals("null", ignoreCase = true) ||
+                (v is String && v.isBlank())
+        }
+
+        if (stillMissing.isNotEmpty()) {
+            // Vẫn chưa đủ — giữ pending intent (refresh thời điểm tạo), hỏi lại đúng phần còn thiếu
+            val question = "Mình vẫn cần thêm: ${stillMissing.joinToString(", ")}. Bạn cho mình biết nhé?"
+            chatHistoryManager.setPendingIntent(
+                pending.copy(missingParams = stillMissing, askedQuestion = question, createdAt = System.currentTimeMillis())
+            )
+            chatHistoryManager.addTurn(userMessage, question)
+            return DeviceCommandResult(
+                pluginId = pending.pluginId,
+                result = PluginResult.NeedMoreInfo(stillMissing, question)
+            )
+        }
+
+        val mergedParams = pending.knownParams + filled
+        chatHistoryManager.clearPendingIntent()
+
+        val executionResult = try {
+            targetPlugin.execute(pending.action, mergedParams)
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Execute pending error: ${e.message}", e)
+            PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
+        }
+
+        if (executionResult is PluginResult.NeedMoreInfo) {
+            // Plugin lại báo thiếu (param khác) — lưu pending mới luôn
+            chatHistoryManager.setPendingIntent(
+                PendingIntent(
+                    pluginId = targetPlugin.id,
+                    action = pending.action,
+                    knownParams = mergedParams,
+                    missingParams = executionResult.missingParams,
+                    askedQuestion = executionResult.question
+                )
+            )
+        }
+
+        val replyForHistory = when (executionResult) {
+            is PluginResult.Success -> (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
@@ -440,6 +610,24 @@ class AgentKernel @Inject constructor(
         val pluginId: String,
         val result: PluginResult
     )
+
+    /**
+     * Kết quả của tryDeviceCommand() — phân biệt rõ 3 trường hợp để ChatSkill biết
+     * có cần cảnh báo "lệnh thất bại" cho model chat lớn hay không:
+     *
+     * - Matched      : router khớp được lệnh, đã (thử) thực thi — result có thể là
+     *                  Success / Failure / NeedMoreInfo.
+     * - NotACommand  : router xác định đây là chat thường (KHÔNG phải lệnh điều khiển) —
+     *                  rơi xuống chat thường bình thường, không cần cờ báo gì thêm.
+     * - RouterFailed : router CỐ định tuyến (message trông như 1 lệnh) nhưng thất bại
+     *                  (JSON lỗi, hoặc trả về plugin không tồn tại) — ChatSkill cần cho
+     *                  model chat lớn biết điều này để nó KHÔNG bịa ra là đã thực hiện.
+     */
+    sealed class RouterOutcome {
+        data class Matched(val result: DeviceCommandResult) : RouterOutcome()
+        object NotACommand : RouterOutcome()
+        data class RouterFailed(val reason: String) : RouterOutcome()
+    }
 
     sealed class PluginResult {
         data class Success(val data: Any) : PluginResult()

@@ -8,8 +8,13 @@ import android.os.CountDownTimer
  *
  * Loop hands-free không bao giờ chết:
  * - Có kết quả STT → onTextRecognized() → AI xử lý → TTS đọc → startListening() lại
- * - Im lặng hết timeout → onSilence() → startListening() lại ngay
- * - Lỗi STT (mất mạng, mic bị chiếm...) → onError → startListening() lại sau 2s
+ * - Im lặng thật (lỗi mềm: NO_MATCH/TIMEOUT) → nghe lại NGAY, không delay
+ *   (đây là điểm khác biệt chính so với bản cũ — trước đây mọi lỗi đều
+ *   chờ 2s, khiến câu nói tiếp theo của người dùng bị hớt mất phần đầu)
+ * - Lỗi thật (mạng, mic, busy...) → backoff tăng dần, có giới hạn, để
+ *   không spin loop liên tục khi có sự cố thật
+ * - Đang có partial result (người dùng còn nói) → watchdog được "đánh thức"
+ *   lại, không bị app tự ngắt giữa câu
  *
  * Chỉ dừng khi toggleVoiceMode() tắt hoặc destroy().
  */
@@ -17,13 +22,20 @@ class VoiceAssistantManager(
     context: Context,
     private val onListeningStateChange: (Boolean) -> Unit,
     private val onTextRecognized: (String) -> Unit,
-    private val onSilence: () -> Unit = {}   // callback tuỳ chọn: UI biết đang chờ tiếp
+    private val onSilence: () -> Unit = {},            // callback tuỳ chọn: UI biết đang chờ tiếp
+    private val onPartialTranscript: (String) -> Unit = {}, // MỚI: hiển thị chữ real-time khi đang nói
+    private val onListenError: (String) -> Unit = {}    // MỚI: UI có thể hiện toast khi lỗi thật xảy ra
 ) {
     private val sttHelper = SpeechRecognizerHelper(context)
     val ttsHelper = TextToSpeechHelper(context)
 
-    private var listeningTimer: CountDownTimer? = null
+    // Watchdog là lưới an toàn, KHÔNG phải cơ chế chính để cắt câu — việc cắt câu
+    // do im lặng đã giao cho ngưỡng EXTRA_SPEECH_INPUT_* bên trong recognizer lo.
+    // Watchdog chỉ đề phòng trường hợp recognizer "treo", không bắn bất kỳ callback nào.
+    private var watchdogTimer: CountDownTimer? = null
+
     @Volatile private var destroyed = false
+    @Volatile private var hardErrorRetryCount = 0
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -32,54 +44,82 @@ class VoiceAssistantManager(
         onListeningStateChange(true)
 
         sttHelper.startListening(
+            onPartialResult = { partialText ->
+                // Người dùng đang nói thật -> reset watchdog để không bị app
+                // tự ý ngắt phiên giữa câu, và đẩy lên UI để hiện real-time.
+                restartWatchdog()
+                onPartialTranscript(partialText)
+            },
             onResult = { text ->
-                stopTimer()
+                stopWatchdog()
+                hardErrorRetryCount = 0
                 onListeningStateChange(false)
                 onTextRecognized(text)
                 // Không startListening() ở đây — ViewModel sẽ gọi lại sau khi TTS đọc xong
             },
-            onError = { _ ->
-                // Lỗi STT: dừng, báo UI, rồi tự restart sau 2 giây
-                stopTimer()
+            onSoftError = {
+                // Chỉ là im lặng / không khớp -> recognizer vẫn khỏe mạnh.
+                // Nghe lại NGAY để không bỏ lỡ câu kế tiếp của người dùng.
+                stopWatchdog()
+                hardErrorRetryCount = 0
                 onListeningStateChange(false)
-                scheduleRestart(delayMs = 2_000L)
+                onSilence()
+                if (!destroyed) startListening()
+            },
+            onHardError = { reason ->
+                // Lỗi thật: mạng, mic bị chiếm, recognizer busy...
+                // Backoff tăng dần (tối đa ~4s) để tránh quay vòng liên tục khi
+                // sự cố vẫn còn, nhưng vẫn tự hồi phục khi hết lỗi.
+                stopWatchdog()
+                onListeningStateChange(false)
+                onListenError(reason)
+                hardErrorRetryCount = (hardErrorRetryCount + 1).coerceAtMost(MAX_HARD_ERROR_STEPS)
+                val delay = HARD_ERROR_BASE_DELAY_MS * hardErrorRetryCount
+                scheduleRestart(delayMs = delay)
             }
         )
 
-        startTimeoutTimer()
+        startWatchdog()
     }
 
     fun stopListening() {
-        stopTimer()
-        sttHelper.destroy()
+        stopWatchdog()
+        // cancelListening() giữ recognizer "nóng" để lần startListening() kế tiếp
+        // không phải bind lại service -> nhanh hơn nhiều so với destroy()+create().
+        sttHelper.cancelListening()
         onListeningStateChange(false)
     }
 
     fun destroy() {
         destroyed = true
-        stopListening()
+        stopWatchdog()
+        sttHelper.destroy()
         ttsHelper.shutdown()
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    private fun startTimeoutTimer() {
-        listeningTimer?.cancel()
-        listeningTimer = object : CountDownTimer(LISTEN_TIMEOUT_MS, LISTEN_TIMEOUT_MS) {
+    private fun startWatchdog() {
+        watchdogTimer?.cancel()
+        watchdogTimer = object : CountDownTimer(WATCHDOG_TIMEOUT_MS, WATCHDOG_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
-                // Hết timeout mà không có tiếng nói → restart loop ngay
+                // Recognizer không bắn bất kỳ callback nào trong suốt thời gian dài
+                // bất thường -> coi như treo, tự khởi động lại loop.
                 onListeningStateChange(false)
                 onSilence()
-                scheduleRestart(delayMs = 300L)
+                scheduleRestart(delayMs = 200L)
             }
         }.start()
     }
 
-    /**
-     * Dùng Handler thay vì coroutine để không phụ thuộc vào scope bên ngoài.
-     * Đảm bảo restart kể cả khi ViewModel bận xử lý coroutine khác.
-     */
+    private fun restartWatchdog() = startWatchdog()
+
+    private fun stopWatchdog() {
+        watchdogTimer?.cancel()
+        watchdogTimer = null
+    }
+
     private fun scheduleRestart(delayMs: Long) {
         if (destroyed) return
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -87,12 +127,12 @@ class VoiceAssistantManager(
         }, delayMs)
     }
 
-    private fun stopTimer() {
-        listeningTimer?.cancel()
-        listeningTimer = null
-    }
-
     companion object {
-        private const val LISTEN_TIMEOUT_MS = 15_000L  // 15 giây — đủ cho người nói chậm
+        // Lưới an toàn tuyệt đối — không phải cơ chế cắt câu chính (đó là việc của
+        // EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS trong SpeechRecognizerHelper).
+        private const val WATCHDOG_TIMEOUT_MS = 25_000L
+
+        private const val HARD_ERROR_BASE_DELAY_MS = 800L
+        private const val MAX_HARD_ERROR_STEPS = 5 // backoff tối đa ~4s (800ms * 5)
     }
 }
