@@ -2,168 +2,97 @@ package com.aichatvn.agent.utils
 
 import android.content.Context
 import android.os.CountDownTimer
-import android.os.Handler
-import android.os.Looper
-import android.util.Log
-import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * VoiceAssistantManager
+ *
+ * Loop hands-free không bao giờ chết:
+ * - Có kết quả STT → onTextRecognized() → AI xử lý → TTS đọc → startListening() lại
+ * - Im lặng hết timeout → onSilence() → startListening() lại ngay
+ * - Lỗi STT (mất mạng, mic bị chiếm...) → onError → startListening() lại sau 2s
+ *
+ * Chỉ dừng khi toggleVoiceMode() tắt hoặc destroy().
+ */
 class VoiceAssistantManager(
     context: Context,
     private val onListeningStateChange: (Boolean) -> Unit,
     private val onTextRecognized: (String) -> Unit,
-    private val onSilence: () -> Unit = {},
-    private val onPartialTranscript: (String) -> Unit = {},
-    private val onListenError: (String) -> Unit = {}
+    private val onSilence: () -> Unit = {}   // callback tuỳ chọn: UI biết đang chờ tiếp
 ) {
     private val sttHelper = SpeechRecognizerHelper(context)
     val ttsHelper = TextToSpeechHelper(context)
 
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private var watchdogTimer: CountDownTimer? = null
-    private var safetyRunnable: Runnable? = null
-
+    private var listeningTimer: CountDownTimer? = null
     @Volatile private var destroyed = false
-    @Volatile private var hardErrorRetryCount = 0
-    private val isListening = AtomicBoolean(false)
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun startListening() {
-        Log.d(TAG, "startListening() called | destroyed=$destroyed isListening=${isListening.get()}")
-        if (destroyed) { Log.w(TAG, "  → SKIP: destroyed"); return }
-        if (!isListening.compareAndSet(false, true)) {
-            Log.w(TAG, "  → SKIP: already listening")
-            return
-        }
-
-        Log.d(TAG, "  → OK: starting STT")
+        if (destroyed) return
         onListeningStateChange(true)
 
         sttHelper.startListening(
-            onPartialResult = { partialText ->
-                restartWatchdog()
-                onPartialTranscript(partialText)
-            },
             onResult = { text ->
-                Log.d(TAG, "onResult: \"$text\"")
-                stopWatchdog()
-                hardErrorRetryCount = 0
-                isListening.set(false)
+                stopTimer()
                 onListeningStateChange(false)
                 onTextRecognized(text)
-                scheduleSafetyRestart()
+                // Không startListening() ở đây — ViewModel sẽ gọi lại sau khi TTS đọc xong
             },
-            onSoftError = {
-                Log.d(TAG, "onSoftError → restart ngay")
-                stopWatchdog()
-                hardErrorRetryCount = 0
-                isListening.set(false)
+            onError = { _ ->
+                // Lỗi STT: dừng, báo UI, rồi tự restart sau 2 giây
+                stopTimer()
                 onListeningStateChange(false)
-                onSilence()
-                if (!destroyed) startListening()
-            },
-            onHardError = { reason ->
-                Log.e(TAG, "onHardError: $reason")
-                stopWatchdog()
-                isListening.set(false)
-                onListeningStateChange(false)
-                onListenError(reason)
-                hardErrorRetryCount = (hardErrorRetryCount + 1).coerceAtMost(MAX_HARD_ERROR_STEPS)
-                scheduleRestart(HARD_ERROR_BASE_DELAY_MS * hardErrorRetryCount)
+                scheduleRestart(delayMs = 2_000L)
             }
         )
 
-        startWatchdog()
-    }
-
-    fun speakResponse(text: String) {
-        Log.d(TAG, "speakResponse: \"${text.take(40)}...\" ttsReady=${ttsHelper.isReady}")
-        cancelSafetyRestart()
-        ttsHelper.stop()
-        if (destroyed) return
-
-        if (text.isBlank()) {
-            Log.d(TAG, "  → text blank, scheduleRestart 300ms")
-            scheduleRestart(300L)
-            return
-        }
-
-        ttsHelper.speak(text) {
-            Log.d(TAG, "TTS onDone → scheduleRestart 300ms | destroyed=$destroyed")
-            if (!destroyed) scheduleRestart(300L)
-        }
+        startTimeoutTimer()
     }
 
     fun stopListening() {
-        Log.d(TAG, "stopListening()")
-        cancelSafetyRestart()
-        stopWatchdog()
-        isListening.set(false)
-        sttHelper.cancelListening()
+        stopTimer()
+        sttHelper.destroy()
         onListeningStateChange(false)
     }
 
     fun destroy() {
-        Log.d(TAG, "destroy()")
         destroyed = true
-        cancelSafetyRestart()
-        stopWatchdog()
-        isListening.set(false)
-        sttHelper.destroy()
+        stopListening()
         ttsHelper.shutdown()
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
-    private fun startWatchdog() {
-        watchdogTimer?.cancel()
-        watchdogTimer = object : CountDownTimer(WATCHDOG_TIMEOUT_MS, WATCHDOG_TIMEOUT_MS) {
+    private fun startTimeoutTimer() {
+        listeningTimer?.cancel()
+        listeningTimer = object : CountDownTimer(LISTEN_TIMEOUT_MS, LISTEN_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
-                Log.w(TAG, "Watchdog fired → restart")
-                isListening.set(false)
+                // Hết timeout mà không có tiếng nói → restart loop ngay
                 onListeningStateChange(false)
                 onSilence()
-                scheduleRestart(200L)
+                scheduleRestart(delayMs = 300L)
             }
         }.start()
     }
 
-    private fun restartWatchdog() = startWatchdog()
-
-    private fun stopWatchdog() {
-        watchdogTimer?.cancel()
-        watchdogTimer = null
-    }
-
+    /**
+     * Dùng Handler thay vì coroutine để không phụ thuộc vào scope bên ngoài.
+     * Đảm bảo restart kể cả khi ViewModel bận xử lý coroutine khác.
+     */
     private fun scheduleRestart(delayMs: Long) {
         if (destroyed) return
-        Log.d(TAG, "scheduleRestart in ${delayMs}ms")
-        mainHandler.postDelayed({
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             if (!destroyed) startListening()
         }, delayMs)
     }
 
-    private fun scheduleSafetyRestart() {
-        cancelSafetyRestart()
-        val r = Runnable {
-            Log.w(TAG, "Safety timer fired → restart (speakResponse chưa được gọi?)")
-            if (!destroyed && !isListening.get()) startListening()
-        }
-        safetyRunnable = r
-        mainHandler.postDelayed(r, RESULT_NO_TTS_TIMEOUT_MS)
-    }
-
-    private fun cancelSafetyRestart() {
-        safetyRunnable?.let { mainHandler.removeCallbacks(it) }
-        safetyRunnable = null
+    private fun stopTimer() {
+        listeningTimer?.cancel()
+        listeningTimer = null
     }
 
     companion object {
-        private const val TAG = "VoiceManager"
-        private const val WATCHDOG_TIMEOUT_MS      = 25_000L
-        private const val HARD_ERROR_BASE_DELAY_MS = 800L
-        private const val MAX_HARD_ERROR_STEPS     = 5
-        private const val RESULT_NO_TTS_TIMEOUT_MS = 15_000L
+        private const val LISTEN_TIMEOUT_MS = 15_000L  // 15 giây — đủ cho người nói chậm
     }
 }
