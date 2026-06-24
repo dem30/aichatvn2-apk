@@ -4,27 +4,9 @@ import android.content.Context
 import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * VoiceAssistantManager
- *
- * Loop hands-free không bao giờ chết:
- * - Có kết quả STT → onTextRecognized() → ViewModel gọi speakResponse(aiReply)
- *   → TTS đọc xong (trên main thread) → tự startListening() lại.
- * - Im lặng (NO_MATCH/TIMEOUT) → nghe lại NGAY
- * - Lỗi thật → backoff tăng dần
- * - Watchdog: nếu recognizer treo → tự restart
- * - Safety timer: nếu ViewModel quên gọi speakResponse() → tự restart sau 15s
- *
- * Fix so với bản trước:
- * - isListening dùng AtomicBoolean thay vì @Volatile để đảm bảo thread-safe
- *   khi đọc+ghi đồng thời từ main thread và coroutine dispatcher.
- * - Mọi scheduleRestart() đều chạy trên main thread (Handler mainLooper).
- *   TextToSpeechHelper đã đảm bảo onDone về main thread — nhưng thêm
- *   mainHandler.post() ở đây làm lớp bảo vệ thứ 2, tránh SpeechRecognizer
- *   bị gọi từ wrong thread.
- */
 class VoiceAssistantManager(
     context: Context,
     private val onListeningStateChange: (Boolean) -> Unit,
@@ -38,24 +20,23 @@ class VoiceAssistantManager(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var watchdogTimer: CountDownTimer? = null
+    private var safetyRunnable: Runnable? = null
 
     @Volatile private var destroyed = false
     @Volatile private var hardErrorRetryCount = 0
-
-    // AtomicBoolean: compareAndSet() đảm bảo chỉ 1 thread thắng race, không bao giờ double-start
     private val isListening = AtomicBoolean(false)
-
-    // Safety timer
-    private var safetyRunnable: Runnable? = null
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun startListening() {
-        if (destroyed) return
-        // compareAndSet(false, true): chỉ tiếp tục nếu isListening đang là false
-        // Nếu đang true (đã nghe) → return ngay, không double-start
-        if (!isListening.compareAndSet(false, true)) return
+        Log.d(TAG, "startListening() called | destroyed=$destroyed isListening=${isListening.get()}")
+        if (destroyed) { Log.w(TAG, "  → SKIP: destroyed"); return }
+        if (!isListening.compareAndSet(false, true)) {
+            Log.w(TAG, "  → SKIP: already listening")
+            return
+        }
 
+        Log.d(TAG, "  → OK: starting STT")
         onListeningStateChange(true)
 
         sttHelper.startListening(
@@ -64,16 +45,16 @@ class VoiceAssistantManager(
                 onPartialTranscript(partialText)
             },
             onResult = { text ->
+                Log.d(TAG, "onResult: \"$text\"")
                 stopWatchdog()
                 hardErrorRetryCount = 0
                 isListening.set(false)
                 onListeningStateChange(false)
-                // Báo ViewModel. ViewModel gọi speakResponse() để khép vòng.
-                // Safety timer đề phòng ViewModel quên gọi.
                 onTextRecognized(text)
                 scheduleSafetyRestart()
             },
             onSoftError = {
+                Log.d(TAG, "onSoftError → restart ngay")
                 stopWatchdog()
                 hardErrorRetryCount = 0
                 isListening.set(false)
@@ -82,6 +63,7 @@ class VoiceAssistantManager(
                 if (!destroyed) startListening()
             },
             onHardError = { reason ->
+                Log.e(TAG, "onHardError: $reason")
                 stopWatchdog()
                 isListening.set(false)
                 onListeningStateChange(false)
@@ -94,27 +76,26 @@ class VoiceAssistantManager(
         startWatchdog()
     }
 
-    /**
-     * ViewModel gọi sau khi có câu trả lời AI.
-     * Manager phát TTS → onDone (main thread) → startListening() tự động.
-     */
     fun speakResponse(text: String) {
+        Log.d(TAG, "speakResponse: \"${text.take(40)}...\" ttsReady=${ttsHelper.isReady}")
         cancelSafetyRestart()
         ttsHelper.stop()
         if (destroyed) return
 
         if (text.isBlank()) {
+            Log.d(TAG, "  → text blank, scheduleRestart 300ms")
             scheduleRestart(300L)
             return
         }
 
         ttsHelper.speak(text) {
-            // TextToSpeechHelper đảm bảo callback này chạy trên main thread
+            Log.d(TAG, "TTS onDone → scheduleRestart 300ms | destroyed=$destroyed")
             if (!destroyed) scheduleRestart(300L)
         }
     }
 
     fun stopListening() {
+        Log.d(TAG, "stopListening()")
         cancelSafetyRestart()
         stopWatchdog()
         isListening.set(false)
@@ -123,6 +104,7 @@ class VoiceAssistantManager(
     }
 
     fun destroy() {
+        Log.d(TAG, "destroy()")
         destroyed = true
         cancelSafetyRestart()
         stopWatchdog()
@@ -138,6 +120,7 @@ class VoiceAssistantManager(
         watchdogTimer = object : CountDownTimer(WATCHDOG_TIMEOUT_MS, WATCHDOG_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
+                Log.w(TAG, "Watchdog fired → restart")
                 isListening.set(false)
                 onListeningStateChange(false)
                 onSilence()
@@ -155,6 +138,7 @@ class VoiceAssistantManager(
 
     private fun scheduleRestart(delayMs: Long) {
         if (destroyed) return
+        Log.d(TAG, "scheduleRestart in ${delayMs}ms")
         mainHandler.postDelayed({
             if (!destroyed) startListening()
         }, delayMs)
@@ -162,7 +146,10 @@ class VoiceAssistantManager(
 
     private fun scheduleSafetyRestart() {
         cancelSafetyRestart()
-        val r = Runnable { if (!destroyed && !isListening.get()) startListening() }
+        val r = Runnable {
+            Log.w(TAG, "Safety timer fired → restart (speakResponse chưa được gọi?)")
+            if (!destroyed && !isListening.get()) startListening()
+        }
         safetyRunnable = r
         mainHandler.postDelayed(r, RESULT_NO_TTS_TIMEOUT_MS)
     }
@@ -173,9 +160,10 @@ class VoiceAssistantManager(
     }
 
     companion object {
-        private const val WATCHDOG_TIMEOUT_MS        = 25_000L
-        private const val HARD_ERROR_BASE_DELAY_MS   = 800L
-        private const val MAX_HARD_ERROR_STEPS       = 5
-        private const val RESULT_NO_TTS_TIMEOUT_MS   = 15_000L
+        private const val TAG = "VoiceManager"
+        private const val WATCHDOG_TIMEOUT_MS      = 25_000L
+        private const val HARD_ERROR_BASE_DELAY_MS = 800L
+        private const val MAX_HARD_ERROR_STEPS     = 5
+        private const val RESULT_NO_TTS_TIMEOUT_MS = 15_000L
     }
 }
