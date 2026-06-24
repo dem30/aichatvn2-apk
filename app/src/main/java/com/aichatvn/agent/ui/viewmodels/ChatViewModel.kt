@@ -90,8 +90,10 @@ class ChatViewModel @Inject constructor(
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
+    // Khai báo trước init để dùng được trong init block
+    @Volatile private var isInForeground = true   // app khởi động = đang ở foreground
+
     init {
-        isInForeground = true   // app khởi động = đang ở foreground
         viewModelScope.launch {
             chatSkill.initialize()
             observeAndSpeak()
@@ -266,10 +268,6 @@ class ChatViewModel @Inject constructor(
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
-
-    // true = app đang ở foreground; false = đã vào background.
-    // Guard này ngăn onForeground() restart recognizer đang hoạt động bình thường.
-    @Volatile private var isInForeground = false
 
     /**
      * Gọi từ ChatScreen khi app vào foreground (ON_START).
