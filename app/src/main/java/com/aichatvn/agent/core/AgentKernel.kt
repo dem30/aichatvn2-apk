@@ -5,6 +5,8 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -476,7 +478,27 @@ class AgentKernel @Inject constructor(
             append("<output>")
         }
 
-        val routerResultJson = groqClient.routeIntent(routerPrompt)
+        // ✅ FIX #2 (đã đính chính): GroqClientTool.routeIntent() trước đây NUỐT mọi lỗi
+        // (network/HTTP) thành SAFE_FALLBACK_INTENT — không treo vô hạn (bị chặn bởi OkHttp
+        // connectTimeout 15s + readTimeout 30s) nhưng lại khiến AgentKernel KHÔNG THỂ phân
+        // biệt "lỗi mạng" với "user chat bình thường" (cả 2 ra cùng 1 JSON). Giờ
+        // GroqClientTool throw GroqRoutingException cho lỗi hạ tầng thật — withTimeout ở
+        // đây vừa giới hạn độ trễ tối đa (15s, ngắn hơn ~45s tổng của OkHttp) vừa đảm bảo
+        // bắt được TimeoutCancellationException nếu coroutine bị treo bất thường.
+        // Catch (Exception) bên dưới nhận cả GroqRoutingException lẫn timeout → luôn trả
+        // RouterFailed → ChatSkill gắn sourcePlugin="router_error" → ChatViewModel đếm lỗi
+        // liên tiếp để tạm dừng hands-free (xem ChatViewModel.observeAndSpeak()).
+        val routerResultJson = try {
+            withTimeout(15_000L) {
+                groqClient.routeIntent(routerPrompt)
+            }
+        } catch (e: TimeoutCancellationException) {
+            logger.e("AgentKernel", "Tier 1 routeIntent timeout sau 15s — mạng chậm/treo")
+            return RouterOutcome.RouterFailed("Tier 1: timeout khi gọi router (mạng chậm/treo)")
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Tier 1 routeIntent error: ${e.message}", e)
+            return RouterOutcome.RouterFailed("Tier 1: lỗi gọi router: ${e.message}")
+        }
         val rawIntent = parseIntentResponse(routerResultJson, userMessage)
             ?: return RouterOutcome.RouterFailed("Tier 1: không parse được JSON: $routerResultJson")
 

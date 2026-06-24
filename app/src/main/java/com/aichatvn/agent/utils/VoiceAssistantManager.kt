@@ -23,12 +23,22 @@ class VoiceAssistantManager(
     val ttsHelper = TextToSpeechHelper(context)
 
     private var listeningTimer: CountDownTimer? = null
+
+    // ✅ FIX #3: Trước đây scheduleRestart() dùng Handler.postDelayed() rời, không lưu lại
+    // Runnable nên không thể hủy. Hậu quả: STT lỗi -> lên lịch restart sau 2s -> người chăm
+    // sóc bấm "Tắt mic" trong 2s đó (stopListening() chạy) -> nhưng sau 2s Handler vẫn chạy,
+    // mic tự bật lại dù vừa bị tắt thủ công. Giờ lưu Runnable + Handler dùng chung để
+    // stopListening()/destroy() có thể removeCallbacks() hủy đúng restart đang chờ.
+    private val restartHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingRestart: Runnable? = null
+
     @Volatile private var destroyed = false
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     fun startListening() {
         if (destroyed) return
+        cancelPendingRestart()
         onListeningStateChange(true)
 
         sttHelper.startListening(
@@ -50,6 +60,7 @@ class VoiceAssistantManager(
     }
 
     fun stopListening() {
+        cancelPendingRestart()
         stopTimer()
         sttHelper.destroy()
         onListeningStateChange(false)
@@ -80,11 +91,27 @@ class VoiceAssistantManager(
      * Dùng Handler thay vì coroutine để không phụ thuộc vào scope bên ngoài.
      * Đảm bảo restart kể cả khi ViewModel bận xử lý coroutine khác.
      */
+    /**
+     * Dùng Handler thay vì coroutine để không phụ thuộc vào scope bên ngoài.
+     * Đảm bảo restart kể cả khi ViewModel bận xử lý coroutine khác.
+     *
+     * ✅ FIX #3: lưu lại Runnable vào pendingRestart để stopListening()/destroy() có thể
+     * hủy đúng restart đang chờ — tránh mic tự bật lại sau khi đã bị tắt thủ công.
+     */
     private fun scheduleRestart(delayMs: Long) {
         if (destroyed) return
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        cancelPendingRestart()
+        val runnable = Runnable {
+            pendingRestart = null
             if (!destroyed) startListening()
-        }, delayMs)
+        }
+        pendingRestart = runnable
+        restartHandler.postDelayed(runnable, delayMs)
+    }
+
+    private fun cancelPendingRestart() {
+        pendingRestart?.let { restartHandler.removeCallbacks(it) }
+        pendingRestart = null
     }
 
     private fun stopTimer() {

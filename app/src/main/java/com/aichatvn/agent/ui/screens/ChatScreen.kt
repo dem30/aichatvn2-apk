@@ -52,6 +52,7 @@ fun ChatScreen(
     val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
     val isListening by viewModel.isListening.collectAsState()         // ✅ Mic đang bật?
     val voiceModeActive by viewModel.voiceModeActive.collectAsState() // ✅ Hands-free bật?
+    val pausedDueToError by viewModel.pausedDueToError.collectAsState() // ✅ Tự dừng do lỗi mạng?
     
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
@@ -191,6 +192,7 @@ fun ChatScreen(
         Surface(
             modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
             color = when {
+                pausedDueToError -> MaterialTheme.colorScheme.errorContainer
                 isListening -> MaterialTheme.colorScheme.errorContainer
                 voiceModeActive -> MaterialTheme.colorScheme.tertiaryContainer
                 else -> MaterialTheme.colorScheme.surfaceVariant
@@ -205,6 +207,10 @@ fun ChatScreen(
             ) {
                 Text(
                     text = when {
+                        // ✅ MỚI: phân biệt rõ "tự tạm dừng do lỗi mạng liên tiếp" với
+                        // "người chăm sóc tắt thủ công" — để biết cần kiểm tra mạng trước
+                        // khi bật lại, không nghĩ nhầm là ai đó vừa tắt.
+                        pausedDueToError -> "⚠️ Đã tạm dừng do lỗi mạng liên tục — kiểm tra mạng rồi bật lại"
                         isListening -> "🎙️ Đang nghe..."
                         voiceModeActive -> "✅ Hands-free bật — đang chờ"
                         else -> "🔇 Hands-free tắt"
@@ -489,6 +495,7 @@ private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin)
     "notification" -> "🔔 Thông báo"
     "schedule" -> "⏰ Lịch"
     "training" -> "📚 Học"
+    "router_error" -> "⚠️ Lỗi mạng"
     else -> "⚡ ${sourcePlugin.replaceFirstChar { it.uppercase() }}"
 }
 

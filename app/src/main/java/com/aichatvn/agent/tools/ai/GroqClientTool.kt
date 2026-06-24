@@ -75,6 +75,20 @@ private data class GroqParsedResponse(
     val usage: GroqUsage?
 )
 
+/**
+ * ✅ MỚI: Lỗi HẠ TẦNG khi gọi routeIntent() — network, HTTP non-2xx, response rỗng, thiếu
+ * API key. PHẢI phân biệt rõ với trường hợp "model trả lời nhưng nội dung không xác định
+ * được" (vẫn dùng SAFE_FALLBACK_INTENT như cũ).
+ *
+ * Trước đây MỌI lỗi đều bị nuốt thành SAFE_FALLBACK_INTENT = {"plugin":"chat","action":"none"}
+ * — khiến AgentKernel/ChatViewModel không thể phân biệt "user đang chat bình thường" với
+ * "router vừa lỗi mạng". Hệ quả: không thể đếm lỗi liên tiếp để tạm dừng hands-free đúng lúc.
+ * Giờ lỗi hạ tầng được throw ra ngoài để AgentKernel.executeTier1Routing() bắt được và trả
+ * RouterOutcome.RouterFailed — tín hiệu này sau đó được ChatSkill/ChatViewModel dùng để đếm
+ * lỗi liên tiếp và tạm dừng hands-free khi cần.
+ */
+class GroqRoutingException(message: String) : Exception(message)
+
 // ─────────────────────────── TOOL ────────────────────────────────────
 
 /**
@@ -465,30 +479,36 @@ class GroqClientTool @Inject constructor(
     // ─────────────────────────── ROUTE INTENT ────────────────────────
 
     suspend fun routeIntent(prompt: String): String = withContext(Dispatchers.IO) {
-        val apiKey = apiKeyProvider.getKey() ?: return@withContext SAFE_FALLBACK_INTENT
+        // ✅ Thiếu API key là lỗi cấu hình thật — throw để AgentKernel biết, không âm thầm
+        // coi như "user đang chat" (trước đây return@withContext SAFE_FALLBACK_INTENT).
+        val apiKey = apiKeyProvider.getKey()
+            ?: throw GroqRoutingException("Chưa cấu hình Groq API key")
 
-        try {
-            val model     = modelRouter()
-            val maxTokens = maxTokensRouter()
+        val model     = modelRouter()
+        val maxTokens = maxTokensRouter()
 
-            val messages = JSONArray().apply {
-                put(JSONObject().apply { put("role", "user"); put("content", prompt) })
-            }
+        val messages = JSONArray().apply {
+            put(JSONObject().apply { put("role", "user"); put("content", prompt) })
+        }
 
-            val logId = logPrompt(
-                "routeIntent",
-                model,
-                requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens, "temperature" to 0))
-            )
+        val logId = logPrompt(
+            "routeIntent",
+            model,
+            requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens, "temperature" to 0))
+        )
 
-            val body = JSONObject().apply {
-                put("model", model)
-                put("messages", messages)
-                put("max_tokens", maxTokens)
-                put("temperature", 0)
-            }.toString()
+        val body = JSONObject().apply {
+            put("model", model)
+            put("messages", messages)
+            put("max_tokens", maxTokens)
+            put("temperature", 0)
+        }.toString()
 
-            val response = client.newCall(
+        // ✅ Lỗi mạng thật (mất kết nối, DNS, OkHttp timeout 15s/30s...) — KHÔNG nuốt thành
+        // SAFE_FALLBACK_INTENT nữa. Đây chính là tín hiệu mà AgentKernel cần để trả
+        // RouterFailed, từ đó ChatViewModel mới đếm được lỗi liên tiếp.
+        val response = try {
+            client.newCall(
                 Request.Builder()
                     .url(BASE_URL)
                     .addHeader("Authorization", "Bearer $apiKey")
@@ -496,36 +516,49 @@ class GroqClientTool @Inject constructor(
                     .post(body.toRequestBody("application/json".toMediaType()))
                     .build()
             ).execute()
+        } catch (e: Exception) {
+            logger.e("GroqClientTool", "routeIntent network error: ${e.message}", e)
+            updatePromptLogResult(logId, "❌ Network error: ${e.message}", null)
+            throw GroqRoutingException("Lỗi mạng khi gọi router: ${e.message}")
+        }
 
-            captureRateLimit(response, model)
-            val bodyStr = response.body?.string() ?: ""
-            val usage = parseUsage(bodyStr)
+        captureRateLimit(response, model)
+        val bodyStr = response.body?.string() ?: ""
+        val usage = parseUsage(bodyStr)
 
-            if (!response.isSuccessful) {
-                logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
-                updatePromptLogResult(logId, "❌ HTTP ${response.code}", usage)
-                return@withContext SAFE_FALLBACK_INTENT
-            }
-            if (bodyStr.isBlank()) {
-                updatePromptLogResult(logId, "❌ Empty response", usage)
-                return@withContext SAFE_FALLBACK_INTENT
-            }
+        if (!response.isSuccessful) {
+            logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
+            updatePromptLogResult(logId, "❌ HTTP ${response.code}", usage)
+            throw GroqRoutingException("Router HTTP ${response.code}")
+        }
+        if (bodyStr.isBlank()) {
+            updatePromptLogResult(logId, "❌ Empty response", usage)
+            throw GroqRoutingException("Router trả về response rỗng")
+        }
 
-            val resultText = JSONObject(bodyStr)
+        // Model trả lời THÀNH CÔNG (HTTP 2xx, có body) nhưng content rỗng/không parse được
+        // → đây KHÔNG phải lỗi hạ tầng, mà là model "không xác định được ý định" — vẫn dùng
+        // SAFE_FALLBACK_INTENT như cũ, hợp lý vì router thật sự không chắc đây có phải lệnh.
+        val resultText = try {
+            JSONObject(bodyStr)
                 .getJSONArray("choices")
                 .getJSONObject(0)
                 .getJSONObject("message")
                 .getString("content")
                 .trim()
-                .takeIf { it.isNotBlank() } ?: SAFE_FALLBACK_INTENT
-
-            updatePromptLogResult(logId, resultText, usage)
-            resultText
-
+                .takeIf { it.isNotBlank() }
         } catch (e: Exception) {
-            logger.e("GroqClientTool", "routeIntent error: ${e.message}", e)
-            SAFE_FALLBACK_INTENT
+            logger.e("GroqClientTool", "routeIntent parse error: ${e.message}, body=$bodyStr")
+            null
         }
+
+        if (resultText == null) {
+            updatePromptLogResult(logId, "⚠️ Empty/invalid content -> fallback chat", usage)
+            return@withContext SAFE_FALLBACK_INTENT
+        }
+
+        updatePromptLogResult(logId, resultText, usage)
+        resultText
     }
 
     // ─────────────────────────── ANALYZE IMAGE ───────────────────────

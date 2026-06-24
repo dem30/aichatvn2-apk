@@ -329,6 +329,11 @@ class ChatSkill @Inject constructor(
                     is AgentKernel.RouterOutcome.RouterFailed -> {
                         val routerFailed = outcome is AgentKernel.RouterOutcome.RouterFailed
                         usedMode = _chatMode.value.name
+                        // ✅ MỚI: đánh dấu rõ đây là LỖI HẠ TẦNG (network/HTTP khi gọi router),
+                        // không phải chat thường — ChatViewModel.observeAndSpeak() dùng dấu
+                        // hiệu này để đếm số lỗi liên tiếp và tạm dừng hands-free khi cần,
+                        // đúng theo yêu cầu "tier 1 lỗi thì phải dừng".
+                        if (routerFailed) usedPluginId = "router_error"
                         val currentMode = _chatMode.value
                         // ✅ Giảm từ 10 → 6 message thô (≈3 lượt) — đỡ tốn token,
                         // không gửi thêm gì khác ngoài cảnh báo chống bịa (rất ngắn).

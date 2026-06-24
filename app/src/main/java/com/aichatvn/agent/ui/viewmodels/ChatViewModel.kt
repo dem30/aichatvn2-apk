@@ -30,6 +30,11 @@ import android.util.Base64
 data class QuickCommand(val label: String, val text: String)
 data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
 
+// ✅ Số lần lỗi router LIÊN TIẾP tối đa trước khi tự tạm dừng hands-free.
+// 3 lần: đủ chịu được vài lần mạng chập chờn ngắn, nhưng không để loop chạy
+// vô tận khi mạng/server lỗi kéo dài — đúng yêu cầu "tier 1 lỗi thì phải dừng".
+private const val MAX_CONSECUTIVE_ROUTER_FAILURES = 3
+
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
@@ -53,9 +58,17 @@ class ChatViewModel @Inject constructor(
     val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
 
     // true = chế độ hands-free đang bật (loop liên tục)
-    // false = đã tắt thủ công (người chăm sóc tắt hộ)
+    // false = đã tắt thủ công (người chăm sóc tắt hộ) HOẶC bị tự tạm dừng do lỗi liên tiếp
     private val _voiceModeActive = MutableStateFlow(true)
     val voiceModeActive: StateFlow<Boolean> = _voiceModeActive.asStateFlow()
+
+    // ✅ MỚI: true khi hands-free bị TỰ ĐỘNG tạm dừng do lỗi router liên tiếp (không phải
+    // người chăm sóc tắt thủ công) — UI dùng cờ này để hiện thông báo rõ ràng, khác với
+    // trạng thái "tắt thủ công" bình thường.
+    private val _pausedDueToError = MutableStateFlow(false)
+    val pausedDueToError: StateFlow<Boolean> = _pausedDueToError.asStateFlow()
+
+    private var consecutiveRouterFailures = 0
 
     val voiceManager: VoiceAssistantManager by lazy {
         VoiceAssistantManager(
@@ -82,11 +95,21 @@ class ChatViewModel @Inject constructor(
     // ── Init ─────────────────────────────────────────────────────────────────
 
     init {
+        // ✅ FIX #1: Trước đây observeAndSpeak() được gọi NGOÀI viewModelScope.launch, chạy
+        // song song không đảm bảo thứ tự với chatSkill.initialize(). Nếu collector của
+        // observeAndSpeak() bắt đầu lắng nghe TRƯỚC khi initialize() set _messages.value =
+        // lịch sử cũ từ DB, thì emission "lịch sử cũ" sẽ KHÔNG bị drop(1) nuốt (vì lúc đó nó
+        // không phải là emission đầu tiên nữa) → app có thể tự TTS đọc lại tin nhắn assistant
+        // CŨ và tự startListening() ngay khi vừa mở app, dù người dùng chưa nói gì.
+        // Giờ gọi observeAndSpeak() NGAY SAU khi initialize() hoàn tất, trong cùng 1 coroutine
+        // tuần tự → đảm bảo emission đầu tiên collector thấy luôn là lịch sử đã load, và
+        // drop(1) sẽ nuốt đúng nó một cách nhất quán (deterministic), không còn phụ thuộc
+        // vào tốc độ dispatcher.
         viewModelScope.launch {
             chatSkill.initialize()
+            observeAndSpeak()
             startVoiceSession()   // Khởi động voice ngay sau khi chat ready
         }
-        observeAndSpeak()
     }
 
     /**
@@ -132,6 +155,35 @@ class ChatViewModel @Inject constructor(
                 val tts = voiceManager.ttsHelper
                 if (!tts.isReady) return@collect
 
+                // ✅ MỚI: đếm lỗi router liên tiếp (sourcePlugin == "router_error" do
+                // ChatSkill gắn khi AgentKernel.RouterOutcome.RouterFailed — xem GroqClientTool
+                // .routeIntent() đã throw GroqRoutingException thay vì nuốt lỗi như trước).
+                // Theo đúng yêu cầu: "tier 1 lỗi thì phải dừng" — lỗi 1-2 lần có thể chỉ là
+                // chập chờn tạm thời (không dừng vội làm phiền người dùng), nhưng từ lần thứ
+                // MAX_CONSECUTIVE_ROUTER_FAILURES liên tiếp trở đi gần như chắc chắn là mất
+                // mạng/server lỗi kéo dài → chủ động dừng hands-free, đọc to lý do, và để
+                // banner báo người chăm sóc biết cần kiểm tra mạng + bật lại mic.
+                if (last.sourcePlugin == "router_error") {
+                    consecutiveRouterFailures++
+                } else {
+                    consecutiveRouterFailures = 0
+                }
+
+                if (consecutiveRouterFailures >= MAX_CONSECUTIVE_ROUTER_FAILURES) {
+                    consecutiveRouterFailures = 0
+                    _voiceModeActive.value = false
+                    _pausedDueToError.value = true
+                    voiceManager.stopListening()
+                    tts.speak(
+                        "Tôi đang gặp lỗi kết nối mạng nhiều lần liên tiếp. " +
+                            "Tôi sẽ tạm dừng nghe để tránh làm phiền bạn. " +
+                            "Nhờ người chăm sóc kiểm tra mạng và bật mic lại khi sẵn sàng."
+                    )
+                    // Chủ động KHÔNG startListening() lại — đây là điểm dừng có chủ đích,
+                    // khác hẳn các restart tự động khác trong VoiceAssistantManager.
+                    return@collect
+                }
+
                 tts.speak(last.content) {
                     // TTS đọc xong → startListening() lại để tiếp tục loop
                     // VoiceAssistantManager tự xử lý silence/error restart
@@ -139,7 +191,11 @@ class ChatViewModel @Inject constructor(
                     if (_voiceModeActive.value) {
                         viewModelScope.launch {
                             delay(300)
-                            voiceManager.startListening()
+                            // ✅ Kiểm tra lại sau delay — phòng trường hợp người chăm sóc
+                            // tắt hands-free đúng lúc TTS đang đọc (trong 300ms chờ này).
+                            if (_voiceModeActive.value) {
+                                voiceManager.startListening()
+                            }
                         }
                     }
                 }
@@ -152,7 +208,11 @@ class ChatViewModel @Inject constructor(
     fun toggleVoiceMode() {
         val next = !_voiceModeActive.value
         _voiceModeActive.value = next
+        // ✅ Bật lại hands-free (thủ công, sau khi bị tự tạm dừng do lỗi) → xoá cờ báo lỗi
+        // và reset bộ đếm, cho app một cơ hội mới hoàn toàn sạch.
         if (next) {
+            _pausedDueToError.value = false
+            consecutiveRouterFailures = 0
             voiceManager.startListening()
         } else {
             voiceManager.stopListening()
