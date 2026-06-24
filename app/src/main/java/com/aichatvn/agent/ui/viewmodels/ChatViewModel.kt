@@ -15,6 +15,7 @@ import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.VoiceAssistantManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,9 +31,6 @@ import android.util.Base64
 data class QuickCommand(val label: String, val text: String)
 data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
 
-// ✅ Số lần lỗi router LIÊN TIẾP tối đa trước khi tự tạm dừng hands-free.
-// 3 lần: đủ chịu được vài lần mạng chập chờn ngắn, nhưng không để loop chạy
-// vô tận khi mạng/server lỗi kéo dài — đúng yêu cầu "tier 1 lỗi thì phải dừng".
 private const val MAX_CONSECUTIVE_ROUTER_FAILURES = 3
 
 @HiltViewModel
@@ -57,26 +55,24 @@ class ChatViewModel @Inject constructor(
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
 
-    // true = chế độ hands-free đang bật (loop liên tục)
-    // false = đã tắt thủ công (người chăm sóc tắt hộ) HOẶC bị tự tạm dừng do lỗi liên tiếp
     private val _voiceModeActive = MutableStateFlow(true)
     val voiceModeActive: StateFlow<Boolean> = _voiceModeActive.asStateFlow()
 
-    // ✅ MỚI: true khi hands-free bị TỰ ĐỘNG tạm dừng do lỗi router liên tiếp (không phải
-    // người chăm sóc tắt thủ công) — UI dùng cờ này để hiện thông báo rõ ràng, khác với
-    // trạng thái "tắt thủ công" bình thường.
     private val _pausedDueToError = MutableStateFlow(false)
     val pausedDueToError: StateFlow<Boolean> = _pausedDueToError.asStateFlow()
 
     private var consecutiveRouterFailures = 0
 
-    val voiceManager: VoiceAssistantManager by lazy {
-        VoiceAssistantManager(
-            context = context,
-            onListeningStateChange = { listening -> _isListening.value = listening },
-            onTextRecognized = { text -> sendMessage(text) }
-        )
-    }
+    // ✅ FIX: Khởi tạo voiceManager NGAY (không lazy) để TTS bắt đầu init sớm nhất có thể.
+    // Trước đây dùng `by lazy` → TTS chỉ bắt đầu init khi voiceManager được truy cập lần đầu,
+    // thường là trong startVoiceSession() → check isReady ngay lập tức → luôn false vì TTS
+    // init là async (callback TextToSpeech.OnInitListener) chưa kịp chạy → bỏ qua lời chào,
+    // hoặc gọi startListening() trong khi TTS chưa sẵn sàng gây xung đột audio session.
+    val voiceManager: VoiceAssistantManager = VoiceAssistantManager(
+        context = context,
+        onListeningStateChange = { listening -> _isListening.value = listening },
+        onTextRecognized = { text -> sendMessage(text) }
+    )
 
     // ── Quick commands ────────────────────────────────────────────────────────
 
@@ -95,48 +91,47 @@ class ChatViewModel @Inject constructor(
     // ── Init ─────────────────────────────────────────────────────────────────
 
     init {
-        // ✅ FIX #1: Trước đây observeAndSpeak() được gọi NGOÀI viewModelScope.launch, chạy
-        // song song không đảm bảo thứ tự với chatSkill.initialize(). Nếu collector của
-        // observeAndSpeak() bắt đầu lắng nghe TRƯỚC khi initialize() set _messages.value =
-        // lịch sử cũ từ DB, thì emission "lịch sử cũ" sẽ KHÔNG bị drop(1) nuốt (vì lúc đó nó
-        // không phải là emission đầu tiên nữa) → app có thể tự TTS đọc lại tin nhắn assistant
-        // CŨ và tự startListening() ngay khi vừa mở app, dù người dùng chưa nói gì.
-        // Giờ gọi observeAndSpeak() NGAY SAU khi initialize() hoàn tất, trong cùng 1 coroutine
-        // tuần tự → đảm bảo emission đầu tiên collector thấy luôn là lịch sử đã load, và
-        // drop(1) sẽ nuốt đúng nó một cách nhất quán (deterministic), không còn phụ thuộc
-        // vào tốc độ dispatcher.
         viewModelScope.launch {
             chatSkill.initialize()
             observeAndSpeak()
-            startVoiceSession()   // Khởi động voice ngay sau khi chat ready
+            startVoiceSession()
         }
     }
 
     /**
      * Khởi động phiên voice:
-     * 1. Chờ TTS sẵn sàng (tối đa 3 giây)
+     * 1. Chờ TTS sẵn sàng — poll với timeout 5 giây (TTS init thường < 1 giây)
      * 2. Đọc lời chào
-     * 3. Bắt đầu lắng nghe lần đầu
+     * 3. Bắt đầu lắng nghe trong callback onDone của lời chào
+     *
+     * ✅ FIX: Chạy trên Dispatchers.Main để SpeechRecognizer.createSpeechRecognizer()
+     * và startListening() luôn được gọi trên Main thread — yêu cầu bắt buộc của Android.
+     * Vi phạm → silently fail (không throw, không crash, chỉ không nhận giọng nói).
      */
     private fun startVoiceSession() {
-        // ✅ FIX: Dùng Dispatchers.Main để đảm bảo SpeechRecognizer được tạo trên đúng
-        // Main thread — Android yêu cầu điều này tuyệt đối, vi phạm = silently fail
-        // (app hiện "Đang nghe" nhưng mic thật ra không mở, không có âm thanh "tút").
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-            // Chờ TTS init xong — dùng while thay vì repeat để thoát đúng
+        viewModelScope.launch(Dispatchers.Main) {
+            if (!_voiceModeActive.value) return@launch
+
+            // ✅ FIX: Poll isReady với timeout 5 giây thay vì 3 giây.
+            // TTS.OnInitListener chạy trên Main thread — nếu ta đang block Main thread
+            // bằng delay() thì Dispatchers.Main scheduler vẫn xử lý được vì delay() suspend
+            // (không block thread thật), cho phép TTS callback chạy xen vào giữa các delay.
             var waited = 0
-            while (!voiceManager.ttsHelper.isReady && waited < 3000) {
+            while (!voiceManager.ttsHelper.isReady && waited < 5_000) {
                 delay(100)
                 waited += 100
             }
+
             if (!_voiceModeActive.value) return@launch
 
             if (voiceManager.ttsHelper.isReady) {
+                // ✅ startListening() gọi trong onDone callback — KHÔNG gọi trực tiếp ở đây.
+                // onDone chạy sau khi TTS đọc xong → đảm bảo mic không tranh audio session với TTS.
                 voiceManager.ttsHelper.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
                     if (_voiceModeActive.value) voiceManager.startListening()
                 }
             } else {
-                // TTS chưa sẵn sàng sau 3 giây → bắt đầu nghe luôn, không chào
+                // TTS không sẵn sàng sau 5 giây (thiết bị không có TTS engine?) → nghe luôn
                 voiceManager.startListening()
             }
         }
@@ -146,10 +141,12 @@ class ChatViewModel @Inject constructor(
      * Observe messages: khi AI trả lời xong → TTS đọc to → startListening() lại.
      * Đây là vòng lặp hands-free chính.
      *
-     * drop(1): bỏ qua emit đầu tiên (tin nhắn cũ load từ DB).
+     * drop(1): bỏ qua emit đầu tiên (lịch sử cũ load từ DB).
      */
     private fun observeAndSpeak() {
-        viewModelScope.launch {
+        // ✅ FIX: Dùng Dispatchers.Main để startListening() trong TTS onDone callback
+        // luôn được dispatch đúng thread — TTS onDone có thể gọi từ thread bất kỳ.
+        viewModelScope.launch(Dispatchers.Main) {
             messages.drop(1).collect { msgs ->
                 val last = msgs.lastOrNull() ?: return@collect
                 if (last.role != "assistant") return@collect
@@ -158,14 +155,6 @@ class ChatViewModel @Inject constructor(
                 val tts = voiceManager.ttsHelper
                 if (!tts.isReady) return@collect
 
-                // ✅ MỚI: đếm lỗi router liên tiếp (sourcePlugin == "router_error" do
-                // ChatSkill gắn khi AgentKernel.RouterOutcome.RouterFailed — xem GroqClientTool
-                // .routeIntent() đã throw GroqRoutingException thay vì nuốt lỗi như trước).
-                // Theo đúng yêu cầu: "tier 1 lỗi thì phải dừng" — lỗi 1-2 lần có thể chỉ là
-                // chập chờn tạm thời (không dừng vội làm phiền người dùng), nhưng từ lần thứ
-                // MAX_CONSECUTIVE_ROUTER_FAILURES liên tiếp trở đi gần như chắc chắn là mất
-                // mạng/server lỗi kéo dài → chủ động dừng hands-free, đọc to lý do, và để
-                // banner báo người chăm sóc biết cần kiểm tra mạng + bật lại mic.
                 if (last.sourcePlugin == "router_error") {
                     consecutiveRouterFailures++
                 } else {
@@ -182,35 +171,29 @@ class ChatViewModel @Inject constructor(
                             "Tôi sẽ tạm dừng nghe để tránh làm phiền bạn. " +
                             "Nhờ người chăm sóc kiểm tra mạng và bật mic lại khi sẵn sàng."
                     )
-                    // Chủ động KHÔNG startListening() lại — đây là điểm dừng có chủ đích,
-                    // khác hẳn các restart tự động khác trong VoiceAssistantManager.
                     return@collect
                 }
 
                 tts.speak(last.content) {
-                    // TTS onDone callback có thể chạy trên bất kỳ thread nào.
-                    // ✅ FIX: Dùng Dispatchers.Main để startListening() luôn chạy trên
-                    // Main thread — đây là điều kiện bắt buộc của Android SpeechRecognizer.
                     if (_voiceModeActive.value) {
-                        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                            delay(300)
+                        // onDone callback có thể ở thread bất kỳ — post về Main qua Handler
+                        // thay vì launch coroutine để tránh phụ thuộc vào scope availability.
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                             if (_voiceModeActive.value) {
                                 voiceManager.startListening()
                             }
-                        }
+                        }, 300L)
                     }
                 }
             }
         }
     }
 
-    // ── Voice controls (cho nút toggle trên UI, người chăm sóc dùng) ─────────
+    // ── Voice controls ────────────────────────────────────────────────────────
 
     fun toggleVoiceMode() {
         val next = !_voiceModeActive.value
         _voiceModeActive.value = next
-        // ✅ Bật lại hands-free (thủ công, sau khi bị tự tạm dừng do lỗi) → xoá cờ báo lỗi
-        // và reset bộ đếm, cho app một cơ hội mới hoàn toàn sạch.
         if (next) {
             _pausedDueToError.value = false
             consecutiveRouterFailures = 0
@@ -285,13 +268,6 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // ✅ FIX: Xoá kiểm tra `if (::voiceManager.isInitialized)` vì:
-        // 1. voiceManager dùng `by lazy`, không phải `lateinit var`
-        // 2. `::voiceManager.isInitialized` chỉ hoạt động với lateinit, gây lỗi compile
-        // 3. Gọi destroy() trực tiếp hoàn toàn an toàn:
-        //    - Nếu lazy chưa khởi tạo → khởi tạo + ngay lập tức set destroyed=true + cleanup
-        //    - Nếu lazy đã khởi tạo → destroy bình thường
-        //    - VoiceAssistantManager có flag destroyed guard tất cả methods
         voiceManager.destroy()
     }
 }
