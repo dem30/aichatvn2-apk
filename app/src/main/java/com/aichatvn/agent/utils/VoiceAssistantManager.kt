@@ -76,6 +76,12 @@ class VoiceAssistantManager(
 
     private fun startTimeoutTimer() {
         listeningTimer?.cancel()
+        // ✅ FIX: Giảm timeout từ 15 giây → 8 giây
+        // Lý do:
+        // - Người nói thường mất 2-5s cho 1 câu
+        // - 8s đủ chịu được speech chậm (người già, nước ngoài...)
+        // - Giảm latency: nếu im 2 giây → kết thúc sớm hơn, không chờ timeout
+        // - Cải thiện UX: feedback nhanh hơn → người dùng tưởng app đang nghe
         listeningTimer = object : CountDownTimer(LISTEN_TIMEOUT_MS, LISTEN_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
@@ -87,10 +93,6 @@ class VoiceAssistantManager(
         }.start()
     }
 
-    /**
-     * Dùng Handler thay vì coroutine để không phụ thuộc vào scope bên ngoài.
-     * Đảm bảo restart kể cả khi ViewModel bận xử lý coroutine khác.
-     */
     /**
      * Dùng Handler thay vì coroutine để không phụ thuộc vào scope bên ngoài.
      * Đảm bảo restart kể cả khi ViewModel bận xử lý coroutine khác.
@@ -120,6 +122,8 @@ class VoiceAssistantManager(
     }
 
     companion object {
-        private const val LISTEN_TIMEOUT_MS = 15_000L  // 15 giây — đủ cho người nói chậm
+        // ✅ FIX: Giảm từ 15_000L → 8_000L (8 giây)
+        // Giải thích chi tiết xem ở startTimeoutTimer()
+        private const val LISTEN_TIMEOUT_MS = 8_000L
     }
 }

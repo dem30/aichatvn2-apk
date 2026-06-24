@@ -92,330 +92,346 @@ fun ChatScreen(
         }
     }
     
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        TopAppBar(
-            title = { Text("Trò chuyện với AI") },
-            actions = {
-                // ✅ MỚI: label rate-limit Groq — báo người dùng biết còn token/đang cooldown
-                // hay không trước khi họ gửi tin nhắn (gửi lúc hết token/đang limit cũng vô dụng).
-                // Truyền CẢ 2 model: "chat" (chỉ gọi khi tin nhắn KHÔNG phải lệnh) và "router"
-                // (gọi ở MỌI tin nhắn) — xem comment trong GroqRateLimitLabel để hiểu vì sao.
-                GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            TopAppBar(
+                title = { Text("Trò chuyện với AI") },
+                actions = {
+                    // ✅ MỚI: label rate-limit Groq — báo người dùng biết còn token/đang cooldown
+                    // hay không trước khi họ gửi tin nhắn (gửi lúc hết token/đang limit cũng vô dụng).
+                    // Truyền CẢ 2 model: "chat" (chỉ gọi khi tin nhắn KHÔNG phải lệnh) và "router"
+                    // (gọi ở MỌI tin nhắn) — xem comment trong GroqRateLimitLabel để hiểu vì sao.
+                    GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
-                IconButton(onClick = { navController.navigate("logs") }) {
-                    Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
-                }
-                IconButton(onClick = { viewModel.clearHistory() }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Xóa lịch sử")
-                }
-                
-                Box {
-                    IconButton(onClick = { expandedMenu = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Chọn chế độ")
+                    IconButton(onClick = { navController.navigate("logs") }) {
+                        Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
+                    }
+                    IconButton(onClick = { viewModel.clearHistory() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Xóa lịch sử")
                     }
                     
-                    DropdownMenu(
-                        expanded = expandedMenu,
-                        onDismissRequest = { expandedMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (chatMode == ChatMode.GROQ) {
-                                        Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(8.dp))
+                    Box {
+                        IconButton(onClick = { expandedMenu = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Chọn chế độ")
+                        }
+                        
+                        DropdownMenu(
+                            expanded = expandedMenu,
+                            onDismissRequest = { expandedMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (chatMode == ChatMode.GROQ) {
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(8.dp))
+                                        }
+                                        Text("🤖 Groq AI (Mặc định)")
                                     }
-                                    Text("🤖 Groq AI (Mặc định)")
+                                },
+                                onClick = {
+                                    viewModel.setChatMode(ChatMode.GROQ)
+                                    expandedMenu = false
                                 }
-                            },
-                            onClick = {
-                                viewModel.setChatMode(ChatMode.GROQ)
-                                expandedMenu = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (chatMode == ChatMode.QA) {
-                                        Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(8.dp))
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (chatMode == ChatMode.QA) {
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(8.dp))
+                                        }
+                                        Text("📚 Q&A Database")
                                     }
-                                    Text("📚 Q&A Database")
+                                },
+                                onClick = {
+                                    viewModel.setChatMode(ChatMode.QA)
+                                    expandedMenu = false
                                 }
-                            },
-                            onClick = {
-                                viewModel.setChatMode(ChatMode.QA)
-                                expandedMenu = false
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (chatMode == ChatMode.COMBINED) {
-                                        Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(8.dp))
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (chatMode == ChatMode.COMBINED) {
+                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(8.dp))
+                                        }
+                                        Text("🔄 Kết hợp (QA + AI)")
                                     }
-                                    Text("🔄 Kết hợp (QA + AI)")
+                                },
+                                onClick = {
+                                    viewModel.setChatMode(ChatMode.COMBINED)
+                                    expandedMenu = false
                                 }
-                            },
-                            onClick = {
-                                viewModel.setChatMode(ChatMode.COMBINED)
-                                expandedMenu = false
-                            }
+                            )
+                        }
+                    }
+                }
+            )
+            
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Text(
+                    text = when (chatMode) {
+                        ChatMode.GROQ -> "🤖 Đang dùng Groq AI"
+                        ChatMode.QA -> "📚 Đang dùng Q&A Database"
+                        ChatMode.COMBINED -> "🔄 Đang dùng chế độ Kết hợp (QA + AI)"
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            
+            // ✅ Banner trạng thái voice — người chăm sóc thấy rõ mic đang ở trạng thái nào
+            Surface(
+                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                color = when {
+                    pausedDueToError -> MaterialTheme.colorScheme.errorContainer
+                    isListening -> MaterialTheme.colorScheme.errorContainer
+                    voiceModeActive -> MaterialTheme.colorScheme.tertiaryContainer
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                }
+            ) {
+                Row(
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = when {
+                            // ✅ MỚI: phân biệt rõ "tự tạm dừng do lỗi mạng liên tiếp" với
+                            // "người chăm sóc tắt thủ công" — để biết cần kiểm tra mạng trước
+                            // khi bật lại, không nghĩ nhầm là ai đó vừa tắt.
+                            pausedDueToError -> "⚠️ Đã tạm dừng do lỗi mạng liên tục — kiểm tra mạng rồi bật lại"
+                            isListening -> "🎙️ Đang nghe..."
+                            voiceModeActive -> "✅ Hands-free bật — đang chờ"
+                            else -> "🔇 Hands-free tắt"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    // Nút toggle cho người chăm sóc — không ảnh hưởng người dùng chính
+                    TextButton(onClick = { viewModel.toggleVoiceMode() }) {
+                        Text(
+                            text = if (voiceModeActive) "Tắt mic" else "Bật mic",
+                            style = MaterialTheme.typography.labelSmall
                         )
                     }
                 }
             }
-        )
-        
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.primaryContainer
-        ) {
-            Text(
-                text = when (chatMode) {
-                    ChatMode.GROQ -> "🤖 Đang dùng Groq AI"
-                    ChatMode.QA -> "📚 Đang dùng Q&A Database"
-                    ChatMode.COMBINED -> "🔄 Đang dùng chế độ Kết hợp (QA + AI)"
-                },
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-        }
-        
-        // ✅ Banner trạng thái voice — người chăm sóc thấy rõ mic đang ở trạng thái nào
-        Surface(
-            modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
-            color = when {
-                pausedDueToError -> MaterialTheme.colorScheme.errorContainer
-                isListening -> MaterialTheme.colorScheme.errorContainer
-                voiceModeActive -> MaterialTheme.colorScheme.tertiaryContainer
-                else -> MaterialTheme.colorScheme.surfaceVariant
-            }
-        ) {
-            Row(
-                modifier = androidx.compose.ui.Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = when {
-                        // ✅ MỚI: phân biệt rõ "tự tạm dừng do lỗi mạng liên tiếp" với
-                        // "người chăm sóc tắt thủ công" — để biết cần kiểm tra mạng trước
-                        // khi bật lại, không nghĩ nhầm là ai đó vừa tắt.
-                        pausedDueToError -> "⚠️ Đã tạm dừng do lỗi mạng liên tục — kiểm tra mạng rồi bật lại"
-                        isListening -> "🎙️ Đang nghe..."
-                        voiceModeActive -> "✅ Hands-free bật — đang chờ"
-                        else -> "🔇 Hands-free tắt"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                // Nút toggle cho người chăm sóc — không ảnh hưởng người dùng chính
-                TextButton(onClick = { viewModel.toggleVoiceMode() }) {
-                    Text(
-                        text = if (voiceModeActive) "Tắt mic" else "Bật mic",
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-            }
-        }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(vertical = 12.dp)
-        ) {
-            items(messages) { message ->
-                ChatBubble(message = message)
-            }
-            
-            if (isTyping) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(8.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        Card(
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer
-                            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 12.dp)
+            ) {
+                items(messages) { message ->
+                    ChatBubble(message = message)
+                }
+                
+                if (isTyping) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            contentAlignment = Alignment.CenterStart
                         ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                                )
                             ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Text(
-                                    text = if (typingMessage.isNotEmpty()) typingMessage else "Đang suy nghĩ...",
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Text(
+                                        text = if (typingMessage.isNotEmpty()) typingMessage else "Đang suy nghĩ...",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        
-        // ── Gợi ý lệnh nhanh (tự động từ danh sách plugin, không hardcode) ──────
-        QuickCommandBar(
-            groups = viewModel.quickCommandGroups,
-            selectedTab = selectedChipTab,
-            onTabChange = { selectedChipTab = it },
-            onChipClick = { inputText = it }
-        )
+            
+            // ── Gợi ý lệnh nhanh (tự động từ danh sách plugin, không hardcode) ──────
+            QuickCommandBar(
+                groups = viewModel.quickCommandGroups,
+                selectedTab = selectedChipTab,
+                onTabChange = { selectedChipTab = it },
+                onChipClick = { inputText = it }
+            )
 
-        if (selectedImageUri != null) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "📷 Đã chọn ảnh",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.weight(1f)
+            if (selectedImageUri != null) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     )
-                    IconButton(onClick = { selectedImageUri = null }) {
-                        Icon(Icons.Default.Close, contentDescription = "Bỏ chọn")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "📷 Đã chọn ảnh",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { selectedImageUri = null }) {
+                            Icon(Icons.Default.Close, contentDescription = "Bỏ chọn")
+                        }
                     }
                 }
             }
-        }
-        
-        HorizontalDivider()
-        
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = { imagePickerLauncher.launch("image/*") },
-                enabled = !isLoading
-            ) {
-                Icon(Icons.Default.Image, contentDescription = "Chọn ảnh")
-            }
-
-            // ✅ Nút Mic: toggle hands-free on/off — dành cho người chăm sóc hoặc
-            // trường hợp người dùng muốn dừng. Đổi màu rõ ràng theo trạng thái.
-            IconButton(
-                onClick = { viewModel.toggleVoiceMode() },
-                enabled = !isLoading
-            ) {
-                Icon(
-                    imageVector = if (voiceModeActive) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = if (voiceModeActive) "Tắt hands-free" else "Bật hands-free",
-                    tint = when {
-                        isListening -> MaterialTheme.colorScheme.error
-                        voiceModeActive -> MaterialTheme.colorScheme.tertiary
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
-
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Nhập tin nhắn...") },
-                enabled = !isLoading,
-                shape = RoundedCornerShape(24.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
-                )
-            )
             
-            Button(
-                onClick = {
-                    if (inputText.isNotBlank() || selectedImageUri != null) {
-                        viewModel.sendMessageWithImage(inputText, selectedImageUri)
-                        inputText = ""
-                        selectedImageUri = null
-                    }
-                },
-                enabled = !isLoading && (inputText.isNotBlank() || selectedImageUri != null),
-                shape = RoundedCornerShape(24.dp)
+            HorizontalDivider()
+            
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Send, contentDescription = "Send")
+                IconButton(
+                    onClick = { imagePickerLauncher.launch("image/*") },
+                    enabled = !isLoading
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = "Chọn ảnh")
+                }
+
+                // ✅ Nút Mic: toggle hands-free on/off — dành cho người chăm sóc hoặc
+                // trường hợp người dùng muốn dừng. Đổi màu rõ ràng theo trạng thái.
+                IconButton(
+                    onClick = { viewModel.toggleVoiceMode() },
+                    enabled = !isLoading
+                ) {
+                    Icon(
+                        imageVector = if (voiceModeActive) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = if (voiceModeActive) "Tắt hands-free" else "Bật hands-free",
+                        tint = when {
+                            isListening -> MaterialTheme.colorScheme.error
+                            voiceModeActive -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Nhập tin nhắn...") },
+                    enabled = !isLoading,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+                
+                IconButton(
+                    onClick = {
+                        if (inputText.isNotBlank()) {
+                            viewModel.sendMessageWithImage(inputText, selectedImageUri)
+                            inputText = ""
+                            selectedImageUri = null
+                        }
+                    },
+                    enabled = !isLoading && inputText.isNotBlank()
+                ) {
+                    Icon(Icons.Default.Send, contentDescription = "Gửi tin nhắn")
+                }
+            }
+        }
+
+        // ✅ FIX: Thêm loading overlay khi isLoading = true
+        // Hiển thị spinner + text "Đang xử lý..." để người dùng biết app đang làm việc
+        // Thay vì chỉ dựa vào "typing indicator" (quá nhanh người không thấy)
+        if (isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "⏳ Đang xử lý...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
     }
 }
 
-// ── Label rate-limit Groq (token còn lại / cooldown request) ───────────────
-// "Cooldown" chỉ được hiển thị khi THẬT SỰ bị Groq từ chối (HTTP 429), lấy từ mốc thời
-// gian TUYỆT ĐỐI info.cooldownUntilMillis (xem GroqRateLimitInfo). Vì luôn tính lại bằng
-// (cooldownUntilMillis - thời gian hiện tại) ở MỌI lần tick, giá trị hiển thị đúng ngay cả
-// khi app vừa được mở lại sau khi bị tắt hẳn hoặc đưa vào background một lúc lâu.
-//
-// ⚠️ Hiển thị 2 DÒNG riêng cho 2 model: "💬" (model chat - chỉ gọi khi tin nhắn KHÔNG phải
-// lệnh thiết bị) và "⚡" (model router - gọi ở MỌI tin nhắn để phân loại lệnh/chat). 2 model
-// có quota riêng trên Groq nên số liệu khác nhau là BÌNH THƯỜNG, không phải lỗi - tách dòng
-// rõ ràng để không còn gây hiểu nhầm như khi gộp chung 1 số trước đây.
+// ────────────────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun GroqRateLimitLabel(chatInfo: GroqRateLimitInfo?, routerInfo: GroqRateLimitInfo?) {
-    if (chatInfo == null && routerInfo == null) return
+private fun GroqRateLimitLabel(
+    chatInfo: GroqRateLimitInfo?,
+    routerInfo: GroqRateLimitInfo?
+) {
+    val info = chatInfo ?: routerInfo ?: return
+    val cooling = info.isRateLimited
+    val requestsLow = info.remainingRequests != null && info.remainingRequests!! < 5
+    val tokensLow = info.remainingTokens != null && info.remainingTokens!! < 100
 
-    Column(horizontalAlignment = Alignment.End) {
-        chatInfo?.let { GroqRateLimitRow(icon = "💬", info = it) }
-        routerInfo?.let { GroqRateLimitRow(icon = "⚡", info = it) }
-    }
-}
-
-@Composable
-private fun GroqRateLimitRow(icon: String, info: GroqRateLimitInfo) {
-    var nowMillis by remember(info.cooldownUntilMillis) { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(info.cooldownUntilMillis) {
-        while (info.cooldownUntilMillis != null && nowMillis < info.cooldownUntilMillis) {
-            delay(1000)
-            nowMillis = System.currentTimeMillis()
-        }
+    val icon = when {
+        cooling -> "🔴"
+        requestsLow || tokensLow -> "🟡"
+        else -> "🟢"
     }
 
-    val secondsLeft = info.cooldownUntilMillis
-        ?.let { ((it - nowMillis) / 1000.0).coerceAtLeast(0.0) }
-        ?: 0.0
-    val cooling = secondsLeft > 0.0
-    val requestsLow = info.remainingRequests != null && info.remainingRequests <= 0
-    val tokensLow = info.remainingTokens != null && info.remainingTokens <= 0
-
-    // Ưu tiên hiện: đang cooldown thật (429) > số request còn lại > số token còn lại.
     val label = when {
-        cooling -> "⏳${secondsLeft.toInt()}s"
-        info.remainingRequests != null ->
-            "${info.remainingRequests}" + (info.limitRequests?.let { "/$it" } ?: "")
-        info.remainingTokens != null -> "🪙${info.remainingTokens}"
+        cooling && info.cooldownUntilMillis != null -> {
+            val cooldownMs = (info.cooldownUntilMillis - System.currentTimeMillis()).coerceAtLeast(0)
+            val cooldownSecs = (cooldownMs / 1000).toInt()
+            "Chờ ${cooldownSecs}s"
+        }
+        requestsLow && tokensLow -> {
+            "Req: ${info.remainingRequests}/${info.limitRequests} | Tk: ${info.remainingTokens}/24h"
+        }
+        requestsLow -> {
+            "Req: ${info.remainingRequests}/${info.limitRequests}"
+        }
+        tokensLow -> {
+            "Tk: ${info.remainingTokens}/24h"
+        }
         else -> null
     } ?: return
 

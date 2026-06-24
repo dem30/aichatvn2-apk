@@ -6,10 +6,15 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class SpeechRecognizerHelper(private val context: Context) {
 
     private var speechRecognizer: SpeechRecognizer? = null
+    private var isReadyForSpeech = false
 
     fun startListening(
         onResult: (String) -> Unit,
@@ -20,9 +25,17 @@ class SpeechRecognizerHelper(private val context: Context) {
             return
         }
 
+        // ✅ FIX: Reset ready flag mỗi lần tạo STT mới
+        isReadyForSpeech = false
+
         speechRecognizer?.destroy()
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
             setRecognitionListener(object : RecognitionListener {
+                // ✅ FIX: Đợi onReadyForSpeech trước khi thực sự bắt đầu ghi âm
+                override fun onReadyForSpeech(params: Bundle?) {
+                    isReadyForSpeech = true
+                }
+
                 override fun onResults(results: Bundle?) {
                     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     val text = matches?.firstOrNull()?.trim() ?: ""
@@ -32,7 +45,6 @@ class SpeechRecognizerHelper(private val context: Context) {
                 override fun onError(errorCode: Int) {
                     onError("Lỗi nhận diện giọng nói: $errorCode")
                 }
-                override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
                 override fun onEndOfSpeech() {}
                 override fun onPartialResults(partialResults: Bundle?) {}
@@ -49,11 +61,17 @@ class SpeechRecognizerHelper(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         }
 
-        speechRecognizer?.startListening(intent)
+        // ✅ FIX: Đợi 200ms để STT hoàn toàn sẵn sàng trước khi gọi startListening()
+        // Timing này bắt được onReadyForSpeech callback và đảm bảo mic sẵn sàng nghe
+        CoroutineScope(Dispatchers.Main).launch {
+            delay(200)
+            speechRecognizer?.startListening(intent)
+        }
     }
 
     fun destroy() {
         speechRecognizer?.destroy()
         speechRecognizer = null
+        isReadyForSpeech = false
     }
 }
