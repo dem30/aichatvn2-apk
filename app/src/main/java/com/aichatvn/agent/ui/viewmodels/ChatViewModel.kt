@@ -284,8 +284,13 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        if (::voiceManager.isInitialized) {
-            voiceManager.destroy()
-        }
+        // ✅ FIX: Xoá kiểm tra `if (::voiceManager.isInitialized)` vì:
+        // 1. voiceManager dùng `by lazy`, không phải `lateinit var`
+        // 2. `::voiceManager.isInitialized` chỉ hoạt động với lateinit, gây lỗi compile
+        // 3. Gọi destroy() trực tiếp hoàn toàn an toàn:
+        //    - Nếu lazy chưa khởi tạo → khởi tạo + ngay lập tức set destroyed=true + cleanup
+        //    - Nếu lazy đã khởi tạo → destroy bình thường
+        //    - VoiceAssistantManager có flag destroyed guard tất cả methods
+        voiceManager.destroy()
     }
 }
