@@ -15,35 +15,7 @@ import kotlin.jvm.JvmSuppressWildcards
 private val EMAIL_REGEX = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 
 /**
- * AgentKernel v9
- *
- * Điểm thay đổi so với v8:
- *
- * 1. tryDeviceCommand() trả về RouterOutcome (Matched / NotACommand / RouterFailed)
- *    thay vì DeviceCommandResult? — phân biệt rõ "đây là chat thường" (NotACommand)
- *    với "router CỐ định tuyến nhưng thất bại" (RouterFailed). ChatSkill dùng
- *    RouterFailed để chèn 1 cảnh báo ngắn cho model lớn, tránh nó bịa ra là đã
- *    thực hiện hành động khi thực ra lệnh chưa chạy được.
- *
- * 2. Pending intent rõ ràng: khi plugin trả NeedMoreInfo, lưu lại pluginId/action/
- *    params đã biết/param còn thiếu vào ChatHistoryManager. Lượt chat kế tiếp ưu
- *    tiên thử điền param còn thiếu bằng 1 prompt SIÊU GỌN (không gửi lại toàn bộ
- *    catalog plugin/qa_facts/schedules) thay vì để router đoán lại từ đầu — vừa
- *    chính xác hơn vừa tiết kiệm token.
- *
- * Điểm thay đổi so với v7:
- *
- * 1. QA được đưa vào router prompt dưới dạng KEY=VALUE CỤ THỂ thay vì text thô.
- *    Router nhỏ không cần "hiểu" — chỉ cần copy đúng giá trị vào đúng param.
- *
- * 2. resolveParamsWithQA() chỉ apply với ALIAS_PARAM_KEYS (email, device, camera...) —
- *    tức là chỉ replace các param mà ngữ nghĩa rõ ràng là "định danh". Không replace
- *    blindly cho mọi param string, tránh case "lịch hôm nay → mỗi 10 phút" đè lên
- *    param sai key (vd `to`, `subject`).
- *
- * 3. QA loại "metadata/config" (Q: lịch hôm nay, A: mỗi 10 phút) được router nhỏ
- *    dùng TRỰC TIẾP từ <qa_facts> trong prompt — model nhận "lịch hôm nay = mỗi 10 phút"
- *    và tự điền vào param đúng (interval, schedule, cron...) theo plugin schema.
+ * AgentKernel v9 (Optimized with Advanced Pending Safeguards & Safe Coalescing)
  */
 @Singleton
 class AgentKernel @Inject constructor(
@@ -57,51 +29,43 @@ class AgentKernel @Inject constructor(
     companion object {
         /**
          * Các param key mà resolveParamsWithQA() được phép replace.
-         * Chỉ gồm "định danh" (email, device ID, camera ID...) — KHÔNG gồm
-         * "metadata" như interval, schedule, subject, body vì những thứ đó
-         * router phải tự điền đúng key từ QA facts trong prompt.
          */
         private val ALIAS_PARAM_KEYS = setOf(
-            "to", "email", "recipient",          // email
-            "device", "device_id", "deviceId",   // thiết bị Tuya
-            "camera", "camera_id", "cameraId"    // camera
+            "to", "email", "recipient",                          // email
+            "device", "device_id", "deviceId",                   // thiết bị Tuya
+            "camera", "camera_id", "cameraId",                   // camera
+            "schedule", "schedule_id", "scheduleId"              // lịch trình / cron
         )
 
         // ─────────────────────────────────────────────────────────────────
         // TIER 0: Keyword → Plugin patterns (0 token, no LLM)
         // ─────────────────────────────────────────────────────────────────
 
-        /**
-         * Pattern nhận diện plugin từ keyword trong câu user.
-         * Thứ tự quan trọng: pattern đặc thù hơn được kiểm tra trước.
-         */
         private val TIER_ZERO_PATTERNS = mapOf(
             "light" to listOf(
-                Regex("(bật|tắt|mở|tắt)\\s+(đèn|light)", RegexOption.IGNORE_CASE),
-                Regex("(sáng|tối|tắt).*(đèn|phòng)", RegexOption.IGNORE_CASE)
+                Regex("(bật|tắt|mở|đóng|sáng|tối).*?(đèn|light|phòng)", RegexOption.IGNORE_CASE)
             ),
             "device" to listOf(
-                Regex("(bật|tắt|mở|đóng|kích hoạt|vô hiệu|switch|on|off).*(?:relay|device|thiết bị)",
+                Regex("(bật|tắt|mở|đóng|kích hoạt|vô hiệu|switch|on|off).*?(?:relay|device|thiết bị)",
                       RegexOption.IGNORE_CASE),
                 Regex("relay[\\s_]?\\d+", RegexOption.IGNORE_CASE)
             ),
             "camera" to listOf(
                 Regex("(camera|giám sát|snapshot|chụp)", RegexOption.IGNORE_CASE),
-                Regex("(hình ảnh|ảnh|snapshot).*camera", RegexOption.IGNORE_CASE)
+                Regex("(hình ảnh|ảnh|snapshot).*?camera", RegexOption.IGNORE_CASE)
             ),
             "email" to listOf(
-                Regex("(gửi|send).*(mail|email|thư)", RegexOption.IGNORE_CASE),
-                Regex("(mail|email).*(cho|to|gửi)", RegexOption.IGNORE_CASE)
+                Regex("(gửi|send).*?(mail|email|thư)", RegexOption.IGNORE_CASE),
+                Regex("(mail|email).*?(cho|to|gửi)", RegexOption.IGNORE_CASE)
             ),
             "schedule" to listOf(
                 Regex("(đặt lịch|tạo lịch|thêm lịch|add schedule)", RegexOption.IGNORE_CASE),
-                Regex("(mỗi|định kỳ).*(phút|giờ|ngày|tuần)", RegexOption.IGNORE_CASE)
+                Regex("(mỗi|định kỳ).*?(phút|giờ|ngày|tuần|lịch|schedule|cron)", RegexOption.IGNORE_CASE)
             )
         )
 
         /**
          * Regex extract param value trực tiếp từ text message.
-         * Ví dụ: "relay 1" → device_id = "relay1"
          */
         private val EXTRACTABLE_PARAM_PATTERNS = mapOf(
             "device_id" to listOf(
@@ -112,10 +76,10 @@ class AgentKernel @Inject constructor(
                 Regex("camera[\\s_]?([a-z0-9_]+)", RegexOption.IGNORE_CASE)
             ),
             "to" to listOf(
-                Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
+                Regex("\\b[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b")
             ),
             "subject" to listOf(
-                Regex("subject:?\\s*(.+?)(?:body|message|$)", RegexOption.IGNORE_CASE)
+                Regex("subject:?\\s*([\\w\\sàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]{1,50})", RegexOption.IGNORE_CASE)
             )
         )
 
@@ -123,14 +87,9 @@ class AgentKernel @Inject constructor(
         // TIER 1: Plugin keyword scoring (smart filtering)
         // ─────────────────────────────────────────────────────────────────
 
-        /**
-         * Từ khoá liên kết với từng plugin, dùng để tính điểm phù hợp.
-         * Chat không có keyword → luôn fallback, không bao giờ được chọn ở Tier 1.
-         */
         private val PLUGIN_KEYWORDS = mapOf(
             "device" to listOf(
-                "device", "thiết bị", "bật", "tắt", "mở", "đóng",
-                "relay", "switch", "kích hoạt", "vô hiệu"
+                "device", "thiết bị", "relay", "switch", "kích hoạt", "vô hiệu"
             ),
             "light" to listOf(
                 "đèn", "light", "sáng", "tối", "ánh sáng", "thắp sáng"
@@ -150,10 +109,6 @@ class AgentKernel @Inject constructor(
 
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.visibleInQuickBar }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Metrics (Tier 0 / Tier 1 hit tracking)
-    // ─────────────────────────────────────────────────────────────────────────
-
     private var tier0Calls = 0
     private var tier0Hits  = 0
     private var tier1Calls = 0
@@ -162,16 +117,8 @@ class AgentKernel @Inject constructor(
         "tier0_total"    to tier0Calls,
         "tier0_hit_rate" to if (tier0Calls > 0) tier0Hits * 100 / tier0Calls else 0,
         "tier1_total"    to tier1Calls,
-        "tokens_saved_approx" to (tier0Hits * 2400)   // ~2400 tokens tiết kiệm mỗi Tier-0 hit
+        "tokens_saved_approx" to (tier0Hits * 2400)
     )
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // tryDeviceCommand — định tuyến 3 tầng (Tier 0 → Tier 1 → Tier 2/chat)
-    //
-    // Tier 0: Keyword match local (0 token, <5ms) — ~70% lệnh đơn giản
-    // Tier 1: Smart plugin filtering + LLM nhỏ (~650 tokens thay vì ~2400)
-    // Tier 2: Chat thường (xử lý ở ChatSkill khi trả NotACommand / RouterFailed)
-    // ─────────────────────────────────────────────────────────────────────────
 
     suspend fun tryDeviceCommand(
         userMessage: String,
@@ -181,13 +128,12 @@ class AgentKernel @Inject constructor(
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
         // ─────────────────────────────────────────────────────────────────
-        // PRE-CHECK: Pending intent (ultra-fast, <10ms)
+        // PRE-CHECK: Pending intent
         // ─────────────────────────────────────────────────────────────────
         val pending = chatHistoryManager.getActivePendingIntent()
         if (pending != null) {
             val resolved = tryResolvePendingIntent(pending, userMessage, devicePlugins)
             if (resolved != null) return RouterOutcome.Matched(resolved)
-            // null → pending không còn hợp lệ / user hỏi việc khác → rơi xuống Tier 0
         }
 
         val rawQAMatches = buildRawQAMatches(userMessage, username)
@@ -201,8 +147,10 @@ class AgentKernel @Inject constructor(
             tier0Hits++
             val (t0Plugin, t0Intent) = tier0Result
             logger.d("AgentKernel", "✅ Tier 0 HIT: ${t0Intent.pluginId}.${t0Intent.action} | params=${t0Intent.params}")
-            t0Intent.params["device"]?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
-            t0Intent.params["device_id"]?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
+            
+            // Cập nhật thiết bị an toàn bằng cơ chế coalescing để tránh ghi đè lỗi
+            val device = t0Intent.params["device_id"] ?: t0Intent.params["deviceId"] ?: t0Intent.params["device"]
+            device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
             return try {
                 val result = t0Plugin.execute(t0Intent.action, t0Intent.params)
@@ -233,28 +181,13 @@ class AgentKernel @Inject constructor(
         }
 
         // ─────────────────────────────────────────────────────────────────
-        // TIER 1: Smart plugin filtering → LLM router với catalog thu gọn
+        // TIER 1: Smart plugin filtering → LLM router
         // ─────────────────────────────────────────────────────────────────
         tier1Calls++
         logger.d("AgentKernel", "🔵 Tier 1: Keyword miss → LLM routing")
         return executeTier1Routing(userMessage, rawQAMatches, devicePlugins)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // TIER 0 — tryTierZeroIntent
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Nhận diện intent nhanh từ keyword — không gọi LLM.
-     *
-     * Logic:
-     *  1. Match plugin từ TIER_ZERO_PATTERNS
-     *  2. Chọn action phù hợp (turnOn/turnOff theo từ khoá bật/tắt)
-     *  3. Extract param từ message (regex) + QA facts + context
-     *  4. Kiểm tra đủ required param → nếu thiếu: return null → Tier 1
-     *
-     * Return: Pair<Plugin, Intent> nếu đủ điều kiện execute, null nếu cần Tier 1.
-     */
     private suspend fun tryTierZeroIntent(
         userMessage: String,
         qaMatches: List<QAEntity>,
@@ -271,7 +204,7 @@ class AgentKernel @Inject constructor(
         val plugin = devicePlugins.find { it.id == detectedPluginId } ?: return null
         logger.d("AgentKernel", "🔍 Tier 0: Plugin detected = $detectedPluginId")
 
-        // Step 2: Select action — ưu tiên match turnOn/turnOff theo từ khoá
+        // Step 2: Select action
         val lowerMsg = userMessage.lowercase()
         val action = when {
             lowerMsg.containsAny("bật", "mở", "on", "kích hoạt") ->
@@ -301,16 +234,15 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // Step 3b: Resolve alias params từ QA facts
+        // Step 3b: Resolve alias params từ QA facts (Sử dụng ranh giới từ để khớp chính xác hơn)
         val paramsToResolve = action.parameters
             .filter { it.required && it.name in ALIAS_PARAM_KEYS && it.name !in extractedParams }
 
+        val sortedQA = qaMatches.sortedByDescending { it.question.length }
         paramsToResolve.forEach { param ->
-            val matchedQA = qaMatches.firstOrNull { qa ->
-                userMessage.contains(qa.question, ignoreCase = true) ||
-                extractedParams.values.any { v ->
-                    v.toString().contains(qa.question, ignoreCase = true)
-                }
+            val matchedQA = sortedQA.firstOrNull { qa ->
+                val boundaryRegex = Regex("\\b${Regex.escape(qa.question)}\\b", RegexOption.IGNORE_CASE)
+                boundaryRegex.containsMatchIn(userMessage)
             }
             if (matchedQA != null) {
                 extractedParams[param.name] = matchedQA.answer
@@ -330,7 +262,7 @@ class AgentKernel @Inject constructor(
                 }
         }
 
-        // Step 4: Validate — đủ required param?
+        // Step 4: Validate
         val missingRequired = action.parameters
             .filter { it.required }
             .map { it.name }
@@ -341,8 +273,7 @@ class AgentKernel @Inject constructor(
             return null
         }
 
-        logger.d("AgentKernel",
-            "✅ Tier 0 ready: $detectedPluginId.${action.name} | params=$extractedParams")
+        logger.d("AgentKernel", "✅ Tier 0 ready: $detectedPluginId.${action.name} | params=$extractedParams")
 
         return Pair(
             plugin,
@@ -350,36 +281,40 @@ class AgentKernel @Inject constructor(
         )
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // TIER 1 — filterRelevantPlugins + executeTier1Routing
-    // ─────────────────────────────────────────────────────────────────────────
-
     /**
-     * Tính điểm phù hợp và trả về tối đa 3 plugin liên quan nhất với message.
-     * Gửi ít plugin hơn cho LLM → ít token hơn (~150 token thay vì ~1000).
+     * Sắp xếp và chọn ra các plugin tương quan nhất.
+     * Giải quyết triệt để lỗi chứa chuỗi con (contains match) bằng cách tách từ (split tokens) 
+     * và chỉ so khớp trọn vẹn ranh giới từ (\bword\b).
      */
     private fun filterRelevantPlugins(
         userMessage: String,
         allPlugins: List<Plugin>
     ): List<Plugin> {
+        val userWords = userMessage.lowercase()
+            .split(Regex("[^\\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+"))
+            .filter { it.isNotEmpty() }
+            .toSet()
+
         val scores = allPlugins.map { plugin ->
             var score = 0.0
 
-            // Keyword score (weight 2x)
+            // Keyword score (weight 2x) sử dụng ranh giới từ chính xác
             val keywordHits = PLUGIN_KEYWORDS[plugin.id]
-                ?.count { keyword -> userMessage.contains(keyword, ignoreCase = true) }
-                ?: 0
+                ?.count { keyword ->
+                    val regex = Regex("\\b${Regex.escape(keyword)}\\b", RegexOption.IGNORE_CASE)
+                    regex.containsMatchIn(userMessage)
+                } ?: 0
             score += keywordHits * 2.0
 
-            // Action description word match (weight 1x)
+            // Action description word match (weight 1x) chỉ so khớp ranh giới từ để loại bỏ case "ảnh" match nhầm "ảnh hưởng"
             val descHits = plugin.getActions()
                 .flatMap { action ->
-                    action.description.split(Regex("[^\\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+"))
+                    action.description.lowercase()
+                        .split(Regex("[^\\wàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+"))
                 }
-                .count { word -> word.length > 2 && userMessage.contains(word, ignoreCase = true) }
+                .count { word -> word.length > 2 && userWords.contains(word) }
             score += descHits.toDouble()
 
-            // Plugin id literal match (weight 1.5x)
             if (userMessage.contains(plugin.id, ignoreCase = true)) score += 1.5
 
             Pair(plugin, score)
@@ -387,25 +322,19 @@ class AgentKernel @Inject constructor(
 
         val relevant = scores
             .filter { it.second > 0 }
-            .sortedByDescending { it.second }
-            .take(3)
+            .sortedWith(compareByDescending<Pair<Plugin, Double>> { it.second }.thenBy { it.first.id })
+            .take(5)
             .map { it.first }
 
-        // Fallback: không match được gì → gửi top default plugins
         val result = relevant.ifEmpty {
-            allPlugins.filter { it.id in listOf("device", "schedule", "camera") }
-                .take(3)
+            allPlugins.filter { it.id in listOf("device", "schedule", "camera", "light", "email") }
+                .take(5)
         }
 
-        logger.d("AgentKernel",
-            "🔵 Tier 1 plugin filter: ${result.size} selected = ${result.map { it.id }}")
+        logger.d("AgentKernel", "🔵 Tier 1 plugin filter: ${result.size} selected = ${result.map { it.id }}")
         return result
     }
 
-    /**
-     * Tier 1 routing: gọi LLM chỉ với relevant plugins + top-3 QA + schedules (nếu cần).
-     * Token cost ~650 thay vì ~2400 của router đầy đủ.
-     */
     private suspend fun executeTier1Routing(
         userMessage: String,
         rawQAMatches: List<QAEntity>,
@@ -413,7 +342,6 @@ class AgentKernel @Inject constructor(
     ): RouterOutcome {
         val relevantPlugins = filterRelevantPlugins(userMessage, devicePlugins)
 
-        // Catalog thu gọn — chỉ relevant plugins
         val compactCatalog = relevantPlugins.joinToString("\n\n") { plugin ->
             val actionLines = plugin.getActions().joinToString("\n") { action ->
                 val paramsSig = action.parameters.joinToString(",") { p ->
@@ -425,13 +353,11 @@ class AgentKernel @Inject constructor(
             "plugin \"${plugin.id}\":\n$actionLines"
         }
 
-        // QA facts: top 3 thay vì toàn bộ
         val qaFacts = if (rawQAMatches.isEmpty()) ""
         else rawQAMatches.take(3).joinToString("\n") { qa ->
             "${qa.question} = ${qa.answer}"
         }
 
-        // Schedules: chỉ load khi user nhắc "lịch/schedule/cron", giới hạn 3 item
         val needsSchedule = userMessage.contains(
             Regex("lịch|schedule|cron|xoá lịch|xóa lịch", RegexOption.IGNORE_CASE))
         val schedulesContext = if (!needsSchedule) "" else try {
@@ -478,16 +404,6 @@ class AgentKernel @Inject constructor(
             append("<output>")
         }
 
-        // ✅ FIX #2 (đã đính chính): GroqClientTool.routeIntent() trước đây NUỐT mọi lỗi
-        // (network/HTTP) thành SAFE_FALLBACK_INTENT — không treo vô hạn (bị chặn bởi OkHttp
-        // connectTimeout 15s + readTimeout 30s) nhưng lại khiến AgentKernel KHÔNG THỂ phân
-        // biệt "lỗi mạng" với "user chat bình thường" (cả 2 ra cùng 1 JSON). Giờ
-        // GroqClientTool throw GroqRoutingException cho lỗi hạ tầng thật — withTimeout ở
-        // đây vừa giới hạn độ trễ tối đa (15s, ngắn hơn ~45s tổng của OkHttp) vừa đảm bảo
-        // bắt được TimeoutCancellationException nếu coroutine bị treo bất thường.
-        // Catch (Exception) bên dưới nhận cả GroqRoutingException lẫn timeout → luôn trả
-        // RouterFailed → ChatSkill gắn sourcePlugin="router_error" → ChatViewModel đếm lỗi
-        // liên tiếp để tạm dừng hands-free (xem ChatViewModel.observeAndSpeak()).
         val routerResultJson = try {
             withTimeout(15_000L) {
                 groqClient.routeIntent(routerPrompt)
@@ -507,7 +423,6 @@ class AgentKernel @Inject constructor(
         if (rawIntent.pluginId == "chat")
             return RouterOutcome.NotACommand
 
-        // Validate: plugin phải thuộc danh sách relevant (không để LLM bịa plugin lạ)
         val allowedIds = relevantPlugins.map { it.id }.toSet() + devicePlugins.map { it.id }.toSet()
         if (rawIntent.pluginId !in allowedIds) {
             logger.w("AgentKernel", "Tier 1: LLM đề xuất plugin không hợp lệ: ${rawIntent.pluginId}")
@@ -517,17 +432,21 @@ class AgentKernel @Inject constructor(
         val targetPlugin = devicePlugins.find { it.id == rawIntent.pluginId }
             ?: return RouterOutcome.RouterFailed("Tier 1: không tìm thấy plugin: ${rawIntent.pluginId}")
 
-        // Alias fallback — lưới an toàn cho ALIAS_PARAM_KEYS
+        // Validate Action hợp lệ của plugin
+        if (targetPlugin.getActions().none { it.name == rawIntent.action }) {
+            return RouterOutcome.RouterFailed("Tier 1: action không hợp lệ: ${rawIntent.action} trong plugin ${targetPlugin.id}")
+        }
+
         val intent = rawIntent.copy(params = resolveAliasParams(rawIntent.params, rawQAMatches))
         if (rawIntent.params != intent.params) {
             logger.d("AgentKernel", "🔄 Tier 1 alias fallback: ${rawIntent.params} → ${intent.params}")
         }
 
-        logger.d("AgentKernel",
-            "🔥 Tier 1 matched: ${intent.pluginId}.${intent.action} | params=${intent.params}")
+        logger.d("AgentKernel", "🔥 Tier 1 matched: ${intent.pluginId}.${intent.action} | params=${intent.params}")
 
-        intent.params["device"]?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
-        intent.params["device_id"]?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
+        // Cập nhật thiết bị an toàn bằng cơ chế coalescing tránh ghi đè sai living_room
+        val device = intent.params["device_id"] ?: intent.params["deviceId"] ?: intent.params["device"]
+        device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
         val executionResult = try {
             targetPlugin.execute(intent.action, intent.params)
@@ -561,13 +480,33 @@ class AgentKernel @Inject constructor(
     }
 
     /**
-     * Thử điền các param còn thiếu của 1 pending intent bằng prompt SIÊU GỌN
-     * (chỉ gồm: action cần param gì, câu hỏi đã hỏi, câu trả lời của user) —
-     * KHÔNG gửi lại catalog plugin / qa_facts / schedules như router đầy đủ.
-     *
-     * Trả về null nếu: plugin/action không còn tồn tại, hoặc model xác định
-     * câu trả lời của user KHÔNG liên quan đến câu hỏi đang chờ (user hỏi việc
-     * khác) — cả 2 trường hợp đều nên rơi xuống flow router bình thường.
+     * Hỗ trợ kiểm tra xem tin nhắn mới có thực sự là một lệnh điều khiển mới hay không.
+     */
+    private fun looksLikeNewCommand(userMessage: String, devicePlugins: List<Plugin>): Boolean {
+        // 1. So khớp mẫu Regex của Tier 0
+        val hasTier0Match = TIER_ZERO_PATTERNS.values.any { patterns ->
+            patterns.any { it.containsMatchIn(userMessage) }
+        }
+        if (hasTier0Match) return true
+
+        // 2. Chấm điểm nhanh từ khóa: nếu có ít nhất 2 từ khóa của bất kỳ plugin nào khớp chính xác, đây là lệnh mới
+        val scores = devicePlugins.map { plugin ->
+            val keywordHits = PLUGIN_KEYWORDS[plugin.id]
+                ?.count { keyword ->
+                    val regex = Regex("\\b${Regex.escape(keyword)}\\b", RegexOption.IGNORE_CASE)
+                    regex.containsMatchIn(userMessage)
+                } ?: 0
+            keywordHits
+        }
+        if (scores.any { it >= 2 }) return true
+
+        return false
+    }
+
+    /**
+     * Bổ sung heuristics/validation nhanh để tự động điền các param định dạng rõ ràng (ví dụ email),
+     * tránh việc LLM dịch nhầm sang "unrelated" rồi xóa oan ngữ cảnh pending.
+     * Sử dụng block try/catch và timeout an toàn xung quanh GroqClient.
      */
     private suspend fun tryResolvePendingIntent(
         pending: PendingIntent,
@@ -583,7 +522,6 @@ class AgentKernel @Inject constructor(
             return null
         }
 
-        // Cancel rẻ — không cần LLM, chặn các câu kiểu "thôi", "khỏi cần", "huỷ đi"
         val lower = userMessage.trim().lowercase()
         val cancelWords = listOf("không cần", "huỷ", "hủy", "thôi khỏi", "bỏ qua", "quên đi", "khỏi cần")
         if (cancelWords.any { lower.contains(it) }) {
@@ -595,43 +533,102 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        val fillPrompt = buildString {
-            append("<system>Output ONLY raw JSON, KHÔNG giải thích.\n")
-            append("User đang trả lời 1 câu hỏi bổ sung thông tin cho lệnh còn thiếu param.\n")
-            append("Nếu trả lời của user CUNG CẤP được giá trị cho (các) param còn thiếu, output:\n")
-            append("{\"params\": {${pending.missingParams.joinToString(",") { "\"$it\": \"giá_trị\"" }}}}\n")
-            append("Nếu trả lời của user là 1 yêu cầu/câu hỏi KHÁC, KHÔNG liên quan câu hỏi đang chờ, output:\n")
-            append("{\"unrelated\": true}</system>\n")
-            append("<param_can_dien>${pending.missingParams.joinToString(", ")}</param_can_dien>\n")
-            append("<cau_hoi_da_hoi>${pending.askedQuestion}</cau_hoi_da_hoi>\n")
-            append("<tra_loi_cua_user>$userMessage</tra_loi_cua_user>\n")
-            append("<output>")
+        // 1. Heuristic Validation nhanh không cần LLM để bảo vệ dữ liệu cấu trúc
+        val heuristicFilled = mutableMapOf<String, Any>()
+        for (param in pending.missingParams) {
+            val trimmed = userMessage.trim()
+            if ((param == "to" || param == "email" || param == "recipient") && EMAIL_REGEX.matches(trimmed)) {
+                heuristicFilled[param] = trimmed
+            }
+            if (param == "device_id" || param == "deviceId" || param == "device") {
+                val relayRegex = Regex("relay[\\s_]?(\\d+)", RegexOption.IGNORE_CASE)
+                val match = relayRegex.find(trimmed)
+                if (match != null) {
+                    heuristicFilled[param] = "relay${match.groupValues[1]}"
+                }
+            }
         }
 
-        val rawJson = groqClient.routeIntent(fillPrompt)
-        val parsed = try {
-            val cleaned = rawJson.trim()
-                .removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            JSONObject(cleaned)
-        } catch (e: Exception) {
-            logger.e("AgentKernel", "tryResolvePendingIntent parse error: $rawJson")
-            null
+        // 2. Định tuyến bằng LLM nếu Heuristics chưa giải quyết hết toàn bộ các tham số còn thiếu
+        val finalParsed = if (heuristicFilled.size == pending.missingParams.size) {
+            JSONObject().put("params", JSONObject(heuristicFilled))
+        } else {
+            val fillPrompt = buildString {
+                append("<system>Output ONLY raw JSON, KHÔNG giải thích.\n")
+                append("User đang trả lời 1 câu hỏi bổ sung thông tin cho lệnh còn thiếu param.\n")
+                append("Nếu trả lời của user CUNG CẤP được giá trị cho (các) param còn thiếu, output:\n")
+                append("{\"params\": {${pending.missingParams.joinToString(",") { "\"$it\": \"giá_trị\"" }}}}\n")
+                append("Nếu trả lời của user là 1 yêu cầu/câu hỏi KHÁC, KHÔNG liên quan câu hỏi đang chờ, output:\n")
+                append("{\"unrelated\": true}</system>\n")
+                
+                if (heuristicFilled.isNotEmpty()) {
+                    append("<heuristic_matches>\n")
+                    heuristicFilled.forEach { (k, v) ->
+                        append("Đã phát hiện heuristic cho $k = \"$v\".\n")
+                    }
+                    append("Do đó câu trả lời của user là RẤT LIÊN QUAN. Hãy trích xuất các param còn lại từ input của user.\n")
+                    append("</heuristic_matches>\n")
+                }
+                append("<param_can_dien>${pending.missingParams.joinToString(", ")}</param_can_dien>\n")
+                append("<cau_hoi_da_hoi>${pending.askedQuestion}</cau_hoi_da_hoi>\n")
+                append("<tra_loi_cua_user>$userMessage</tra_loi_cua_user>\n")
+                append("<output>")
+            }
+
+            val parsedJson = try {
+                withTimeout(10_000L) {
+                    val rawJson = groqClient.routeIntent(fillPrompt)
+                    val cleaned = rawJson.trim()
+                        .removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+                    JSONObject(cleaned)
+                }
+            } catch (e: Exception) {
+                logger.e("AgentKernel", "tryResolvePendingIntent route/parse error: ${e.message}", e)
+                null
+            }
+
+            if (parsedJson == null) {
+                // Do mạng lỗi hoặc không parse được JSON, không xóa pending, tiếp tục hỏi lại
+                return DeviceCommandResult(
+                    pluginId = pending.pluginId,
+                    result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
+                )
+            }
+
+            if (parsedJson.optBoolean("unrelated", false)) {
+                if (heuristicFilled.isNotEmpty()) {
+                    // Lưới bảo vệ: LLM báo "unrelated" nhưng heuristics nhận diện được một phần, bỏ qua cờ unrelated
+                    JSONObject().put("params", JSONObject(heuristicFilled))
+                } else {
+                    // Kiểm tra xem có phải là lệnh mới hay không trước khi hủy pending
+                    if (looksLikeNewCommand(userMessage, devicePlugins)) {
+                        chatHistoryManager.clearPendingIntent()
+                        return null // Rơi xuống Tier 0 / Tier 1 bên ngoài để xử trị lệnh mới
+                    } else {
+                        // Trả lời bình thường không định dạng, bảo vệ pending bằng cách giữ lại và hỏi lại
+                        chatHistoryManager.setPendingIntent(
+                            pending.copy(createdAt = System.currentTimeMillis())
+                        )
+                        return DeviceCommandResult(
+                            pluginId = pending.pluginId,
+                            result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
+                        )
+                    }
+                }
+            } else {
+                // Gộp kết quả heuristics tự nhận diện vào JSON kết quả của LLM
+                val paramsObj = parsedJson.optJSONObject("params") ?: JSONObject()
+                heuristicFilled.forEach { (k, v) ->
+                    if (!paramsObj.has(k)) {
+                        paramsObj.put(k, v)
+                    }
+                }
+                parsedJson.put("params", paramsObj)
+                parsedJson
+            }
         }
 
-        if (parsed == null) {
-            // Không parse được — coi như chưa điền thêm gì, hỏi lại câu cũ (không tốn LLM thêm)
-            return DeviceCommandResult(
-                pluginId = pending.pluginId,
-                result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
-            )
-        }
-
-        if (parsed.optBoolean("unrelated", false)) {
-            chatHistoryManager.clearPendingIntent()
-            return null
-        }
-
-        val filled = parsed.optJSONObject("params")?.toMap() ?: emptyMap()
+        val filled = finalParsed?.optJSONObject("params")?.toMap() ?: emptyMap()
         val stillMissing = pending.missingParams.filter { key ->
             val v = filled[key]
             v == null || v.toString().equals("null", ignoreCase = true) ||
@@ -639,7 +636,6 @@ class AgentKernel @Inject constructor(
         }
 
         if (stillMissing.isNotEmpty()) {
-            // Vẫn chưa đủ — giữ pending intent (refresh thời điểm tạo), hỏi lại đúng phần còn thiếu
             val question = "Mình vẫn cần thêm: ${stillMissing.joinToString(", ")}. Bạn cho mình biết nhé?"
             chatHistoryManager.setPendingIntent(
                 pending.copy(missingParams = stillMissing, askedQuestion = question, createdAt = System.currentTimeMillis())
@@ -662,7 +658,6 @@ class AgentKernel @Inject constructor(
         }
 
         if (executionResult is PluginResult.NeedMoreInfo) {
-            // Plugin lại báo thiếu (param khác) — lưu pending mới luôn
             chatHistoryManager.setPendingIntent(
                 PendingIntent(
                     pluginId = targetPlugin.id,
@@ -683,10 +678,6 @@ class AgentKernel @Inject constructor(
 
         return DeviceCommandResult(pluginId = targetPlugin.id, result = executionResult)
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // process — định tuyến ĐẦY ĐỦ bằng model chat lớn (entry-point cũ)
-    // ─────────────────────────────────────────────────────────────────────────
 
     suspend fun process(userMessage: String): PluginResult {
         logger.d("AgentKernel", "Processing: '$userMessage'")
@@ -714,9 +705,6 @@ class AgentKernel @Inject constructor(
     // QA helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Trả về List<QAEntity> thô — dùng cho resolveAliasParams() và build qaFacts string.
-     */
     private suspend fun buildRawQAMatches(
         message: String,
         username: String = "default_user"
@@ -737,9 +725,6 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    /**
-     * Trả về String đã format (cho resolveIntentWithLLM / process()).
-     */
     private suspend fun buildQAContext(
         message: String,
         username: String = "default_user"
@@ -769,45 +754,30 @@ class AgentKernel @Inject constructor(
     // Alias resolver — CHỈ cho ALIAS_PARAM_KEYS, dùng làm lưới an toàn
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Chỉ replace param value nếu:
-     *   1. key nằm trong ALIAS_PARAM_KEYS (to, device, camera...)
-     *   2. value là String chưa hợp lệ (chưa phải email thật / device ID thật)
-     *   3. Tìm thấy QA match theo question ⊇ value hoặc value ⊇ question
-     *
-     * KHÔNG đụng đến các param khác (interval, schedule, subject, body...) —
-     * những thứ đó router đã lấy từ <qa_facts> trong prompt.
-     */
     private fun resolveAliasParams(
         params: Map<String, Any>,
         qaMatches: List<QAEntity>
     ): Map<String, Any> {
         if (qaMatches.isEmpty()) return params
 
+        // Sắp xếp các câu hỏi QA có độ dài dài hơn lên trước để tránh việc match nhầm chuỗi con
+        val sortedQA = qaMatches.sortedByDescending { it.question.length }
+
         return params.mapValues { (key, value) ->
-            // ✅ Generic: schedule.add lồng tham số thật của plugin đích trong key "params"
-            // (vd email cần "to", camera cần "camera"...). Đệ quy vào đây để alias QA cũng
-            // resolve được cho MỌI plugin đích, không chỉ tham số ở cấp 1.
             if (key == "params" && value is Map<*, *>) {
                 @Suppress("UNCHECKED_CAST")
                 return@mapValues resolveAliasParams(value as Map<String, Any>, qaMatches)
             }
-            // Chỉ xử lý param key thuộc danh sách alias
             if (key !in ALIAS_PARAM_KEYS) return@mapValues value
             if (value !is String) return@mapValues value
-            // Nếu đã là email hợp lệ → bỏ qua
             if (EMAIL_REGEX.matches(value)) return@mapValues value
 
-            val matched = qaMatches.firstOrNull { qa ->
-                qa.question.contains(value, ignoreCase = true) ||
-                value.contains(qa.question, ignoreCase = true)
+            val matched = sortedQA.firstOrNull { qa ->
+                qa.question.trim().equals(value.trim(), ignoreCase = true)
             }
 
             if (matched != null) {
-                logger.d(
-                    "AgentKernel",
-                    "🔄 Alias resolved: [$key] \"$value\" → \"${matched.answer}\""
-                )
+                logger.d("AgentKernel", "🔄 Alias resolved: [$key] \"$value\" → \"${matched.answer}\"")
                 matched.answer
             } else {
                 value
@@ -816,7 +786,7 @@ class AgentKernel @Inject constructor(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // LLM routing (dùng cho process())
+    // LLM routing
     // ─────────────────────────────────────────────────────────────────────────
 
     private suspend fun resolveIntentWithLLM(message: String, qaContext: String = ""): Intent? {
@@ -898,7 +868,6 @@ class AgentKernel @Inject constructor(
 
     private fun findPlugin(intent: Intent): Plugin? = plugins.find { it.id == intent.pluginId }
 
-    /** Tiện ích: kiểm tra String có chứa bất kỳ từ khoá nào không. */
     private fun String.containsAny(vararg keywords: String): Boolean =
         keywords.any { this.contains(it, ignoreCase = true) }
 
@@ -906,19 +875,24 @@ class AgentKernel @Inject constructor(
         val map = mutableMapOf<String, Any>()
         keys().forEach { key ->
             val value = get(key)
-            map[key] = when (value) {
-                is JSONObject -> value.toMap()
-                is org.json.JSONArray -> {
-                    val list = mutableListOf<Any>()
-                    for (i in 0 until value.length()) {
-                        list.add(when (val item = value.get(i)) {
-                            is JSONObject -> item.toMap()
-                            else -> item
-                        })
+            if (value != org.json.JSONObject.NULL) { // Lọc bỏ giá trị NULL của JSON để bảo vệ dữ liệu sạch
+                map[key] = when (value) {
+                    is JSONObject -> value.toMap()
+                    is org.json.JSONArray -> {
+                        val list = mutableListOf<Any>()
+                        for (i in 0 until value.length()) {
+                            val item = value.get(i)
+                            if (item != org.json.JSONObject.NULL) {
+                                list.add(when (item) {
+                                    is JSONObject -> item.toMap()
+                                    else -> item
+                                })
+                            }
+                        }
+                        list
                     }
-                    list
+                    else -> value
                 }
-                else -> value
             }
         }
         return map
@@ -939,18 +913,6 @@ class AgentKernel @Inject constructor(
         val result: PluginResult
     )
 
-    /**
-     * Kết quả của tryDeviceCommand() — phân biệt rõ 3 trường hợp để ChatSkill biết
-     * có cần cảnh báo "lệnh thất bại" cho model chat lớn hay không:
-     *
-     * - Matched      : router khớp được lệnh, đã (thử) thực thi — result có thể là
-     *                  Success / Failure / NeedMoreInfo.
-     * - NotACommand  : router xác định đây là chat thường (KHÔNG phải lệnh điều khiển) —
-     *                  rơi xuống chat thường bình thường, không cần cờ báo gì thêm.
-     * - RouterFailed : router CỐ định tuyến (message trông như 1 lệnh) nhưng thất bại
-     *                  (JSON lỗi, hoặc trả về plugin không tồn tại) — ChatSkill cần cho
-     *                  model chat lớn biết điều này để nó KHÔNG bịa ra là đã thực hiện.
-     */
     sealed class RouterOutcome {
         data class Matched(val result: DeviceCommandResult) : RouterOutcome()
         object NotACommand : RouterOutcome()
