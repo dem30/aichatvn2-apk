@@ -15,7 +15,7 @@ import kotlin.jvm.JvmSuppressWildcards
 private val EMAIL_REGEX = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
 
 /**
- * AgentKernel v9 (Optimized with Advanced Pending Safeguards & Safe Coalescing)
+ * AgentKernel v10 (Fully Optimized with High-Density Tier 0 & Compact Tier 1 Prompts)
  */
 @Singleton
 class AgentKernel @Inject constructor(
@@ -40,59 +40,30 @@ class AgentKernel @Inject constructor(
         // ─────────────────────────────────────────────────────────────────
         // TIER 0: Keyword → Plugin patterns (0 token, no LLM)
         // ─────────────────────────────────────────────────────────────────
-
         private val TIER_ZERO_PATTERNS = mapOf(
             "light" to listOf(
-                Regex("(bật|tắt|mở|đóng|sáng|tối).*?(đèn|light|phòng)", RegexOption.IGNORE_CASE)
-            ),
-            "device" to listOf(
-                Regex("(bật|tắt|mở|đóng|kích hoạt|vô hiệu|switch|on|off).*?(?:relay|device|thiết bị)",
-                      RegexOption.IGNORE_CASE),
-                Regex("relay[\\s_]?\\d+", RegexOption.IGNORE_CASE)
+                Regex("(bật|tắt|mở|đóng|sáng|tối|trạng thái|kiểm tra|xem|quét|scan).*?(đèn|light|relay|thiết bị|switch)", RegexOption.IGNORE_CASE)
             ),
             "camera" to listOf(
-                Regex("(camera|giám sát|snapshot|chụp)", RegexOption.IGNORE_CASE),
-                Regex("(hình ảnh|ảnh|snapshot).*?camera", RegexOption.IGNORE_CASE)
+                Regex("(camera|giám sát|snapshot|chụp|hình ảnh|ảnh|quét|scan)", RegexOption.IGNORE_CASE)
             ),
             "email" to listOf(
-                Regex("(gửi|send).*?(mail|email|thư)", RegexOption.IGNORE_CASE),
-                Regex("(mail|email).*?(cho|to|gửi)", RegexOption.IGNORE_CASE)
+                Regex("(gửi|send).*?(mail|email|thư)", RegexOption.IGNORE_CASE)
             ),
             "schedule" to listOf(
-                Regex("(đặt lịch|tạo lịch|thêm lịch|add schedule)", RegexOption.IGNORE_CASE),
-                Regex("(mỗi|định kỳ).*?(phút|giờ|ngày|tuần|lịch|schedule|cron)", RegexOption.IGNORE_CASE)
-            )
-        )
-
-        /**
-         * Regex extract param value trực tiếp từ text message.
-         */
-        private val EXTRACTABLE_PARAM_PATTERNS = mapOf(
-            "device_id" to listOf(
-                Regex("relay[\\s_]?(\\d+)", RegexOption.IGNORE_CASE),
-                Regex("thiết bị[\\s_]?([a-z0-9_]+)", RegexOption.IGNORE_CASE)
+                Regex("(lịch|schedule|cron)", RegexOption.IGNORE_CASE)
             ),
-            "camera_id" to listOf(
-                Regex("camera[\\s_]?([a-z0-9_]+)", RegexOption.IGNORE_CASE)
-            ),
-            "to" to listOf(
-                Regex("\\b[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b")
-            ),
-            "subject" to listOf(
-                Regex("subject:?\\s*([\\w\\sàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]{1,50})", RegexOption.IGNORE_CASE)
+            "notification" to listOf(
+                Regex("(thông báo|notification)", RegexOption.IGNORE_CASE)
             )
         )
 
         // ─────────────────────────────────────────────────────────────────
         // TIER 1: Plugin keyword scoring (smart filtering)
         // ─────────────────────────────────────────────────────────────────
-
         private val PLUGIN_KEYWORDS = mapOf(
-            "device" to listOf(
-                "device", "thiết bị", "relay", "switch", "kích hoạt", "vô hiệu"
-            ),
             "light" to listOf(
-                "đèn", "light", "sáng", "tối", "ánh sáng", "thắp sáng"
+                "đèn", "light", "relay", "switch", "thiết bị", "sáng", "tối"
             ),
             "camera" to listOf(
                 "camera", "giám sát", "snapshot", "hình ảnh", "chụp", "ảnh"
@@ -101,8 +72,10 @@ class AgentKernel @Inject constructor(
                 "mail", "email", "gửi", "thư", "tin nhắn"
             ),
             "schedule" to listOf(
-                "lịch", "schedule", "cron", "định hạn", "mỗi", "định kỳ",
-                "phút", "giờ", "ngày", "tuần"
+                "lịch", "schedule", "cron", "mỗi", "định kỳ", "phút", "giờ", "ngày", "tuần"
+            ),
+            "notification" to listOf(
+                "thông báo", "notification", "báo động"
             )
         )
     }
@@ -148,8 +121,7 @@ class AgentKernel @Inject constructor(
             val (t0Plugin, t0Intent) = tier0Result
             logger.d("AgentKernel", "✅ Tier 0 HIT: ${t0Intent.pluginId}.${t0Intent.action} | params=${t0Intent.params}")
             
-            // Cập nhật thiết bị an toàn bằng cơ chế coalescing để tránh ghi đè lỗi
-            val device = t0Intent.params["device_id"] ?: t0Intent.params["deviceId"] ?: t0Intent.params["device"]
+            val device = t0Intent.params["device"] ?: t0Intent.params["device_id"] ?: t0Intent.params["deviceId"]
             device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
             return try {
@@ -193,99 +165,264 @@ class AgentKernel @Inject constructor(
         qaMatches: List<QAEntity>,
         devicePlugins: List<Plugin>
     ): Pair<Plugin, Intent>? {
-        // Step 1: Detect plugin
-        val detectedPluginId = TIER_ZERO_PATTERNS.entries.firstOrNull { (_, patterns) ->
-            patterns.any { it.containsMatchIn(userMessage) }
-        }?.key ?: run {
-            logger.d("AgentKernel", "🟡 Tier 0: No keyword pattern match")
-            return null
+        val lowerMsg = userMessage.trim().lowercase()
+
+        // 1. LIGHT SKILL (ID: "light")
+        if (lowerMsg.containsAny("đèn", "light", "relay", "thiết bị", "switch")) {
+            val plugin = devicePlugins.find { it.id == "light" }
+            if (plugin != null) {
+                if (lowerMsg.containsAny("quét", "scan", "tìm")) {
+                    return Pair(plugin, Intent("light", "scan"))
+                }
+                if (lowerMsg.containsAny("trạng thái", "status", "kiểm tra", "xem")) {
+                    val deviceName = extractDeviceName(userMessage, listOf("trạng thái", "status", "kiểm tra", "xem", "đèn", "relay", "thiết bị", "switch"))
+                    if (deviceName.isNotEmpty()) {
+                        val params = finalizeTierZeroParams("light", "status", mapOf("device" to deviceName), qaMatches)
+                        return Pair(plugin, Intent("light", "status", params))
+                    }
+                }
+                val isTurnOn = lowerMsg.containsAny("bật", "mở", "on", "kích hoạt", "sáng")
+                val isTurnOff = lowerMsg.containsAny("tắt", "đóng", "off", "vô hiệu", "tối")
+                if (isTurnOn || isTurnOff) {
+                    val state = isTurnOn
+                    val deviceName = extractDeviceName(userMessage, listOf("bật", "tắt", "mở", "đóng", "on", "off", "kích hoạt", "vô hiệu", "sáng", "tối", "đèn", "relay", "thiết bị", "switch"))
+                    if (deviceName.isNotEmpty()) {
+                        val params = finalizeTierZeroParams("light", "set", mapOf("device" to deviceName, "state" to state), qaMatches)
+                        return Pair(plugin, Intent("light", "set", params))
+                    }
+                }
+            }
         }
 
-        val plugin = devicePlugins.find { it.id == detectedPluginId } ?: return null
-        logger.d("AgentKernel", "🔍 Tier 0: Plugin detected = $detectedPluginId")
+        // 2. CAMERA SKILL (ID: "camera")
+        if (lowerMsg.containsAny("camera", "giám sát", "snapshot", "chụp", "hình ảnh", "ảnh")) {
+            val plugin = devicePlugins.find { it.id == "camera" }
+            if (plugin != null) {
+                if (lowerMsg.containsAny("danh sách", "liệt kê", "tất cả")) {
+                    return Pair(plugin, Intent("camera", "list_cameras"))
+                }
+                if (lowerMsg.containsAny("ai", "smart mode", "thông minh")) {
+                    val enabled = lowerMsg.containsAny("bật", "mở", "on", "kích hoạt")
+                    val camName = extractDeviceName(userMessage, listOf("bật", "tắt", "mở", "đóng", "ai", "smart mode", "thông minh", "chế độ", "camera"))
+                    val rawParams = mutableMapOf<String, Any>("enabled" to enabled)
+                    if (camName.isNotEmpty()) rawParams["cameraId"] = camName
+                    val params = finalizeTierZeroParams("camera", "set_smart_mode", rawParams, qaMatches)
+                    return Pair(plugin, Intent("camera", "set_smart_mode", params))
+                }
+                if (lowerMsg.containsAny("theo dõi", "giám sát")) {
+                    val active = lowerMsg.containsAny("bật", "mở", "on", "kích hoạt")
+                    val camName = extractDeviceName(userMessage, listOf("bật", "tắt", "mở", "đóng", "theo dõi", "giám sát", "camera"))
+                    if (camName.isNotEmpty()) {
+                        val params = finalizeTierZeroParams("camera", "set_active", mapOf("cameraId" to camName, "active" to active), qaMatches)
+                        return Pair(plugin, Intent("camera", "set_active", params))
+                    }
+                }
+                if (lowerMsg.containsAny("quét", "scan", "chụp", "hình", "ảnh", "snapshot")) {
+                    val camName = extractDeviceName(userMessage, listOf("quét", "scan", "chụp", "hình", "ảnh", "snapshot", "camera"))
+                    val rawParams = mutableMapOf<String, Any>()
+                    if (camName.isNotEmpty()) rawParams["cameraId"] = camName
+                    val params = finalizeTierZeroParams("camera", "scan", rawParams, qaMatches)
+                    return Pair(plugin, Intent("camera", "scan", params))
+                }
+                if (lowerMsg.containsAny("trạng thái", "status", "kiểm tra", "xem")) {
+                    val camName = extractDeviceName(userMessage, listOf("trạng thái", "status", "kiểm tra", "xem", "camera"))
+                    if (camName.isNotEmpty()) {
+                        val params = finalizeTierZeroParams("camera", "status", mapOf("cameraId" to camName), qaMatches)
+                        return Pair(plugin, Intent("camera", "status", params))
+                    }
+                }
+            }
+        }
 
-        // Step 2: Select action
-        val lowerMsg = userMessage.lowercase()
-        val action = when {
-            lowerMsg.containsAny("bật", "mở", "on", "kích hoạt") ->
-                plugin.getActions().find { it.name.lowercase().contains("on") || it.name == "turnOn" }
-                    ?: plugin.getActions().firstOrNull()
-            lowerMsg.containsAny("tắt", "đóng", "off", "vô hiệu") ->
-                plugin.getActions().find { it.name.lowercase().contains("off") || it.name == "turnOff" }
-                    ?: plugin.getActions().firstOrNull()
-            else -> plugin.getActions().firstOrNull()
-        } ?: return null
+        // 3. EMAIL SKILL (ID: "email")
+        if (lowerMsg.containsAny("mail", "email", "thư")) {
+            val plugin = devicePlugins.find { it.id == "email" }
+            if (plugin != null) {
+                if (lowerMsg.contains("test")) {
+                    val emailMatch = EMAIL_REGEX.find(userMessage)
+                    if (emailMatch != null) {
+                        return Pair(plugin, Intent("email", "test", mapOf("to" to emailMatch.value)))
+                    }
+                }
+                
+                var toVal: String? = EMAIL_REGEX.find(userMessage)?.value
+                if (toVal == null) {
+                    val recipientMatch = Regex("(?i)(?:cho|to|gửi)\\s+([a-zA-Z0-9àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+(?:\\s+[a-zA-Z0-9àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]+){0,2})").find(userMessage)
+                    if (recipientMatch != null) {
+                        val candidate = recipientMatch.groupValues[1].trim()
+                        val cleanCandidate = candidate.split(Regex("(?i)\\s+(?:nội dung|tiêu đề|chủ đề|body|subject|báo)\\b"))[0].trim()
+                        if (cleanCandidate.isNotEmpty()) {
+                            toVal = cleanCandidate
+                        }
+                    }
+                }
+                
+                if (toVal != null) {
+                    val subjectMatch = Regex("(?i)(?:tiêu đề|chủ đề|subject)[:\\s]+(.*?)(?=\\s+(?:nội dung|body|báo)|$)").find(userMessage)
+                    val bodyMatch = Regex("(?i)(?:nội dung|body|báo)[:\\s]+(.*)").find(userMessage)
+                    
+                    val subject = subjectMatch?.groupValues[1]?.trim() ?: "Thông báo hệ thống"
+                    val body = bodyMatch?.groupValues[1]?.trim() ?: userMessage
+                    
+                    val params = finalizeTierZeroParams("email", "send", mapOf(
+                        "to" to toVal,
+                        "subject" to subject,
+                        "body" to body
+                    ), qaMatches)
+                    
+                    return Pair(plugin, Intent("email", "send", params))
+                }
+            }
+        }
 
-        // Step 3a: Extract params từ regex pattern trong message
-        val extractedParams = mutableMapOf<String, Any>()
-        EXTRACTABLE_PARAM_PATTERNS.forEach { (paramName, patterns) ->
-            if (paramName in action.parameters.map { it.name }) {
-                patterns.forEach { pattern ->
-                    if (paramName !in extractedParams) {
-                        val match = pattern.find(userMessage)
-                        if (match != null) {
-                            val value = if (match.groupValues.size > 1 && match.groupValues[1].isNotEmpty())
-                                match.groupValues[1] else match.value
-                            extractedParams[paramName] = value
-                            logger.d("AgentKernel", "  ✓ Tier 0 extracted $paramName = $value (regex)")
+        // 4. SCHEDULE SKILL (ID: "schedule")
+        if (lowerMsg.containsAny("lịch", "schedule", "cron")) {
+            val plugin = devicePlugins.find { it.id == "schedule" }
+            if (plugin != null) {
+                if (lowerMsg.containsAny("danh sách", "xem", "liệt kê", "list")) {
+                    return Pair(plugin, Intent("schedule", "list"))
+                }
+                if (lowerMsg.containsAny("xóa", "xoá", "delete")) {
+                    val idMatch = Regex("([a-f0-9\\-]{36}|\\d+)").find(userMessage)
+                    if (idMatch != null) {
+                        return Pair(plugin, Intent("schedule", "delete", mapOf("id" to idMatch.value)))
+                    }
+                }
+                val isEnableToggle = lowerMsg.containsAny("bật", "kích hoạt", "enable")
+                val isDisableToggle = lowerMsg.containsAny("tắt", "vô hiệu", "disable")
+                if (isEnableToggle || isDisableToggle) {
+                    val idMatch = Regex("([a-f0-9\\-]{36}|\\d+)").find(userMessage)
+                    if (idMatch != null) {
+                        return Pair(plugin, Intent("schedule", "toggle", mapOf(
+                            "id" to idMatch.value,
+                            "enabled" to isEnableToggle
+                        )))
+                    }
+                }
+                
+                // Add schedule
+                if (lowerMsg.containsAny("đặt lịch", "tạo lịch", "thêm lịch", "add schedule")) {
+                    var intervalMinutes = 0
+                    var cron = ""
+                    val intervalMatch = Regex("(?i)(?:mỗi|định kỳ|sau)\\s+(\\d+)\\s+(?:phút|m|min)").find(userMessage)
+                    if (intervalMatch != null) {
+                        intervalMinutes = intervalMatch.groupValues[1].toInt()
+                    } else if (lowerMsg.containsAny("mỗi giờ", "định kỳ mỗi giờ")) {
+                        intervalMinutes = 60
+                    }
+                    val cronMatch = Regex("(?i)cron[:\\s]+([^\\n]+)").find(userMessage)
+                    if (cronMatch != null) {
+                        cron = cronMatch.groupValues[1].trim()
+                    }
+                    
+                    if (intervalMinutes > 0 || cron.isNotEmpty()) {
+                        var targetPluginId = ""
+                        var targetAction = ""
+                        val targetParams = mutableMapOf<String, Any>()
+                        
+                        if (lowerMsg.contains("camera")) {
+                            targetPluginId = "camera"
+                            targetAction = "scan"
+                            val camName = extractDeviceName(userMessage, listOf("đặt lịch", "tạo lịch", "thêm lịch", "add schedule", "mỗi", "phút", "định kỳ", "camera", "quét", "scan"))
+                            if (camName.isNotEmpty()) targetParams["cameraId"] = camName
+                        } else if (lowerMsg.containsAny("đèn", "light", "relay", "thiết bị")) {
+                            targetPluginId = "light"
+                            val isOn = lowerMsg.containsAny("bật", "mở", "on")
+                            val isOff = lowerMsg.containsAny("tắt", "đóng", "off")
+                            if (isOn || isOff) {
+                                targetAction = "set"
+                                targetParams["state"] = isOn
+                                val devName = extractDeviceName(userMessage, listOf("đặt lịch", "tạo lịch", "thêm lịch", "add schedule", "mỗi", "phút", "định kỳ", "đèn", "light", "relay", "thiết bị", "bật", "tắt", "mở", "đóng", "on", "off"))
+                                if (devName.isNotEmpty()) targetParams["device"] = devName
+                            }
+                        } else if (lowerMsg.containsAny("mail", "email")) {
+                            targetPluginId = "email"
+                            targetAction = "send"
+                            val emailMatch = EMAIL_REGEX.find(userMessage)
+                            if (emailMatch != null) targetParams["to"] = emailMatch.value
+                        }
+                        
+                        if (targetPluginId.isNotEmpty() && targetAction.isNotEmpty()) {
+                            val resolvedTargetParams = resolveParamsWithQA(targetParams, qaMatches)
+                            val paramsMap = mutableMapOf<String, Any>(
+                                "pluginId" to targetPluginId,
+                                "action" to targetAction,
+                                "params" to resolvedTargetParams
+                            )
+                            if (cron.isNotEmpty()) paramsMap["cron"] = cron
+                            if (intervalMinutes > 0) paramsMap["intervalMinutes"] = intervalMinutes
+                            return Pair(plugin, Intent("schedule", "add", paramsMap))
                         }
                     }
                 }
             }
         }
 
-        // Step 3b: Resolve alias params từ QA facts (Sử dụng ranh giới từ để khớp chính xác hơn)
-        val paramsToResolve = action.parameters
-            .filter { it.required && it.name in ALIAS_PARAM_KEYS && it.name !in extractedParams }
-
-        val sortedQA = qaMatches.sortedByDescending { it.question.length }
-        paramsToResolve.forEach { param ->
-            val matchedQA = sortedQA.firstOrNull { qa ->
-                val boundaryRegex = Regex("\\b${Regex.escape(qa.question)}\\b", RegexOption.IGNORE_CASE)
-                boundaryRegex.containsMatchIn(userMessage)
-            }
-            if (matchedQA != null) {
-                extractedParams[param.name] = matchedQA.answer
-                logger.d("AgentKernel", "  ✓ Tier 0 resolved ${param.name} = ${matchedQA.answer} (QA)")
-            }
-        }
-
-        // Step 3c: Dùng lastMentionedDeviceId làm fallback cho device_id
-        val lastDevice = chatHistoryManager.lastMentionedDeviceId
-        if (lastDevice != null) {
-            val deviceParamNames = setOf("device_id", "deviceId", "device")
-            action.parameters
-                .filter { it.name in deviceParamNames && it.name !in extractedParams }
-                .forEach {
-                    extractedParams[it.name] = lastDevice
-                    logger.d("AgentKernel", "  ✓ Tier 0 used lastMentionedDevice = $lastDevice")
+        // 5. NOTIFICATION SKILL (ID: "notification")
+        if (lowerMsg.containsAny("thông báo", "notification")) {
+            val plugin = devicePlugins.find { it.id == "notification" }
+            if (plugin != null) {
+                val titleMatch = Regex("(?i)(?:tiêu đề|chủ đề|title)[:\\s]+(.*?)(?=\\s+(?:nội dung|tin nhắn|message)|$)").find(userMessage)
+                val msgMatch = Regex("(?i)(?:nội dung|tin nhắn|message)[:\\s]+(.*)").find(userMessage)
+                
+                val title = titleMatch?.groupValues[1]?.trim() ?: "Thông báo hệ thống"
+                var msg = msgMatch?.groupValues[1]?.trim()
+                
+                if (msg == null) {
+                    msg = extractDeviceName(userMessage, listOf("thông báo", "gửi thông báo", "push notification", "gửi", "tạo", "tin nhắn"))
                 }
+                if (msg.isNotEmpty()) {
+                    return Pair(plugin, Intent("notification", "send", mapOf(
+                        "title" to title,
+                        "message" to msg
+                    )))
+                }
+            }
         }
 
-        // Step 4: Validate
-        val missingRequired = action.parameters
-            .filter { it.required }
-            .map { it.name }
-            .filter { it !in extractedParams }
-
-        if (missingRequired.isNotEmpty()) {
-            logger.d("AgentKernel", "❌ Tier 0: Missing $missingRequired → fallback Tier 1")
-            return null
-        }
-
-        logger.d("AgentKernel", "✅ Tier 0 ready: $detectedPluginId.${action.name} | params=$extractedParams")
-
-        return Pair(
-            plugin,
-            Intent(pluginId = detectedPluginId, action = action.name, params = extractedParams)
-        )
+        return null
     }
 
-    /**
-     * Sắp xếp và chọn ra các plugin tương quan nhất.
-     * Giải quyết triệt để lỗi chứa chuỗi con (contains match) bằng cách tách từ (split tokens) 
-     * và chỉ so khớp trọn vẹn ranh giới từ (\bword\b).
-     */
+    private fun extractDeviceName(text: String, stopWords: List<String>): String {
+        var cleaned = text
+        val politenessPhrases = listOf("vui lòng", "giúp mình", "hộ mình", "giúp", "hộ", "nhé", "nha", "đi", "với", "cho mình")
+        politenessPhrases.forEach { phrase ->
+            cleaned = cleaned.replace(Regex("(?i)\\b${Regex.escape(phrase)}\\b"), "")
+        }
+        cleaned = cleaned.replace(Regex("[,.!?_\\-]"), " ")
+        stopWords.forEach { word ->
+            cleaned = cleaned.replace(Regex("(?i)\\b${Regex.escape(word)}\\b"), "")
+        }
+        return cleaned.replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun finalizeTierZeroParams(
+        pluginId: String,
+        actionName: String,
+        rawParams: Map<String, Any>,
+        qaMatches: List<QAEntity>
+    ): Map<String, Any> {
+        var resolved = resolveParamsWithQA(rawParams, qaMatches)
+        val lastDevice = chatHistoryManager.lastMentionedDeviceId
+        if (lastDevice != null) {
+            val deviceKeys = setOf("device", "device_id", "deviceId")
+            val hasDeviceKeyInSchema = (pluginId == "light" && actionName in setOf("set", "status"))
+            if (hasDeviceKeyInSchema) {
+                val foundKey = deviceKeys.firstOrNull { it in rawParams }
+                if (foundKey != null && (resolved[foundKey] as? String).isNullOrBlank()) {
+                    val mutable = resolved.toMutableMap()
+                    mutable[foundKey] = lastDevice
+                    resolved = mutable
+                } else if (foundKey == null) {
+                    val mutable = resolved.toMutableMap()
+                    mutable["device"] = lastDevice
+                    resolved = mutable
+                }
+            }
+        }
+        return resolved
+    }
+
     private fun filterRelevantPlugins(
         userMessage: String,
         allPlugins: List<Plugin>
@@ -297,8 +434,6 @@ class AgentKernel @Inject constructor(
 
         val scores = allPlugins.map { plugin ->
             var score = 0.0
-
-            // Keyword score (weight 2x) sử dụng ranh giới từ chính xác
             val keywordHits = PLUGIN_KEYWORDS[plugin.id]
                 ?.count { keyword ->
                     val regex = Regex("\\b${Regex.escape(keyword)}\\b", RegexOption.IGNORE_CASE)
@@ -306,7 +441,6 @@ class AgentKernel @Inject constructor(
                 } ?: 0
             score += keywordHits * 2.0
 
-            // Action description word match (weight 1x) chỉ so khớp ranh giới từ để loại bỏ case "ảnh" match nhầm "ảnh hưởng"
             val descHits = plugin.getActions()
                 .flatMap { action ->
                     action.description.lowercase()
@@ -316,7 +450,6 @@ class AgentKernel @Inject constructor(
             score += descHits.toDouble()
 
             if (userMessage.contains(plugin.id, ignoreCase = true)) score += 1.5
-
             Pair(plugin, score)
         }
 
@@ -327,8 +460,7 @@ class AgentKernel @Inject constructor(
             .map { it.first }
 
         val result = relevant.ifEmpty {
-            allPlugins.filter { it.id in listOf("device", "schedule", "camera", "light", "email") }
-                .take(5)
+            allPlugins.filter { it.id in listOf("light", "schedule", "camera", "email") }.take(5)
         }
 
         logger.d("AgentKernel", "🔵 Tier 1 plugin filter: ${result.size} selected = ${result.map { it.id }}")
@@ -382,25 +514,19 @@ class AgentKernel @Inject constructor(
         val lastDevice   = chatHistoryManager.lastMentionedDeviceId ?: "none"
 
         val routerPrompt = buildString {
-            append("<system>You are an Intent Router. Output ONLY raw JSON: ")
-            append("{\"plugin\": string, \"action\": string, \"params\": object}.\n")
+            append("<sys>Intent Router. JSON only: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
             append("Rules:\n")
-            append("- Only use plugins listed in <plugins> below.\n")
-            append("- Use <qa_facts> to resolve aliases and fill param values.\n")
-            append("  Example: \"vinh = vinh@gmail.com\" and user says \"send to vinh\" → params.to = \"vinh@gmail.com\".\n")
-            append("  Example: \"lịch hôm nay = mỗi 10 phút\" → set relevant schedule param = \"mỗi 10 phút\".\n")
-            append("- param keys with '?' are optional; omit '?' from key name.\n")
-            append("- If general conversation (not a command), output ")
-            append("{\"plugin\":\"chat\",\"action\":\"none\",\"params\":{}}.\n")
-            append("- If plugin == \"schedule\" and action == \"add\": params.params PHẢI chứa ĐẦY ĐỦ ")
-            append("tham số bắt buộc của action đích (params.pluginId + params.action) theo đúng schema.\n")
-            append("- Do NOT add explanation. Output JSON only.</system>\n")
+            append("- If general talk/not a command, output plugin:\"chat\", action:\"none\".\n")
+            append("- Use <qa> to map aliases (e.g., names to emails, nicknames to IDs).\n")
+            append("- Optional param keys end with '?'; omit '?' in final JSON.\n")
+            append("- If plugin==\"schedule\" and action==\"add\": 'params.params' MUST be a nested object containing all required parameters of the target action.\n")
+            append("- Output raw JSON. No explanation.</sys>\n")
             append("<plugins>\n$compactCatalog\n</plugins>\n")
-            if (qaFacts.isNotEmpty()) append("<qa_facts>\n$qaFacts\n</qa_facts>\n")
+            if (qaFacts.isNotEmpty()) append("<qa>\n$qaFacts\n</qa>\n")
             if (schedulesContext.isNotEmpty()) append(schedulesContext)
             append("<context>last_device: \"$lastDevice\"</context>\n")
             append("<history>\n$shortHistory\n</history>\n")
-            append("<input>User: $userMessage</input>\n")
+            append("<input>$userMessage</input>\n")
             append("<output>")
         }
 
@@ -432,7 +558,6 @@ class AgentKernel @Inject constructor(
         val targetPlugin = devicePlugins.find { it.id == rawIntent.pluginId }
             ?: return RouterOutcome.RouterFailed("Tier 1: không tìm thấy plugin: ${rawIntent.pluginId}")
 
-        // Validate Action hợp lệ của plugin
         if (targetPlugin.getActions().none { it.name == rawIntent.action }) {
             return RouterOutcome.RouterFailed("Tier 1: action không hợp lệ: ${rawIntent.action} trong plugin ${targetPlugin.id}")
         }
@@ -444,8 +569,7 @@ class AgentKernel @Inject constructor(
 
         logger.d("AgentKernel", "🔥 Tier 1 matched: ${intent.pluginId}.${intent.action} | params=${intent.params}")
 
-        // Cập nhật thiết bị an toàn bằng cơ chế coalescing tránh ghi đè sai living_room
-        val device = intent.params["device_id"] ?: intent.params["deviceId"] ?: intent.params["device"]
+        val device = intent.params["device"] ?: intent.params["device_id"] ?: intent.params["deviceId"]
         device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
         val executionResult = try {
@@ -479,17 +603,12 @@ class AgentKernel @Inject constructor(
         return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.id, result = executionResult))
     }
 
-    /**
-     * Hỗ trợ kiểm tra xem tin nhắn mới có thực sự là một lệnh điều khiển mới hay không.
-     */
     private fun looksLikeNewCommand(userMessage: String, devicePlugins: List<Plugin>): Boolean {
-        // 1. So khớp mẫu Regex của Tier 0
         val hasTier0Match = TIER_ZERO_PATTERNS.values.any { patterns ->
             patterns.any { it.containsMatchIn(userMessage) }
         }
         if (hasTier0Match) return true
 
-        // 2. Chấm điểm nhanh từ khóa: nếu có ít nhất 2 từ khóa của bất kỳ plugin nào khớp chính xác, đây là lệnh mới
         val scores = devicePlugins.map { plugin ->
             val keywordHits = PLUGIN_KEYWORDS[plugin.id]
                 ?.count { keyword ->
@@ -503,11 +622,6 @@ class AgentKernel @Inject constructor(
         return false
     }
 
-    /**
-     * Bổ sung heuristics/validation nhanh để tự động điền các param định dạng rõ ràng (ví dụ email),
-     * tránh việc LLM dịch nhầm sang "unrelated" rồi xóa oan ngữ cảnh pending.
-     * Sử dụng block try/catch và timeout an toàn xung quanh GroqClient.
-     */
     private suspend fun tryResolvePendingIntent(
         pending: PendingIntent,
         userMessage: String,
@@ -533,14 +647,13 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // 1. Heuristic Validation nhanh không cần LLM để bảo vệ dữ liệu cấu trúc
         val heuristicFilled = mutableMapOf<String, Any>()
         for (param in pending.missingParams) {
             val trimmed = userMessage.trim()
             if ((param == "to" || param == "email" || param == "recipient") && EMAIL_REGEX.matches(trimmed)) {
                 heuristicFilled[param] = trimmed
             }
-            if (param == "device_id" || param == "deviceId" || param == "device") {
+            if (param == "device" || param == "device_id" || param == "deviceId") {
                 val relayRegex = Regex("relay[\\s_]?(\\d+)", RegexOption.IGNORE_CASE)
                 val match = relayRegex.find(trimmed)
                 if (match != null) {
@@ -549,7 +662,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // 2. Định tuyến bằng LLM nếu Heuristics chưa giải quyết hết toàn bộ các tham số còn thiếu
         val finalParsed = if (heuristicFilled.size == pending.missingParams.size) {
             JSONObject().put("params", JSONObject(heuristicFilled))
         } else {
@@ -588,7 +700,6 @@ class AgentKernel @Inject constructor(
             }
 
             if (parsedJson == null) {
-                // Do mạng lỗi hoặc không parse được JSON, không xóa pending, tiếp tục hỏi lại
                 return DeviceCommandResult(
                     pluginId = pending.pluginId,
                     result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
@@ -597,15 +708,12 @@ class AgentKernel @Inject constructor(
 
             if (parsedJson.optBoolean("unrelated", false)) {
                 if (heuristicFilled.isNotEmpty()) {
-                    // Lưới bảo vệ: LLM báo "unrelated" nhưng heuristics nhận diện được một phần, bỏ qua cờ unrelated
                     JSONObject().put("params", JSONObject(heuristicFilled))
                 } else {
-                    // Kiểm tra xem có phải là lệnh mới hay không trước khi hủy pending
                     if (looksLikeNewCommand(userMessage, devicePlugins)) {
                         chatHistoryManager.clearPendingIntent()
-                        return null // Rơi xuống Tier 0 / Tier 1 bên ngoài để xử trị lệnh mới
+                        return null
                     } else {
-                        // Trả lời bình thường không định dạng, bảo vệ pending bằng cách giữ lại và hỏi lại
                         chatHistoryManager.setPendingIntent(
                             pending.copy(createdAt = System.currentTimeMillis())
                         )
@@ -616,7 +724,6 @@ class AgentKernel @Inject constructor(
                     }
                 }
             } else {
-                // Gộp kết quả heuristics tự nhận diện vào JSON kết quả của LLM
                 val paramsObj = parsedJson.optJSONObject("params") ?: JSONObject()
                 heuristicFilled.forEach { (k, v) ->
                     if (!paramsObj.has(k)) {
@@ -631,8 +738,7 @@ class AgentKernel @Inject constructor(
         val filled = finalParsed?.optJSONObject("params")?.toMap() ?: emptyMap()
         val stillMissing = pending.missingParams.filter { key ->
             val v = filled[key]
-            v == null || v.toString().equals("null", ignoreCase = true) ||
-                (v is String && v.isBlank())
+            v == null || v.toString().equals("null", ignoreCase = true) || (v is String && v.isBlank())
         }
 
         if (stillMissing.isNotEmpty()) {
@@ -750,39 +856,34 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Alias resolver — CHỈ cho ALIAS_PARAM_KEYS, dùng làm lưới an toàn
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private fun resolveAliasParams(
+    private fun resolveParamsWithQA(
         params: Map<String, Any>,
         qaMatches: List<QAEntity>
     ): Map<String, Any> {
         if (qaMatches.isEmpty()) return params
-
-        // Sắp xếp các câu hỏi QA có độ dài dài hơn lên trước để tránh việc match nhầm chuỗi con
         val sortedQA = qaMatches.sortedByDescending { it.question.length }
-
         return params.mapValues { (key, value) ->
             if (key == "params" && value is Map<*, *>) {
                 @Suppress("UNCHECKED_CAST")
-                return@mapValues resolveAliasParams(value as Map<String, Any>, qaMatches)
+                return@mapValues resolveParamsWithQA(value as Map<String, Any>, qaMatches)
             }
             if (key !in ALIAS_PARAM_KEYS) return@mapValues value
             if (value !is String) return@mapValues value
             if (EMAIL_REGEX.matches(value)) return@mapValues value
 
             val matched = sortedQA.firstOrNull { qa ->
-                qa.question.trim().equals(value.trim(), ignoreCase = true)
+                val boundaryRegex = Regex("\\b${Regex.escape(qa.question)}\\b", RegexOption.IGNORE_CASE)
+                boundaryRegex.containsMatchIn(value) || qa.question.trim().equals(value.trim(), ignoreCase = true)
             }
-
-            if (matched != null) {
-                logger.d("AgentKernel", "🔄 Alias resolved: [$key] \"$value\" → \"${matched.answer}\"")
-                matched.answer
-            } else {
-                value
-            }
+            matched?.answer ?: value
         }
+    }
+
+    private fun resolveAliasParams(
+        params: Map<String, Any>,
+        qaMatches: List<QAEntity>
+    ): Map<String, Any> {
+        return resolveParamsWithQA(params, qaMatches)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -875,7 +976,7 @@ class AgentKernel @Inject constructor(
         val map = mutableMapOf<String, Any>()
         keys().forEach { key ->
             val value = get(key)
-            if (value != org.json.JSONObject.NULL) { // Lọc bỏ giá trị NULL của JSON để bảo vệ dữ liệu sạch
+            if (value != org.json.JSONObject.NULL) {
                 map[key] = when (value) {
                     is JSONObject -> value.toMap()
                     is org.json.JSONArray -> {

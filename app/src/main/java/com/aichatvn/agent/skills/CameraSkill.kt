@@ -172,8 +172,6 @@ class CameraSkill @Inject constructor(
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
     
     companion object {
-        // DEFAULT_AI_PROMPT, DEFAULT_POSITIVE/NEGATIVE_KEYWORDS, COOLDOWN_DURATION_MS,
-        // MAX_DAILY_EVENTS_PER_CAMERA moved to AppConfigDefaults / AppConfigProvider.
         private const val CIRCUIT_BREAKER_THRESHOLD_DEFAULT = 3
         private const val CIRCUIT_BREAKER_RESET_MS_DEFAULT = 30 * 60 * 1000L
         private const val DAILY_REPORT_HOUR_DEFAULT = 20
@@ -342,9 +340,6 @@ class CameraSkill @Inject constructor(
         val cam = database.cameraDao().getCameraById(cameraId)
             ?: return PluginResult.Failure("Không tìm thấy camera id=$cameraId. Dùng list_cameras để xem danh sách đúng.")
 
-        // manualOff=0 là đang theo dõi (active), manualOff=1 là đã tắt thủ công.
-        // Tách biệt với CustomerSettingEntity.isActive — cái đó là kill switch ở cấp khách hàng,
-        // không phải toggle từng camera riêng lẻ.
         val newManualOff = if (active) 0 else 1
         if (cam.manualOff == newManualOff) {
             val state = if (active) "đang bật" else "đang tắt"
@@ -366,8 +361,6 @@ class CameraSkill @Inject constructor(
             ?: (params["enabled"] as? String)?.lowercase()?.let { it == "true" }
             ?: return PluginResult.Failure("Bạn muốn bật hay tắt AI smart mode?")
 
-        // Ưu tiên cameraId (user thường nói "camera X"), lookup ngược ra customerId.
-        // Fallback customerId nếu AI gửi thẳng.
         val resolvedCustomerId: String
         val cameraName: String
 
@@ -380,10 +373,8 @@ class CameraSkill @Inject constructor(
         } else {
             val customerId = params["customerId"] as? String
                 ?: return PluginResult.Failure("Thiếu cameraId hoặc customerId. Dùng list_cameras để xem danh sách.")
-            // Xác nhận customerId tồn tại
             val setting = database.cameraDao().getCustomerSetting(customerId)
             if (setting == null) {
-                // Thử tìm như cameraId phòng trường hợp LLM nhầm field
                 val cam = database.cameraDao().getCameraById(customerId)
                 if (cam != null) {
                     resolvedCustomerId = cam.customerId
@@ -431,12 +422,13 @@ class CameraSkill @Inject constructor(
         try {
             pruneMutex.withLock {
                 val allIds = database.cameraDao().getAllCamerasFlow().first().map { it.id }.toSet()
-                val orphans = (learningStates.keys + circuitBreakers.keys + pendingResets.keys + dailyEvents.keys) - allIds
+                val orphans = (learningStates.keys + circuitBreakers.keys + pendingResets.keys + dailyEvents.keys + cameraMutexMap.keys) - allIds
                 orphans.forEach { id ->
                     learningStates.remove(id)
                     circuitBreakers.remove(id)
                     pendingResets.remove(id)
                     dailyEvents.remove(id)
+                    cameraMutexMap.remove(id)
                 }
                 if (orphans.isNotEmpty()) {
                     logger.i("CameraSkill", "🧹 Pruned ${orphans.size} orphaned camera state entries")
@@ -468,9 +460,10 @@ class CameraSkill @Inject constructor(
         scope.launch {
             while (true) {
                 val now = System.currentTimeMillis()
+                val reportHour = dailyReportHour() // Tối ưu: Lấy cấu hình động từ ConfigProvider
                 val calendar = Calendar.getInstance().apply {
                     timeInMillis = now
-                    set(Calendar.HOUR_OF_DAY, DAILY_REPORT_HOUR_DEFAULT)
+                    set(Calendar.HOUR_OF_DAY, reportHour)
                     set(Calendar.MINUTE, 0)
                     set(Calendar.SECOND, 0)
                     set(Calendar.MILLISECOND, 0)
@@ -482,7 +475,7 @@ class CameraSkill @Inject constructor(
                 }
                 
                 val delay = nextRun - now
-                kotlinx.coroutines.delay(delay)
+                delay(delay)
                 sendDailyReports()
                 pruneOrphanedCameraState()
             }
@@ -566,13 +559,14 @@ class CameraSkill @Inject constructor(
     
     // ==================== CIRCUIT BREAKER ====================
     
-    private fun isCircuitBreakerOpen(cameraId: String): Boolean {
+    private suspend fun isCircuitBreakerOpen(cameraId: String): Boolean {
         val cb = circuitBreakers[cameraId] ?: return false
         if (!cb.isOpen) return false
 
         val elapsed = System.currentTimeMillis() - cb.offlineSince
+        val resetMs = circuitBreakerResetMs() // Tối ưu: Lấy cấu hình động từ ConfigProvider
 
-        if (elapsed > CIRCUIT_BREAKER_RESET_MS_DEFAULT) {
+        if (elapsed > resetMs) {
             if (!cb.halfOpenAttempted) {
                 cb.halfOpenAttempted = true
                 logger.i("CameraSkill", "🔁 Circuit Breaker HALF-OPEN for camera $cameraId - thử lại...")
@@ -587,11 +581,12 @@ class CameraSkill @Inject constructor(
         return true
     }
     
-    private fun recordOffline(cameraId: String) {
+    private suspend fun recordOffline(cameraId: String) {
         val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
         cb.offlineCount++
         cb.halfOpenAttempted = false
-        if (cb.offlineCount >= CIRCUIT_BREAKER_THRESHOLD_DEFAULT) {
+        val threshold = circuitBreakerThreshold() // Tối ưu: Lấy cấu hình động từ ConfigProvider
+        if (cb.offlineCount >= threshold) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
             logger.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $cameraId (offline ${cb.offlineCount} times)")
@@ -881,7 +876,7 @@ class CameraSkill @Inject constructor(
                 
                 logger.d("CameraSkill", "📷 Camera ${camera.id} scanned, hasChange=$isSuddenChange")
                 
-                updateDiagnostics()
+                updateDiagnostics() // Gọi đồng bộ trực tiếp trong suspend scope để tránh leak coroutine
                 
                 return@withLock mapOf(
                     "cameraId" to camera.id,
@@ -908,8 +903,6 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
-        // ⚠️ KHÔNG lock mutex ở đây — processImageWithLearning() đã tự lock rồi.
-        // Mutex của Kotlin không reentrant, lock 2 lần liên tiếp => deadlock vĩnh viễn.
         try {
             val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
             if (imageBytes == null) {
@@ -1068,6 +1061,7 @@ class CameraSkill @Inject constructor(
             circuitBreakers.remove(cameraId)
             pendingResets.remove(cameraId)
             dailyEvents.remove(cameraId)
+            cameraMutexMap.remove(cameraId) // Tối ưu: Dọn dẹp Mutex để tránh rò rỉ bộ nhớ
             PluginResult.Success(mapOf("message" to "Camera deleted"))
         } catch (e: Exception) {
             PluginResult.Failure(e.message ?: "Delete camera failed")
@@ -1085,6 +1079,7 @@ class CameraSkill @Inject constructor(
                 circuitBreakers.remove(camera.id)
                 pendingResets.remove(camera.id)
                 dailyEvents.remove(camera.id)
+                cameraMutexMap.remove(camera.id) // Tối ưu: Dọn dẹp Mutex của các camera thuộc customer
             }
             
             PluginResult.Success(mapOf("message" to "Customer deleted"))
@@ -1177,24 +1172,23 @@ class CameraSkill @Inject constructor(
 
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
     
-    private fun updateDiagnostics() {
-        scope.launch {
-            val stats = learningStates.mapValues { (cameraId, state) ->
-                val cb = circuitBreakers[cameraId]
-                mapOf(
-                    "samples" to state.falseDeltas.size,
-                    "realEvents" to state.realEvents,
-                    "deltaTrigger" to state.deltaTrigger,
-                    "absDiffTrigger" to state.absDiffTrigger,
-                    "baselineSize" to state.baselineWindow.size,
-                    "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
-                    "circuitBreakerOpen" to (cb?.isOpen ?: false),
-                    "offlineCount" to (cb?.offlineCount ?: 0),
-                    "pendingReset" to pendingResets.containsKey(cameraId)
-                )
-            }
-            _diagnostics.value = stats
+    // Tối ưu: Chuyển đổi thành hàm suspend đồng bộ để tránh tạo luồng coroutine vô hạn khi quét liên tục
+    private suspend fun updateDiagnostics() {
+        val stats = learningStates.mapValues { (cameraId, state) ->
+            val cb = circuitBreakers[cameraId]
+            mapOf(
+                "samples" to state.falseDeltas.size,
+                "realEvents" to state.realEvents,
+                "deltaTrigger" to state.deltaTrigger,
+                "absDiffTrigger" to state.absDiffTrigger,
+                "baselineSize" to state.baselineWindow.size,
+                "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
+                "circuitBreakerOpen" to (cb?.isOpen ?: false),
+                "offlineCount" to (cb?.offlineCount ?: 0),
+                "pendingReset" to pendingResets.containsKey(cameraId)
+            )
         }
+        _diagnostics.value = stats
     }
     
     // ==================== ALERT HELPER METHODS ====================
