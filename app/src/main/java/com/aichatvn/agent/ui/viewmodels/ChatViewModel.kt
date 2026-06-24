@@ -99,7 +99,7 @@ class ChatViewModel @Inject constructor(
      */
     private fun startVoiceSession() {
         viewModelScope.launch {
-            // Chờ TTS init xong — dùng while thay vì repeat để thoát đúng
+            // Chờ TTS init xong — tối đa 3 giây
             var waited = 0
             while (!voiceManager.ttsHelper.isReady && waited < 3000) {
                 delay(100)
@@ -107,20 +107,21 @@ class ChatViewModel @Inject constructor(
             }
             if (!_voiceModeActive.value) return@launch
 
-            if (voiceManager.ttsHelper.isReady) {
-                voiceManager.ttsHelper.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
-                    if (_voiceModeActive.value) voiceManager.startListening()
-                }
-            } else {
-                // TTS chưa sẵn sàng sau 3 giây → bắt đầu nghe luôn, không chào
-                voiceManager.startListening()
-            }
+            // speakResponse() tự lo TTS → onDone → startListening()
+            // Nếu TTS chưa sẵn sàng, text rỗng → Manager startListening() ngay
+            val greeting = if (voiceManager.ttsHelper.isReady)
+                "Xin chào, tôi đang nghe. Bạn cần gì?"
+            else ""
+            voiceManager.speakResponse(greeting)
         }
     }
 
+
     /**
-     * Observe messages: khi AI trả lời xong → TTS đọc to → startListening() lại.
-     * Đây là vòng lặp hands-free chính.
+     * Observe messages: khi AI trả lời xong → gọi voiceManager.speakResponse().
+     * Manager tự lo phát TTS → sau khi đọc xong → tự startListening() lại.
+     * Vòng lặp đóng kín bên trong VoiceAssistantManager, không cần ViewModel
+     * gọi startListening() thủ công nữa.
      *
      * drop(1): bỏ qua emit đầu tiên (tin nhắn cũ load từ DB).
      */
@@ -130,24 +131,12 @@ class ChatViewModel @Inject constructor(
                 val last = msgs.lastOrNull() ?: return@collect
                 if (last.role != "assistant") return@collect
                 if (!_voiceModeActive.value) return@collect
-
-                val tts = voiceManager.ttsHelper
-                if (!tts.isReady) return@collect
-
-                tts.speak(last.content) {
-                    // TTS đọc xong → startListening() lại để tiếp tục loop
-                    // VoiceAssistantManager tự xử lý silence/error restart
-                    // nên ở đây chỉ cần gọi khi voiceMode còn bật
-                    if (_voiceModeActive.value) {
-                        viewModelScope.launch {
-                            delay(300)
-                            voiceManager.startListening()
-                        }
-                    }
-                }
+                // speakResponse() tự lo: phát TTS → onDone → startListening()
+                voiceManager.speakResponse(last.content)
             }
         }
     }
+
 
     // ── Voice controls (cho nút toggle trên UI, người chăm sóc dùng) ─────────
 
