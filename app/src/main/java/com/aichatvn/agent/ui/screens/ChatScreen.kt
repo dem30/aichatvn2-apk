@@ -95,17 +95,20 @@ fun ChatScreen(
         }
     }
 
-    // ✅ FIX: Observe lifecycle để restart SpeechRecognizer khi quay lại foreground.
-    // Android kill SpeechRecognizer session âm thầm khi app vào background — không có
-    // callback báo lại → app hiện "Đang nghe" nhưng mic thật ra đã chết.
-    // onPause: dừng chủ động (tránh nhận giọng nói khi không ở foreground).
-    // onResume: tạo session mới hoàn toàn với audio focus mới.
+    // ✅ FIX: Dùng ON_START/ON_STOP thay vì ON_RESUME/ON_PAUSE.
+    //
+    // ON_RESUME/ON_PAUSE bắn quá nhiều: mỗi khi dialog mở/đóng, keyboard xuất hiện/ẩn,
+    // màn hình sáng lại, navigation... → stopListening() liên tục → destroy recognizer
+    // đang hoạt động tốt → restart → ERROR_RECOGNIZER_BUSY → hên xui.
+    //
+    // ON_START/ON_STOP chỉ bắn khi app thật sự vào/ra foreground (chuyển app, home button)
+    // — đúng với mục đích: dừng mic khi user rời app, restart khi quay lại.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.onResume()
-                Lifecycle.Event.ON_PAUSE  -> viewModel.onPause()
+                Lifecycle.Event.ON_START -> viewModel.onForeground()
+                Lifecycle.Event.ON_STOP  -> viewModel.onBackground()
                 else -> {}
             }
         }

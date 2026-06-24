@@ -91,6 +91,7 @@ class ChatViewModel @Inject constructor(
     // ── Init ─────────────────────────────────────────────────────────────────
 
     init {
+        isInForeground = true   // app khởi động = đang ở foreground
         viewModelScope.launch {
             chatSkill.initialize()
             observeAndSpeak()
@@ -266,35 +267,35 @@ class ChatViewModel @Inject constructor(
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+    // true = app đang ở foreground; false = đã vào background.
+    // Guard này ngăn onForeground() restart recognizer đang hoạt động bình thường.
+    @Volatile private var isInForeground = false
+
     /**
-     * Gọi từ ChatScreen khi Activity/Fragment resume (quay lại foreground).
-     *
-     * Khi app vào background, Android thu hồi audio focus và terminate SpeechRecognizer
-     * session âm thầm — không có callback báo lại. VoiceAssistantManager không biết
-     * điều này → vẫn nghĩ đang listen → loop timeout cứ restart nhưng recognizer đã chết.
-     *
-     * Fix: khi resume, destroy recognizer cũ (dù nó đã chết, destroy() an toàn) rồi
-     * startListening() lại từ đầu — tạo session hoàn toàn mới với audio focus mới.
+     * Gọi từ ChatScreen khi app vào foreground (ON_START).
+     * ON_START chỉ bắn khi thật sự quay lại từ background — không bắn khi
+     * dialog/keyboard xuất hiện, khác với ON_RESUME bắn liên tục.
      */
-    fun onResume() {
+    fun onForeground() {
+        if (isInForeground) return   // tránh double-call
+        isInForeground = true
         if (!_voiceModeActive.value) return
-        // stopListening() trước để dọn sạch state cũ (timer, pending restart, recognizer chết)
+
+        // Destroy recognizer cũ (có thể đã bị Android kill âm thầm khi background)
+        // rồi tạo session mới hoàn toàn với audio focus mới.
         voiceManager.stopListening()
-        // Delay nhỏ để audio system release hoàn toàn trước khi claim lại
         viewModelScope.launch(Dispatchers.Main) {
-            delay(300)
-            if (_voiceModeActive.value) voiceManager.startListening()
+            delay(400)  // chờ audio system release sau khi app trở lại foreground
+            if (_voiceModeActive.value && isInForeground) voiceManager.startListening()
         }
     }
 
     /**
-     * Gọi từ ChatScreen khi Activity/Fragment pause (vào background / màn hình khác).
-     *
-     * Dừng SpeechRecognizer chủ động thay vì để Android kill nó — tránh trạng thái
-     * "nhận giọng nói nhưng không có AI xử lý" khi user đang ở app khác.
-     * TTS cũng stop để không phát âm thanh khi app không ở foreground.
+     * Gọi từ ChatScreen khi app vào background (ON_STOP).
+     * Dừng mic + TTS chủ động — tránh nhận/phát âm khi user đang ở app khác.
      */
-    fun onPause() {
+    fun onBackground() {
+        isInForeground = false
         voiceManager.stopListening()
         voiceManager.ttsHelper.stop()
     }
