@@ -16,6 +16,9 @@ interface Plugin {
     
     // ✅ Thêm để AgentKernel biết plugin có những action gì
     fun getActions(): List<PluginAction>
+  // Thêm method với default implementation trả về emptyMap()
+// để các plugin cũ không bị break
+fun getQATriggers(): Map<String, List<String>> = emptyMap()
 }
 
 data class PluginAction(

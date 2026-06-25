@@ -832,7 +832,8 @@ class AgentKernel @Inject constructor(
                 val boundaryRegex = Regex("\\b${Regex.escape(qa.question)}\\b", RegexOption.IGNORE_CASE)
                 boundaryRegex.containsMatchIn(value) || qa.question.trim().equals(value.trim(), ignoreCase = true)
             }
-            if (directMatch != null) return@mapValues directMatch.answer
+            if (directMatch != null) return@mapValues directMatch.answer.trim()
+
 
             // 2. So khớp alias trong cả câu nói nếu có truyền userMessage (ví dụ: "bật đèn phòng khách")
             if (userMessage != null) {
@@ -842,8 +843,8 @@ class AgentKernel @Inject constructor(
                     regex.containsMatchIn(userMessage) || userMessage.contains(qa.question, ignoreCase = true)
                 }
                 if (messageMatch != null) {
-                    return@mapValues messageMatch.answer
-                }
+    return@mapValues messageMatch.answer.trim()
+}
             }
             value
         }

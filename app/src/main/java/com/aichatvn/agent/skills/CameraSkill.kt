@@ -105,6 +105,18 @@ class CameraSkill @Inject constructor(
             )
         )
     }
+
+    override fun getQATriggers(): Map<String, List<String>> = mapOf(
+    "scan"           to listOf("chụp camera", "snapshot", "quét camera", "chụp ảnh camera"),
+    "list_cameras"   to listOf("danh sách camera", "liệt kê camera", "xem camera"),
+    "set_active"     to listOf(
+        "bật camera", "tắt camera", "mở camera", "dừng camera",
+        "kích hoạt camera", "vô hiệu camera", "cho camera hoạt động", "tắt theo dõi"
+    ),
+    "set_smart_mode" to listOf("bật ai camera", "tắt ai camera", "smart mode camera", "bật trí tuệ nhân tạo"),
+    "status"         to listOf("trạng thái camera", "kiểm tra camera", "camera có hoạt động không"),
+    "configure"      to listOf("cấu hình camera", "cập nhật camera", "đặt từ khoá camera", "thay url camera")
+)
     
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = mutableMapOf<String, Mutex>()

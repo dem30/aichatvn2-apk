@@ -16,16 +16,20 @@ class QAInitBuilder @Inject constructor(
     private val logger: Logger
 ) {
     suspend fun buildInitialQA(username: String = "default_user") {
-        // Skip nếu đã có Intent QA trong DB
         val existing = trainingSkill.countQAByCategory("auto_init")
         if (existing > 0) {
             logger.i("QAInitBuilder", "Intent QA đã có ($existing rows), skip.")
             return
         }
 
+        var count = 0
         plugins.forEach { plugin ->
+            val triggers = plugin.getQATriggers()
             plugin.getActions().forEach { action ->
-                vietnameseTriggers(plugin.id, action.name).forEach { trigger ->
+                val actionTriggers = triggers[action.name]
+                    ?: listOf("${plugin.id} ${action.name}")
+
+                actionTriggers.forEach { trigger ->
                     val json = JSONObject().apply {
                         put("plugin", plugin.id)
                         put("action", action.name)
@@ -37,37 +41,22 @@ class QAInitBuilder @Inject constructor(
                         category = "auto_init",
                         username = username
                     )
+                    count++
                 }
             }
         }
-        logger.d("QAInitBuilder", "✅ Intent QA init xong")
+        logger.d("QAInitBuilder", "✅ Intent QA init xong: $count entries")
     }
-
-    private fun vietnameseTriggers(pluginId: String, action: String): List<String> =
-        when ("$pluginId/$action") {
-            "light/set"        -> listOf("bật đèn", "tắt đèn", "mở đèn", "đóng đèn")
-            "light/status"     -> listOf("trạng thái đèn", "kiểm tra đèn", "đèn đang bật không")
-            "light/scan"       -> listOf("quét đèn", "scan thiết bị", "tìm relay")
-            "camera/scan"      -> listOf("chụp camera", "snapshot", "quét camera")
-            "camera/list_cameras" -> listOf("danh sách camera", "liệt kê camera")
-            "camera/set_smart_mode" -> listOf("bật ai camera", "tắt ai camera", "smart mode")
-            "email/send"       -> listOf("gửi email", "gửi thư", "send mail")
-            "schedule/add"     -> listOf("thêm lịch", "đặt lịch", "tạo lịch tự động")
-            "schedule/list"    -> listOf("danh sách lịch", "xem lịch")
-            "schedule/delete"  -> listOf("xóa lịch", "huỷ lịch")
-            "notification/send" -> listOf("gửi thông báo", "push notification")
-            else               -> listOf("$pluginId $action")
-        }
 
     private fun defaultParams(action: PluginAction): Map<String, String> =
         action.parameters
             .filter { it.required }
             .associate { param ->
                 param.name to when (param.name.lowercase()) {
-                    "to", "email"    -> "example@gmail.com"
-                    "device","deviceid" -> "device_1"
-                    "cameraid"       -> "camera_1"
-                    else             -> ""
+                    "to", "email"        -> "example@gmail.com"
+                    "device", "deviceid" -> ""
+                    "cameraid"           -> ""
+                    else                 -> ""
                 }
             }
 }

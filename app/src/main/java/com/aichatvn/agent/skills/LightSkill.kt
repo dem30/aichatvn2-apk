@@ -51,6 +51,12 @@ class LightSkill @Inject constructor(
         )
     }
 
+    override fun getQATriggers(): Map<String, List<String>> = mapOf(
+    "set"    to listOf("bật đèn", "tắt đèn", "mở đèn", "tắt relay", "bật relay"),
+    "status" to listOf("trạng thái đèn", "kiểm tra đèn", "đèn đang bật không"),
+    "scan"   to listOf("quét thiết bị", "tìm đèn", "scan relay")
+)
+
     private suspend fun handleScan(): AgentKernel.PluginResult {
         return try {
             val count = tuyaManager.scanDevices()

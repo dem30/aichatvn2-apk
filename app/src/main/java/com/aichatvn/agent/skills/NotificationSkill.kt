@@ -18,6 +18,8 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
+import android.app.PendingIntent
+import android.content.Intent
 
 @Singleton
 class NotificationSkill @Inject constructor(
@@ -68,30 +70,11 @@ class NotificationSkill @Inject constructor(
         )
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = CHANNEL_DESCRIPTION
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 400, 200, 400)
-                setShowBadge(true)
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
-            }
-            notificationManager.createNotificationChannel(channel)
-            logger.i("NotificationSkill", "Channel '$CHANNEL_ID' created (IMPORTANCE_HIGH)")
-        }
-    }
-
     suspend fun sendNotification(
     title: String,
     message: String,
     channelId: String = CHANNEL_ID
 ): Int = withContext(Dispatchers.Main) {
-    // ✅ Bảo vệ: Luôn đảm bảo channel tồn tại trước khi notify
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         if (notificationManager.getNotificationChannel(channelId) == null) {
             createNotificationChannel()
@@ -99,6 +82,18 @@ class NotificationSkill @Inject constructor(
     }
 
     val id = notificationCounter.getAndIncrement()
+
+    // ✅ Thêm: tap notification → mở MainActivity
+    val launchIntent = context.packageManager
+        .getLaunchIntentForPackage(context.packageName)
+        ?.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+
+    val pendingIntent = PendingIntent.getActivity(
+        context,
+        id,
+        launchIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
 
     val notification = NotificationCompat.Builder(context, channelId)
         .setSmallIcon(R.drawable.ic_notification)
@@ -109,10 +104,10 @@ class NotificationSkill @Inject constructor(
         .setDefaults(NotificationCompat.DEFAULT_ALL)
         .setAutoCancel(true)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .setContentIntent(pendingIntent)  // ✅ Thêm dòng này
         .build()
 
     notificationManager.notify(id, notification)
-    
     logger.i("NotificationSkill", "📢 NOTIFICATION POSTED | ID=$id | Title: $title")
     id
 }

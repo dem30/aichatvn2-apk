@@ -71,6 +71,14 @@ class ScheduleSkill @Inject constructor(
             )
         )
     }
+    // ScheduleSkill.kt
+override fun getQATriggers(): Map<String, List<String>> = mapOf(
+    "add"    to listOf("thêm lịch", "đặt lịch", "tạo lịch", "lên lịch tự động"),
+    "list"   to listOf("danh sách lịch", "xem lịch", "lịch đang có"),
+    "delete" to listOf("xóa lịch", "huỷ lịch", "xoá lịch"),
+    "toggle" to listOf("bật lịch", "tắt lịch", "kích hoạt lịch")
+)
+
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
