@@ -1,10 +1,11 @@
 package com.aichatvn.agent.di
-import com.aichatvn.agent.core.ChatHistoryManager
+
 import android.content.Context
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.ChatHistoryManager
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -27,7 +28,6 @@ object AppModule {
         database: AppDatabase,
         logger: Logger
     ): TuyaManager {
-        // ✅ Dùng đúng method name: tuyaDeviceDao()
         return TuyaManager(context, database.tuyaDeviceDao(), logger)
     }
 
@@ -86,8 +86,7 @@ object AppModule {
     fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
 
     // ===== AGENT KERNEL =====
-    // ✅ Đã bỏ localRouterEngine: AgentKernel giờ định tuyến hoàn toàn qua Groq
-    // (xem GroqClientTool.routeIntent()).
+    // Cập nhật nhận thêm configProvider từ Hilt graph để khởi tạo AgentKernel đồng bộ
     @Provides
     @Singleton
     fun provideAgentKernel(
@@ -95,6 +94,7 @@ object AppModule {
         groqClient: GroqClientTool,
         trainingSkill: TrainingSkill,
         chatHistoryManager: ChatHistoryManager,
+        configProvider: AppConfigProvider,
         logger: Logger
     ): AgentKernel {
         return AgentKernel(
@@ -102,6 +102,7 @@ object AppModule {
             groqClient,
             trainingSkill,
             chatHistoryManager,
+            configProvider,
             logger
         )
     }

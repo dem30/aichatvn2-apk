@@ -6,6 +6,7 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitListener {
@@ -15,6 +16,11 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     @Volatile
     var isReady = false
         private set
+
+    // Trạng thái đang phát âm thanh (thread-safe)
+    private val _isSpeaking = AtomicBoolean(false)
+    val isSpeaking: Boolean
+        get() = _isSpeaking.get() || (isReady && tts?.isSpeaking == true)
 
     private val callbacks = mutableMapOf<String, () -> Unit>()
     private val utteranceCounter = AtomicInteger(0)
@@ -28,7 +34,9 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
         if (status == TextToSpeech.SUCCESS) {
             tts?.language = Locale("vi", "VN")
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
+                override fun onStart(utteranceId: String?) {
+                    _isSpeaking.set(true)
+                }
                 override fun onDone(utteranceId: String?) {
                     completeCallback(utteranceId)
                 }
@@ -47,6 +55,7 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     private fun completeCallback(utteranceId: String?) {
         if (utteranceId == null) return
         val callback = synchronized(callbacks) { callbacks.remove(utteranceId) }
+        _isSpeaking.set(false)
         callback?.let {
             // Đảm bảo callback chạy trên Main Thread để gọi startListening() an toàn
             mainHandler.post {
@@ -57,18 +66,31 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
 
     fun speak(text: String, onDone: (() -> Unit)? = null) {
         if (!isReady || tts == null || text.isBlank()) {
+            _isSpeaking.set(false)
             onDone?.invoke()
             return
         }
+        
+        _isSpeaking.set(true)
         val utteranceId = "ai_speak_${utteranceCounter.getAndIncrement()}"
         synchronized(callbacks) {
             callbacks.clear()
-            if (onDone != null) callbacks[utteranceId] = onDone
+            callbacks[utteranceId] = {
+                _isSpeaking.set(false)
+                onDone?.invoke()
+            }
         }
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        
+        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        if (result == TextToSpeech.ERROR) {
+            _isSpeaking.set(false)
+            synchronized(callbacks) { callbacks.remove(utteranceId) }
+            onDone?.invoke()
+        }
     }
 
     fun stop() {
+        _isSpeaking.set(false)
         try {
             tts?.stop()
         } catch (e: Exception) {
@@ -78,12 +100,13 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     }
 
     fun shutdown() {
+        _isSpeaking.set(false)
+        isReady = false
         try {
             tts?.shutdown()
         } catch (e: Exception) {
             // Bỏ qua
         }
-        isReady = false
         synchronized(callbacks) { callbacks.clear() }
     }
 }

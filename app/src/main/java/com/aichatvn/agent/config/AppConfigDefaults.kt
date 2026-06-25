@@ -39,6 +39,7 @@ object AppConfigDefaults {
 
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD = "global.fuzzy_threshold"
+    const val GLOBAL_TIER2_MIN_SCORE = "global.tier2_min_score"
 
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
@@ -88,7 +89,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_ROUTER,
-            value = "1000",
+            value = "500",
             type = "int",
             pluginId = "groq",
             label = "Max tokens – router",
@@ -192,11 +193,19 @@ object AppConfigDefaults {
         // ── GLOBAL ──
         AppConfigEntity(
             key = GLOBAL_FUZZY_THRESHOLD,
-            value = "0.7",
+            value = "0.5",
             type = "string",
             pluginId = "global",
             label = "Ngưỡng lọc lệnh cục bộ (Fuzzy Threshold)",
             description = "Giá trị từ 0.0 đến 1.0. Thấp sẽ nhạy hơn nhưng dễ nhầm lẫn, cao sẽ khắt khe hơn."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_TIER2_MIN_SCORE,
+            value = "0.3",
+            type = "string",
+            pluginId = "global",
+            label = "Ngưỡng điểm Tier 2 QA (Tier 2 Min Score)",
+            description = "Giá trị từ 0.0 đến 1.0. Ngưỡng điểm số tối thiểu để kích hoạt Fuzzy QA Intent ở tầng 2 mà không cần LLM."
         )
     )
 }

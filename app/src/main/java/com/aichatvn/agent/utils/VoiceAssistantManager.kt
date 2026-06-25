@@ -9,6 +9,7 @@ import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
 import android.speech.SpeechRecognizer
+import android.util.Log
 
 class VoiceAssistantManager(
     private val context: Context,
@@ -80,6 +81,13 @@ class VoiceAssistantManager(
 
     fun startListening() {
         if (destroyed) return
+        
+        // CHỐNG ECHO: Tuyệt đối không bật microphone nếu TTS đang phát âm thanh
+        if (ttsHelper.isSpeaking) {
+            Log.d("VoiceAssistantManager", "Bỏ qua startListening() vì thiết bị đang trong tiến trình TTS đọc.")
+            return
+        }
+
         if (isListeningActive) return // Đề xuất 1: Từ chối yêu cầu nghe mới nếu phiên cũ đang hoạt động
         isListeningActive = true
 
@@ -124,6 +132,12 @@ class VoiceAssistantManager(
         sttHelper.destroy()
         onListeningStateChange(false)
         abandonAudioFocus()
+    }
+
+    // ✅ PHƯƠNG THỨC MỚI: Tự động ngắt mic trước khi yêu cầu TTS nói để chống lặp âm
+    fun speak(text: String, onDone: (() -> Unit)? = null) {
+        stopListening()
+        ttsHelper.speak(text, onDone)
     }
 
     fun destroy() {

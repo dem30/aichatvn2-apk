@@ -82,8 +82,8 @@ class ChatViewModel @Inject constructor(
             viewModelScope.launch(Dispatchers.Main) {
                 _voiceModeActive.value = false
                 _pausedDueToError.value = true
-                voiceManager.stopListening()
-                voiceManager.ttsHelper.speak("Đã tạm dừng nhận diện giọng nói do thiết bị lỗi microphone liên tiếp. Vui lòng kiểm tra quyền truy cập hoặc micro.")
+                // ✅ SỬ DỤNG: voiceManager.speak thay vì trực tiếp ttsHelper
+                voiceManager.speak("Đã tạm dừng nhận diện giọng nói do thiết bị lỗi microphone liên tiếp. Vui lòng kiểm tra quyền truy cập hoặc micro.")
             }
         }
     )
@@ -128,7 +128,8 @@ class ChatViewModel @Inject constructor(
             if (!_voiceModeActive.value || !isInForeground) return@launch
 
             if (voiceManager.ttsHelper.isReady) {
-                voiceManager.ttsHelper.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
+                // ✅ SỬ DỤNG: voiceManager.speak
+                voiceManager.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
                     if (_voiceModeActive.value && isInForeground) {
                         voiceManager.startListening()
                     }
@@ -146,8 +147,7 @@ class ChatViewModel @Inject constructor(
                 if (last.role != "assistant") return@collect
                 if (!_voiceModeActive.value) return@collect
 
-                val tts = voiceManager.ttsHelper
-                if (!tts.isReady) {
+                if (!voiceManager.ttsHelper.isReady) {
                     logger.w("ChatViewModel", "TTS chưa sẵn sàng, kích hoạt nghe lại nhằm duy trì vòng lặp.")
                     if (_voiceModeActive.value && isInForeground) {
                         voiceManager.startListening()
@@ -165,8 +165,8 @@ class ChatViewModel @Inject constructor(
                     consecutiveRouterFailures = 0
                     _voiceModeActive.value = false
                     _pausedDueToError.value = true
-                    voiceManager.stopListening()
-                    tts.speak(
+                    // ✅ SỬ DỤNG: voiceManager.speak dập mic tự động
+                    voiceManager.speak(
                         "Tôi đang gặp lỗi kết nối mạng nhiều lần liên tiếp. " +
                             "Tôi sẽ tạm dừng nghe để tránh làm phiền bạn. " +
                             "Nhờ người chăm sóc kiểm tra mạng và bật mic lại khi sẵn sàng."
@@ -174,7 +174,8 @@ class ChatViewModel @Inject constructor(
                     return@collect
                 }
 
-                tts.speak(last.content) {
+                // ✅ SỬ DỤNG: voiceManager.speak thay vì tts.speak
+                voiceManager.speak(last.content) {
                     if (_voiceModeActive.value && isInForeground) {
                         Handler(Looper.getMainLooper()).postDelayed({
                             if (_voiceModeActive.value && isInForeground) {
