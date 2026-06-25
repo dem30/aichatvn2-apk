@@ -184,7 +184,7 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // 2. Tìm action trong plugin thông qua metadata định nghĩa động (Truy cập trực tiếp không qua find ID)
+        // 2. Tìm action trong plugin thông qua metadata định nghĩa động
         val action = plugin.getActions().find { it.name == actionName }
 
         if (action != null) {
@@ -501,8 +501,8 @@ class AgentKernel @Inject constructor(
         intent: Intent,
         userMessage: String
     ): PluginResult {
-        // Tự động chuẩn hóa các giá trị Boolean thô (bật/tắt/mở/true/false) dựa trên metadata hành động
-        val normalizedParams = normalizeParams(intent.params, plugin, intent.action)
+        // Tự động chuẩn hóa các giá trị Boolean thô (bật/tắt/mở/true/false) dựa trên metadata hành động và câu thoại gốc
+        val normalizedParams = normalizeParams(intent.params, plugin, intent.action, userMessage)
         val normalizedIntent = intent.copy(params = normalizedParams)
 
         val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
@@ -731,7 +731,7 @@ class AgentKernel @Inject constructor(
         val mergedParams = pending.knownParams + filledResolved
 
         // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata (Sử dụng trực tiếp đối tượng targetPlugin)
-        val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin, pending.action)
+        val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin, pending.action, userMessage)
 
         // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số đã được chuẩn hóa không
         val stillMissing = pending.missingParams.filter { key ->
@@ -878,13 +878,24 @@ class AgentKernel @Inject constructor(
     // Normalization utilities (Chuẩn hóa tự động các tham số boolean Tiếng Việt/English)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private fun normalizeParams(params: Map<String, Any>, plugin: Plugin, actionName: String): Map<String, Any> {
+    private fun normalizeParams(
+        params: Map<String, Any>, 
+        plugin: Plugin, 
+        actionName: String, 
+        userMessage: String? = null
+    ): Map<String, Any> {
         val action = plugin.getActions().find { it.name == actionName } ?: return params
 
         return params.mapValues { (key, value) ->
             val paramMeta = action.parameters.find { it.name == key }
             if (paramMeta != null && paramMeta.type.lowercase() == "boolean") {
-                parseBooleanSmart(value) ?: value
+                // Nếu giá trị hiện tại bị trống/null, thử trích xuất logic trực tiếp từ câu thoại gốc của user
+                val rawValue = if ((value.toString().isBlank() || value.toString() == "null") && userMessage != null) {
+                    extractBooleanFromMessage(userMessage) ?: value
+                } else {
+                    value
+                }
+                parseBooleanSmart(rawValue) ?: rawValue
             } else {
                 value
             }
@@ -902,6 +913,21 @@ class AgentKernel @Inject constructor(
             str in trueWords -> true
             str in falseWords -> false
             else -> null
+        }
+    }
+
+    private fun extractBooleanFromMessage(userMessage: String): Boolean? {
+        val str = userMessage.lowercase()
+        val trueWords = setOf("mở", "bật", "on", "kích hoạt", "hoạt động")
+        val falseWords = setOf("tắt", "off", "vô hiệu", "dừng")
+
+        val hasTrue = trueWords.any { str.contains(it) }
+        val hasFalse = falseWords.any { str.contains(it) }
+
+        return when {
+            hasTrue && !hasFalse -> true
+            hasFalse && !hasTrue -> false
+            else -> null // Nếu chứa cả 2 hoặc không chứa từ nào thì để trống để hỏi lại
         }
     }
 
