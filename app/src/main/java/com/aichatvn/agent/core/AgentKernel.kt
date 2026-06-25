@@ -502,11 +502,15 @@ class AgentKernel @Inject constructor(
         intent: Intent,
         userMessage: String
     ): PluginResult {
-        val device = intent.params["device"] ?: intent.params["device_id"] ?: intent.params["deviceId"]
+        // Tự động chuẩn hóa các giá trị Boolean thô (bật/tắt/mở/true/false) dựa trên metadata hành động
+        val normalizedParams = normalizeParams(intent.params, plugin.id, intent.action)
+        val normalizedIntent = intent.copy(params = normalizedParams)
+
+        val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
         device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
         // Kiểm tra xem có tham số bắt buộc nào chưa được điền dựa trên metadata động của plugin
-        val missing = getUnresolvedParams(intent.params, intent.pluginId, intent.action)
+        val missing = getUnresolvedParams(normalizedIntent.params, normalizedIntent.pluginId, normalizedIntent.action)
 
         val executionResult = if (missing.isNotEmpty()) {
             // Trả về yêu cầu bổ sung thông tin trực tiếp, loại bỏ cuộc gọi LLM không cần thiết
@@ -514,7 +518,7 @@ class AgentKernel @Inject constructor(
             PluginResult.NeedMoreInfo(missing, question)
         } else {
             try {
-                plugin.execute(intent.action, intent.params)
+                plugin.execute(normalizedIntent.action, normalizedIntent.params)
             } catch (e: Exception) {
                 logger.e("AgentKernel", "Execute error: ${e.message}", e)
                 PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
@@ -525,8 +529,8 @@ class AgentKernel @Inject constructor(
             is PluginResult.NeedMoreInfo -> chatHistoryManager.setPendingIntent(
                 PendingIntent(
                     pluginId = plugin.id,
-                    action = intent.action,
-                    knownParams = intent.params,
+                    action = normalizedIntent.action,
+                    knownParams = normalizedIntent.params,
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question
                 )
@@ -722,9 +726,12 @@ class AgentKernel @Inject constructor(
         // Gộp dữ liệu đã biết từ trước với phần mới nhận diện được để lưu và đánh giá tính đầy đủ
         val mergedParams = pending.knownParams + filledResolved
 
-        // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số hiện tại không
+        // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata
+        val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin.id, pending.action)
+
+        // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số đã được chuẩn hóa không
         val stillMissing = pending.missingParams.filter { key ->
-            val v = mergedParams[key]
+            val v = normalizedMergedParams[key]
             v == null || v.toString().equals("null", ignoreCase = true) || (v is String && v.isBlank())
         }
 
@@ -733,7 +740,7 @@ class AgentKernel @Inject constructor(
             val question = "Mình vẫn cần thêm: ${stillMissing.joinToString(", ")}. Bạn cho mình biết nhé?"
             chatHistoryManager.setPendingIntent(
                 pending.copy(
-                    knownParams = mergedParams, // Cập nhật những gì đã điền được ở lượt trung gian này
+                    knownParams = normalizedMergedParams, // Lưu map đã chuẩn hóa để giữ giá trị Boolean
                     missingParams = stillMissing,
                     askedQuestion = question,
                     createdAt = System.currentTimeMillis()
@@ -750,7 +757,7 @@ class AgentKernel @Inject constructor(
         chatHistoryManager.clearPendingIntent()
 
         val executionResult = try {
-            targetPlugin.execute(pending.action, mergedParams)
+            targetPlugin.execute(pending.action, normalizedMergedParams) // Sử dụng tham số đã chuẩn hóa
         } catch (e: Exception) {
             logger.e("AgentKernel", "Execute pending error: ${e.message}", e)
             PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
@@ -761,7 +768,7 @@ class AgentKernel @Inject constructor(
                 PendingIntent(
                     pluginId = targetPlugin.id,
                     action = pending.action,
-                    knownParams = mergedParams,
+                    knownParams = normalizedMergedParams,
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question
                 )
@@ -860,6 +867,38 @@ class AgentKernel @Inject constructor(
                 }
             }
             value
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Normalization utilities (Chuẩn hóa tự động các tham số boolean Tiếng Việt/English)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun normalizeParams(params: Map<String, Any>, pluginId: String, actionName: String): Map<String, Any> {
+        val plugin = plugins.find { it.id == pluginId } ?: return params
+        val action = plugin.getActions().find { it.name == actionName } ?: return params
+
+        return params.mapValues { (key, value) ->
+            val paramMeta = action.parameters.find { it.name == key }
+            if (paramMeta != null && paramMeta.type.lowercase() == "boolean") {
+                parseBooleanSmart(value) ?: value
+            } else {
+                value
+            }
+        }
+    }
+
+    private fun parseBooleanSmart(value: Any?): Boolean? {
+        if (value is Boolean) return value
+        val str = value?.toString()?.trim()?.lowercase() ?: return null
+
+        val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "hoạt động")
+        val falseWords = setOf("false", "tắt", "no", "off", "0", "vô hiệu", "dừng")
+
+        return when {
+            str in trueWords -> true
+            str in falseWords -> false
+            else -> null
         }
     }
 
