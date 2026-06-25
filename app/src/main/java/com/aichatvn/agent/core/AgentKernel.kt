@@ -14,7 +14,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
-private val EMAIL_REGEX = Regex("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")
+private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
 
 /**
  * Cấu trúc dữ liệu chứa thông tin Intent QA đã được phân tích và lưu kèm score tương đồng.
@@ -610,10 +610,13 @@ class AgentKernel @Inject constructor(
         for (param in pending.missingParams) {
             val trimmed = userMessage.trim()
             
-            // 1. Kiểm tra khớp Regex cơ bản
-            if ((param == "to" || param == "email" || param == "recipient") && EMAIL_REGEX.matches(trimmed)) {
-                heuristicFilled[param] = trimmed
-                continue
+            // 1. Kiểm tra khớp Regex cơ bản (Nới lỏng regex để trích xuất email thay vì bắt buộc khớp 100%)
+            if (param == "to" || param == "email" || param == "recipient") {
+                val emailMatch = EMAIL_REGEX.find(trimmed)
+                if (emailMatch != null) {
+                    heuristicFilled[param] = emailMatch.value
+                    continue
+                }
             }
             if (param == "device" || param == "device_id" || param == "deviceId") {
                 val relayRegex = Regex("relay[\\s_]?(\\d+)", RegexOption.IGNORE_CASE)
@@ -710,15 +713,31 @@ class AgentKernel @Inject constructor(
             }
         }
 
+        // Resolve alias cho params mà LLM/Heuristic vừa điền trước khi tiến hành cập nhật/so sánh
+        val filledResolved = resolveParamsWithQA(filled, pendingQAMatches, userMessage)
+        if (filled != filledResolved) {
+            logger.d("AgentKernel", "🔄 Pending alias resolve: $filled → $filledResolved")
+        }
+
+        // Gộp dữ liệu đã biết từ trước với phần mới nhận diện được để lưu và đánh giá tính đầy đủ
+        val mergedParams = pending.knownParams + filledResolved
+
+        // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số hiện tại không
         val stillMissing = pending.missingParams.filter { key ->
-            val v = filled[key]
+            val v = mergedParams[key]
             v == null || v.toString().equals("null", ignoreCase = true) || (v is String && v.isBlank())
         }
 
+        // Nếu vẫn còn thiếu tham số, cập nhật lại knownParams và missingParams rồi tiếp tục hỏi
         if (stillMissing.isNotEmpty()) {
             val question = "Mình vẫn cần thêm: ${stillMissing.joinToString(", ")}. Bạn cho mình biết nhé?"
             chatHistoryManager.setPendingIntent(
-                pending.copy(missingParams = stillMissing, askedQuestion = question, createdAt = System.currentTimeMillis())
+                pending.copy(
+                    knownParams = mergedParams, // Cập nhật những gì đã điền được ở lượt trung gian này
+                    missingParams = stillMissing,
+                    askedQuestion = question,
+                    createdAt = System.currentTimeMillis()
+                )
             )
             chatHistoryManager.addTurn(userMessage, question)
             return DeviceCommandResult(
@@ -727,13 +746,7 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // Resolve alias cho params mà LLM/Heuristic vừa điền từ câu trả lời của user
-        val filledResolved = resolveParamsWithQA(filled, pendingQAMatches, userMessage)
-        if (filled != filledResolved) {
-            logger.d("AgentKernel", "🔄 Pending alias resolve: $filled → $filledResolved")
-        }
-
-        val mergedParams = pending.knownParams + filledResolved
+        // Nếu đã hoàn tất việc điền tất cả tham số bắt buộc
         chatHistoryManager.clearPendingIntent()
 
         val executionResult = try {
@@ -843,8 +856,8 @@ class AgentKernel @Inject constructor(
                     regex.containsMatchIn(userMessage) || userMessage.contains(qa.question, ignoreCase = true)
                 }
                 if (messageMatch != null) {
-    return@mapValues messageMatch.answer.trim()
-}
+                    return@mapValues messageMatch.answer.trim()
+                }
             }
             value
         }
