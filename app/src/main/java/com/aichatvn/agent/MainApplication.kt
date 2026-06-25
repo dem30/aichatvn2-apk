@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.QAInitBuilder
 import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.HiltAndroidApp
@@ -25,6 +26,9 @@ class MainApplication : Application(), Configuration.Provider {
 
     @Inject
     lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
+
+    @Inject
+    lateinit var qaInitBuilder: QAInitBuilder
 
     // Sử dụng CoroutineScope ở cấp độ ứng dụng để tránh nghẽn luồng Main
     private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -48,6 +52,12 @@ class MainApplication : Application(), Configuration.Provider {
                 } catch (e: Exception) {
                     logger.e("MainApplication", "❌ Failed to initialize ${plugin.id}", e)
                 }
+            }
+            // Gọi khởi tạo Intent QA mẫu tự động sau khi tải xong plugins
+            try {
+                qaInitBuilder.buildInitialQA()
+            } catch (e: Exception) {
+                logger.e("MainApplication", "❌ Failed to build initial QA", e)
             }
         }
     }

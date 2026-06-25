@@ -9,6 +9,8 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,10 +24,10 @@ import javax.inject.Singleton
 @Singleton
 class TrainingSkill @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val configProvider: AppConfigProvider,
     logger: Logger, 
 ) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
 
-    // Ẩn khỏi router prompt — lệnh học được xử lý riêng qua "Học:" / "Dạy:" trong ChatSkill
     override val visibleInQuickBar: Boolean = false
 
     private val database by lazy { AppDatabase.getDatabase(context) }
@@ -35,6 +37,37 @@ class TrainingSkill @Inject constructor(
     
     private val _stats = MutableStateFlow<Map<String, Any>>(emptyMap())
     val stats: StateFlow<Map<String, Any>> = _stats.asStateFlow()
+
+    // ==================== NEW METHOD FOR QAInitBuilder ====================
+
+    suspend fun countQAByCategory(category: String): Int {
+        return try {
+            database.qaDao().getAllQAs("default_user").count { it.category == category }
+        } catch (e: Exception) {
+            logger.e("TrainingSkill", "Lỗi đếm danh mục QA: ${e.message}", e)
+            0
+        }
+    }
+
+    /**
+     * Phân loại 1 QA là "Intent QA" (answer chứa JSON {"plugin":...,"action":...},
+     * được QAInitBuilder seed sẵn hoặc người dùng tự dạy qua tab Training để AgentKernel
+     * match trực tiếp ở Tầng 2) hay là "Alias QA" (alias/Q&A thuần văn bản, chỉ dùng để
+     * map tên gọi tắt -> giá trị thật, hoặc trả lời tự do).
+     *
+     * Dùng để:
+     *  1) AgentKernel Tầng 2: tìm Intent QA khớp nhất qua fuzzy match để thực thi trực tiếp.
+     *  2) AgentKernel Tầng 3: lọc bỏ Intent QA khỏi gợi ý <qa> gửi cho LLM, chỉ giữ Alias QA.
+     */
+    fun isIntentQA(qa: QAEntity): Boolean {
+        if (qa.category == "auto_init") return true
+        return try {
+            val json = JSONObject(qa.answer)
+            json.has("plugin") && json.has("action")
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     // ==================== PLUGIN IMPLEMENTATION ====================
 
@@ -138,8 +171,7 @@ class TrainingSkill @Inject constructor(
     private suspend fun handleSearch(params: Map<String, Any>, username: String): PluginResult {
         val query = params["query"] as? String 
             ?: return PluginResult.Failure("Thiếu từ khóa")
-        val threshold = (params["threshold"] as? Number)?.toFloat() ?: 0.5f
-        val result = fuzzyMatchQuestion(query, username, threshold)
+        val result = searchQAs(query, username)
         return when (result) {
             is PluginResult.Success -> result
             is PluginResult.Failure -> result
@@ -381,13 +413,28 @@ class TrainingSkill @Inject constructor(
         }
     }
     
+    /**
+     * TỐI ƯU HÓA: Thay thế logic SQL LIKE bằng Fuzzy Match của Agent Kernel sử dụng ngưỡng động
+     */
     suspend fun searchQAs(query: String, username: String): PluginResult {
         return try {
-            val results = database.qaDao().searchQAs(query, username)
+            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.7f)
+
+            val allQAs = database.qaDao().getAllQAs(username)
+            
+            val matches = allQAs.mapNotNull { qa ->
+                val questionSimilarity = calculateSimilarity(query.lowercase(), qa.question.lowercase())
+                val answerSimilarity = calculateSimilarity(query.lowercase(), qa.answer.lowercase())
+                val maxSimilarity = maxOf(questionSimilarity, answerSimilarity)
+                if (maxSimilarity >= configThreshold) {
+                    qa to maxSimilarity
+                } else null
+            }.sortedByDescending { it.second }
+
             PluginResult.Success(
                 mapOf(
-                    "results" to results,
-                    "count" to results.size
+                    "results" to matches.map { it.first },
+                    "count" to matches.size
                 )
             )
         } catch (e: Exception) {
@@ -397,24 +444,22 @@ class TrainingSkill @Inject constructor(
     }
     
     /**
-     * ⭐ HÀM PHỐI HỢP CHÍNH VỚI CHATSKILL VÀ AGENTKERNEL
-     * 
-     * Tìm Q&A gần giống với câu hỏi
-     * Được gọi từ:
-     * - ChatSkill: xây dựng context cho Groq
-     * - AgentKernel: xây dựng context cho LLM routing
+     * TỐI ƯU HÓA: Tự động lấy ngưỡng từ Config Provider nếu không truyền tham số
      */
-    suspend fun fuzzyMatchQuestion(query: String, username: String, threshold: Float = 0.5f): PluginResult {
+    suspend fun fuzzyMatchQuestion(query: String, username: String, threshold: Float? = null): PluginResult {
         return try {
+            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.7f)
+            val activeThreshold = threshold ?: configThreshold
+
             val allQAs = database.qaDao().getAllQAs(username)
             val matches = allQAs.mapNotNull { qa ->
                 val questionSimilarity = calculateSimilarity(query.lowercase(), qa.question.lowercase())
                 val answerSimilarity = calculateSimilarity(query.lowercase(), qa.answer.lowercase())
                 val maxSimilarity = maxOf(questionSimilarity, answerSimilarity)
-                if (maxSimilarity >= threshold) {
+                if (maxSimilarity >= activeThreshold) {
                     qa to maxSimilarity
                 } else null
-            }.sortedByDescending { it.second }.take(3)
+            }.sortedByDescending { it.second }.take(20)
             
             PluginResult.Success(
                 matches.map { 

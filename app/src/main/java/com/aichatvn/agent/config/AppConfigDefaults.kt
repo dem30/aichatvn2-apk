@@ -37,6 +37,9 @@ object AppConfigDefaults {
     // ───────────────────────── SCHEDULE ─────────────────────
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
+    // ───────────────────────── GLOBAL ───────────────────────
+    const val GLOBAL_FUZZY_THRESHOLD = "global.fuzzy_threshold"
+
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
     // ─────────────────────────────────────────────────────────
@@ -184,6 +187,16 @@ object AppConfigDefaults {
             pluginId = "schedule",
             label = "Chu kỳ quét camera (phút)",
             description = "Khoảng thời gian giữa 2 lần TaskScheduler tự động quét toàn bộ camera. Mặc định 15 phút."
+        ),
+
+        // ── GLOBAL ──
+        AppConfigEntity(
+            key = GLOBAL_FUZZY_THRESHOLD,
+            value = "0.7",
+            type = "string",
+            pluginId = "global",
+            label = "Ngưỡng lọc lệnh cục bộ (Fuzzy Threshold)",
+            description = "Giá trị từ 0.0 đến 1.0. Thấp sẽ nhạy hơn nhưng dễ nhầm lẫn, cao sẽ khắt khe hơn."
         )
     )
 }
