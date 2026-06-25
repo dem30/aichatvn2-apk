@@ -71,46 +71,60 @@ class NotificationSkill @Inject constructor(
     }
 
     suspend fun sendNotification(
-    title: String,
-    message: String,
-    channelId: String = CHANNEL_ID
-): Int = withContext(Dispatchers.Main) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        if (notificationManager.getNotificationChannel(channelId) == null) {
-            createNotificationChannel()
+        title: String,
+        message: String,
+        channelId: String = CHANNEL_ID
+    ): Int = withContext(Dispatchers.Main) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (notificationManager.getNotificationChannel(channelId) == null) {
+                createNotificationChannel()
+            }
         }
+
+        val id = notificationCounter.getAndIncrement()
+
+        // ✅ Thêm: tap notification → mở MainActivity
+        val launchIntent = context.packageManager
+            .getLaunchIntentForPackage(context.packageName)
+            ?.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            id,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(pendingIntent)  // ✅ Thêm dòng này
+            .build()
+
+        notificationManager.notify(id, notification)
+        logger.i("NotificationSkill", "📢 NOTIFICATION POSTED | ID=$id | Title: $title")
+        id
     }
 
-    val id = notificationCounter.getAndIncrement()
-
-    // ✅ Thêm: tap notification → mở MainActivity
-    val launchIntent = context.packageManager
-        .getLaunchIntentForPackage(context.packageName)
-        ?.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
-
-    val pendingIntent = PendingIntent.getActivity(
-        context,
-        id,
-        launchIntent,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-    )
-
-    val notification = NotificationCompat.Builder(context, channelId)
-        .setSmallIcon(R.drawable.ic_notification)
-        .setContentTitle(title)
-        .setContentText(message)
-        .setStyle(NotificationCompat.BigTextStyle().bigText(message))
-        .setPriority(NotificationCompat.PRIORITY_HIGH)
-        .setDefaults(NotificationCompat.DEFAULT_ALL)
-        .setAutoCancel(true)
-        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-        .setContentIntent(pendingIntent)  // ✅ Thêm dòng này
-        .build()
-
-    notificationManager.notify(id, notification)
-    logger.i("NotificationSkill", "📢 NOTIFICATION POSTED | ID=$id | Title: $title")
-    id
-}
+    // Thêm hàm định nghĩa Notification Channel để giải quyết lỗi biên dịch
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = CHANNEL_DESCRIPTION
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
 
     companion object {
         private const val CHANNEL_ID = "aichatvn_alerts"
