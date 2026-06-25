@@ -173,20 +173,19 @@ class AgentKernel @Inject constructor(
     /**
      * Xác định các tham số bắt buộc bị thiếu hoặc chưa được giải quyết dựa trên metadata thực tế của plugin.
      */
-    private fun getUnresolvedParams(params: Map<String, Any>, pluginId: String, actionName: String): List<String> {
+    private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
         val missing = mutableListOf<String>()
 
         // 1. Kiểm tra riêng cho lịch trình (schedule.add)
-        if (pluginId == "schedule" && actionName == "add") {
+        if (plugin.id == "schedule" && actionName == "add") {
             val targetPluginId = params["pluginId"]?.toString()
             if (targetPluginId.isNullOrBlank()) {
                 missing.add("pluginId")
             }
         }
 
-        // 2. Tìm action trong plugin thông qua metadata định nghĩa động
-        val plugin = plugins.find { it.id == pluginId }
-        val action = plugin?.getActions()?.find { it.name == actionName }
+        // 2. Tìm action trong plugin thông qua metadata định nghĩa động (Truy cập trực tiếp không qua find ID)
+        val action = plugin.getActions().find { it.name == actionName }
 
         if (action != null) {
             // Lấy các tham số bắt buộc (required == true) từ metadata thực tế của plugin
@@ -503,14 +502,14 @@ class AgentKernel @Inject constructor(
         userMessage: String
     ): PluginResult {
         // Tự động chuẩn hóa các giá trị Boolean thô (bật/tắt/mở/true/false) dựa trên metadata hành động
-        val normalizedParams = normalizeParams(intent.params, plugin.id, intent.action)
+        val normalizedParams = normalizeParams(intent.params, plugin, intent.action)
         val normalizedIntent = intent.copy(params = normalizedParams)
 
         val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
         device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
-        // Kiểm tra xem có tham số bắt buộc nào chưa được điền dựa trên metadata động của plugin
-        val missing = getUnresolvedParams(normalizedIntent.params, normalizedIntent.pluginId, normalizedIntent.action)
+        // Kiểm tra xem có tham số bắt buộc nào chưa được điền dựa trên metadata động của plugin (Sử dụng trực tiếp đối tượng plugin)
+        val missing = getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action)
 
         val executionResult = if (missing.isNotEmpty()) {
             // Trả về yêu cầu bổ sung thông tin trực tiếp, loại bỏ cuộc gọi LLM không cần thiết
@@ -726,8 +725,8 @@ class AgentKernel @Inject constructor(
         // Gộp dữ liệu đã biết từ trước với phần mới nhận diện được để lưu và đánh giá tính đầy đủ
         val mergedParams = pending.knownParams + filledResolved
 
-        // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata
-        val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin.id, pending.action)
+        // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata (Sử dụng trực tiếp đối tượng targetPlugin)
+        val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin, pending.action)
 
         // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số đã được chuẩn hóa không
         val stillMissing = pending.missingParams.filter { key ->
@@ -874,8 +873,7 @@ class AgentKernel @Inject constructor(
     // Normalization utilities (Chuẩn hóa tự động các tham số boolean Tiếng Việt/English)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private fun normalizeParams(params: Map<String, Any>, pluginId: String, actionName: String): Map<String, Any> {
-        val plugin = plugins.find { it.id == pluginId } ?: return params
+    private fun normalizeParams(params: Map<String, Any>, plugin: Plugin, actionName: String): Map<String, Any> {
         val action = plugin.getActions().find { it.name == actionName } ?: return params
 
         return params.mapValues { (key, value) ->
