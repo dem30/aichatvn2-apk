@@ -551,8 +551,9 @@ class AgentKernel @Inject constructor(
     /**
      * Tự động nhận diện nhanh từ khóa Plugin ID và Action Name để bảo vệ Pending Intent hiện tại,
      * loại bỏ kiểm tra mô tả để giảm thiểu tối đa False Positive khi người dùng trả lời hội thoại.
+     * Chỉ coi là lệnh mới nếu từ khóa trùng khớp với một PLUGIN KHÁC với plugin đang chờ (pendingPluginId).
      */
-    private fun looksLikeNewCommand(userMessage: String, devicePlugins: List<Plugin>): Boolean {
+    private fun looksLikeNewCommand(userMessage: String, pendingPluginId: String, devicePlugins: List<Plugin>): Boolean {
         val lower = userMessage.trim().lowercase()
 
         val stopWords = setOf(
@@ -561,13 +562,16 @@ class AgentKernel @Inject constructor(
         )
 
         for (plugin in devicePlugins) {
-            // 1. Quét theo Plugin ID (ví dụ: "camera", "mail", "tuya")
+            // Nếu trùng với plugin hiện tại đang chờ xử lý -> KHÔNG được coi là lệnh mới để bảo vệ Tầng 1
+            if (plugin.id == pendingPluginId) continue
+
+            // 1. Quét theo Plugin ID của các plugin KHÁC (ví dụ: "camera", "mail", "tuya")
             if (plugin.id.isNotBlank() && lower.contains(plugin.id.lowercase())) {
                 return true
             }
 
             for (action in plugin.getActions()) {
-                // 2. Quét theo tên action (tách camelCase hoặc snake_case thành các từ đơn)
+                // 2. Quét theo tên action của các plugin KHÁC (tách camelCase hoặc snake_case thành các từ đơn)
                 val actionWords = action.name.split(Regex("(?=[A-Z])|_|\\s"))
                     .map { it.lowercase() }
                     .filter { it.length > 2 && it !in stopWords }
@@ -692,7 +696,8 @@ class AgentKernel @Inject constructor(
                 if (heuristicFilled.isNotEmpty()) {
                     heuristicFilled
                 } else {
-                    if (looksLikeNewCommand(userMessage, devicePlugins)) {
+                    // Truyền thêm ID của plugin đang chờ xử lý vào looksLikeNewCommand
+                    if (looksLikeNewCommand(userMessage, pending.pluginId, devicePlugins)) {
                         chatHistoryManager.clearPendingIntent()
                         return null
                     } else {
