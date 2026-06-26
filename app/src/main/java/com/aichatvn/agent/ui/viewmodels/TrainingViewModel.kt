@@ -40,6 +40,9 @@ class TrainingViewModel @Inject constructor(
     private val _hasMore = MutableStateFlow(true)
     val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
 
+    // Track query đang active để refresh searchResults sau khi xoá
+    private var activeSearchQuery: String = ""
+
     private val PAGE_SIZE = 20
 
     init {
@@ -88,6 +91,10 @@ class TrainingViewModel @Inject constructor(
     fun deleteQA(id: String) {
         viewModelScope.launch {
             trainingSkill.deleteQA(id, "default_user")
+            // Nếu đang search thì refresh lại kết quả, tránh item "ma" vẫn hiện sau khi xoá
+            if (activeSearchQuery.isNotBlank()) {
+                refreshSearchResults()
+            }
         }
     }
 
@@ -97,7 +104,19 @@ class TrainingViewModel @Inject constructor(
             for (id in ids) {
                 trainingSkill.deleteQA(id, "default_user")
             }
+            // Refresh search nếu đang search
+            if (activeSearchQuery.isNotBlank()) {
+                refreshSearchResults()
+            }
             _isLoading.value = false
+        }
+    }
+
+    private suspend fun refreshSearchResults() {
+        val result = trainingSkill.searchQAs(activeSearchQuery, "default_user")
+        if (result is PluginResult.Success) {
+            @Suppress("UNCHECKED_CAST")
+            _searchResults.value = (result.data as? Map<String, Any>)?.get("results") as? List<QAEntity> ?: emptyList()
         }
     }
 
@@ -108,6 +127,7 @@ class TrainingViewModel @Inject constructor(
     }
 
     fun searchQAs(query: String) {
+        activeSearchQuery = query  // Lưu query để dùng khi refresh sau xoá
         viewModelScope.launch {
             _isLoading.value = true
             val result = trainingSkill.searchQAs(query, "default_user")
@@ -126,6 +146,7 @@ class TrainingViewModel @Inject constructor(
     }
 
     fun clearSearch() {
+        activeSearchQuery = ""
         _searchResults.value = emptyList()
     }
 

@@ -283,6 +283,7 @@ class TrainingSkill @Inject constructor(
     suspend fun exportQAs(username: String): PluginResult {
         return try {
             val allQAs = database.qaDao().getAllQAs(username)
+                .filter { it.category != "auto_init" }  // Bỏ QA auto-seed, sẽ được rebuild tự động
             val jsonArray = JSONArray()
             for (qa in allQAs) {
                 val obj = JSONObject().apply {
@@ -311,26 +312,59 @@ class TrainingSkill @Inject constructor(
     suspend fun importQAs(jsonString: String, username: String): PluginResult {
         return try {
             val jsonArray = JSONArray(jsonString)
+
+            // Build lookup từ DB hiện tại: normalized question → QAEntity
+            val existingQAs = database.qaDao().getAllQAs(username)
+            val existingByQuestion = existingQAs.associateBy { it.question.trim().lowercase() }
+
             var imported = 0
+            var skipped = 0
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
-                val qa = QAEntity(
-                    id = UUID.randomUUID().toString(),
-                    question = obj.getString("question"),
-                    answer = obj.getString("answer"),
-                    category = obj.optString("category", "general"),
-                    createdBy = username,
-                    createdAt = System.currentTimeMillis(),
-                    timestamp = System.currentTimeMillis()
-                )
-                database.qaDao().insertQA(qa)
-                imported++
+                val question = obj.getString("question")
+                val answer = obj.getString("answer")
+                val category = obj.optString("category", "general")
+
+                // Bỏ qua auto_init — QAInitBuilder sẽ seed lại tự động sau khi cài app
+                if (category == "auto_init") { skipped++; continue }
+
+                val key = question.trim().lowercase()
+                val existing = existingByQuestion[key]
+                when {
+                    existing == null -> {
+                        // Câu hỏi chưa có → insert mới
+                        database.qaDao().insertQA(
+                            QAEntity(
+                                id = UUID.randomUUID().toString(),
+                                question = question,
+                                answer = answer,
+                                category = category,
+                                createdBy = username,
+                                createdAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                        imported++
+                    }
+                    existing.answer != answer -> {
+                        // Câu hỏi đã có nhưng answer khác → update (giữ id cũ)
+                        database.qaDao().updateQA(
+                            existing.copy(
+                                answer = answer,
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                        imported++
+                    }
+                    else -> skipped++ // Hoàn toàn giống → bỏ qua
+                }
             }
             refreshQAList(username)
             PluginResult.Success(
                 mapOf(
-                    "message" to "Imported $imported Q&As",
-                    "imported" to imported
+                    "message" to "Import: $imported Q&As đã xử lý, $skipped bỏ qua",
+                    "imported" to imported,
+                    "skipped" to skipped
                 )
             )
         } catch (e: Exception) {
