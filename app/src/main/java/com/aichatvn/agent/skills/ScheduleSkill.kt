@@ -25,6 +25,10 @@ class ScheduleSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("schedule", "Lên lịch trình", logger), Plugin {
 
+  override val routable: Boolean = true
+    override val visibleOnDashboard: Boolean = false
+    override val autoGenerateQA: Boolean = true
+
     private val database by lazy { AppDatabase.getDatabase(context) }
     
     private val _schedules = MutableStateFlow<List<ScheduleEntity>>(emptyList())

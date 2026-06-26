@@ -29,6 +29,10 @@ class EmailSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("email", "Gửi email", logger), Plugin {
 
+  override val routable: Boolean = true
+    override val visibleOnDashboard: Boolean = false
+    override val autoGenerateQA: Boolean = true
+
     companion object {
         private const val RESEND_API_URL = "https://api.resend.com/emails"
     }

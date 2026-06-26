@@ -6,19 +6,23 @@ interface Plugin {
     val id: String
     val name: String
 
-    // ✅ Mặc định true; các skill hệ thống/chat override thành false để ẩn khỏi
-    // catalog định tuyến local (AgentKernel.tryDeviceCommand) và UI quick bar.
-    val visibleInQuickBar: Boolean get() = true
+    // Cập nhật 3 flag độc lập theo thiết kế mới
+    val routable: Boolean 
+        get() = true
+
+    val visibleOnDashboard: Boolean 
+        get() = false
+
+    val autoGenerateQA: Boolean 
+        get() = true
 
     suspend fun initialize()
     suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult
     suspend fun shutdown()
     
-    // ✅ Thêm để AgentKernel biết plugin có những action gì
     fun getActions(): List<PluginAction>
-  // Thêm method với default implementation trả về emptyMap()
-// để các plugin cũ không bị break
-fun getQATriggers(): Map<String, List<String>> = emptyMap()
+    
+    fun getQATriggers(): Map<String, List<String>> = emptyMap()
 }
 
 data class PluginParameter(

@@ -9,6 +9,7 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.ui.dashboard.DashboardProvider // Import mới
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -85,8 +86,20 @@ object AppModule {
     @Singleton
     fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
 
+    // ===== ĐĂNG KÝ DASHBOARD PROVIDER (PHẦN 9) =====
+    // Nếu CameraSkill và LightSkill implement DashboardProvider, ta đưa chúng vào Set<DashboardProvider>
+    
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideCameraDashboardProvider(skill: CameraSkill): DashboardProvider = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideLightDashboardProvider(skill: LightSkill): DashboardProvider = skill
+
     // ===== AGENT KERNEL =====
-    // Cập nhật nhận thêm configProvider từ Hilt graph để khởi tạo AgentKernel đồng bộ
     @Provides
     @Singleton
     fun provideAgentKernel(

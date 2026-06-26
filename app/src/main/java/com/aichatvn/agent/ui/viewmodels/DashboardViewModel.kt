@@ -2,123 +2,111 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
-import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.data.model.AlertEntity
-import com.aichatvn.agent.data.model.CameraConfigEntity
-import com.aichatvn.agent.skills.CameraSkill
+import com.aichatvn.agent.ui.dashboard.DashboardProvider
+import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.Calendar
 import javax.inject.Inject
-
-data class DashboardSummary(
-    val totalCameras: Int = 0,
-    val onlineCameras: Int = 0,
-    val offlineCameras: Int = 0,
-    val disabledCameras: Int = 0,
-    val cooldownCameras: Int = 0,
-    val circuitBreakerOpenCameras: Int = 0
-)
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val cameraSkill: CameraSkill,
-    private val database: AppDatabase,
+    private val providers: Set<@JvmSuppressWildcards DashboardProvider>,
+    private val agentKernel: AgentKernel,
     private val logger: Logger
 ) : ViewModel() {
 
-    private val _isScanning = MutableStateFlow(false)
-    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+    private val _deviceNodes = MutableStateFlow<List<DeviceNode>>(emptyList())
+    val deviceNodes: StateFlow<List<DeviceNode>> = _deviceNodes.asStateFlow()
 
-    private val _scanResultMessage = MutableStateFlow<String?>(null)
-    val scanResultMessage: StateFlow<String?> = _scanResultMessage.asStateFlow()
+    private val _isProcessing = MutableStateFlow(false)
+    val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
 
-    private val _learningStats = MutableStateFlow<Map<String, Any>>(emptyMap())
-
-    private val cameras: StateFlow<List<CameraConfigEntity>> = database.cameraDao()
-        .getAllCamerasFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val recentAlerts: StateFlow<List<AlertEntity>> = database.alertDao()
-        .getAllAlertsFlow()
-        .map { it.take(5) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val unreadAlertCount: StateFlow<Int> = database.alertDao()
-        .getUnreadCountFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
-
-    val todayAlertCount: StateFlow<Int> = database.alertDao()
-        .getAlertCountSinceFlow(startOfTodayMillis())
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
-
-    val summary: StateFlow<DashboardSummary> = combine(cameras, _learningStats) { cameraList, stats ->
-        DashboardSummary(
-            totalCameras = cameraList.size,
-            onlineCameras = cameraList.count { it.isOnline == 1 && it.manualOff == 0 },
-            offlineCameras = cameraList.count { it.isOnline != 1 && it.manualOff == 0 },
-            disabledCameras = cameraList.count { it.manualOff == 1 },
-            cooldownCameras = stats.values.count {
-                (it as? Map<*, *>)?.get("inCooldown") == true
-            },
-            circuitBreakerOpenCameras = stats.values.count {
-                (it as? Map<*, *>)?.get("circuitBreakerOpen") == true
-            }
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardSummary())
+    private val _executionMessage = MutableStateFlow<String?>(null)
+    val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
     init {
+        // Chu kỳ cập nhật dữ liệu từ các provider để giữ trạng thái sơ đồ đồng bộ thực thời
         viewModelScope.launch {
             while (isActive) {
-                _learningStats.value = cameraSkill.getDiagnostics()
+                refreshDashboardNodes()
                 delay(5000)
             }
         }
     }
 
-    private fun startOfTodayMillis(): Long {
-        val cal = Calendar.getInstance()
-        cal.set(Calendar.HOUR_OF_DAY, 0)
-        cal.set(Calendar.MINUTE, 0)
-        cal.set(Calendar.SECOND, 0)
-        cal.set(Calendar.MILLISECOND, 0)
-        return cal.timeInMillis
-    }
-
-    fun scanAllNow() {
+    fun refreshDashboardNodes() {
         viewModelScope.launch {
-            _isScanning.value = true
-            _scanResultMessage.value = null
             try {
-                val result = cameraSkill.execute("scan", emptyMap())
-                _scanResultMessage.value = when (result) {
-                    is PluginResult.Success -> {
-                        val msg = (result.data as? Map<*, *>)?.get("message") as? String
-                        "✅ ${msg ?: "Đã quét xong"}"
-                    }
-                    is PluginResult.Failure -> "❌ Lỗi: ${result.error}"
-                    else -> "❌ Không thực hiện được"
-                }
+                // Merge tất cả các node từ các DashboardProvider (PHẦN 6)
+                val allNodes = providers.flatMap { it.getDashboardNodes() }
+                _deviceNodes.value = allNodes
             } catch (e: Exception) {
-                _scanResultMessage.value = "❌ Exception: ${e.message}"
-                logger.e("DashboardViewModel", "scanAllNow error: ${e.message}", e)
+                logger.e("DashboardViewModel", "Lỗi nạp danh sách sơ đồ: ${e.message}", e)
             }
-            _isScanning.value = false
         }
     }
 
-    fun clearScanResult() {
-        _scanResultMessage.value = null
+    /**
+     * Gửi yêu cầu điều khiển về AgentKernel dưới dạng text-command hoặc tham số (PHẦN 8).
+     * AgentKernel tiếp tục là trung tâm điều phối duy nhất cho cả chat và GUI.
+     */
+    fun sendDeviceAction(node: DeviceNode, action: String, params: Map<String, Any> = emptyMap()) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _executionMessage.value = null
+
+            // Tạo câu lệnh tương đương từ hành động trên UI của người dùng
+            val command = when (node.type) {
+                DeviceType.LIGHT, DeviceType.SWITCH, DeviceType.PUMP -> {
+                    if (action.uppercase() == "ON") "bật ${node.name}" else "tắt ${node.name}"
+                }
+                DeviceType.CAMERA -> {
+                    if (action.uppercase() == "LIVE") "xem camera ${node.name}" else "chụp ảnh từ ${node.name}"
+                }
+                DeviceType.LOCK -> {
+                    if (action.uppercase() == "UNLOCK") "mở khóa ${node.name}" else "khóa ${node.name}"
+                }
+                DeviceType.FLYCAM -> {
+                    "${action.lowercase()} flycam ${node.name}"
+                }
+                DeviceType.ROBOT -> {
+                    "${action.lowercase()} robot ${node.name}"
+                }
+                else -> "${action.lowercase()} ${node.name}"
+            }
+
+            logger.d("DashboardViewModel", "Gửi lệnh sơ đồ đến AgentKernel: $command")
+            
+            try {
+                val result = agentKernel.process(command)
+                _executionMessage.value = when (result) {
+                    is PluginResult.Success -> {
+                        val msg = (result.data as? Map<*, *>)?.get("message") as? String
+                        "✅ ${msg ?: "Đã thực hiện thành công"}"
+                    }
+                    is PluginResult.Failure -> "❌ Lỗi: ${result.error}"
+                    is PluginResult.NeedMoreInfo -> "⚠️ ${result.question}"
+                }
+            } catch (e: Exception) {
+                _executionMessage.value = "❌ Exception: ${e.message}"
+                logger.e("DashboardViewModel", "Lỗi khi xử lý lệnh thiết bị: ${e.message}", e)
+            } finally {
+                _isProcessing.value = false
+                refreshDashboardNodes() // Nạp lại sơ đồ ngay sau khi thực thi
+            }
+        }
+    }
+
+    fun clearExecutionMessage() {
+        _executionMessage.value = null
     }
 }

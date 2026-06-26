@@ -24,7 +24,9 @@ class QAInitBuilder @Inject constructor(
 
         var intentCount = 0
         var aliasCount = 0
-        val targetPlugins = plugins.filter { it.id != "training" && it.id != "global" }
+        
+        // SỬA ĐỔI: Sử dụng flag autoGenerateQA để lọc plugin sinh QA tự động
+        val targetPlugins = plugins.filter { it.autoGenerateQA }
 
         // 1. Sinh Intent QA tiêu chuẩn cho tất cả các Action của từng Plugin
         targetPlugins.forEach { plugin ->
@@ -40,7 +42,6 @@ class QAInitBuilder @Inject constructor(
                     put("params", schemaParams)
                 }
 
-                // Chuyển ngữ tự nhiên để làm Trigger Question cho Intent
                 val friendlyAction = getFriendlyActionName(action.name)
                 val friendlyPlugin = getFriendlyPluginName(plugin.id)
 
@@ -67,7 +68,7 @@ class QAInitBuilder @Inject constructor(
 
         // 2. Sinh Intent QA đặc biệt cho Plugin Lên Lịch (Generic composite schedule)
         val schedulePlugin = plugins.firstOrNull { it.id == "schedule" || it.id == "scheduler" }
-        if (schedulePlugin != null) {
+        if (schedulePlugin != null && schedulePlugin.autoGenerateQA) { // Kiểm tra thêm flag cấu hình sinh QA
             val scheduleAction = schedulePlugin.getActions().firstOrNull {
                 it.name == "add" || it.name == "create" || it.name == "schedule"
             } ?: schedulePlugin.getActions().firstOrNull()
@@ -99,7 +100,7 @@ class QAInitBuilder @Inject constructor(
             }
         }
 
-        // 3. Khởi tạo một số Alias QA mẫu theo từng Semantic Type để người dùng trải nghiệm ngay
+        // 3. Khởi tạo một số Alias QA mẫu
         val defaultAliases = listOf(
             Triple("cổng", "camera_1", "camera"),
             Triple("sân trước", "camera_2", "camera"),
@@ -113,7 +114,7 @@ class QAInitBuilder @Inject constructor(
             trainingSkill.addQA(
                 question = question,
                 answer = answer,
-                type = semanticType, // Trường type lưu Semantic Type của Alias
+                type = semanticType,
                 category = "default_alias",
                 username = username
             )

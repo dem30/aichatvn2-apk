@@ -60,9 +60,9 @@ class ChatSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
-    // ✅ ChatSkill là điểm vào hội thoại, không phải lệnh thiết bị -> ẩn khỏi
-    // catalog định tuyến local của AgentKernel và khỏi UI gợi ý động.
-    override val visibleInQuickBar: Boolean = false
+    override val routable: Boolean = false
+    override val visibleOnDashboard: Boolean = false
+    override val autoGenerateQA: Boolean = false
 
     private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
     val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()

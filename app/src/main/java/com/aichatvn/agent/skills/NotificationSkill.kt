@@ -27,6 +27,10 @@ class NotificationSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("notification", "Gửi thông báo", logger), Plugin {
 
+  override val routable: Boolean = true
+    override val visibleOnDashboard: Boolean = false
+    override val autoGenerateQA: Boolean = true
+
     private val notificationManager by lazy {
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     }

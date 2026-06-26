@@ -31,7 +31,9 @@ class AppConfigSkill @Inject constructor(
 ) : BaseSkill("appconfig", "Cấu hình hệ thống", logger), Plugin {
 
 
-  override val visibleInQuickBar: Boolean = false
+  override val routable: Boolean = false
+    override val visibleOnDashboard: Boolean = false
+    override val autoGenerateQA: Boolean = false
     override fun getActions(): List<PluginAction> = listOf(
         PluginAction(
             name = "get",

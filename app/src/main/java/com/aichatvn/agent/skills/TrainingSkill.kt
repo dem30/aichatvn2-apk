@@ -28,7 +28,9 @@ class TrainingSkill @Inject constructor(
     logger: Logger, 
 ) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
 
-    override val visibleInQuickBar: Boolean = false
+    override val routable: Boolean = false
+    override val visibleOnDashboard: Boolean = false
+    override val autoGenerateQA: Boolean = false
 
     private val database by lazy { AppDatabase.getDatabase(context) }
     

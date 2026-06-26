@@ -1,7 +1,12 @@
 package com.aichatvn.agent.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -9,15 +14,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.aichatvn.agent.data.model.AlertEntity
+import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.viewmodels.DashboardViewModel
-import java.text.SimpleDateFormat
-import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,211 +31,356 @@ fun DashboardScreen(
     navController: NavController,
     viewModel: DashboardViewModel = hiltViewModel()
 ) {
-    val summary by viewModel.summary.collectAsState()
-    val recentAlerts by viewModel.recentAlerts.collectAsState()
-    val unreadAlertCount by viewModel.unreadAlertCount.collectAsState()
-    val todayAlertCount by viewModel.todayAlertCount.collectAsState()
-    val isScanning by viewModel.isScanning.collectAsState()
-    val scanResultMessage by viewModel.scanResultMessage.collectAsState()
+    val deviceNodes by viewModel.deviceNodes.collectAsState()
+    val isProcessing by viewModel.isProcessing.collectAsState()
+    val executionMessage by viewModel.executionMessage.collectAsState()
 
+    var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(scanResultMessage) {
-        scanResultMessage?.let {
+    LaunchedEffect(executionMessage) {
+        executionMessage?.let {
             snackbarHostState.showSnackbar(it)
-            viewModel.clearScanResult()
+            viewModel.clearExecutionMessage()
         }
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Tổng quan") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Sơ đồ điều khiển thiết bị") },
+                actions = {
+                    IconButton(onClick = { viewModel.refreshDashboardNodes() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Làm mới")
+                    }
+                }
+            )
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
         ) {
-            // Tổng quan camera
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // SƠ ĐỒ ĐỊNH VỊ THIẾT BỊ (Canvas / Coordinate Layout)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(12.dp)
+                    )
             ) {
-                SummaryCard("📷 Tổng", "${summary.totalCameras}", modifier = Modifier.weight(1f))
-                SummaryCard(
-                    "🟢 Online", "${summary.onlineCameras}",
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SummaryCard(
-                    "🔴 Offline", "${summary.offlineCameras}",
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    modifier = Modifier.weight(1f)
-                )
-                SummaryCard(
-                    "⛔ Đã tắt", "${summary.disabledCameras}",
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            // Cảnh báo hệ thống: cooldown / circuit breaker
-            if (summary.cooldownCameras > 0 || summary.circuitBreakerOpenCameras > 0) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+                // Background biểu diễn Sơ đồ Nhà (🏠)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(bottom = 40.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        if (summary.cooldownCameras > 0) {
-                            Text("⏳ ${summary.cooldownCameras} camera đang trong thời gian cooldown")
-                        }
-                        if (summary.circuitBreakerOpenCameras > 0) {
-                            Text("🔌 ${summary.circuitBreakerOpenCameras} camera đang bị tạm ngưng quét (mất kết nối liên tục)")
+                    Text("🏠", fontSize = 120.sp, modifier = Modifier.clip(CircleShape))
+                    Text(
+                        text = "AIChatVN Home",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(top = 110.dp)
+                    )
+                }
+
+                // Vẽ các node thiết bị động dựa theo tọa độ x, y định nghĩa sẵn trong DB/Skill
+                deviceNodes.forEach { node ->
+                    Box(
+                        modifier = Modifier
+                            .offset(x = node.x.dp, y = node.y.dp)
+                            .clickable { selectedNode = node }
+                            .padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .background(
+                                        color = if (node.online)
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        else
+                                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                                        shape = CircleShape
+                                    )
+                                    .border(
+                                        width = 2.dp,
+                                        color = if (node.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(node.icon, fontSize = 24.sp)
+                            }
+                            Text(
+                                text = node.name,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .background(
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                        shape = RoundedCornerShape(4.dp)
+                                    )
+                                    .padding(horizontal = 4.dp)
+                            )
                         }
                     }
                 }
             }
 
-            // Cảnh báo trong ngày + lối vào Lịch sử
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
+            // Trạng thái hệ thống đang gửi lệnh
+            if (isProcessing) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(48.dp)
+                )
+            }
+        }
+
+        // BOTTOM SHEET ĐIỀU KHIỂN CHI TIẾT (PHẦN 7)
+        if (selectedNode != null) {
+            val node = selectedNode!!
+            ModalBottomSheet(
+                onDismissRequest = { selectedNode = null },
+                sheetState = sheetState
+            ) {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    Column {
-                        Text("🔔 Cảnh báo hôm nay", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "$todayAlertCount cảnh báo" +
-                                if (unreadAlertCount > 0) " • $unreadAlertCount chưa đọc" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    // Tiêu đề Bottom Sheet
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(node.icon, fontSize = 36.sp)
+                            Column {
+                                Text(node.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                Text("Plugin ID: ${node.pluginId}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        
+                        // Trạng thái kết nối
+                        Surface(
+                            color = if (node.online) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                            contentColor = if (node.online) Color(0xFF2E7D32) else Color(0xFFC62828),
+                            shape = CircleShape
+                        ) {
+                            Text(
+                                text = if (node.online) "ONLINE" else "OFFLINE",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
                     }
-                    TextButton(onClick = { navController.navigate("alert_history") }) {
-                        Text("Xem tất cả")
-                        Icon(Icons.Default.ChevronRight, contentDescription = null)
+
+                    // Thông số kỹ thuật của thiết bị
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text("Địa chỉ IP", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(node.ip, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            }
+                            Column {
+                                Text("Pin / Nguồn điện", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${node.battery}%", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            }
+                            Column {
+                                Text("Mã định danh", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(node.deviceId, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
+
+                    Text("Hành động", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
+                    // Phân loại các nút điều khiển trực quan dựa trên DeviceType (PHẦN 7)
+                    when (node.type) {
+                        DeviceType.CAMERA -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        viewModel.sendDeviceAction(node, "LIVE")
+                                        selectedNode = null
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Videocam, contentDescription = null)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Xem Trực Tiếp")
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.sendDeviceAction(node, "SNAPSHOT")
+                                        selectedNode = null
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Chụp Ảnh")
+                                }
+                            }
+                        }
+
+                        DeviceType.LIGHT, DeviceType.SWITCH, DeviceType.PUMP -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = {
+                                        viewModel.sendDeviceAction(node, "ON")
+                                        selectedNode = null
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Power, contentDescription = null)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("BẬT (ON)")
+                                }
+                                Button(
+                                    onClick = {
+                                        viewModel.sendDeviceAction(node, "OFF")
+                                        selectedNode = null
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.PowerOff, contentDescription = null)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("TẮT (OFF)")
+                                }
+                            }
+                        }
+
+                        DeviceType.FLYCAM -> {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = { viewModel.sendDeviceAction(node, "Takeoff"); selectedNode = null },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("🚀 Cất cánh") }
+                                    Button(
+                                        onClick = { viewModel.sendDeviceAction(node, "Land"); selectedNode = null },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("📉 Hạ cánh") }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.sendDeviceAction(node, "Return Home"); selectedNode = null },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("🏠 Trở về") }
+                                    OutlinedButton(
+                                        onClick = { viewModel.sendDeviceAction(node, "Follow"); selectedNode = null },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("🏃 Bám theo") }
+                                }
+                            }
+                        }
+
+                        DeviceType.ROBOT -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { viewModel.sendDeviceAction(node, "Patrol"); selectedNode = null },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("🚨 Tuần tra") }
+                                Button(
+                                    onClick = { viewModel.sendDeviceAction(node, "Go to Base"); selectedNode = null },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("⚡ Sạc điện") }
+                                OutlinedButton(
+                                    onClick = { viewModel.sendDeviceAction(node, "Stop"); selectedNode = null },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("🛑 Dừng lại") }
+                            }
+                        }
+
+                        DeviceType.LOCK -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { viewModel.sendDeviceAction(node, "UNLOCK"); selectedNode = null },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("🔓 Mở khóa") }
+                                Button(
+                                    onClick = { viewModel.sendDeviceAction(node, "LOCK"); selectedNode = null },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("🔒 Khóa") }
+                            }
+                        }
+
+                        else -> {
+                            Button(
+                                onClick = { viewModel.sendDeviceAction(node, "REFRESH"); selectedNode = null },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Làm mới trạng thái")
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
                 }
             }
-
-            // Nút quét tất cả ngay
-            Button(
-                onClick = { viewModel.scanAllNow() },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isScanning
-            ) {
-                if (isScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Đang quét...")
-                } else {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Quét tất cả camera ngay")
-                }
-            }
-
-            HorizontalDivider()
-
-            // Cảnh báo gần đây
-            Text("Cảnh báo gần đây", style = MaterialTheme.typography.titleMedium)
-
-            if (recentAlerts.isEmpty()) {
-                Text(
-                    "Chưa có cảnh báo nào. Hệ thống sẽ tự động ghi nhận khi AI phát hiện biến động.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    recentAlerts.forEach { alert ->
-                        RecentAlertRow(
-                            alert = alert,
-                            onClick = { navController.navigate("alert_history") }
-                        )
-                    }
-                }
-            }
-
-            // Đi tới quản lý camera
-            OutlinedButton(
-                onClick = { navController.navigate("customer") },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Videocam, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Quản lý Camera")
-            }
-
-            Spacer(Modifier.height(8.dp))
-        }
-    }
-}
-
-@Composable
-private fun SummaryCard(
-    label: String,
-    value: String,
-    color: Color = MaterialTheme.colorScheme.surface,
-    modifier: Modifier = Modifier
-) {
-    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = color)) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(label, style = MaterialTheme.typography.labelMedium)
-            Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        }
-    }
-}
-
-@Composable
-private fun RecentAlertRow(alert: AlertEntity, onClick: () -> Unit) {
-    val timeText = remember(alert.timestamp) {
-        SimpleDateFormat("HH:mm dd/MM", Locale.getDefault()).format(Date(alert.timestamp))
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (alert.isRead == 0)
-                MaterialTheme.colorScheme.errorContainer
-            else
-                MaterialTheme.colorScheme.surfaceVariant
-        ),
-        onClick = onClick
-    ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(alert.cameraName, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text(timeText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Text(
-                alert.aiComment,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2
-            )
         }
     }
 }

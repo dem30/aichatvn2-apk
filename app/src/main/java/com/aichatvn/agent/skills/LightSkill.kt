@@ -4,16 +4,52 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.data.AppDatabase // Import mới
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
+// Imports mới cho Dashboard (PHẦN 5 & 6)
+import com.aichatvn.agent.ui.dashboard.DashboardProvider
+import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DeviceType
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class LightSkill @Inject constructor(
     private val tuyaManager: TuyaManager,
+    private val database: AppDatabase, // Bổ sung để truy vấn danh sách thiết bị Tuya
     logger: Logger
-) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
+) : BaseSkill("light", "Điều khiển đèn", logger), Plugin, DashboardProvider { // Kế thừa DashboardProvider
+
+    // Cấu hình 3 flag cấu hình mới cho LightSkill (PHẦN 1)
+    override val routable: Boolean = true
+    override val visibleOnDashboard: Boolean = true // Dashboard hiển thị đèn/relay
+    override val autoGenerateQA: Boolean = true
+
+    // Triển khai lấy dữ liệu thực tế cung cấp cho Sơ đồ điều khiển (PHẦN 6)
+    override suspend fun getDashboardNodes(): List<DeviceNode> {
+        // Lấy danh sách thiết bị Tuya lưu trong Database
+        val tuyaDevices = database.tuyaDeviceDao().getAllDevices() // Giả định hàm trả về List<TuyaDeviceEntity>
+        return tuyaDevices.mapIndexed { index, dev ->
+            // Sắp xếp tọa độ vẽ tương đối để không chồng lấn với Camera (Camera bắt đầu từ Y=40, Đèn từ Y=200)
+            val xCoord = 40f + (index % 2) * 160f
+            val yCoord = 200f + (index / 2) * 160f
+
+            DeviceNode(
+                id = dev.id, // Hoặc dev.localId tùy cấu trúc Entity
+                name = dev.name,
+                type = DeviceType.LIGHT,
+                pluginId = id,
+                deviceId = dev.id,
+                x = xCoord,
+                y = yCoord,
+                online = dev.isOnline == 1, // Hoặc dev.online tùy thuộc tính Entity của bạn
+                icon = "💡",
+                ip = dev.ip ?: "192.168.1.50",
+                battery = 100
+            )
+        }
+    }
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         logger.d("LightSkill", "execute: action=$action, params=$params")
@@ -32,7 +68,6 @@ class LightSkill @Inject constructor(
                 name = "set",
                 description = "Bật/tắt đèn",
                 parameters = listOf(
-                    // Định nghĩa semanticType là "device" để khớp với Alias DB
                     PluginParameter("device", "string", "Tên thiết bị", true, "device"),
                     PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
                 )

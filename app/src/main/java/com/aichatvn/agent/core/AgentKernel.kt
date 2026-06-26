@@ -43,14 +43,16 @@ class AgentKernel @Inject constructor(
         )
     }
 
-    fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.visibleInQuickBar }
+    fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.routable }
 
     suspend fun tryDeviceCommand(
         userMessage: String,
         username: String = "default_user"
     ): RouterOutcome {
-        val devicePlugins = plugins.filter { it.visibleInQuickBar }
+        // SỬA ĐỔI: Đổi visibleInQuickBar thành routable
+        val devicePlugins = plugins.filter { it.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
+
 
         // ─────────────────────────────────────────────────────────────────
         // TẦNG 1: Xử lý Pending Intent (Lệnh dở dang)
