@@ -29,23 +29,26 @@ class QAInitBuilder @Inject constructor(
                 val actionTriggers = triggers[action.name]
                     ?: listOf("${plugin.id} ${action.name}")
 
-                actionTriggers.forEach { trigger ->
-                    val json = JSONObject().apply {
-                        put("plugin", plugin.id)
-                        put("action", action.name)
-                        put("params", JSONObject(defaultParams(action)))
-                    }
-                    trainingSkill.addQA(
-                        question = trigger,
-                        answer   = json.toString(),
-                        category = "auto_init",
-                        username = username
-                    )
-                    count++
+                // Lấy trigger đầu tiên làm trigger chính (Primary Trigger)
+                // Đảm bảo mỗi action chỉ có duy nhất 1 bản ghi QA Intent đại diện trong DB
+                val primaryTrigger = actionTriggers.firstOrNull() ?: "${plugin.id} ${action.name}"
+
+                val json = JSONObject().apply {
+                    put("plugin", plugin.id)
+                    put("action", action.name)
+                    put("params", JSONObject(defaultParams(action)))
                 }
+                
+                trainingSkill.addQA(
+                    question = primaryTrigger,
+                    answer   = json.toString(),
+                    category = "auto_init",
+                    username = username
+                )
+                count++
             }
         }
-        logger.d("QAInitBuilder", "✅ Intent QA init xong: $count entries")
+        logger.d("QAInitBuilder", "✅ Intent QA init hoàn tất (mỗi action một câu đại diện): $count entries")
     }
 
     private fun defaultParams(action: PluginAction): Map<String, String> =
