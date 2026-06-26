@@ -182,6 +182,21 @@ class AgentKernel @Inject constructor(
             if (targetPluginId.isNullOrBlank()) {
                 missing.add("pluginId")
             }
+
+            // FIX: Validate nested params của target action trong schedule
+            val targetAction = params["action"]?.toString()
+            @Suppress("UNCHECKED_CAST")
+            val nestedParams = params["params"] as? Map<String, Any>
+            if (!targetPluginId.isNullOrBlank() && !targetAction.isNullOrBlank() && nestedParams != null) {
+                val targetPlugin = plugins.find { it.id == targetPluginId }
+                val targetActionObj = targetPlugin?.getActions()?.find { it.name == targetAction }
+                targetActionObj?.parameters?.filter { it.required }?.forEach { param ->
+                    val v = nestedParams[param.name]?.toString() ?: ""
+                    if (v.isBlank() || (param.name in ALIAS_PARAM_KEYS && v in PLACEHOLDER_VALUES)) {
+                        missing.add("params.${param.name}")
+                    }
+                }
+            }
         }
 
         // 2. Tìm action trong plugin thông qua metadata định nghĩa động
@@ -223,15 +238,26 @@ class AgentKernel @Inject constructor(
      */
     private fun getQuestionForMissingParam(param: String): String {
         return when (param) {
-            "device", "device_id", "deviceId" -> "Bạn muốn điều khiển thiết bị nào?"
-            "camera", "camera_id", "cameraId" -> "Bạn muốn xem camera nào?"
-            "to", "email", "recipient" -> "Bạn muốn gửi đến email nào?"
-            "subject" -> "Tiêu đề email là gì thế bạn?"
-            "body" -> "Nội dung email bạn muốn viết gì?"
-            "title" -> "Tiêu đề thông báo là gì vậy bạn?"
-            "message" -> "Nội dung thông báo bạn muốn gửi là gì?"
-            "pluginId" -> "Bạn muốn lên lịch cho chức năng nào?"
-            else -> "Bạn vui lòng cung cấp thông tin cho '$param' nhé?"
+            "device", "device_id", "deviceId"          -> "Bạn muốn điều khiển thiết bị nào?"
+            "camera", "camera_id", "cameraId"          -> "Bạn muốn xem camera nào?"
+            "to", "email", "recipient"                 -> "Bạn muốn gửi đến email nào?"
+            "subject"                                  -> "Tiêu đề email là gì thế bạn?"
+            "body"                                     -> "Nội dung email bạn muốn viết gì?"
+            "title"                                    -> "Tiêu đề thông báo là gì vậy bạn?"
+            "message"                                  -> "Nội dung thông báo bạn muốn gửi là gì?"
+            "pluginId"                                 -> "Bạn muốn lên lịch cho chức năng nào?"
+            // FIX: nested params của schedule (params.xxx)
+            "params.to", "params.email",
+            "params.recipient"                         -> "Email nhận trong lịch định kỳ là gì?"
+            "params.subject"                           -> "Tiêu đề email trong lịch định kỳ là gì?"
+            "params.body"                              -> "Nội dung email trong lịch định kỳ bạn muốn gửi gì?"
+            "params.device", "params.device_id",
+            "params.deviceId"                          -> "Thiết bị cần điều khiển trong lịch là gì?"
+            "params.camera", "params.camera_id",
+            "params.cameraId"                          -> "Camera cần giám sát trong lịch là gì?"
+            "params.title"                             -> "Tiêu đề thông báo trong lịch là gì?"
+            "params.message"                           -> "Nội dung thông báo trong lịch bạn muốn gửi gì?"
+            else                                       -> "Bạn vui lòng cung cấp thông tin cho '$param' nhé?"
         }
     }
 
@@ -443,6 +469,7 @@ class AgentKernel @Inject constructor(
             append("- Use <qa> to map aliases (e.g., names to emails, nicknames to IDs).\n")
             append("- Optional param keys end with '?'; omit '?' in final JSON.\n")
             append("- If plugin==\"schedule\" and action==\"add\": 'params.params' MUST be a nested object containing all required parameters of the target action.\n")
+            append("- Time conversion for schedule cron: '7h tối'='0 19 * * *', '8h sáng'='0 8 * * *', 'mỗi ngày lúc Xh'='0 X * * *', 'mỗi X phút'=intervalMinutes=X (set cron=\"\").\n")
             append("- Output raw JSON. No explanation.</sys>\n")
             append("<candidates>\n$candidateLines\n</candidates>\n")
             if (qaFacts.isNotEmpty()) append("<qa>\n$qaFacts\n</qa>\n")
@@ -616,16 +643,20 @@ class AgentKernel @Inject constructor(
         val heuristicFilled = mutableMapOf<String, Any>()
         for (param in pending.missingParams) {
             val trimmed = userMessage.trim()
-            
+
+            // FIX: Tách nested key (params.subject, params.body, params.device, ...)
+            val isNested = param.startsWith("params.")
+            val actualKey = if (isNested) param.removePrefix("params.") else param
+
             // 1. Kiểm tra khớp Regex cơ bản (Nới lỏng regex để trích xuất email thay vì bắt buộc khớp 100%)
-            if (param == "to" || param == "email" || param == "recipient") {
+            if (actualKey == "to" || actualKey == "email" || actualKey == "recipient") {
                 val emailMatch = EMAIL_REGEX.find(trimmed)
                 if (emailMatch != null) {
                     heuristicFilled[param] = emailMatch.value
                     continue
                 }
             }
-            if (param == "device" || param == "device_id" || param == "deviceId") {
+            if (actualKey == "device" || actualKey == "device_id" || actualKey == "deviceId") {
                 val relayRegex = Regex("relay[\\s_]?(\\d+)", RegexOption.IGNORE_CASE)
                 val match = relayRegex.find(trimmed)
                 if (match != null) {
@@ -635,13 +666,22 @@ class AgentKernel @Inject constructor(
             }
 
             // 2. Tra cứu alias cục bộ bằng QA matches trước khi chuyển tiếp cho LLM
-            if (param in ALIAS_PARAM_KEYS) {
-                val tempMap = mapOf(param to trimmed)
+            if (actualKey in ALIAS_PARAM_KEYS) {
+                val tempMap = mapOf(actualKey to trimmed)
                 val resolvedMap = resolveParamsWithQA(tempMap, pendingQAMatches, userMessage)
-                val resolvedValue = resolvedMap[param]?.toString() ?: ""
-                
+                val resolvedValue = resolvedMap[actualKey]?.toString() ?: ""
                 if (resolvedValue.isNotEmpty() && resolvedValue != trimmed) {
                     heuristicFilled[param] = resolvedValue
+                    continue
+                }
+            }
+
+            // 3. FIX: Với nested text param (params.subject, params.body, params.message, params.title)
+            //    user nhập text thuần → lấy thẳng làm giá trị
+            if (isNested && !heuristicFilled.containsKey(param)) {
+                val textParams = setOf("subject", "body", "message", "title")
+                if (actualKey in textParams && trimmed.isNotBlank()) {
+                    heuristicFilled[param] = trimmed
                 }
             }
         }
@@ -727,16 +767,36 @@ class AgentKernel @Inject constructor(
             logger.d("AgentKernel", "🔄 Pending alias resolve: $filled → $filledResolved")
         }
 
-        // Gộp dữ liệu đã biết từ trước với phần mới nhận diện được để lưu và đánh giá tính đầy đủ
-        val mergedParams = pending.knownParams + filledResolved
+        // FIX: Tách flat params và nested params.xxx ra riêng trước khi merge
+        val flatFilled = filledResolved.filterKeys { !it.startsWith("params.") }
+        val nestedFilled = filledResolved
+            .filterKeys { it.startsWith("params.") }
+            .mapKeys { it.key.removePrefix("params.") }
+
+        val existingNested = (pending.knownParams["params"] as? Map<*, *>)
+            ?.entries?.associate { it.key.toString() to (it.value ?: "") } ?: emptyMap()
+        @Suppress("UNCHECKED_CAST")
+        val mergedNested = (existingNested as Map<String, Any>) + nestedFilled
+
+        val mergedParams = pending.knownParams + flatFilled +
+            if (mergedNested.isNotEmpty()) mapOf("params" to mergedNested) else emptyMap()
 
         // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata (Sử dụng trực tiếp đối tượng targetPlugin)
         val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin, pending.action, userMessage)
 
         // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số đã được chuẩn hóa không
         val stillMissing = pending.missingParams.filter { key ->
-            val v = normalizedMergedParams[key]
-            v == null || v.toString().equals("null", ignoreCase = true) || (v is String && v.isBlank())
+            if (key.startsWith("params.")) {
+                // FIX: Kiểm tra nested params.xxx trong map "params"
+                val nestedKey = key.removePrefix("params.")
+                @Suppress("UNCHECKED_CAST")
+                val nested = normalizedMergedParams["params"] as? Map<String, Any>
+                val v = nested?.get(nestedKey)
+                v == null || v.toString().equals("null", ignoreCase = true) || (v is String && v.isBlank())
+            } else {
+                val v = normalizedMergedParams[key]
+                v == null || v.toString().equals("null", ignoreCase = true) || (v is String && v.isBlank())
+            }
         }
 
         // Nếu vẫn còn thiếu tham số, cập nhật lại knownParams và missingParams rồi tiếp tục hỏi
@@ -849,7 +909,7 @@ class AgentKernel @Inject constructor(
             }
             if (key !in ALIAS_PARAM_KEYS) return@mapValues value
             if (value !is String) return@mapValues value
-            if (EMAIL_REGEX.matches(value)) return@mapValues value
+            if (value !in PLACEHOLDER_VALUES && EMAIL_REGEX.matches(value)) return@mapValues value
 
             // 1. So khớp giá trị trực tiếp của tham số (Alias matching)
             val directMatch = sortedQA.firstOrNull { qa ->
@@ -887,6 +947,18 @@ class AgentKernel @Inject constructor(
         val action = plugin.getActions().find { it.name == actionName } ?: return params
 
         return params.mapValues { (key, value) ->
+            // FIX: Recursive normalize nested params.params cho schedule.add
+            if (key == "params" && value is Map<*, *> && plugin.id == "schedule" && actionName == "add") {
+                @Suppress("UNCHECKED_CAST")
+                val nested = value as Map<String, Any>
+                val targetPluginId = params["pluginId"]?.toString() ?: ""
+                val targetAction = params["action"]?.toString() ?: ""
+                val targetPlugin = plugins.find { it.id == targetPluginId }
+                return@mapValues if (targetPlugin != null && targetAction.isNotEmpty()) {
+                    normalizeParams(nested, targetPlugin, targetAction, userMessage)
+                } else nested
+            }
+
             val paramMeta = action.parameters.find { it.name == key }
             if (paramMeta != null && paramMeta.type.lowercase() == "boolean") {
                 // Nếu giá trị hiện tại bị trống/null, thử trích xuất logic trực tiếp từ câu thoại gốc của user
