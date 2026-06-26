@@ -23,7 +23,7 @@ class QAInitBuilder @Inject constructor(
         }
 
         var count = 0
-        plugins.forEach { plugin ->
+        plugins.filter { it.visibleInQuickBar }.forEach { plugin ->
             val triggers = plugin.getQATriggers()
             plugin.getActions().forEach { action ->
                 val actionTriggers = triggers[action.name]

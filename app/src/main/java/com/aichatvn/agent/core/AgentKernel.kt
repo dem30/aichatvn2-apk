@@ -94,16 +94,7 @@ class AgentKernel @Inject constructor(
 
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.visibleInQuickBar }
 
-    private var tier2Calls = 0
-    private var tier2Hits  = 0
-    private var tier3Calls = 0
-
-    fun getRoutingMetrics(): Map<String, Any> = mapOf(
-        "tier2_total"    to tier2Calls,
-        "tier2_hit_rate" to if (tier2Calls > 0) tier2Hits * 100 / tier2Calls else 0,
-        "tier3_total"    to tier3Calls,
-        "tokens_saved_approx" to (tier2Hits * 2400)
-    )
+    
 
     suspend fun tryDeviceCommand(
         userMessage: String,
@@ -146,10 +137,10 @@ class AgentKernel @Inject constructor(
         // ─────────────────────────────────────────────────────────────────
         // TẦNG 2: Fuzzy match QA Intent JSON theo ngưỡng động từ AppConfig (0 token)
         // ─────────────────────────────────────────────────────────────────
-        tier2Calls++
+        
         val tier2Result = tryTier2FuzzyQAIntent(userMessage, parsedQAIntents, rawQAMatches, devicePlugins)
         if (tier2Result != null) {
-            tier2Hits++
+            
             val (t2Plugin, t2Intent) = tier2Result
             logger.d("AgentKernel", "✅ Tier 2 HIT: ${t2Intent.pluginId}.${t2Intent.action} | params=${t2Intent.params}")
             
@@ -165,7 +156,7 @@ class AgentKernel @Inject constructor(
         // ─────────────────────────────────────────────────────────────────
         // TẦNG 3: Chuẩn hóa ý định (Intent Formatter) dựa trên Local Candidates
         // ─────────────────────────────────────────────────────────────────
-        tier3Calls++
+        
         logger.d("AgentKernel", "🔵 Tier 3: Tầng 2 miss -> Chuẩn hóa ý định qua LLM Formatter")
         return executeTier3LlmRouting(userMessage, parsedQAIntents, rawQAMatches, devicePlugins)
     }
@@ -273,7 +264,7 @@ class AgentKernel @Inject constructor(
         // Đọc động ngưỡng điểm tối thiểu từ AppConfigProvider
         val dynamicMinScore = configProvider.allConfigs.value
             .find { it.key == AppConfigDefaults.GLOBAL_TIER2_MIN_SCORE }
-            ?.value?.toDoubleOrNull() ?: 0.8
+            ?.value?.toDoubleOrNull() ?: 0.3
 
         // Lọc các candidate có score >= dynamicMinScore và chọn ứng viên có độ tương đồng lớn nhất
         val bestCandidate = parsedQAIntents

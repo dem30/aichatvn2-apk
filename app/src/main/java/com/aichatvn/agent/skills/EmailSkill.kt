@@ -84,6 +84,11 @@ class EmailSkill @Inject constructor(
         )
     }
 
+    override fun getQATriggers(): Map<String, List<String>> = mapOf(
+    "send" to listOf("gửi email", "soạn email", "gửi mail cho", "viết email cho"),
+    "test" to listOf("gửi email test", "test email", "kiểm tra gửi mail")
+)
+    
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         return when (action) {
             "send" -> handleSend(params)

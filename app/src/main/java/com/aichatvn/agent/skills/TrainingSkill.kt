@@ -418,7 +418,7 @@ class TrainingSkill @Inject constructor(
      */
     suspend fun searchQAs(query: String, username: String): PluginResult {
         return try {
-            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.7f)
+            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.5f)
 
             val allQAs = database.qaDao().getAllQAs(username)
             
@@ -448,7 +448,7 @@ class TrainingSkill @Inject constructor(
      */
     suspend fun fuzzyMatchQuestion(query: String, username: String, threshold: Float? = null): PluginResult {
         return try {
-            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.7f)
+            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.5f)
             val activeThreshold = threshold ?: configThreshold
 
             val allQAs = database.qaDao().getAllQAs(username)

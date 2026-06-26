@@ -52,6 +52,10 @@ class NotificationSkill @Inject constructor(
         )
     }
 
+    override fun getQATriggers(): Map<String, List<String>> = mapOf(
+    "send" to listOf("gửi thông báo", "báo cho tôi", "gửi cảnh báo", "thông báo cho tôi")
+)
+    
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
             "send" -> handleSend(params)
