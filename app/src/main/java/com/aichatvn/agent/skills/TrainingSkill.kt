@@ -357,6 +357,22 @@ class TrainingSkill @Inject constructor(
             PluginResult.Failure(e.message ?: "Import QAs failed")
         }
     }
+
+    // ✅ BỔ SUNG: Hàm Overload addQA (4 tham số) giúp tương thích với các lệnh gọi cũ từ UI và ChatSkill
+    suspend fun addQA(
+        question: String, 
+        answer: String, 
+        type: String, 
+        username: String
+    ): PluginResult {
+        return addQA(
+            question = question,
+            answer = answer,
+            type = type,
+            category = "general", // Gán danh mục mặc định là "general"
+            username = username
+        )
+    }
     
     suspend fun addQA(
         question: String, 
@@ -457,6 +473,28 @@ class TrainingSkill @Inject constructor(
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Error: ${e.message}", e)
             PluginResult.Failure(e.message ?: "Search QAs failed")
+        }
+    }
+
+    // ✅ BỔ SUNG: Hàm fuzzyMatchQuestion giúp ChatSkill thực hiện truy vấn so khớp mờ trực tiếp
+    suspend fun fuzzyMatchQuestion(
+        query: String,
+        username: String,
+        threshold: Float? = null
+    ): PluginResult {
+        return try {
+            val matches = fuzzyMatchCategorized(query, username, threshold)
+            val combined = (matches.intentMatches + matches.aliasMatches)
+                .map { (qa, similarity) ->
+                    mapOf(
+                        "qa" to qa,
+                        "similarity" to similarity.toFloat()
+                    )
+                }
+            PluginResult.Success(combined)
+        } catch (e: Exception) {
+            logger.e("TrainingSkill", "Lỗi fuzzyMatchQuestion: ${e.message}", e)
+            PluginResult.Failure(e.message ?: "Fuzzy match failed")
         }
     }
 

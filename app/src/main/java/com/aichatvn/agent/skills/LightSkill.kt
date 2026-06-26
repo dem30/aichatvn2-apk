@@ -27,25 +27,31 @@ class LightSkill @Inject constructor(
     override val autoGenerateQA: Boolean = true
 
     // Triển khai lấy dữ liệu thực tế cung cấp cho Sơ đồ điều khiển (PHẦN 6)
+    // Đảm bảo override đúng suspend fun từ interface
     override suspend fun getDashboardNodes(): List<DeviceNode> {
-        // Lấy danh sách thiết bị Tuya lưu trong Database
-        val tuyaDevices = database.tuyaDeviceDao().getAllDevices() // Giả định hàm trả về List<TuyaDeviceEntity>
+        val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
         return tuyaDevices.mapIndexed { index, dev ->
-            // Sắp xếp tọa độ vẽ tương đối để không chồng lấn với Camera (Camera bắt đầu từ Y=40, Đèn từ Y=200)
             val xCoord = 40f + (index % 2) * 160f
             val yCoord = 200f + (index / 2) * 160f
 
+            // Kiểm tra trạng thái trực tiếp từ tuyaManager
+            val isDeviceOnline = try {
+                tuyaManager.getStatus(dev.name)
+            } catch (e: Exception) {
+                false
+            }
+
             DeviceNode(
-                id = dev.id, // Hoặc dev.localId tùy cấu trúc Entity
+                id = dev.id,
                 name = dev.name,
                 type = DeviceType.LIGHT,
                 pluginId = id,
                 deviceId = dev.id,
                 x = xCoord,
                 y = yCoord,
-                online = dev.isOnline == 1, // Hoặc dev.online tùy thuộc tính Entity của bạn
+                online = isDeviceOnline, // Sử dụng kết quả kiểm tra thực tế
                 icon = "💡",
-                ip = dev.ip ?: "192.168.1.50",
+                ip = "192.168.1.${50 + index}", // Gán dải IP tĩnh an toàn
                 battery = 100
             )
         }

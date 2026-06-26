@@ -68,10 +68,20 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
+    // Thêm hàm Overload cho màn hình TrainingScreen gọi khi không chỉ định 'type'
+    fun addQA(question: String, answer: String, category: String) {
+        addQA(question, answer, "alias", category)
+    }
+
     fun addQA(question: String, answer: String, type: String, category: String) {
         viewModelScope.launch {
             trainingSkill.addQA(question, answer, type, category, "default_user")
         }
+    }
+
+    // Thêm hàm Overload cho màn hình TrainingScreen gọi khi không chỉ định 'type'
+    fun updateQA(id: String, question: String?, answer: String?, category: String?) {
+        updateQA(id, question, answer, "alias", category)
     }
 
     fun updateQA(id: String, question: String?, answer: String?, type: String?, category: String?) {
