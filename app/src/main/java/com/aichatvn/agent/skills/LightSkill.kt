@@ -1,40 +1,37 @@
 package com.aichatvn.agent.skills
 
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
-import com.aichatvn.agent.data.AppDatabase // Import mới
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
-// Imports mới cho Dashboard (PHẦN 5 & 6)
 import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
+import com.aichatvn.agent.ui.dashboard.DeviceAction
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class LightSkill @Inject constructor(
     private val tuyaManager: TuyaManager,
-    private val database: AppDatabase, // Bổ sung để truy vấn danh sách thiết bị Tuya
+    private val database: AppDatabase,
     logger: Logger
-) : BaseSkill("light", "Điều khiển đèn", logger), Plugin, DashboardProvider { // Kế thừa DashboardProvider
+) : BaseSkill("light", "Điều khiển đèn", logger), Plugin, DashboardProvider {
 
-    // Cấu hình 3 flag cấu hình mới cho LightSkill (PHẦN 1)
     override val routable: Boolean = true
-    override val visibleOnDashboard: Boolean = true // Dashboard hiển thị đèn/relay
+    override val visibleOnDashboard: Boolean = true
     override val autoGenerateQA: Boolean = true
 
-    // Triển khai lấy dữ liệu thực tế cung cấp cho Sơ đồ điều khiển (PHẦN 6)
-    // Đảm bảo override đúng suspend fun từ interface
     override suspend fun getDashboardNodes(): List<DeviceNode> {
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
         return tuyaDevices.mapIndexed { index, dev ->
             val xCoord = 40f + (index % 2) * 160f
             val yCoord = 200f + (index / 2) * 160f
 
-            // Kiểm tra trạng thái trực tiếp từ tuyaManager
             val isDeviceOnline = try {
                 tuyaManager.getStatus(dev.name)
             } catch (e: Exception) {
@@ -46,12 +43,39 @@ class LightSkill @Inject constructor(
                 name = dev.name,
                 type = DeviceType.LIGHT,
                 pluginId = id,
-                deviceId = dev.id,
+                
+                // 1. Hành động mặc định khi tap vào node
+                defaultAction = "status",
+                
+                // 2. Tham số định danh gốc của thiết bị (LightSkill yêu cầu khóa "device")
+                defaultParams = mapOf("device" to dev.name),
+                
+                // 3. Khai báo danh sách hành động tương thích để UI tự động vẽ các nút bấm chức năng
+                supportedActions = listOf(
+                    DeviceAction(
+                        id = "set",
+                        title = "Bật Đèn",
+                        icon = "💡",
+                        defaultParams = mapOf("state" to true)
+                    ),
+                    DeviceAction(
+                        id = "set",
+                        title = "Tắt Đèn",
+                        icon = "🔌",
+                        defaultParams = mapOf("state" to false)
+                    ),
+                    DeviceAction(
+                        id = "status",
+                        title = "Trạng thái",
+                        icon = "ℹ️"
+                    )
+                ),
+                
                 x = xCoord,
                 y = yCoord,
-                online = isDeviceOnline, // Sử dụng kết quả kiểm tra thực tế
+                online = isDeviceOnline,
                 icon = "💡",
-                ip = "192.168.1.${50 + index}", // Gán dải IP tĩnh an toàn
+                ip = "192.168.1.${50 + index}",
                 battery = 100
             )
         }
@@ -101,8 +125,8 @@ class LightSkill @Inject constructor(
 
     private suspend fun handleScan(): AgentKernel.PluginResult {
         return try {
-            val count = tuyaManager.scanDevices()
-            success("✅ Đã tìm thấy $count thiết bị")
+            val devices = tuyaManager.scanDevices()
+            success("✅ Đã tìm thấy ${devices.size} thiết bị")
         } catch (e: Exception) {
             failure("Lỗi quét: ${e.message}")
         }

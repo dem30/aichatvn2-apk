@@ -61,29 +61,63 @@ class CameraSkill @Inject constructor(
     override val autoGenerateQA: Boolean = true
 
     // Triển khai lấy dữ liệu thực tế cung cấp cho Sơ đồ điều khiển (PHẦN 6)
-    override suspend fun getDashboardNodes(): List<DeviceNode> {
-        val cameras = database.cameraDao().getAllCameras()
-        return cameras.mapIndexed { index, cam ->
-            // Sắp xếp tọa độ vẽ tương đối để các camera không chồng lên nhau trên sơ đồ Canvas
-            val xCoord = 40f + (index % 2) * 160f
-            val yCoord = 40f + (index / 2) * 160f
+    
 
-            DeviceNode(
-                id = cam.id,
-                name = cam.customername,
-                type = DeviceType.CAMERA,
-                pluginId = id,
-                deviceId = cam.id,
-                x = xCoord,
-                y = yCoord,
-                online = cam.isOnline == 1,
-                icon = "📷",
-                ip = "192.168.1.${10 + index}",
-                battery = 100
-            )
-        }
+  override suspend fun getDashboardNodes(): List<DeviceNode> {
+    val cameras = database.cameraDao().getAllCameras()
+    return cameras.mapIndexed { index, cam ->
+        val xCoord = 40f + (index % 2) * 160f
+        val yCoord = 40f + (index / 2) * 160f
+
+        DeviceNode(
+            id = cam.id,
+            name = cam.customername,
+            type = DeviceType.CAMERA,
+            pluginId = id,
+            
+            defaultAction = "scan",
+            defaultParams = mapOf("cameraId" to cam.id), // Tham số định danh camera
+            supportedActions = listOf(
+                DeviceAction(
+                    id = "scan", 
+                    title = "Quét camera", 
+                    icon = "📸"
+                ),
+                DeviceAction(
+                    id = "status", 
+                    title = "Trạng thái", 
+                    icon = "ℹ️"
+                ),
+                DeviceAction(
+                    id = "set_active", 
+                    title = "Bật giám sát", 
+                    icon = "🔔", 
+                    defaultParams = mapOf("active" to true)
+                ),
+                DeviceAction(
+                    id = "set_active", 
+                    title = "Tắt giám sát", 
+                    icon = "🔕", 
+                    defaultParams = mapOf("active" to false)
+                ),
+                DeviceAction(
+                    id = "set_smart_mode", 
+                    title = "Bật AI", 
+                    icon = "🧠", 
+                    defaultParams = mapOf("enabled" to true)
+                )
+            ),
+            
+            x = xCoord,
+            y = yCoord,
+            online = cam.isOnline == 1,
+            icon = "📷",
+            ip = "192.168.1.${10 + index}",
+            battery = 100
+        )
     }
-
+}
+  
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
     // ... (Giữ nguyên toàn bộ phần khai báo getActions(), getQATriggers() và logic nghiệp vụ bên dưới)

@@ -778,6 +778,42 @@ class AgentKernel @Inject constructor(
         return map
     }
 
+    // Thêm hàm public này vào trong class AgentKernel
+
+/**
+ * Thực thi trực tiếp Action của một Plugin từ giao diện người dùng (GUI/Dashboard)
+ * Bỏ qua toàn bộ các bước dịch ngôn ngữ tự nhiên và định tuyến (Router).
+ */
+suspend fun executePluginAction(
+    pluginId: String,
+    action: String,
+    params: Map<String, Any>
+): PluginResult {
+    val plugin = plugins.find { it.id == pluginId }
+        ?: return PluginResult.Failure("Không tìm thấy plugin: $pluginId")
+
+    // Chuẩn hóa tham số (Ví dụ: chuyển đổi kiểu dữ liệu Boolean, số, v.v.)
+    val normalizedParams = normalizeParams(params, plugin, action, null)
+
+    // Cập nhật thiết bị tương tác cuối cùng vào bộ nhớ đệm ngữ cảnh (để phục vụ lượt chat tiếp theo nếu có)
+    val device = normalizedParams["device"] ?: normalizedParams["device_id"] ?: normalizedParams["deviceId"]
+    device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
+
+    val missing = getUnresolvedParams(normalizedParams, plugin, action)
+
+    return if (missing.isNotEmpty()) {
+        val question = getQuestionForMissingParam(missing.first())
+        PluginResult.NeedMoreInfo(missing, question)
+    } else {
+        try {
+            plugin.execute(action, normalizedParams)
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Lỗi thực thi trực tiếp từ GUI: ${e.message}", e)
+            PluginResult.Failure("Lỗi khi thực hiện lệnh trực tiếp: ${e.message}")
+        }
+    }
+}
+
     suspend fun process(userMessage: String): PluginResult {
         val outcome = tryDeviceCommand(userMessage)
         return when (outcome) {

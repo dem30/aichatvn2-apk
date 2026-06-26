@@ -6,7 +6,6 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
-import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -34,7 +33,6 @@ class DashboardViewModel @Inject constructor(
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
     init {
-        // Chu kỳ cập nhật dữ liệu từ các provider để giữ trạng thái sơ đồ đồng bộ thực thời
         viewModelScope.launch {
             while (isActive) {
                 refreshDashboardNodes()
@@ -46,7 +44,6 @@ class DashboardViewModel @Inject constructor(
     fun refreshDashboardNodes() {
         viewModelScope.launch {
             try {
-                // Merge tất cả các node từ các DashboardProvider (PHẦN 6)
                 val allNodes = providers.flatMap { it.getDashboardNodes() }
                 _deviceNodes.value = allNodes
             } catch (e: Exception) {
@@ -56,38 +53,37 @@ class DashboardViewModel @Inject constructor(
     }
 
     /**
-     * Gửi yêu cầu điều khiển về AgentKernel dưới dạng text-command hoặc tham số (PHẦN 8).
-     * AgentKernel tiếp tục là trung tâm điều phối duy nhất cho cả chat và GUI.
+     * Thực thi hành động điều khiển thiết bị hướng cấu hình.
+     * Dashboard hoàn toàn không có logic nghiệp vụ hay quy ước tham số của từng loại thiết bị.
      */
-    fun sendDeviceAction(node: DeviceNode, action: String, params: Map<String, Any> = emptyMap()) {
+    fun sendDeviceAction(
+        node: DeviceNode,
+        actionId: String = node.defaultAction,
+        customParams: Map<String, Any> = emptyMap()
+    ) {
         viewModelScope.launch {
             _isProcessing.value = true
             _executionMessage.value = null
 
-            // Tạo câu lệnh tương đương từ hành động trên UI của người dùng
-            val command = when (node.type) {
-                DeviceType.LIGHT, DeviceType.SWITCH, DeviceType.PUMP -> {
-                    if (action.uppercase() == "ON") "bật ${node.name}" else "tắt ${node.name}"
-                }
-                DeviceType.CAMERA -> {
-                    if (action.uppercase() == "LIVE") "xem camera ${node.name}" else "chụp ảnh từ ${node.name}"
-                }
-                DeviceType.LOCK -> {
-                    if (action.uppercase() == "UNLOCK") "mở khóa ${node.name}" else "khóa ${node.name}"
-                }
-                DeviceType.FLYCAM -> {
-                    "${action.lowercase()} flycam ${node.name}"
-                }
-                DeviceType.ROBOT -> {
-                    "${action.lowercase()} robot ${node.name}"
-                }
-                else -> "${action.lowercase()} ${node.name}"
-            }
+            // Tìm thông tin cấu hình tương ứng của hành động đang được gọi
+            val actionConfig = node.supportedActions.find { it.id == actionId }
+            val actionDefaultParams = actionConfig?.defaultParams ?: emptyMap()
 
-            logger.d("DashboardViewModel", "Gửi lệnh sơ đồ đến AgentKernel: $command")
+            // Hợp nhất tham số theo thứ tự ưu tiên tăng dần:
+            // 1. Tham số chung của thiết bị (ví dụ: cameraId)
+            // 2. Tham số mặc định riêng cho hành động này (ví dụ: active = true)
+            // 3. Tham số động nhận được từ tương tác trực tiếp của người dùng trên UI (ví dụ: toạ độ GPS)
+            val mergedParams = node.defaultParams + actionDefaultParams + customParams
+
+            logger.d("DashboardViewModel", "Thực thi trực tiếp: ${node.pluginId}.$actionId | Tham số: $mergedParams")
             
             try {
-                val result = agentKernel.process(command)
+                val result = agentKernel.executePluginAction(
+                    pluginId = node.pluginId,
+                    action = actionId,
+                    params = mergedParams
+                )
+                
                 _executionMessage.value = when (result) {
                     is PluginResult.Success -> {
                         val msg = (result.data as? Map<*, *>)?.get("message") as? String
@@ -98,10 +94,10 @@ class DashboardViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _executionMessage.value = "❌ Exception: ${e.message}"
-                logger.e("DashboardViewModel", "Lỗi khi xử lý lệnh thiết bị: ${e.message}", e)
+                logger.e("DashboardViewModel", "Lỗi khi xử lý lệnh trực tiếp: ${e.message}", e)
             } finally {
                 _isProcessing.value = false
-                refreshDashboardNodes() // Nạp lại sơ đồ ngay sau khi thực thi
+                refreshDashboardNodes()
             }
         }
     }
