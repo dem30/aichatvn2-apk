@@ -23,6 +23,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
+import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.viewmodels.DashboardViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -155,7 +156,7 @@ fun DashboardScreen(
             }
         }
 
-        // BOTTOM SHEET ĐIỀU KHIỂN CHI TIẾT (PHẦN 7)
+        // BOTTOM SHEET ĐIỀU KHIỂN CHI TIẾT
         if (selectedNode != null) {
             val node = selectedNode!!
             ModalBottomSheet(
@@ -218,163 +219,78 @@ fun DashboardScreen(
                             }
                             Column {
                                 Text("Pin / Nguồn điện", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${node.battery}%", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    text = if (node.battery != null) "${node.battery}%" else "Nguồn trực tiếp",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                             Column {
                                 Text("Mã định danh", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(node.deviceId, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(node.id, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
 
                     Text("Hành động", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
-                    // Phân loại các nút điều khiển trực quan dựa trên DeviceType (PHẦN 7)
-                    when (node.type) {
-                        DeviceType.CAMERA -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        viewModel.sendDeviceAction(node, "LIVE")
-                                        selectedNode = null
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.Videocam, contentDescription = null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Xem Trực Tiếp")
-                                }
-                                OutlinedButton(
-                                    onClick = {
-                                        viewModel.sendDeviceAction(node, "SNAPSHOT")
-                                        selectedNode = null
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Chụp Ảnh")
-                                }
-                            }
-                        }
-
-                        DeviceType.LIGHT, DeviceType.SWITCH, DeviceType.PUMP -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        viewModel.sendDeviceAction(node, "ON")
-                                        selectedNode = null
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.Power, contentDescription = null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("BẬT (ON)")
-                                }
-                                Button(
-                                    onClick = {
-                                        viewModel.sendDeviceAction(node, "OFF")
-                                        selectedNode = null
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Icon(Icons.Default.PowerOff, contentDescription = null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("TẮT (OFF)")
-                                }
-                            }
-                        }
-
-                        DeviceType.FLYCAM -> {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
+                    // HIỂN THỊ CÁC NÚT ĐIỀU KHIỂN HOÀN TOÀN ĐỘNG (FLOW / GRID STYLE)
+                    if (node.supportedActions.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Nhóm các nút bấm thành từng cặp 2 nút trên 1 dòng
+                            node.supportedActions.chunked(2).forEach { rowActions ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Button(
-                                        onClick = { viewModel.sendDeviceAction(node, "Takeoff"); selectedNode = null },
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("🚀 Cất cánh") }
-                                    Button(
-                                        onClick = { viewModel.sendDeviceAction(node, "Land"); selectedNode = null },
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("📉 Hạ cánh") }
+                                    rowActions.forEach { action ->
+                                        val uppercaseId = action.id.uppercase()
+                                        val isPositive = uppercaseId in setOf("ON", "UNLOCK", "TAKEOFF", "PATROL")
+                                        val isNegative = uppercaseId in setOf("OFF", "LOCK", "STOP", "LAND")
+
+                                        Button(
+                                            onClick = {
+                                                viewModel.sendDeviceAction(
+                                                    node = node,
+                                                    action = action.id,
+                                                    params = emptyMap()
+                                                )
+                                                selectedNode = null
+                                            },
+                                            colors = when {
+                                                isPositive -> ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                                isNegative -> ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                                else -> ButtonDefaults.buttonColors()
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(action.icon, fontSize = 16.sp)
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(action.title, maxLines = 1)
+                                        }
+                                    }
+                                    // Bổ sung khoảng trống giữ tỉ lệ nếu hàng chỉ có 1 nút đơn lẻ
+                                    if (rowActions.size < 2) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
                                 }
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    OutlinedButton(
-                                        onClick = { viewModel.sendDeviceAction(node, "Return Home"); selectedNode = null },
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("🏠 Trở về") }
-                                    OutlinedButton(
-                                        onClick = { viewModel.sendDeviceAction(node, "Follow"); selectedNode = null },
-                                        modifier = Modifier.weight(1f)
-                                    ) { Text("🏃 Bám theo") }
-                                }
                             }
                         }
-
-                        DeviceType.ROBOT -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { viewModel.sendDeviceAction(node, "Patrol"); selectedNode = null },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("🚨 Tuần tra") }
-                                Button(
-                                    onClick = { viewModel.sendDeviceAction(node, "Go to Base"); selectedNode = null },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("⚡ Sạc điện") }
-                                OutlinedButton(
-                                    onClick = { viewModel.sendDeviceAction(node, "Stop"); selectedNode = null },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red),
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("🛑 Dừng lại") }
-                            }
-                        }
-
-                        DeviceType.LOCK -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { viewModel.sendDeviceAction(node, "UNLOCK"); selectedNode = null },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("🔓 Mở khóa") }
-                                Button(
-                                    onClick = { viewModel.sendDeviceAction(node, "LOCK"); selectedNode = null },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("🔒 Khóa") }
-                            }
-                        }
-
-                        else -> {
-                            Button(
-                                onClick = { viewModel.sendDeviceAction(node, "REFRESH"); selectedNode = null },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = null)
-                                Spacer(Modifier.width(4.dp))
-                                Text("Làm mới trạng thái")
-                            }
+                    } else {
+                        // Trường hợp dự phòng nếu plugin chưa cấu hình supportedActions
+                        Button(
+                            onClick = { 
+                                viewModel.sendDeviceAction(node, node.defaultAction)
+                                selectedNode = null 
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Chạy hành động mặc định")
                         }
                     }
 

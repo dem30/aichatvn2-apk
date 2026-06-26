@@ -16,10 +16,10 @@ import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
-// Imports mới cho Dashboard (PHẦN 5 & 6)
 import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
+import com.aichatvn.agent.ui.dashboard.DeviceAction // Thêm Import này
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,74 +53,68 @@ class CameraSkill @Inject constructor(
     private val notificationSkill: NotificationSkill,
     private val configProvider: AppConfigProvider,
     logger: Logger,
-) : BaseSkill("camera", "Quản lý camera", logger), Plugin, DashboardProvider { // Kế thừa DashboardProvider
+) : BaseSkill("camera", "Quản lý camera", logger), Plugin, DashboardProvider {
     
-    // Cấu hình 3 flag độc lập cho CameraSkill (PHẦN 1)
     override val routable: Boolean = true
     override val visibleOnDashboard: Boolean = true
     override val autoGenerateQA: Boolean = true
 
-    // Triển khai lấy dữ liệu thực tế cung cấp cho Sơ đồ điều khiển (PHẦN 6)
-    
+    override suspend fun getDashboardNodes(): List<DeviceNode> {
+        val cameras = database.cameraDao().getAllCameras()
+        return cameras.mapIndexed { index, cam ->
+            val xCoord = 40f + (index % 2) * 160f
+            val yCoord = 40f + (index / 2) * 160f
 
-  override suspend fun getDashboardNodes(): List<DeviceNode> {
-    val cameras = database.cameraDao().getAllCameras()
-    return cameras.mapIndexed { index, cam ->
-        val xCoord = 40f + (index % 2) * 160f
-        val yCoord = 40f + (index / 2) * 160f
-
-        DeviceNode(
-            id = cam.id,
-            name = cam.customername,
-            type = DeviceType.CAMERA,
-            pluginId = id,
-            
-            defaultAction = "scan",
-            defaultParams = mapOf("cameraId" to cam.id), // Tham số định danh camera
-            supportedActions = listOf(
-                DeviceAction(
-                    id = "scan", 
-                    title = "Quét camera", 
-                    icon = "📸"
+            DeviceNode(
+                id = cam.id,
+                name = cam.customername,
+                type = DeviceType.CAMERA,
+                pluginId = id,
+                
+                defaultAction = "scan",
+                defaultParams = mapOf("cameraId" to cam.id),
+                supportedActions = listOf(
+                    DeviceAction(
+                        id = "scan", 
+                        title = "Quét camera", 
+                        icon = "📸"
+                    ),
+                    DeviceAction(
+                        id = "status", 
+                        title = "Trạng thái", 
+                        icon = "ℹ️"
+                    ),
+                    DeviceAction(
+                        id = "set_active", 
+                        title = "Bật giám sát", 
+                        icon = "🔔", 
+                        defaultParams = mapOf("active" to true)
+                    ),
+                    DeviceAction(
+                        id = "set_active", 
+                        title = "Tắt giám sát", 
+                        icon = "🔕", 
+                        defaultParams = mapOf("active" to false)
+                    ),
+                    DeviceAction(
+                        id = "set_smart_mode", 
+                        title = "Bật AI", 
+                        icon = "🧠", 
+                        defaultParams = mapOf("enabled" to true)
+                    )
                 ),
-                DeviceAction(
-                    id = "status", 
-                    title = "Trạng thái", 
-                    icon = "ℹ️"
-                ),
-                DeviceAction(
-                    id = "set_active", 
-                    title = "Bật giám sát", 
-                    icon = "🔔", 
-                    defaultParams = mapOf("active" to true)
-                ),
-                DeviceAction(
-                    id = "set_active", 
-                    title = "Tắt giám sát", 
-                    icon = "🔕", 
-                    defaultParams = mapOf("active" to false)
-                ),
-                DeviceAction(
-                    id = "set_smart_mode", 
-                    title = "Bật AI", 
-                    icon = "🧠", 
-                    defaultParams = mapOf("enabled" to true)
-                )
-            ),
-            
-            x = xCoord,
-            y = yCoord,
-            online = cam.isOnline == 1,
-            icon = "📷",
-            ip = "192.168.1.${10 + index}",
-            battery = 100
-        )
+                
+                x = xCoord,
+                y = yCoord,
+                online = cam.isOnline == 1,
+                icon = "📷",
+                ip = "192.168.1.${10 + index}",
+                battery = 100
+            )
+        }
     }
-}
-  
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    
-    // ... (Giữ nguyên toàn bộ phần khai báo getActions(), getQATriggers() và logic nghiệp vụ bên dưới)
     
     override fun getActions(): List<PluginAction> {
         return listOf(
@@ -263,8 +257,6 @@ class CameraSkill @Inject constructor(
         private val DATETIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
-    
-    // ==================== PLUGIN IMPLEMENTATION ====================
     
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         logger.d("CameraSkill", "execute: action=$action")
@@ -478,8 +470,6 @@ class CameraSkill @Inject constructor(
             else -> PluginResult.Failure("Không thể thực hiện")
         }
     }
-    
-    // ==================== CORE SKILL METHODS ====================
     
     private val pruneMutex = Mutex()
     
