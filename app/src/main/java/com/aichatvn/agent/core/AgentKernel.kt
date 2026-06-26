@@ -556,7 +556,7 @@ class AgentKernel @Inject constructor(
                 PendingIntent(
                     pluginId = plugin.id,
                     action = normalizedIntent.action,
-                    knownParams = normalizedIntent.params,
+                    knownParams = normalizedIntent.params + mapOf("_noProgressCount" to 0),
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question
                 )
@@ -621,6 +621,14 @@ class AgentKernel @Inject constructor(
             return null
         }
         if (targetPlugin.getActions().none { it.name == pending.action }) {
+            chatHistoryManager.clearPendingIntent()
+            return null
+        }
+
+        // FIX: Track số lần liên tiếp không fill được param mới (stuck), không phải tổng số retry
+        val noProgressCount = pending.knownParams["_noProgressCount"]?.toString()?.toIntOrNull() ?: 0
+        if (noProgressCount >= 2) {
+            logger.w("AgentKernel", "⚠️ Pending stuck $noProgressCount lần liên tiếp không có tiến triển → clear & fallthrough Tier 3")
             chatHistoryManager.clearPendingIntent()
             return null
         }
@@ -778,10 +786,13 @@ class AgentKernel @Inject constructor(
         @Suppress("UNCHECKED_CAST")
         val mergedNested = (existingNested as Map<String, Any>) + nestedFilled
 
+        // Snapshot knownParams trước khi merge (bỏ meta keys _xxx) để so sánh progress
+        val knownBefore = pending.knownParams.filterKeys { !it.startsWith("_") }
+
         val mergedParams = pending.knownParams + flatFilled +
             if (mergedNested.isNotEmpty()) mapOf("params" to mergedNested) else emptyMap()
 
-        // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata (Sử dụng trực tiếp đối tượng targetPlugin)
+        // Chuẩn hóa các biến Boolean thô ("bật"/"tắt"/"mở" -> true/false) dựa trên metadata
         val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin, pending.action, userMessage)
 
         // Kiểm tra xem thực tế còn thiếu thông số nào trong toàn bộ map tham số đã được chuẩn hóa không
@@ -801,10 +812,16 @@ class AgentKernel @Inject constructor(
 
         // Nếu vẫn còn thiếu tham số, cập nhật lại knownParams và missingParams rồi tiếp tục hỏi
         if (stillMissing.isNotEmpty()) {
-            val question = "Mình vẫn cần thêm: ${stillMissing.joinToString(", ")}. Bạn cho mình biết nhé?"
+            // FIX: So sánh progress — fill được param mới thì reset counter, không thì tăng
+            val knownAfter = normalizedMergedParams.filterKeys { !it.startsWith("_") }
+            val madeProgress = knownAfter != knownBefore
+            val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
+            logger.d("AgentKernel", "Pending progress=$madeProgress noProgressCount=$newNoProgressCount stillMissing=$stillMissing")
+
+            val question = getQuestionForMissingParam(stillMissing.first())
             chatHistoryManager.setPendingIntent(
                 pending.copy(
-                    knownParams = normalizedMergedParams, // Lưu map đã chuẩn hóa để giữ giá trị Boolean
+                    knownParams = normalizedMergedParams + mapOf("_noProgressCount" to newNoProgressCount),
                     missingParams = stillMissing,
                     askedQuestion = question,
                     createdAt = System.currentTimeMillis()
