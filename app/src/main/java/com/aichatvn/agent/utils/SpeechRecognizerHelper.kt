@@ -18,7 +18,9 @@ class SpeechRecognizerHelper(private val context: Context) {
 
     fun startListening(
         onResult: (String) -> Unit,
-        onError: (errorCode: Int, message: String) -> Unit // Truyền errorCode để phân loại lỗi
+        onError: (errorCode: Int, message: String) -> Unit,
+        onSpeechStarted: (() -> Unit)? = null,
+        onEndOfSpeech: (() -> Unit)? = null
     ) {
         pendingStart?.let { mainHandler.removeCallbacks(it) }
 
@@ -48,17 +50,28 @@ class SpeechRecognizerHelper(private val context: Context) {
                 recognizer = SpeechRecognizer.createSpeechRecognizer(context.applicationContext).apply {
                     setRecognitionListener(object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {}
+
                         override fun onResults(results: Bundle?) {
                             val text = results
                                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                 ?.firstOrNull()?.trim() ?: ""
                             if (text.isNotBlank()) onResult(text) else onError(-2, "Không nhận được nội dung")
                         }
+
                         override fun onError(errorCode: Int) {
                             onError(errorCode, "Lỗi nhận diện giọng nói: $errorCode")
                         }
-                        override fun onBeginningOfSpeech() {}
-                        override fun onEndOfSpeech() {}
+
+                        // ✅ FIX: Callback khi user bắt đầu nói → reset timer
+                        override fun onBeginningOfSpeech() {
+                            onSpeechStarted?.invoke()
+                        }
+
+                        // ✅ FIX: Callback khi user ngừng nói → hủy timer, chờ kết quả ngay
+                        override fun onEndOfSpeech() {
+                            onEndOfSpeech?.invoke()
+                        }
+
                         override fun onPartialResults(partialResults: Bundle?) {}
                         override fun onRmsChanged(rmsdB: Float) {}
                         override fun onBufferReceived(buffer: ByteArray?) {}

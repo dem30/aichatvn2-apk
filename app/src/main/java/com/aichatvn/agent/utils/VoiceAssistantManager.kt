@@ -26,8 +26,6 @@ class VoiceAssistantManager(
     private var pendingRestart: Runnable? = null
 
     @Volatile private var destroyed = false
-    
-    // Đề xuất 1: Thêm cờ bảo vệ chống mở nhiều phiên nghe trùng lặp
     @Volatile private var isListeningActive = false
 
     // Quản lý Audio Focus
@@ -46,7 +44,6 @@ class VoiceAssistantManager(
                     .setUsage(AudioAttributes.USAGE_ASSISTANT)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
-                // Đề xuất 3: Sử dụng AUDIOFOCUS_GAIN_TRANSIENT nâng cao độ tương thích thiết bị
                 focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                     .setAudioAttributes(playbackAttributes)
                     .setAcceptsDelayedFocusGain(false)
@@ -81,14 +78,14 @@ class VoiceAssistantManager(
 
     fun startListening() {
         if (destroyed) return
-        
+
         // CHỐNG ECHO: Tuyệt đối không bật microphone nếu TTS đang phát âm thanh
         if (ttsHelper.isSpeaking) {
             Log.d("VoiceAssistantManager", "Bỏ qua startListening() vì thiết bị đang trong tiến trình TTS đọc.")
             return
         }
 
-        if (isListeningActive) return // Đề xuất 1: Từ chối yêu cầu nghe mới nếu phiên cũ đang hoạt động
+        if (isListeningActive) return
         isListeningActive = true
 
         cancelPendingRestart()
@@ -97,7 +94,7 @@ class VoiceAssistantManager(
 
         sttHelper.startListening(
             onResult = { text ->
-                isListeningActive = false // Reset cờ trạng thái nghe
+                isListeningActive = false
                 consecutiveSttFailures = 0
                 stopTimer()
                 onListeningStateChange(false)
@@ -105,20 +102,29 @@ class VoiceAssistantManager(
                 onTextRecognized(text)
             },
             onError = { errorCode, errorMsg ->
-                isListeningActive = false // Reset cờ trạng thái nghe
+                isListeningActive = false
                 stopTimer()
                 onListeningStateChange(false)
                 abandonAudioFocus()
-                
+
                 consecutiveSttFailures++
                 if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
                     consecutiveSttFailures = 0
                     onMaxSTTFailuresReached(errorMsg)
                 } else {
-                    // Đề xuất 5: Gặp lỗi BUSY thì kích hoạt thử lại cực nhanh (300ms) thay vì 2000ms
                     val delay = if (errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 300L else 2000L
                     scheduleRestart(delayMs = delay)
                 }
+            },
+            // ✅ FIX: User bắt đầu nói → reset timeout từ đầu, tránh bị cắt giữa chừng
+            onSpeechStarted = {
+                Log.d("VoiceAssistantManager", "User bắt đầu nói, reset timeout timer.")
+                resetTimeoutTimer()
+            },
+            // ✅ FIX: User ngừng nói → hủy timer ngay, chờ kết quả STT (không đợi hết 12s)
+            onEndOfSpeech = {
+                Log.d("VoiceAssistantManager", "User ngừng nói, hủy timer chờ kết quả STT.")
+                stopTimer()
             }
         )
 
@@ -126,7 +132,7 @@ class VoiceAssistantManager(
     }
 
     fun stopListening() {
-        isListeningActive = false // Đề xuất 1: Đưa cờ về false khi chủ động tắt nghe
+        isListeningActive = false
         cancelPendingRestart()
         stopTimer()
         sttHelper.destroy()
@@ -134,7 +140,6 @@ class VoiceAssistantManager(
         abandonAudioFocus()
     }
 
-    // ✅ PHƯƠNG THỨC MỚI: Tự động ngắt mic trước khi yêu cầu TTS nói để chống lặp âm
     fun speak(text: String, onDone: (() -> Unit)? = null) {
         stopListening()
         ttsHelper.speak(text, onDone)
@@ -151,15 +156,21 @@ class VoiceAssistantManager(
         listeningTimer = object : CountDownTimer(LISTEN_TIMEOUT_MS, LISTEN_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
-                isListeningActive = false // Reset cờ trạng thái nghe
+                // Chỉ chạy vào đây nếu user im lặng hoàn toàn suốt LISTEN_TIMEOUT_MS
+                isListeningActive = false
                 onListeningStateChange(false)
                 abandonAudioFocus()
                 onSilence()
-                
                 sttHelper.destroy()
                 scheduleRestart(delayMs = 300L)
             }
         }.start()
+    }
+
+    // ✅ FIX: Reset timer từ đầu khi user bắt đầu nói
+    private fun resetTimeoutTimer() {
+        listeningTimer?.cancel()
+        startTimeoutTimer()
     }
 
     private fun scheduleRestart(delayMs: Long) {
@@ -184,7 +195,8 @@ class VoiceAssistantManager(
     }
 
     companion object {
-        // Đề xuất 2: Tăng thời gian chờ lên 12 giây tối ưu cho các phản hồi chậm của người dùng
+        // Timeout im lặng: 12s — chỉ kích hoạt khi user KHÔNG nói gì
+        // Nếu user đang nói thì timer sẽ được reset liên tục qua onSpeechStarted
         private const val LISTEN_TIMEOUT_MS = 12_000L
     }
 }
