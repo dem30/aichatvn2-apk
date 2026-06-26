@@ -30,6 +30,8 @@ class AppConfigSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("appconfig", "Cấu hình hệ thống", logger), Plugin {
 
+
+  override val visibleInQuickBar: Boolean = false
     override fun getActions(): List<PluginAction> = listOf(
         PluginAction(
             name = "get",

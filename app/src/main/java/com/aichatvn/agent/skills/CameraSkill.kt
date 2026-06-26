@@ -59,43 +59,43 @@ class CameraSkill @Inject constructor(
                 name = "scan",
                 description = "Quét camera để phát hiện thay đổi và phân tích AI",
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera (để trống quét tất cả)", false)
+                    PluginParameter("cameraId", "string", "Mã camera (để trống quét tất cả)", false, "camera")
                 )
             ),
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái chi tiết của 1 camera (online/offline, smart mode, ngưỡng học)",
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera (id)", true)
+                    PluginParameter("cameraId", "string", "Mã camera (id)", true, "camera")
                 )
             ),
             PluginAction(
                 name = "set_active",
                 description = "Bật hoặc tắt theo dõi của 1 camera cụ thể. Dùng khi user nói: bật/tắt camera X.",
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera (id)", true),
-                    PluginParameter("active", "boolean", "true: bật theo dõi, false: tắt theo dõi", true)
+                    PluginParameter("cameraId", "string", "Mã camera (id)", true, "camera"),
+                    PluginParameter("active", "boolean", "true: bật theo dõi, false: tắt theo dõi", true, "boolean")
                 )
             ),
             PluginAction(
                 name = "set_smart_mode",
                 description = "Bật hoặc tắt chế độ AI phân tích ảnh cho camera. Chấp nhận cameraId hoặc customerId.",
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera (id) — ưu tiên dùng cái này", false),
-                    PluginParameter("customerId", "string", "Mã khách hàng (dùng nếu không có cameraId)", false),
-                    PluginParameter("enabled", "boolean", "true: bật AI, false: tắt AI", true)
+                    PluginParameter("cameraId", "string", "Mã camera (id) — ưu tiên dùng cái này", false, "camera"),
+                    PluginParameter("customerId", "string", "Mã khách hàng (dùng nếu không có cameraId)", false, "string"),
+                    PluginParameter("enabled", "boolean", "true: bật AI, false: tắt AI", true, "boolean")
                 )
             ),
             PluginAction(
                 name = "configure",
                 description = "Cập nhật cấu hình AI cho camera: prompt phân tích, từ khoá cảnh báo, từ khoá bình thường, URL ảnh chụp, vị trí. Dùng khi user nói: đặt từ khoá, cập nhật prompt, thay URL camera, đổi vị trí.",
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera (id)", true),
-                    PluginParameter("aiPrompt", "string", "Prompt AI mới cho camera này", false),
-                    PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo, cách nhau bằng dấu phẩy. Ví dụ: cảnh báo, khói, người lạ", false),
-                    PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường, cách nhau bằng dấu phẩy. Ví dụ: bình thường, không có gì", false),
-                    PluginParameter("snapshotUrl", "string", "URL ảnh chụp mới", false),
-                    PluginParameter("landInfo", "string", "Thông tin vị trí / ghi chú", false)
+                    PluginParameter("cameraId", "string", "Mã camera (id)", true, "camera"),
+                    PluginParameter("aiPrompt", "string", "Prompt AI mới cho camera này", false, "string"),
+                    PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo, cách nhau bằng dấu phẩy. Ví dụ: cảnh báo, khói, người lạ", false, "string"),
+                    PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường, cách nhau bằng dấu phẩy. Ví dụ: bình thường, không có gì", false, "string"),
+                    PluginParameter("snapshotUrl", "string", "URL ảnh chụp mới", false, "string"),
+                    PluginParameter("landInfo", "string", "Thông tin vị trí / ghi chú", false, "string")
                 )
             ),
             PluginAction(
@@ -107,16 +107,16 @@ class CameraSkill @Inject constructor(
     }
 
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-    "scan"           to listOf("chụp camera", "snapshot", "quét camera", "chụp ảnh camera"),
-    "list_cameras"   to listOf("danh sách camera", "liệt kê camera", "xem camera"),
-    "set_active"     to listOf(
-        "bật camera", "tắt camera", "mở camera", "dừng camera",
-        "kích hoạt camera", "vô hiệu camera", "cho camera hoạt động", "tắt theo dõi"
-    ),
-    "set_smart_mode" to listOf("bật ai camera", "tắt ai camera", "smart mode camera", "bật trí tuệ nhân tạo"),
-    "status"         to listOf("trạng thái camera", "kiểm tra camera", "camera có hoạt động không"),
-    "configure"      to listOf("cấu hình camera", "cập nhật camera", "đặt từ khoá camera", "thay url camera")
-)
+        "scan"           to listOf("chụp camera", "snapshot", "quét camera", "chụp ảnh camera"),
+        "list_cameras"   to listOf("danh sách camera", "liệt kê camera", "xem camera"),
+        "set_active"     to listOf(
+            "bật camera", "tắt camera", "mở camera", "dừng camera",
+            "kích hoạt camera", "vô hiệu camera", "cho camera hoạt động", "tắt theo dõi"
+        ),
+        "set_smart_mode" to listOf("bật ai camera", "tắt ai camera", "smart mode camera", "bật trí tuệ nhân tạo"),
+        "status"         to listOf("trạng thái camera", "kiểm tra camera", "camera có hoạt động không"),
+        "configure"      to listOf("cấu hình camera", "cập nhật camera", "đặt từ khoá camera", "thay url camera")
+    )
     
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = mutableMapOf<String, Mutex>()
@@ -173,7 +173,6 @@ class CameraSkill @Inject constructor(
     private val _diagnostics = MutableStateFlow<Map<String, Any>>(emptyMap())
     val diagnostics: StateFlow<Map<String, Any>> = _diagnostics.asStateFlow()
 
-    // ── Config helpers (lấy từ AppConfigProvider, có fallback) ───────────────────
     private suspend fun defaultAiPrompt()       = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT, "Camera giám sát. Mô tả những gì bạn thấy, ghi cảnh báo nếu phát hiện bất thường.")
     private suspend fun defaultPositiveKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW, "cảnh báo").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
     private suspend fun defaultNegativeKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW, "bình thường").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
@@ -212,7 +211,6 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    // ── Configure: cập nhật aiPrompt, keywords, snapshotUrl, landInfo ──────────
     private suspend fun handleConfigure(params: Map<String, Any>): PluginResult {
         val cameraId = params["cameraId"] as? String
             ?: return PluginResult.Failure("Thiếu cameraId. Dùng action list_cameras để xem danh sách camera.")
@@ -240,7 +238,6 @@ class CameraSkill @Inject constructor(
         return PluginResult.Success(mapOf("message" to "✅ Camera \"${cam.customername}\": $summary"))
     }
 
-    // ── List cameras: trả về id + tên để LLM map khi user nói tên camera ────────
     private suspend fun handleListCameras(): PluginResult {
         val cameras = database.cameraDao().getAllCameras()
         if (cameras.isEmpty()) return PluginResult.Success(mapOf("message" to "Chưa có camera nào"))
@@ -272,7 +269,6 @@ class CameraSkill @Inject constructor(
 
                 if (warning != null) return PluginResult.Success(mapOf("message" to warning))
 
-                // Tóm tắt kết quả từng camera để AI trả lời có nghĩa cho người dùng
                 val summary = buildString {
                     append("📷 Đã quét $processed camera")
                     if (skippedCb > 0) append(" ($skippedCb camera bị bỏ qua do lỗi liên tiếp)")
@@ -472,7 +468,7 @@ class CameraSkill @Inject constructor(
         scope.launch {
             while (true) {
                 val now = System.currentTimeMillis()
-                val reportHour = dailyReportHour() // Tối ưu: Lấy cấu hình động từ ConfigProvider
+                val reportHour = dailyReportHour()
                 val calendar = Calendar.getInstance().apply {
                     timeInMillis = now
                     set(Calendar.HOUR_OF_DAY, reportHour)
@@ -569,14 +565,12 @@ class CameraSkill @Inject constructor(
     
     override suspend fun shutdown() {}
     
-    // ==================== CIRCUIT BREAKER ====================
-    
     private suspend fun isCircuitBreakerOpen(cameraId: String): Boolean {
         val cb = circuitBreakers[cameraId] ?: return false
         if (!cb.isOpen) return false
 
         val elapsed = System.currentTimeMillis() - cb.offlineSince
-        val resetMs = circuitBreakerResetMs() // Tối ưu: Lấy cấu hình động từ ConfigProvider
+        val resetMs = circuitBreakerResetMs()
 
         if (elapsed > resetMs) {
             if (!cb.halfOpenAttempted) {
@@ -597,7 +591,7 @@ class CameraSkill @Inject constructor(
         val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
         cb.offlineCount++
         cb.halfOpenAttempted = false
-        val threshold = circuitBreakerThreshold() // Tối ưu: Lấy cấu hình động từ ConfigProvider
+        val threshold = circuitBreakerThreshold()
         if (cb.offlineCount >= threshold) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
@@ -628,8 +622,6 @@ class CameraSkill @Inject constructor(
         
         return false
     }
-    
-    // ==================== SCAN METHODS ====================
     
     suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): PluginResult {
         return try {
@@ -888,7 +880,7 @@ class CameraSkill @Inject constructor(
                 
                 logger.d("CameraSkill", "📷 Camera ${camera.id} scanned, hasChange=$isSuddenChange")
                 
-                updateDiagnostics() // Gọi đồng bộ trực tiếp trong suspend scope để tránh leak coroutine
+                updateDiagnostics()
                 
                 return@withLock mapOf(
                     "cameraId" to camera.id,
@@ -1015,8 +1007,6 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    // ==================== CRUD METHODS ====================
-    
     suspend fun saveCameraConfig(config: Map<String, Any>): PluginResult {
         return try {
             val id = config["id"] as? String ?: return PluginResult.Failure("Missing camera id")
@@ -1073,7 +1063,7 @@ class CameraSkill @Inject constructor(
             circuitBreakers.remove(cameraId)
             pendingResets.remove(cameraId)
             dailyEvents.remove(cameraId)
-            cameraMutexMap.remove(cameraId) // Tối ưu: Dọn dẹp Mutex để tránh rò rỉ bộ nhớ
+            cameraMutexMap.remove(cameraId)
             PluginResult.Success(mapOf("message" to "Camera deleted"))
         } catch (e: Exception) {
             PluginResult.Failure(e.message ?: "Delete camera failed")
@@ -1091,7 +1081,7 @@ class CameraSkill @Inject constructor(
                 circuitBreakers.remove(camera.id)
                 pendingResets.remove(camera.id)
                 dailyEvents.remove(camera.id)
-                cameraMutexMap.remove(camera.id) // Tối ưu: Dọn dẹp Mutex của các camera thuộc customer
+                cameraMutexMap.remove(camera.id)
             }
             
             PluginResult.Success(mapOf("message" to "Customer deleted"))
@@ -1184,7 +1174,6 @@ class CameraSkill @Inject constructor(
 
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
     
-    // Tối ưu: Chuyển đổi thành hàm suspend đồng bộ để tránh tạo luồng coroutine vô hạn khi quét liên tục
     private suspend fun updateDiagnostics() {
         val stats = learningStates.mapValues { (cameraId, state) ->
             val cb = circuitBreakers[cameraId]
@@ -1202,8 +1191,6 @@ class CameraSkill @Inject constructor(
         }
         _diagnostics.value = stats
     }
-    
-    // ==================== ALERT HELPER METHODS ====================
     
     private suspend fun saveAlertToHistory(
         camera: CameraConfigEntity,
@@ -1266,7 +1253,7 @@ class CameraSkill @Inject constructor(
                     <strong>🤖 Phân tích AI:</strong><br>
                     $analysis
                 </div>
-                <p><small>Hình ảnh bằng chứng được đính kèm email này.</small></p>
+                <p><small>Bug evidence attachment in the email.</small></p>
             </body>
             </html>
         """.trimIndent()

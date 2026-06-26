@@ -16,54 +16,56 @@ class QAInitBuilder @Inject constructor(
     private val logger: Logger
 ) {
     suspend fun buildInitialQA(username: String = "default_user") {
-        val existing = trainingSkill.countQAByCategory("auto_init")
-        if (existing > 0) {
-            logger.i("QAInitBuilder", "Intent QA đã có ($existing rows), skip.")
+        val existingIntents = trainingSkill.countQAByType("intent")
+        if (existingIntents > 0) {
+            logger.i("QAInitBuilder", "Hệ thống đã có $existingIntents Intent QA, bỏ qua khởi tạo.")
             return
         }
 
-        var count = 0
-        // Loại bỏ các plugin hệ thống/cấu hình để chỉ giữ lại các plugin dịch vụ thực tế
+        var intentCount = 0
+        var aliasCount = 0
         val targetPlugins = plugins.filter { it.id != "training" && it.id != "global" }
 
-        // 1. Sinh Intent QA tiêu chuẩn cho từng Action của từng Plugin
+        // 1. Sinh Intent QA tiêu chuẩn cho tất cả các Action của từng Plugin
         targetPlugins.forEach { plugin ->
-            val triggers = plugin.getQATriggers()
             plugin.getActions().forEach { action ->
-                val actionTriggers = triggers[action.name] ?: emptyList()
-
-                // Chuyển ngữ thân thiện
-                val friendlyAction = getFriendlyActionName(action.name)
-                val friendlyPlugin = getFriendlyPluginName(plugin.id)
-                
-                val primaryTrigger = "yêu cầu $friendlyAction $friendlyPlugin"
-                val alternativeTrigger = "$friendlyAction $friendlyPlugin"
-                val defaultTrigger = actionTriggers.firstOrNull() ?: "${plugin.id} ${action.name}"
-
-                val json = JSONObject().apply {
-                    put("plugin", plugin.id)
-                    put("action", action.name)
-                    put("params", JSONObject(defaultParams(action)))
+                val schemaParams = JSONObject()
+                action.parameters.forEach { param ->
+                    schemaParams.put(param.name, getDefaultPlaceholder(param.name, param.type))
                 }
 
-                // Gom nhóm các biến thể câu hỏi duy nhất
-                val uniqueQuestions = listOf(primaryTrigger, alternativeTrigger, defaultTrigger)
-                    .map { it.trim().lowercase() }
-                    .distinct()
+                val jsonSchema = JSONObject().apply {
+                    put("plugin", plugin.id)
+                    put("action", action.name)
+                    put("params", schemaParams)
+                }
 
-                uniqueQuestions.forEach { question ->
+                // Chuyển ngữ tự nhiên để làm Trigger Question cho Intent
+                val friendlyAction = getFriendlyActionName(action.name)
+                val friendlyPlugin = getFriendlyPluginName(plugin.id)
+
+                val triggers = listOf(
+                    "yêu cầu $friendlyAction $friendlyPlugin",
+                    "$friendlyAction $friendlyPlugin",
+                    "${plugin.id} ${action.name}",
+                    friendlyAction,
+                    friendlyPlugin
+                ).map { it.trim().lowercase() }.distinct()
+
+                triggers.forEach { question ->
                     trainingSkill.addQA(
                         question = question,
-                        answer   = json.toString(),
+                        answer = jsonSchema.toString(),
+                        type = "intent",
                         category = "auto_init",
                         username = username
                     )
-                    count++
+                    intentCount++
                 }
             }
         }
 
-        // 2. Sinh các Intent QA kết hợp đặc biệt với Plugin Lên Lịch (Schedule)
+        // 2. Sinh Intent QA đặc biệt cho Plugin Lên Lịch (Generic composite schedule)
         val schedulePlugin = plugins.firstOrNull { it.id == "schedule" || it.id == "scheduler" }
         if (schedulePlugin != null) {
             val scheduleAction = schedulePlugin.getActions().firstOrNull {
@@ -71,81 +73,81 @@ class QAInitBuilder @Inject constructor(
             } ?: schedulePlugin.getActions().firstOrNull()
 
             if (scheduleAction != null) {
-                // Lấy danh sách các action từ các plugin khác (trừ chính nó) để kết hợp đặt lịch
-                targetPlugins.filter { it.id != "schedule" && it.id != "scheduler" }.forEach { otherPlugin ->
-                    otherPlugin.getActions().forEach { otherAction ->
-                        val friendlyAction = getFriendlyActionName(otherAction.name)
-                        val friendlyPlugin = getFriendlyPluginName(otherPlugin.id)
+                val scheduleTriggers = listOf("lên lịch", "đặt lịch", "hẹn giờ", "tạo lịch trình")
+                val jsonSchema = JSONObject().apply {
+                    put("plugin", schedulePlugin.id)
+                    put("action", scheduleAction.name)
+                    put("params", JSONObject().apply {
+                        put("pluginId", "")
+                        put("action", "")
+                        put("cron", "")
+                        put("intervalMinutes", 0)
+                        put("params", JSONObject())
+                    })
+                }
 
-                        // Các mẫu câu hỏi lên lịch tự nhiên trong Tiếng Việt
-                        val questions = listOf(
-                            "lên lịch $friendlyAction $friendlyPlugin",
-                            "hẹn giờ $friendlyAction $friendlyPlugin",
-                            "đặt lịch $friendlyAction $friendlyPlugin"
-                        )
-
-                        // Thiết kế cấu hình tham số dự phòng (đầy đủ cả dạng lồng nhau và dạng phẳng)
-                        val combinedParams = JSONObject().apply {
-                            put("name", "Lịch trình $friendlyAction $friendlyPlugin")
-                            put("expression", "0 */15 * * * ?") // Mặc định chu kỳ 15 phút một lần
-                            put("cron", "0 */15 * * * ?")
-                            
-                            // Tương thích dạng phẳng (Flat)
-                            put("plugin", otherPlugin.id)
-                            put("action", otherAction.name)
-                            put("params", JSONObject(defaultParams(otherAction)))
-
-                            // Tương thích dạng lồng nhau (Target Nested)
-                            put("targetPlugin", otherPlugin.id)
-                            put("targetAction", otherAction.name)
-                            put("targetParams", JSONObject(defaultParams(otherAction)))
-                        }
-
-                        val json = JSONObject().apply {
-                            put("plugin", schedulePlugin.id)
-                            put("action", scheduleAction.name)
-                            put("params", combinedParams)
-                        }
-
-                        questions.forEach { question ->
-                            trainingSkill.addQA(
-                                question = question,
-                                answer   = json.toString(),
-                                category = "auto_init",
-                                username = username
-                            )
-                            count++
-                        }
-                    }
+                scheduleTriggers.forEach { trigger ->
+                    trainingSkill.addQA(
+                        question = trigger,
+                        answer = jsonSchema.toString(),
+                        type = "intent",
+                        category = "auto_init",
+                        username = username
+                    )
+                    intentCount++
                 }
             }
         }
 
-        logger.d("QAInitBuilder", "✅ Intent QA init hoàn tất đầy đủ: $count entries")
+        // 3. Khởi tạo một số Alias QA mẫu theo từng Semantic Type để người dùng trải nghiệm ngay
+        val defaultAliases = listOf(
+            Triple("cổng", "camera_1", "camera"),
+            Triple("sân trước", "camera_2", "camera"),
+            Triple("đèn phòng khách", "relay_1", "device"),
+            Triple("đèn sân vườn", "relay_2", "device"),
+            Triple("sếp", "boss@gmail.com", "email"),
+            Triple("tôi", "me@gmail.com", "email")
+        )
+
+        defaultAliases.forEach { (question, answer, semanticType) ->
+            trainingSkill.addQA(
+                question = question,
+                answer = answer,
+                type = semanticType, // Trường type lưu Semantic Type của Alias
+                category = "default_alias",
+                username = username
+            )
+            aliasCount++
+        }
+
+        logger.d("QAInitBuilder", "✅ Khởi tạo hoàn tất: $intentCount Intents, $aliasCount Aliases")
     }
 
-    private fun defaultParams(action: PluginAction): Map<String, String> =
-        action.parameters
-            .filter { it.required }
-            .associate { param ->
-                param.name to when (param.name.lowercase()) {
-                    "to", "email"        -> "example@gmail.com"
-                    "device", "deviceid" -> ""
-                    "cameraid"           -> ""
-                    else                 -> ""
+    private fun getDefaultPlaceholder(name: String, type: String): Any {
+        return when (type.lowercase()) {
+            "boolean" -> true
+            "number"  -> 0
+            else -> {
+                when (name.lowercase()) {
+                    "to", "email", "recipient" -> "example@gmail.com"
+                    "device", "deviceid", "device_id" -> "device_1"
+                    "camera", "cameraid", "camera_id" -> "camera_1"
+                    else -> ""
                 }
             }
+        }
+    }
 
     private fun getFriendlyActionName(action: String): String {
         return when (action.lowercase()) {
             "scan" -> "quét"
-            "send", "sendemail", "send_email" -> "gửi"
-            "turn_on", "turnon", "on" -> "bật"
+            "send", "sendemail" -> "gửi"
+            "turn_on", "turnon", "on", "power" -> "bật"
             "turn_off", "turnoff", "off" -> "tắt"
-            "capture", "snapshot", "take_photo", "takephoto" -> "chụp ảnh"
+            "capture", "snapshot" -> "chụp ảnh"
             "add", "create" -> "thêm"
-            "delete", "remove" -> "xóa"
-            "status", "check" -> "kiểm tra trạng thái"
+            "delete" -> "xóa"
+            "status" -> "kiểm tra"
             else -> action
         }
     }
@@ -154,9 +156,9 @@ class QAInitBuilder @Inject constructor(
         return when (pluginId.lowercase()) {
             "camera" -> "camera"
             "email", "resend" -> "email"
-            "tuya", "smartlife", "tuyadevice" -> "thiết bị tuya"
-            "schedule", "scheduler" -> "lịch trình"
-            "groq", "ai" -> "trợ lý ai"
+            "tuya" -> "thiết bị"
+            "schedule" -> "lịch trình"
+            "notification" -> "thông báo"
             else -> pluginId
         }
     }

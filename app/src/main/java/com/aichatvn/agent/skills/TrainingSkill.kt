@@ -38,35 +38,22 @@ class TrainingSkill @Inject constructor(
     private val _stats = MutableStateFlow<Map<String, Any>>(emptyMap())
     val stats: StateFlow<Map<String, Any>> = _stats.asStateFlow()
 
-    // ==================== NEW METHOD FOR QAInitBuilder ====================
+    data class MatchResult(
+        val intentMatches: List<Pair<QAEntity, Double>>,
+        val aliasMatches: List<Pair<QAEntity, Double>>
+    )
 
-    suspend fun countQAByCategory(category: String): Int {
+    suspend fun countQAByType(type: String): Int {
         return try {
-            database.qaDao().getAllQAs("default_user").count { it.category == category }
+            database.qaDao().getAllQAs("default_user").count { it.type == type }
         } catch (e: Exception) {
-            logger.e("TrainingSkill", "Lỗi đếm danh mục QA: ${e.message}", e)
+            logger.e("TrainingSkill", "Lỗi đếm QA theo type: ${e.message}", e)
             0
         }
     }
 
-    /**
-     * Phân loại 1 QA là "Intent QA" (answer chứa JSON {"plugin":...,"action":...},
-     * được QAInitBuilder seed sẵn hoặc người dùng tự dạy qua tab Training để AgentKernel
-     * match trực tiếp ở Tầng 2) hay là "Alias QA" (alias/Q&A thuần văn bản, chỉ dùng để
-     * map tên gọi tắt -> giá trị thật, hoặc trả lời tự do).
-     *
-     * Dùng để:
-     *  1) AgentKernel Tầng 2: tìm Intent QA khớp nhất qua fuzzy match để thực thi trực tiếp.
-     *  2) AgentKernel Tầng 3: lọc bỏ Intent QA khỏi gợi ý <qa> gửi cho LLM, chỉ giữ Alias QA.
-     */
     fun isIntentQA(qa: QAEntity): Boolean {
-        if (qa.category == "auto_init") return true
-        return try {
-            val json = JSONObject(qa.answer)
-            json.has("plugin") && json.has("action")
-        } catch (e: Exception) {
-            false
-        }
+        return qa.type == "intent"
     }
 
     // ==================== PLUGIN IMPLEMENTATION ====================
@@ -79,6 +66,7 @@ class TrainingSkill @Inject constructor(
                 parameters = listOf(
                     PluginParameter("question", "string", "Câu hỏi", true),
                     PluginParameter("answer", "string", "Câu trả lời", true),
+                    PluginParameter("type", "string", "Loại QA (intent/alias)", true),
                     PluginParameter("category", "string", "Danh mục", false),
                     PluginParameter("username", "string", "Tên người dùng", true)
                 )
@@ -155,12 +143,11 @@ class TrainingSkill @Inject constructor(
     }
 
     private suspend fun handleAdd(params: Map<String, Any>, username: String): PluginResult {
-        val question = params["question"] as? String 
-            ?: return PluginResult.Failure("Thiếu câu hỏi")
-        val answer = params["answer"] as? String 
-            ?: return PluginResult.Failure("Thiếu câu trả lời")
+        val question = params["question"] as? String ?: return PluginResult.Failure("Thiếu câu hỏi")
+        val answer = params["answer"] as? String ?: return PluginResult.Failure("Thiếu câu trả lời")
+        val type = params["type"] as? String ?: "alias"
         val category = params["category"] as? String ?: "general"
-        val result = addQA(question, answer, category, username)
+        val result = addQA(question, answer, type, category, username)
         return when (result) {
             is PluginResult.Success -> result
             is PluginResult.Failure -> result
@@ -169,8 +156,7 @@ class TrainingSkill @Inject constructor(
     }
 
     private suspend fun handleSearch(params: Map<String, Any>, username: String): PluginResult {
-        val query = params["query"] as? String 
-            ?: return PluginResult.Failure("Thiếu từ khóa")
+        val query = params["query"] as? String ?: return PluginResult.Failure("Thiếu từ khóa")
         val result = searchQAs(query, username)
         return when (result) {
             is PluginResult.Success -> result
@@ -191,8 +177,7 @@ class TrainingSkill @Inject constructor(
     }
 
     private suspend fun handleDelete(params: Map<String, Any>, username: String): PluginResult {
-        val id = params["id"] as? String 
-            ?: return PluginResult.Failure("Thiếu ID")
+        val id = params["id"] as? String ?: return PluginResult.Failure("Thiếu ID")
         val result = deleteQA(id, username)
         return when (result) {
             is PluginResult.Success -> result
@@ -220,8 +205,7 @@ class TrainingSkill @Inject constructor(
     }
 
     private suspend fun handleImport(params: Map<String, Any>, username: String): PluginResult {
-        val jsonString = params["json"] as? String 
-            ?: return PluginResult.Failure("Thiếu dữ liệu JSON")
+        val jsonString = params["json"] as? String ?: return PluginResult.Failure("Thiếu dữ liệu JSON")
         val result = importQAs(jsonString, username)
         return when (result) {
             is PluginResult.Success -> result
@@ -283,7 +267,7 @@ class TrainingSkill @Inject constructor(
     suspend fun exportQAs(username: String): PluginResult {
         return try {
             val allQAs = database.qaDao().getAllQAs(username)
-                .filter { it.category != "auto_init" }  // Bỏ QA auto-seed, sẽ được rebuild tự động
+                .filter { it.category != "auto_init" }
             val jsonArray = JSONArray()
             for (qa in allQAs) {
                 val obj = JSONObject().apply {
@@ -291,6 +275,7 @@ class TrainingSkill @Inject constructor(
                     put("question", qa.question)
                     put("answer", qa.answer)
                     put("category", qa.category)
+                    put("type", qa.type)
                     put("createdBy", qa.createdBy)
                     put("createdAt", qa.createdAt)
                     put("timestamp", qa.timestamp)
@@ -312,8 +297,6 @@ class TrainingSkill @Inject constructor(
     suspend fun importQAs(jsonString: String, username: String): PluginResult {
         return try {
             val jsonArray = JSONArray(jsonString)
-
-            // Build lookup từ DB hiện tại: normalized question → QAEntity
             val existingQAs = database.qaDao().getAllQAs(username)
             val existingByQuestion = existingQAs.associateBy { it.question.trim().lowercase() }
 
@@ -323,22 +306,22 @@ class TrainingSkill @Inject constructor(
                 val obj = jsonArray.getJSONObject(i)
                 val question = obj.getString("question")
                 val answer = obj.getString("answer")
+                val type = obj.optString("type", "alias")
                 val category = obj.optString("category", "general")
 
-                // Bỏ qua auto_init — QAInitBuilder sẽ seed lại tự động sau khi cài app
                 if (category == "auto_init") { skipped++; continue }
 
                 val key = question.trim().lowercase()
                 val existing = existingByQuestion[key]
                 when {
                     existing == null -> {
-                        // Câu hỏi chưa có → insert mới
                         database.qaDao().insertQA(
                             QAEntity(
                                 id = UUID.randomUUID().toString(),
                                 question = question,
                                 answer = answer,
                                 category = category,
+                                type = type,
                                 createdBy = username,
                                 createdAt = System.currentTimeMillis(),
                                 timestamp = System.currentTimeMillis()
@@ -346,17 +329,17 @@ class TrainingSkill @Inject constructor(
                         )
                         imported++
                     }
-                    existing.answer != answer -> {
-                        // Câu hỏi đã có nhưng answer khác → update (giữ id cũ)
+                    existing.answer != answer || existing.type != type -> {
                         database.qaDao().updateQA(
                             existing.copy(
                                 answer = answer,
+                                type = type,
                                 timestamp = System.currentTimeMillis()
                             )
                         )
                         imported++
                     }
-                    else -> skipped++ // Hoàn toàn giống → bỏ qua
+                    else -> skipped++
                 }
             }
             refreshQAList(username)
@@ -373,13 +356,20 @@ class TrainingSkill @Inject constructor(
         }
     }
     
-    suspend fun addQA(question: String, answer: String, category: String, username: String): PluginResult {
+    suspend fun addQA(
+        question: String, 
+        answer: String, 
+        type: String, 
+        category: String, 
+        username: String
+    ): PluginResult {
         return try {
             val qa = QAEntity(
                 id = UUID.randomUUID().toString(),
                 question = question,
                 answer = answer,
                 category = category,
+                type = type,
                 createdBy = username,
                 createdAt = System.currentTimeMillis(),
                 timestamp = System.currentTimeMillis()
@@ -398,16 +388,21 @@ class TrainingSkill @Inject constructor(
         }
     }
     
-    suspend fun updateQA(id: String, question: String?, answer: String?, category: String?, username: String): PluginResult {
+    suspend fun updateQA(
+        id: String, 
+        question: String?, 
+        answer: String?, 
+        type: String?, 
+        category: String?, 
+        username: String
+    ): PluginResult {
         return try {
-            val existing = database.qaDao().getQAById(id, username)
-            if (existing == null) {
-                return PluginResult.Failure("QA not found")
-            }
+            val existing = database.qaDao().getQAById(id, username) ?: return PluginResult.Failure("QA not found")
             
             val updated = existing.copy(
                 question = question ?: existing.question,
                 answer = answer ?: existing.answer,
+                type = type ?: existing.type,
                 category = category ?: existing.category,
                 timestamp = System.currentTimeMillis()
             )
@@ -447,28 +442,14 @@ class TrainingSkill @Inject constructor(
         }
     }
     
-    /**
-     * TỐI ƯU HÓA: Thay thế logic SQL LIKE bằng Fuzzy Match của Agent Kernel sử dụng ngưỡng động
-     */
     suspend fun searchQAs(query: String, username: String): PluginResult {
         return try {
-            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.5f)
-
-            val allQAs = database.qaDao().getAllQAs(username)
-            
-            val matches = allQAs.mapNotNull { qa ->
-                val questionSimilarity = calculateSimilarity(query.lowercase(), qa.question.lowercase())
-                val answerSimilarity = calculateSimilarity(query.lowercase(), qa.answer.lowercase())
-                val maxSimilarity = maxOf(questionSimilarity, answerSimilarity)
-                if (maxSimilarity >= configThreshold) {
-                    qa to maxSimilarity
-                } else null
-            }.sortedByDescending { it.second }
-
+            val matches = fuzzyMatchCategorized(query, username)
+            val combined = (matches.intentMatches + matches.aliasMatches).map { it.first }
             PluginResult.Success(
                 mapOf(
-                    "results" to matches.map { it.first },
-                    "count" to matches.size
+                    "results" to combined,
+                    "count" to combined.size
                 )
             )
         } catch (e: Exception) {
@@ -476,36 +457,41 @@ class TrainingSkill @Inject constructor(
             PluginResult.Failure(e.message ?: "Search QAs failed")
         }
     }
-    
-    /**
-     * TỐI ƯU HÓA: Tự động lấy ngưỡng từ Config Provider nếu không truyền tham số
-     */
-    suspend fun fuzzyMatchQuestion(query: String, username: String, threshold: Float? = null): PluginResult {
+
+    suspend fun fuzzyMatchCategorized(
+        query: String, 
+        username: String, 
+        threshold: Float? = null
+    ): MatchResult {
         return try {
             val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.5f)
             val activeThreshold = threshold ?: configThreshold
 
             val allQAs = database.qaDao().getAllQAs(username)
-            val matches = allQAs.mapNotNull { qa ->
+            val intents = mutableListOf<Pair<QAEntity, Double>>()
+            val aliases = mutableListOf<Pair<QAEntity, Double>>()
+
+            for (qa in allQAs) {
                 val questionSimilarity = calculateSimilarity(query.lowercase(), qa.question.lowercase())
                 val answerSimilarity = calculateSimilarity(query.lowercase(), qa.answer.lowercase())
-                val maxSimilarity = maxOf(questionSimilarity, answerSimilarity)
+                val maxSimilarity = maxOf(questionSimilarity, answerSimilarity).toDouble()
+
                 if (maxSimilarity >= activeThreshold) {
-                    qa to maxSimilarity
-                } else null
-            }.sortedByDescending { it.second }.take(20)
-            
-            PluginResult.Success(
-                matches.map { 
-                    mapOf(
-                        "qa" to it.first, 
-                        "similarity" to it.second
-                    ) 
+                    if (qa.type == "intent") {
+                        intents.add(qa to maxSimilarity)
+                    } else {
+                        aliases.add(qa to maxSimilarity)
+                    }
                 }
+            }
+
+            MatchResult(
+                intentMatches = intents.sortedByDescending { it.second },
+                aliasMatches = aliases.sortedByDescending { it.second }
             )
         } catch (e: Exception) {
-            logger.e("TrainingSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message ?: "Fuzzy match failed")
+            logger.e("TrainingSkill", "Fuzzy match categorized failed: ${e.message}", e)
+            MatchResult(emptyList(), emptyList())
         }
     }
     

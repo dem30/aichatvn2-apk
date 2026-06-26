@@ -33,19 +33,12 @@ class EmailSkill @Inject constructor(
         private const val RESEND_API_URL = "https://api.resend.com/emails"
     }
 
-    // ─── Đọc credentials từ DataStore ───────────────────────────────────
-
     private suspend fun loadApiKey(): String {
         return try {
             val prefs = context.dataStore.data.first()
             val key = prefs[stringPreferencesKey("resend_api_key")] ?: ""
-            if (key.isNotBlank()) key
-            else {
-                logger.i("EmailSkill", "DataStore trống → dùng BuildConfig")
-                BuildConfig.RESEND_API_KEY
-            }
+            if (key.isNotBlank()) key else BuildConfig.RESEND_API_KEY
         } catch (e: Exception) {
-            logger.e("EmailSkill", "Lỗi đọc API key: ${e.message}")
             BuildConfig.RESEND_API_KEY
         }
     }
@@ -54,8 +47,7 @@ class EmailSkill @Inject constructor(
         return try {
             val prefs = context.dataStore.data.first()
             val sender = prefs[stringPreferencesKey("resend_sender")] ?: ""
-            if (sender.isNotBlank()) sender
-            else BuildConfig.RESEND_SENDER
+            if (sender.isNotBlank()) sender else BuildConfig.RESEND_SENDER
         } catch (e: Exception) {
             BuildConfig.RESEND_SENDER
         }
@@ -69,25 +61,26 @@ class EmailSkill @Inject constructor(
                 name = "send",
                 description = "Gửi email",
                 parameters = listOf(
-                    PluginParameter("to", "string", "Địa chỉ email nhận", true),
-                    PluginParameter("subject", "string", "Tiêu đề email", false),
-                    PluginParameter("body", "string", "Nội dung email", false)
+                    // Khai báo kiểu ngữ nghĩa (semanticType) rõ ràng là "email"
+                    PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
+                    PluginParameter("subject", "string", "Tiêu đề email", false, "string"),
+                    PluginParameter("body", "string", "Nội dung email", false, "string")
                 )
             ),
             PluginAction(
                 name = "test",
                 description = "Gửi email test",
                 parameters = listOf(
-                    PluginParameter("to", "string", "Địa chỉ email nhận", true)
+                    PluginParameter("to", "string", "Địa chỉ email nhận", true, "email")
                 )
             )
         )
     }
 
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-    "send" to listOf("gửi email", "soạn email", "gửi mail cho", "viết email cho"),
-    "test" to listOf("gửi email test", "test email", "kiểm tra gửi mail")
-)
+        "send" to listOf("gửi email", "soạn email", "gửi mail cho", "viết email cho"),
+        "test" to listOf("gửi email test", "test email", "kiểm tra gửi mail")
+    )
     
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         return when (action) {
@@ -98,46 +91,27 @@ class EmailSkill @Inject constructor(
     }
 
     private suspend fun handleSend(params: Map<String, Any>): PluginResult {
-        val to = params["to"] as? String
-            ?: return PluginResult.Failure("Bạn muốn gửi email tới địa chỉ nào?")
-        
+        val to = params["to"] as? String ?: return PluginResult.Failure("Bạn muốn gửi email tới địa chỉ nào?")
         val subject = params["subject"] as? String ?: "Không có tiêu đề"
         val body = params["body"] as? String ?: ""
-        
-        val result = sendEmail(to, subject, body, null)
-        
-        return when (result) {
-            is PluginResult.Success -> result
-            is PluginResult.Failure -> result
-            else -> PluginResult.Failure("Gửi email thất bại")
-        }
+        return sendEmail(to, subject, body, null)
     }
 
     private suspend fun handleTest(params: Map<String, Any>): PluginResult {
-        val to = params["to"] as? String
-            ?: return PluginResult.Failure("Bạn muốn gửi email test tới địa chỉ nào?")
-        
-        val result = sendEmail(
+        val to = params["to"] as? String ?: return PluginResult.Failure("Bạn muốn gửi email test tới địa chỉ nào?")
+        return sendEmail(
             to = to,
             subject = "Test từ AIChatVN2",
             body = "Email test gửi lúc ${System.currentTimeMillis()}",
             imageBytes = null
         )
-        
-        return when (result) {
-            is PluginResult.Success -> result
-            is PluginResult.Failure -> result
-            else -> PluginResult.Failure("Gửi email test thất bại")
-        }
     }
 
     // ==================== CORE SKILL METHODS ====================
 
     override suspend fun initialize() {
         val key = loadApiKey()
-        if (key.isBlank()) {
-            logger.w("EmailSkill", "Chưa cấu hình Resend API key")
-        }
+        if (key.isBlank()) logger.w("EmailSkill", "Chưa cấu hình Resend API key")
     }
 
     override suspend fun shutdown() {}
@@ -148,33 +122,14 @@ class EmailSkill @Inject constructor(
         body: String,
         imageBytes: ByteArray? = null
     ): PluginResult = withContext(Dispatchers.IO) {
-        if (to.isBlank()) {
-            return@withContext PluginResult.Failure("Địa chỉ email nhận không được để trống")
-        }
-
+        if (to.isBlank()) return@withContext PluginResult.Failure("Địa chỉ email nhận không được để trống")
         val apiKey = loadApiKey()
-        if (apiKey.isBlank()) {
-            return@withContext PluginResult.Failure(
-                "Chưa cấu hình Resend API key. Vào Settings để nhập."
-            )
-        }
-
+        if (apiKey.isBlank()) return@withContext PluginResult.Failure("Chưa cấu hình Resend API key. Vào Settings để nhập.")
         val sender = loadSenderEmail()
-        if (sender.isBlank()) {
-            return@withContext PluginResult.Failure(
-                "Chưa cấu hình email gửi (Resend sender). Vào Settings để nhập."
-            )
-        }
+        if (sender.isBlank()) return@withContext PluginResult.Failure("Chưa cấu hình email gửi (Resend sender). Vào Settings để nhập.")
 
         try {
-            val json = buildRequestJson(
-                from    = sender,
-                to      = to,
-                subject = subject,
-                html    = body,
-                imageBytes = imageBytes
-            )
-
+            val json = buildRequestJson(sender, to, subject, body, imageBytes)
             val connection = (URL(RESEND_API_URL).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Authorization", "Bearer $apiKey")
@@ -185,51 +140,25 @@ class EmailSkill @Inject constructor(
             }
 
             OutputStreamWriter(connection.outputStream).use { it.write(json) }
-
             val code = connection.responseCode
 
-            // ✅ FIX: KHÔNG đọc connection.inputStream trước khi biết code thành công.
-            // HttpURLConnection ném FileNotFoundException khi gọi getInputStream() trên
-            // response lỗi (4xx/5xx) — body lỗi CHỈ đọc được qua errorStream. Code cũ đọc
-            // inputStream trước rồi mới if/else nên mọi lỗi HTTP đều bị crash ra ngoài
-            // catch(Exception) phía dưới, mất hết message lỗi thật từ Resend (vd "domain
-            // not verified") và chỉ còn lại "FileNotFoundException: <url>".
             if (code in 200..299) {
-                val responseBody = connection.inputStream.bufferedReader().readText()
-                logger.i("EmailSkill", "✅ Email gửi thành công tới $to (HTTP $code)")
-                PluginResult.Success(
-                    mapOf(
-                        "message" to "Email đã gửi tới $to",
-                        "to" to to,
-                        "subject" to subject
-                    )
-                )
+                PluginResult.Success(mapOf("message" to "Email đã gửi tới $to", "to" to to))
             } else {
-                val errorBody = connection.errorStream?.bufferedReader()?.readText()
-                    ?: "Không có nội dung lỗi từ server"
-                logger.e("EmailSkill", "❌ Resend API lỗi HTTP $code: $errorBody")
+                val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Không có nội dung lỗi từ server"
                 PluginResult.Failure("Gửi email thất bại (HTTP $code): $errorBody")
             }
-
         } catch (e: Exception) {
-            logger.e("EmailSkill", "❌ Exception khi gửi email: ${e.message}", e)
             PluginResult.Failure("Gửi email thất bại: ${e.message}")
         }
     }
 
-    private fun buildRequestJson(
-        from: String,
-        to: String,
-        subject: String,
-        html: String,
-        imageBytes: ByteArray?
-    ): String {
+    private fun buildRequestJson(from: String, to: String, subject: String, html: String, imageBytes: ByteArray?): String {
         val obj = JSONObject().apply {
             put("from", from)
             put("to", JSONArray().put(to))
             put("subject", subject)
             put("html", html)
-
             if (imageBytes != null) {
                 val attachments = JSONArray().put(
                     JSONObject().apply {

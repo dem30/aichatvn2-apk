@@ -290,7 +290,7 @@ interface AppConfigDao {
         AppConfigEntity::class,
         CustomerEntity::class
     ],
-    version = 8,
+    version = 9, // Tăng phiên bản cấu trúc từ 8 lên 9
 
     exportSchema = false
 )
@@ -337,7 +337,6 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ THÊM MIGRATION 2 -> 3
         private val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -358,14 +357,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ THÊM MIGRATION 4 -> 5: thêm cột sourcePlugin cho tính năng tag lệnh/chat thường
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE chat_messages ADD COLUMN sourcePlugin TEXT")
             }
         }
 
-        // MIGRATION 5 -> 6: thêm bảng customers
         private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -382,15 +379,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // MIGRATION 6 -> 7: thêm cột smartMode per-camera
         private val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE cameras ADD COLUMN smartMode INTEGER NOT NULL DEFAULT 1")
             }
         }
 
-
-        // MIGRATION 7 -> 8: thêm bảng app_config (key-value store cho plugin config)
         private val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -409,6 +403,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // ✅ MIGRATION 8 -> 9: Bổ sung cột 'type' vào bảng 'qa_data'
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE qa_data ADD COLUMN type TEXT NOT NULL DEFAULT 'alias'")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -416,7 +417,15 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                    .addMigrations(
+                        MIGRATION_1_2, 
+                        MIGRATION_2_3, 
+                        MIGRATION_4_5, 
+                        MIGRATION_5_6, 
+                        MIGRATION_6_7, 
+                        MIGRATION_7_8,
+                        MIGRATION_8_9 // Khai báo nạp MIGRATION 8 -> 9
+                    )
                     .build()
                 INSTANCE = instance
                 instance

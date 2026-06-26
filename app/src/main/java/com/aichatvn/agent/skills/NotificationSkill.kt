@@ -45,16 +45,16 @@ class NotificationSkill @Inject constructor(
                 name = "send",
                 description = "Gửi thông báo",
                 parameters = listOf(
-                    PluginParameter("title", "string", "Tiêu đề", true),
-                    PluginParameter("message", "string", "Nội dung", true)
+                    PluginParameter("title", "string", "Tiêu đề", true, "string"),
+                    PluginParameter("message", "string", "Nội dung", true, "string")
                 )
             )
         )
     }
 
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-    "send" to listOf("gửi thông báo", "báo cho tôi", "gửi cảnh báo", "thông báo cho tôi")
-)
+        "send" to listOf("gửi thông báo", "báo cho tôi", "gửi cảnh báo", "thông báo cho tôi")
+    )
     
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
@@ -87,7 +87,6 @@ class NotificationSkill @Inject constructor(
 
         val id = notificationCounter.getAndIncrement()
 
-        // ✅ Thêm: tap notification → mở MainActivity
         val launchIntent = context.packageManager
             .getLaunchIntentForPackage(context.packageName)
             ?.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
@@ -108,7 +107,7 @@ class NotificationSkill @Inject constructor(
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setContentIntent(pendingIntent)  // ✅ Thêm dòng này
+            .setContentIntent(pendingIntent)
             .build()
 
         notificationManager.notify(id, notification)
@@ -116,7 +115,6 @@ class NotificationSkill @Inject constructor(
         id
     }
 
-    // Thêm hàm định nghĩa Notification Channel để giải quyết lỗi biên dịch
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(

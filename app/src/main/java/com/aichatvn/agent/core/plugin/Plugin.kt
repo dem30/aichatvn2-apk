@@ -21,15 +21,16 @@ interface Plugin {
 fun getQATriggers(): Map<String, List<String>> = emptyMap()
 }
 
+data class PluginParameter(
+    val name: String,
+    val type: String, // "string" | "boolean" | "number" | "object"
+    val description: String,
+    val required: Boolean,
+    val semanticType: String = "string" // "email", "camera", "device", "time", "interval", "plugin_id", "action_id", "params"
+)
+
 data class PluginAction(
     val name: String,
     val description: String,
-    val parameters: List<PluginParameter> = emptyList()
-)
-
-data class PluginParameter(
-    val name: String,
-    val type: String,  // string, boolean, number, object
-    val description: String,
-    val required: Boolean = true
+    val parameters: List<PluginParameter>
 )

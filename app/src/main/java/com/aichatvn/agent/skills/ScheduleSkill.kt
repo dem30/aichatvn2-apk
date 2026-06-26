@@ -42,11 +42,12 @@ class ScheduleSkill @Inject constructor(
                     "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
                     "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
                 parameters = listOf(
-                    PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true),
-                    PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true),
-                    PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false),
-                    PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false),
-                    PluginParameter("params", "object", "Tham số cho action đích theo đúng schema của plugin đó", false)
+                    // Định nghĩa siêu dữ liệu cho phép Schema Composer nhận diện vai trò lồng ghép
+                    PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
+                    PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
+                    PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false, "time"),
+                    PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false, "interval"),
+                    PluginParameter("params", "object", "Tham số cho action đích theo đúng schema của plugin đó", false, "params")
                 )
             ),
             PluginAction(
@@ -58,27 +59,26 @@ class ScheduleSkill @Inject constructor(
                 name = "delete",
                 description = "Xóa lịch trình",
                 parameters = listOf(
-                    PluginParameter("id", "string", "ID lịch trình", true)
+                    PluginParameter("id", "string", "ID lịch trình", true, "string")
                 )
             ),
             PluginAction(
                 name = "toggle",
                 description = "Bật/tắt lịch trình",
                 parameters = listOf(
-                    PluginParameter("id", "string", "ID lịch trình", true),
-                    PluginParameter("enabled", "boolean", "true: bật, false: tắt", true)
+                    PluginParameter("id", "string", "ID lịch trình", true, "string"),
+                    PluginParameter("enabled", "boolean", "true: bật, false: tắt", true, "boolean")
                 )
             )
         )
     }
-    // ScheduleSkill.kt
-override fun getQATriggers(): Map<String, List<String>> = mapOf(
-    "add"    to listOf("thêm lịch", "đặt lịch", "tạo lịch", "lên lịch tự động"),
-    "list"   to listOf("danh sách lịch", "xem lịch", "lịch đang có"),
-    "delete" to listOf("xóa lịch", "huỷ lịch", "xoá lịch"),
-    "toggle" to listOf("bật lịch", "tắt lịch", "kích hoạt lịch")
-)
 
+    override fun getQATriggers(): Map<String, List<String>> = mapOf(
+        "add"    to listOf("thêm lịch", "đặt lịch", "tạo lịch", "lên lịch tự động"),
+        "list"   to listOf("danh sách lịch", "xem lịch", "lịch đang có"),
+        "delete" to listOf("xóa lịch", "huỷ lịch", "xoá lịch"),
+        "toggle" to listOf("bật lịch", "tắt lịch", "kích hoạt lịch")
+    )
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
@@ -104,17 +104,11 @@ override fun getQATriggers(): Map<String, List<String>> = mapOf(
             return failure("Cần cron hoặc intervalMinutes")
         }
         
-        // ✅ Generic: 'params' lồng bên trong dùng cho MỌI plugin đích (email, camera, light...).
-        // Trước đây dùng params.getOrDefault("params","{}").toString() → nếu giá trị là
-        // Map<String,Any> (kết quả parse JSON từ router) thì .toString() ra chuỗi kiểu
-        // "{to=a@b.com, subject=Test}" — KHÔNG phải JSON hợp lệ. TaskScheduler.runSchedule()
-        // sau đó gọi JSONObject(schedule.params) sẽ throw JSONException, bị catch âm thầm,
-        // lịch coi như chạy nhưng không làm gì cả, không ai biết lỗi ở đâu.
         @Suppress("UNCHECKED_CAST")
         val nestedParams: Map<String, Any> = when (val raw = params["params"]) {
             is Map<*, *> -> raw as Map<String, Any>
             null -> emptyMap()
-            else -> emptyMap() // giá trị lạ (string/number...) -> bỏ qua, coi như không có params
+            else -> emptyMap()
         }
         val paramsJson = JSONObject(nestedParams).toString()
 
@@ -133,9 +127,6 @@ override fun getQATriggers(): Map<String, List<String>> = mapOf(
         database.scheduleDao().insertSchedule(schedule)
         loadSchedules()
 
-        // ✅ Kick WorkManager ngay sau khi lưu lịch mới — tránh chờ đến lần check
-        // tiếp theo (CHECK_INTERVAL_MINUTES = 5 phút). runNow() enqueue OneTimeWork
-        // chạy ngay, periodic work vẫn tiếp tục chạy đúng lịch sau đó.
         TaskScheduler.runNow(context)
 
         return success(
@@ -150,8 +141,7 @@ override fun getQATriggers(): Map<String, List<String>> = mapOf(
     }
 
     private suspend fun handleDelete(params: Map<String, Any>): AgentKernel.PluginResult {
-        val id = params["id"] as? String
-            ?: return failure("Thiếu id")
+        val id = params["id"] as? String ?: return failure("Thiếu id")
         
         database.scheduleDao().deleteSchedule(id)
         loadSchedules()
@@ -160,19 +150,14 @@ override fun getQATriggers(): Map<String, List<String>> = mapOf(
     }
 
     private suspend fun handleToggle(params: Map<String, Any>): AgentKernel.PluginResult {
-        val id = params["id"] as? String
-            ?: return failure("Thiếu id")
-        
-        val enabled = params["enabled"] as? Boolean
-            ?: return failure("Thiếu enabled")
+        val id = params["id"] as? String ?: return failure("Thiếu id")
+        val enabled = params["enabled"] as? Boolean ?: return failure("Thiếu enabled")
         
         database.scheduleDao().toggleSchedule(id, if (enabled) 1 else 0)
         loadSchedules()
         
         return success("✅ Đã ${if(enabled) "bật" else "tắt"} lịch trình")
     }
-
-    // ==================== CORE METHODS ====================
 
     suspend fun loadSchedules() {
         _schedules.value = database.scheduleDao().getAllSchedules()

@@ -40,9 +40,7 @@ class TrainingViewModel @Inject constructor(
     private val _hasMore = MutableStateFlow(true)
     val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
 
-    // Track query đang active để refresh searchResults sau khi xoá
     private var activeSearchQuery: String = ""
-
     private val PAGE_SIZE = 20
 
     init {
@@ -58,40 +56,33 @@ class TrainingViewModel @Inject constructor(
             _isLoading.value = true
 
             val result = trainingSkill.getQAsPaginated(_currentPage.value, PAGE_SIZE, "default_user")
-            when (result) {
-                is PluginResult.Success -> {
-                    @Suppress("UNCHECKED_CAST")
-                    val newQAs = (result.data as? Map<String, Any>)?.get("qas") as? List<QAEntity> ?: emptyList()
-                    _hasMore.value = newQAs.size == PAGE_SIZE
-                    if (newQAs.isNotEmpty()) {
-                        _currentPage.value++
-                    }
+            if (result is PluginResult.Success) {
+                @Suppress("UNCHECKED_CAST")
+                val newQAs = (result.data as? Map<String, Any>)?.get("qas") as? List<QAEntity> ?: emptyList()
+                _hasMore.value = newQAs.size == PAGE_SIZE
+                if (newQAs.isNotEmpty()) {
+                    _currentPage.value++
                 }
-                is PluginResult.Failure -> {
-                    // Log error if needed
-                }
-                else -> {}
             }
             _isLoading.value = false
         }
     }
 
-    fun addQA(question: String, answer: String, category: String) {
+    fun addQA(question: String, answer: String, type: String, category: String) {
         viewModelScope.launch {
-            trainingSkill.addQA(question, answer, category, "default_user")
+            trainingSkill.addQA(question, answer, type, category, "default_user")
         }
     }
 
-    fun updateQA(id: String, question: String?, answer: String?, category: String?) {
+    fun updateQA(id: String, question: String?, answer: String?, type: String?, category: String?) {
         viewModelScope.launch {
-            trainingSkill.updateQA(id, question, answer, category, "default_user")
+            trainingSkill.updateQA(id, question, answer, type, category, "default_user")
         }
     }
 
     fun deleteQA(id: String) {
         viewModelScope.launch {
             trainingSkill.deleteQA(id, "default_user")
-            // Nếu đang search thì refresh lại kết quả, tránh item "ma" vẫn hiện sau khi xoá
             if (activeSearchQuery.isNotBlank()) {
                 refreshSearchResults()
             }
@@ -104,7 +95,6 @@ class TrainingViewModel @Inject constructor(
             for (id in ids) {
                 trainingSkill.deleteQA(id, "default_user")
             }
-            // Refresh search nếu đang search
             if (activeSearchQuery.isNotBlank()) {
                 refreshSearchResults()
             }
@@ -127,19 +117,15 @@ class TrainingViewModel @Inject constructor(
     }
 
     fun searchQAs(query: String) {
-        activeSearchQuery = query  // Lưu query để dùng khi refresh sau xoá
+        activeSearchQuery = query
         viewModelScope.launch {
             _isLoading.value = true
             val result = trainingSkill.searchQAs(query, "default_user")
-            when (result) {
-                is PluginResult.Success -> {
-                    @Suppress("UNCHECKED_CAST")
-                    _searchResults.value = (result.data as? Map<String, Any>)?.get("results") as? List<QAEntity> ?: emptyList()
-                }
-                is PluginResult.Failure -> {
-                    _searchResults.value = emptyList()
-                }
-                else -> {}
+            if (result is PluginResult.Success) {
+                @Suppress("UNCHECKED_CAST")
+                _searchResults.value = (result.data as? Map<String, Any>)?.get("results") as? List<QAEntity> ?: emptyList()
+            } else {
+                _searchResults.value = emptyList()
             }
             _isLoading.value = false
         }
@@ -154,28 +140,23 @@ class TrainingViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             val result = trainingSkill.exportQAs("default_user")
-            when (result) {
-                is PluginResult.Success -> {
-                    val data = result.data as? Map<*, *>
-                    val jsonString = data?.get("json") as? String
-                    if (jsonString != null) {
-                        try {
-                            val downloadsDir = android.os.Environment
-                                .getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                            val file = File(downloadsDir, "qa_export_${System.currentTimeMillis()}.json")
-                            file.writeText(jsonString)
-                            _exportResult.value = "✅ Đã lưu tại: ${file.absolutePath}"
-                        } catch (e: Exception) {
-                            _exportResult.value = "❌ Lỗi lưu file: ${e.message}"
-                        }
-                    } else {
-                        _exportResult.value = "❌ Export thất bại: Dữ liệu rỗng"
+            if (result is PluginResult.Success) {
+                val data = result.data as? Map<*, *>
+                val jsonString = data?.get("json") as? String
+                if (jsonString != null) {
+                    try {
+                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                        val file = File(downloadsDir, "qa_export_${System.currentTimeMillis()}.json")
+                        file.writeText(jsonString)
+                        _exportResult.value = "✅ Đã lưu tại: ${file.absolutePath}"
+                    } catch (e: Exception) {
+                        _exportResult.value = "❌ Lỗi lưu file: ${e.message}"
                     }
+                } else {
+                    _exportResult.value = "❌ Export thất bại: Dữ liệu rỗng"
                 }
-                is PluginResult.Failure -> {
-                    _exportResult.value = "❌ Export thất bại: ${result.error}"
-                }
-                else -> {}
+            } else {
+                _exportResult.value = "❌ Export thất bại"
             }
             _isLoading.value = false
         }
@@ -185,13 +166,9 @@ class TrainingViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val jsonString = context.contentResolver
-                    .openInputStream(uri)
-                    ?.bufferedReader()
-                    ?.use { it.readText() }
-
+                val jsonString = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                 if (jsonString.isNullOrBlank()) {
-                    _importResult.value = "❌ File rỗng hoặc không đọc được"
+                    _importResult.value = "❌ File rỗng"
                 } else {
                     val result = trainingSkill.importQAs(jsonString, "default_user")
                     _importResult.value = when (result) {
@@ -215,13 +192,7 @@ class TrainingViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val lines = context.contentResolver
-                    .openInputStream(uri)
-                    ?.bufferedReader()
-                    ?.readLines()
-                    ?.drop(1)
-                    ?: emptyList()
-
+                val lines = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readLines()?.drop(1) ?: emptyList()
                 var imported = 0
                 var skipped = 0
                 for (line in lines) {
@@ -230,7 +201,8 @@ class TrainingViewModel @Inject constructor(
                         trainingSkill.addQA(
                             question = cols[0],
                             answer = cols[1],
-                            category = cols.getOrElse(2) { "general" },
+                            type = cols.getOrElse(2) { "alias" },
+                            category = cols.getOrElse(3) { "general" },
                             username = "default_user"
                         )
                         imported++
@@ -238,8 +210,7 @@ class TrainingViewModel @Inject constructor(
                         skipped++
                     }
                 }
-                _importResult.value = "✅ Import CSV: $imported dòng OK" +
-                    if (skipped > 0) ", $skipped dòng bỏ qua" else ""
+                _importResult.value = "✅ Import CSV: $imported dòng OK" + if (skipped > 0) ", $skipped dòng bỏ qua" else ""
             } catch (e: Exception) {
                 _importResult.value = "❌ Lỗi đọc CSV: ${e.message}"
             }

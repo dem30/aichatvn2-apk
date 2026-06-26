@@ -2,8 +2,8 @@ package com.aichatvn.agent.skills
 
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
-import com.aichatvn.agent.core.plugin.PluginAction          // ✅ THÊM
-import com.aichatvn.agent.core.plugin.PluginParameter       // ✅ THÊM
+import com.aichatvn.agent.core.plugin.PluginAction
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import javax.inject.Inject
@@ -11,7 +11,7 @@ import javax.inject.Singleton
 
 @Singleton
 class LightSkill @Inject constructor(
-    private val tuyaManager: TuyaManager,  // ✅ Chỉ gọi TuyaManager
+    private val tuyaManager: TuyaManager,
     logger: Logger
 ) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
 
@@ -32,15 +32,16 @@ class LightSkill @Inject constructor(
                 name = "set",
                 description = "Bật/tắt đèn",
                 parameters = listOf(
-                    PluginParameter("device", "string", "Tên thiết bị", true),
-                    PluginParameter("state", "boolean", "true: bật, false: tắt", true)
+                    // Định nghĩa semanticType là "device" để khớp với Alias DB
+                    PluginParameter("device", "string", "Tên thiết bị", true, "device"),
+                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
                 )
             ),
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái đèn",
                 parameters = listOf(
-                    PluginParameter("device", "string", "Tên thiết bị", true)
+                    PluginParameter("device", "string", "Tên thiết bị", true, "device")
                 )
             ),
             PluginAction(
@@ -52,10 +53,10 @@ class LightSkill @Inject constructor(
     }
 
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-    "set"    to listOf("bật đèn", "tắt đèn", "mở đèn", "tắt relay", "bật relay"),
-    "status" to listOf("trạng thái đèn", "kiểm tra đèn", "đèn đang bật không"),
-    "scan"   to listOf("quét thiết bị", "tìm đèn", "scan relay")
-)
+        "set"    to listOf("bật đèn", "tắt đèn", "mở đèn", "tắt relay", "bật relay"),
+        "status" to listOf("trạng thái đèn", "kiểm tra đèn", "đèn đang bật không"),
+        "scan"   to listOf("quét thiết bị", "tìm đèn", "scan relay")
+    )
 
     private suspend fun handleScan(): AgentKernel.PluginResult {
         return try {

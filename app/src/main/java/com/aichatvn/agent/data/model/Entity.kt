@@ -48,6 +48,7 @@ data class QAEntity(
     val question: String,
     val answer: String,
     val category: String,
+    val type: String = "alias",
     val createdBy: String,
     val createdAt: Long,
     val timestamp: Long
