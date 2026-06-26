@@ -103,10 +103,7 @@ class SettingsViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // ─── AppConfig ───────────────────────────────────────────────────────────
-    /** Toàn bộ config realtime — UI bind trực tiếp */
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
-
-    /** Prompt log ≥5 entries gần nhất từ GroqClientTool — gồm full request + response + token usage */
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
 
     // ─── UI state cho config editing ─────────────────────────────────────────
@@ -190,7 +187,7 @@ class SettingsViewModel @Inject constructor(
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
         val trimmedKey = apiKey.trim()
         if (trimmedKey.isEmpty()) {
-            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            viewModelScope.launch(Dispatchers.Main) {
                 onResult(false, "❌ API key trống — vui lòng nhập key trước khi test")
             }
             return
@@ -214,12 +211,12 @@ class SettingsViewModel @Inject constructor(
                         .post(body.toRequestBody("application/json".toMediaType()))
                         .build()
                 ).execute()
-                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
                     if (response.isSuccessful) onResult(true, "✅ Kết nối Groq thành công!")
                     else onResult(false, "❌ HTTP ${response.code}: ${response.body?.string()?.take(200)}")
                 }
             } catch (e: Exception) {
-                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
                     onResult(false, "❌ Lỗi: ${e.message}")
                 }
             }
@@ -248,22 +245,20 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ─── Test Tuya ────────────────────────────────────────────────────────────
-    // THÀNH:
-suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
-    return withContext(Dispatchers.IO) {
-        try {
-            // Save credentials trước để TuyaManager đọc từ DataStore
-            context.dataStore.edit { prefs ->
-                prefs[TUYA_CLIENT_ID] = clientId.trim()
-                prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                context.dataStore.edit { prefs ->
+                    prefs[TUYA_CLIENT_ID] = clientId.trim()
+                    prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+                }
+                val devices = tuyaManager.scanDevices()
+                "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
+            } catch (e: Exception) {
+                "❌ Lỗi Tuya: ${e.message}"
             }
-            val devices = tuyaManager.scanDevices()
-            "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
-        } catch (e: Exception) {
-            "❌ Lỗi Tuya: ${e.message}"
         }
     }
-}
 
     // ─── Export ───────────────────────────────────────────────────────────────
     suspend fun exportSettings(context: Context): String {
@@ -285,7 +280,11 @@ suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
                 val cameras         = database.cameraDao().getAllCameras()
                 val customers       = database.customerDao().getAllCustomers()
                 val tuyaDevices     = database.tuyaDeviceDao().getAllDevices()
+                
+                // ✅ SỬA ĐỔI: Lọc bỏ toàn bộ QA tự động (auto_init), chỉ giữ lại QA của người dùng huấn luyện
                 val qaList          = database.qaDao().getAllQAs(username = "default_user")
+                    .filter { it.category != "auto_init" }
+                
                 val customerSettings = customers.mapNotNull { c ->
                     database.cameraDao().getCustomerSetting(c.id)
                 }
@@ -378,12 +377,15 @@ suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
                         database.tuyaDeviceDao().insertAllDevices(list)
                         restoredCount += list.size
                     }
+                    
+                    // ✅ SỬA ĐỔI: Bỏ qua toàn bộ các QA tự sinh (auto_init) từ file import nếu có
                     dataJson.optJSONArray("qa_data")?.let { arr ->
                         val list: List<QAEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<QAEntity>>() {}.type)
-                        list.forEach { database.qaDao().insertQA(it) }
-                        restoredCount += list.size
+                        val filteredList = list.filter { it.category != "auto_init" }
+                        filteredList.forEach { database.qaDao().insertQA(it) }
+                        restoredCount += filteredList.size
                     }
-                    // ✅ Import app_config (chỉ ghi nếu có trong file export)
+                    
                     dataJson.optJSONArray("app_config")?.let { arr ->
                         val list: List<AppConfigEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<AppConfigEntity>>() {}.type)
                         list.forEach { configProvider.upsert(it) }
