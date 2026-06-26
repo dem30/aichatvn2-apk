@@ -253,11 +253,8 @@ fun DashboardScreen(
 
                                         Button(
                                             onClick = {
-                                                viewModel.sendDeviceAction(
-                                                    node = node,
-                                                    action = action.id,
-                                                    params = emptyMap()
-                                                )
+                                                // Sửa đổi sang sử dụng positional arguments để tránh xung đột tên tham số
+                                                viewModel.sendDeviceAction(node, action.id, emptyMap())
                                                 selectedNode = null
                                             },
                                             colors = when {
@@ -283,7 +280,8 @@ fun DashboardScreen(
                         // Trường hợp dự phòng nếu plugin chưa cấu hình supportedActions
                         Button(
                             onClick = { 
-                                viewModel.sendDeviceAction(node, node.defaultAction)
+                                // Sửa đổi sang sử dụng positional arguments để tránh xung đột tên tham số
+                                viewModel.sendDeviceAction(node, node.defaultAction, emptyMap())
                                 selectedNode = null 
                             },
                             modifier = Modifier.fillMaxWidth()
