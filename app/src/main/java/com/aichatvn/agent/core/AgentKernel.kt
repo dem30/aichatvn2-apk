@@ -675,9 +675,9 @@ class AgentKernel @Inject constructor(
                 }
             }
 
-            // 3. FIX: Với nested text param (params.subject, params.body, params.message, params.title)
-            //    user nhập text thuần → lấy thẳng làm giá trị
-            if (isNested && !heuristicFilled.containsKey(param)) {
+            // 3. FIX: Với text param thuần (subject, body, message, title) — cả flat lẫn nested
+            //    user nhập text thuần → lấy thẳng làm giá trị, không cần gọi LLM
+            if (!heuristicFilled.containsKey(param)) {
                 val textParams = setOf("subject", "body", "message", "title")
                 if (actualKey in textParams && trimmed.isNotBlank()) {
                     heuristicFilled[param] = trimmed
