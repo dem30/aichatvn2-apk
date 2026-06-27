@@ -42,10 +42,11 @@ class TuyaManager @Inject constructor(
             "us" to "https://openapi.tuyaus.com",
             "eu" to "https://openapi.tuyaeu.com",
             "cn" to "https://openapi.tuyacn.com",
-            "in" to "https://openapi.tuyain.com"
+            "in" to "https://openapi.tuyain.com",
+            "sg" to "https://openapi.tuyasg.com"
         )
         
-        private const val DEFAULT_REGION = "us"
+        private const val DEFAULT_REGION = "sg"
         private var powerDps = "1"
     }
 
@@ -197,7 +198,10 @@ class TuyaManager @Inject constructor(
             val nonce = UUID.randomUUID().toString()
             val signString = clientId + timestamp.toString()
             val sign = hmacSha256(signString, clientSecret)
-            
+
+            logger.i("TuyaManager", "Region=$region BaseUrl=$baseUrl ClientId=$clientId")
+            logger.i("TuyaManager", "Timestamp=$timestamp Nonce=$nonce Sign=$sign")
+
             val url = "$baseUrl/v1.0/token?grant_type=1"
             val request = Request.Builder()
                 .url(url)
@@ -208,17 +212,20 @@ class TuyaManager @Inject constructor(
                 .addHeader("sign_method", "HMAC-SHA256")
                 .get()
                 .build()
-            
+
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
                 throw Exception("Lấy token thất bại: ${response.code}")
             }
             
-            val json = JSONObject(response.body?.string() ?: "")
+            val body = response.body?.string().orEmpty()
+            logger.i("TuyaManager", "TokenResponse: $body")
+            val json = JSONObject(body)
             val success = json.optBoolean("success")
             if (!success) {
+                val code = json.optInt("code")
                 val msg = json.optString("msg", "Unknown error")
-                throw Exception("Token API error: $msg")
+                throw Exception("Token API error: code=$code msg=$msg")
             }
             
             val result = json.optJSONObject("result")
@@ -237,7 +244,7 @@ class TuyaManager @Inject constructor(
             val secretKey = SecretKeySpec(key.toByteArray(), "HmacSHA256")
             mac.init(secretKey)
             val hash = mac.doFinal(data.toByteArray())
-            return hash.joinToString("") { "%02x".format(it) }
+            return hash.joinToString("") { "%02X".format(it) }
         } catch (e: Exception) {
             logger.e("TuyaManager", "HMAC error: ${e.message}", e)
             throw e
@@ -247,7 +254,8 @@ class TuyaManager @Inject constructor(
     private suspend fun getApiBaseUrl(): String {
         val prefs = context.dataStore.data.first()
         val region = prefs[DATA_CENTER] ?: DEFAULT_REGION
-        return API_URLS[region] ?: API_URLS[DEFAULT_REGION]!!
+        return API_URLS[region]
+            ?: throw IllegalStateException("Unsupported Tuya region: $region")
     }
 
     suspend fun turnOn(deviceName: String) = withContext(Dispatchers.IO) {
