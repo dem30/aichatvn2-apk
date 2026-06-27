@@ -17,25 +17,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
-private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
+private val EMAIL_REGEX = Regex("[A-Za-0-9+_.-]+@[A-Za-0-9.-]+\\.[A-Za-z]{2,}")
 
 data class LocalCandidate(
     val pluginId: String,
     val action: String,
     val description: String,
     val parameters: List<String>
-)
-
-data class PendingIntent(
-    val pluginId: String,
-    val action: String,
-    val knownParams: Map<String, Any>,
-    val missingParams: List<String>,
-    val askedQuestion: String,
-    val createdAt: Long = System.currentTimeMillis(),
-    val version: Int = 2,
-    val retryCount: Int = 0,
-    val lastUpdate: Long = System.currentTimeMillis()
 )
 
 data class Tier2Result(
@@ -134,10 +122,9 @@ class AgentKernel @Inject constructor(
         val devicePlugins = plugins.filter { it.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
-        // TẦNG 1: Xử lý Pending Intent (Lệnh dở dang)
         val pending = chatHistoryManager.getActivePendingIntent()
         if (pending != null) {
-            logger.d("AgentKernel", "[$traceId] Phát hiện tiến trình dở dang Pending Intent v${pending.version}")
+            logger.d("AgentKernel", "[$traceId] Phát hiện tiến trình dở dang Pending Intent")
             val resolved = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId)
             if (resolved != null) return RouterOutcome.Matched(resolved)
         }
@@ -148,7 +135,6 @@ class AgentKernel @Inject constructor(
 
         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, threshold = dynamicMinScore)
 
-        // TẦNG 2: Semantic Slot Resolver (Confidence Gate)
         val tier2Result = tryTier2SemanticSlotResolver(userMessage, matchResult, devicePlugins)
         if (tier2Result != null) {
             if (tier2Result.confidence >= 0.80) {
@@ -167,7 +153,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // TẦNG 2.5: Action Metadata Matcher (So khớp Metadata của Action không qua QA DB)
         val tier2_5Result = tryTier2_5ActionMetadataMatcher(userMessage, matchResult, devicePlugins)
         if (tier2_5Result != null) {
             val (plugin, intent) = tier2_5Result
@@ -181,7 +166,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // TẦNG 3: LLM Router
         logger.d("AgentKernel", "[$traceId] 🔵 [Tier 2.5 Miss] -> Chuyển tiếp sang LLM Semantic Router")
         return executeTier3LlmRouting(userMessage, matchResult, devicePlugins, traceId)
     }
@@ -206,7 +190,6 @@ class AgentKernel @Inject constructor(
         val rootPluginId = rootJson.optString("plugin")
         val rootActionName = rootJson.optString("action")
         
-        // Chặn sớm rủi ro định dạng dữ liệu lỗi của JSON format
         if (rootPluginId.isBlank() || rootActionName.isBlank()) return null
         
         val rootParams = rootJson.optJSONObject("params")?.toMap() ?: emptyMap()
@@ -235,7 +218,6 @@ class AgentKernel @Inject constructor(
         var bestScore = 0.0
         var bestMatch: Pair<Plugin, PluginAction>? = null
         
-        // Chuẩn hóa một lần trước vòng lặp lớn để giải phóng áp lực tính toán chuỗi trên CPU
         val normalizedUserQuery = normalizeVietnamese(userMessage)
 
         pluginActionList.forEach { (plugin, action) ->
@@ -282,7 +264,6 @@ class AgentKernel @Inject constructor(
         val clean2 = normalizeVietnamese(s2)
         if (clean1 == clean2) return 1.0
 
-        // Lọc nhanh: Nếu chênh lệch độ dài quá lớn, bỏ qua Levenshtein
         val lenDiff = Math.abs(clean1.length - clean2.length)
         val maxLen = maxOf(clean1.length, clean2.length)
         if (maxLen > 10 && lenDiff.toDouble() / maxLen > 0.7) {
@@ -293,7 +274,6 @@ class AgentKernel @Inject constructor(
         val tokens2 = clean2.split(SPACE_REGEX).toSet()
         val intersectionSize = tokens1.intersect(tokens2).size.toDouble()
 
-        // Lọc nhanh: Nếu không có bất kỳ từ chung nào, khả năng khớp rất thấp
         if (tokens1.size > 1 && tokens2.size > 1 && intersectionSize == 0.0) {
             return 0.0
         }
@@ -793,8 +773,7 @@ class AgentKernel @Inject constructor(
                     knownParams = normalizedMergedParams + mapOf("_noProgressCount" to newNoProgressCount),
                     missingParams = stillMissing,
                     askedQuestion = question,
-                    lastUpdate = System.currentTimeMillis(),
-                    retryCount = pending.retryCount + 1
+                    createdAt = System.currentTimeMillis()
                 )
             )
             chatHistoryManager.addTurn(userMessage, question)
