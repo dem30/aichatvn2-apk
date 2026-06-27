@@ -186,11 +186,9 @@ class CameraDetailViewModel @Inject constructor(
                 val all = withContext(Dispatchers.IO) {
                     database.scheduleDao().getAllSchedules()
                 }
-                // Tối ưu hiệu năng: Đưa tác vụ lọc dữ liệu mảng lớn và phân tích JSON ra khỏi Luồng chính
                 val filtered = withContext(Dispatchers.Default) {
                     all.filter { schedule ->
                         runCatching {
-                            // Chuyển sang dùng optString để loại bỏ rủi ro ném ngoại lệ JSONException
                             JSONObject(schedule.params).optString("cameraId") == cameraId
                         }.getOrDefault(false)
                     }
@@ -402,7 +400,7 @@ class CameraDetailViewModel @Inject constructor(
                                 customerId = cam.customerId,
                                 smartMode = 1,
                                 isActive = setting?.isActive ?: 1,
-                                updatedAt = System.currentTimeMillis(),
+                                updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
                                 timestamp = System.currentTimeMillis()
                             )
                         )
@@ -456,7 +454,6 @@ class CameraDetailViewModel @Inject constructor(
                 _testResult.value = "❌ Exception: ${e.message}"
                 logger.e("CameraDetailViewModel", "testCamera error: ${e.message}", e)
             } finally {
-                // CHỐNG RÒ RỈ TRẠNG THÁI: Khối "finally" đảm bảo hạ smartMode về chế độ gốc ban đầu kể cả khi tiến trình bị lỗi đột ngột
                 if (wasSmartOff) {
                     try {
                         withContext(Dispatchers.IO) {
@@ -465,7 +462,7 @@ class CameraDetailViewModel @Inject constructor(
                                     customerId = cam.customerId,
                                     smartMode = 0,
                                     isActive = setting?.isActive ?: 1,
-                                    createdAt = System.currentTimeMillis(),
+                                    updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
                                     timestamp = System.currentTimeMillis()
                                 )
                             )

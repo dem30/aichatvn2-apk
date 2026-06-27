@@ -64,7 +64,6 @@ class CustomerCameraViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                // TỐI ƯU HÓA: Chuyển toàn bộ các giao dịch cơ sở dữ liệu ngầm ra khỏi Luồng chính
                 withContext(Dispatchers.IO) {
                     val cust = database.customerDao().getCustomerById(customerId)
                     val cams = database.cameraDao().getCamerasByCustomer(customerId)
@@ -175,7 +174,7 @@ class CustomerCameraViewModel @Inject constructor(
                                 customerId = camera.customerId,
                                 smartMode = 1,
                                 isActive = setting?.isActive ?: 1,
-                                updatedAt = System.currentTimeMillis(),
+                                updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
                                 timestamp = System.currentTimeMillis()
                             )
                         )
@@ -216,7 +215,6 @@ class CustomerCameraViewModel @Inject constructor(
                 _testResult.value = "❌ Exception: ${e.message}"
                 logger.e("CustomerCameraViewModel", "testCamera error: ${e.message}", e)
             } finally {
-                // CHỐNG RÒ RỈ TRẠNG THÁI: Bảo bọc việc khôi phục cấu hình smartMode gốc trong "finally" để luôn khôi phục kể cả khi có ngoại lệ xảy ra
                 if (wasSmartOff && camera != null) {
                     try {
                         withContext(Dispatchers.IO) {
@@ -225,7 +223,7 @@ class CustomerCameraViewModel @Inject constructor(
                                     customerId = camera.customerId,
                                     smartMode = 0,
                                     isActive = setting?.isActive ?: 1,
-                                    createdAt = System.currentTimeMillis(),
+                                    updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
                                     timestamp = System.currentTimeMillis()
                                 )
                             )
