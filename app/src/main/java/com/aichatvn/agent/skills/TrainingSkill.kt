@@ -65,6 +65,7 @@ class TrainingSkill @Inject constructor(
     )
 
     init {
+        // Tải trước RAM Cache an toàn từ Dispatchers IO ngay sau khi khởi tạo Object
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 refreshQAList("default_user")
@@ -612,16 +613,27 @@ class TrainingSkill @Inject constructor(
         }
     }
 
-    // Tối ưu hóa lớn: Chuẩn hóa không dấu cho CẢ HAI đối số đầu vào s1 và s2 của calculateSimilarity
-    // Việc này triệt tiêu hoàn toàn lỗi lệch Jaccard Token (intersection = 0) khi so khớp mờ tìm kiếm Q&A Tiếng Việt có dấu
+    private fun normalizeVietnamese(text: String): String {
+        val temp = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
+        val regex = "\\p{InCombiningDiacriticalMarks}+".toRegex()
+        return regex.replace(temp, "")
+            .replace("đ", "d")
+            .replace("Đ", "D")
+            .lowercase()
+            .trim()
+            .replace(SPACE_REGEX, " ")
+    }
+
+    // ĐÃ SỬA: Chuẩn hóa tự thân cả hai đối số đầu vào (clean1, clean2) thay vì giả định chúng đã sạch.
+    // Và sửa lỗi "Comparable compareTo operator" bằng cách thay thế maxOf thành biểu thức rẽ nhánh nguyên bản của Kotlin
     private fun calculateSimilarity(s1: String, s2: String): Float {
         val clean1 = normalizeVietnamese(s1)
         val clean2 = normalizeVietnamese(s2)
         if (clean1.isEmpty() || clean2.isEmpty()) return 0f
         if (clean1 == clean2) return 1f
         
-        val lenDiff = Math.abs(clean1.length - clean2.length)
-        val maxLen = maxOf(clean1.length, clean2.length)
+        val lenDiff = if (clean1.length > clean2.length) clean1.length - clean2.length else clean2.length - clean1.length
+        val maxLen = if (clean1.length > clean2.length) clean1.length else clean2.length
         if (maxLen > 10 && lenDiff.toFloat() / maxLen > 0.7f) {
             return 0f
         }
