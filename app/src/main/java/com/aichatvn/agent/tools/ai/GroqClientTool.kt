@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -22,8 +23,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import com.aichatvn.agent.data.GroqApiKeyProvider
 
-// ─────────────────────────── DATA CLASSES ────────────────────────────
-
 data class GroqRateLimitInfo(
     val model: String,
     val limitRequests: Int? = null,
@@ -35,21 +34,6 @@ data class GroqRateLimitInfo(
     val capturedAtMillis: Long = System.currentTimeMillis()
 )
 
-/**
- * Một entry trong log prompt gần nhất.
- *
- * id               : id duy nhất, dùng để cập nhật entry sau khi có response (token usage)
- * caller           : "chat" | "routeIntent" | "analyzeImage"
- * model            : tên model Groq thực tế đã dùng
- * prompt           : TOÀN BỘ nội dung request body gửi lên Groq (system + history + user,
- *                     đã pretty-print JSON; ảnh base64 được rút gọn thành placeholder để
- *                     không phình bộ nhớ — không ảnh hưởng việc đếm token text)
- * response         : nội dung Groq trả về (null nếu request đang chờ / lỗi trước khi có response)
- * promptTokens     : usage.prompt_tokens từ response Groq (null nếu chưa có / request lỗi)
- * completionTokens : usage.completion_tokens từ response Groq
- * totalTokens      : usage.total_tokens từ response Groq
- * sentAt           : epoch millis khi gửi request
- */
 data class PromptLogEntry(
     val id: String = java.util.UUID.randomUUID().toString(),
     val caller: String,
@@ -62,52 +46,19 @@ data class PromptLogEntry(
     val sentAt: Long = System.currentTimeMillis()
 )
 
-/** Usage token parse từ response Groq (chuẩn OpenAI-compatible: usage.{prompt,completion,total}_tokens) */
 private data class GroqUsage(
     val promptTokens: Int? = null,
     val completionTokens: Int? = null,
     val totalTokens: Int? = null
 )
 
-/** Kết quả parse response Groq: text đã làm sạch + usage token (nếu có) */
 private data class GroqParsedResponse(
     val text: String,
     val usage: GroqUsage?
 )
 
-/**
- * ✅ MỚI: Lỗi HẠ TẦNG khi gọi routeIntent() — network, HTTP non-2xx, response rỗng, thiếu
- * API key. PHẢI phân biệt rõ với trường hợp "model trả lời nhưng nội dung không xác định
- * được" (vẫn dùng SAFE_FALLBACK_INTENT như cũ).
- *
- * Trước đây MỌI lỗi đều bị nuốt thành SAFE_FALLBACK_INTENT = {"plugin":"chat","action":"none"}
- * — khiến AgentKernel/ChatViewModel không thể phân biệt "user đang chat bình thường" với
- * "router vừa lỗi mạng". Hệ quả: không thể đếm lỗi liên tiếp để tạm dừng hands-free đúng lúc.
- * Giờ lỗi hạ tầng được throw ra ngoài để AgentKernel.executeTier1Routing() bắt được và trả
- * RouterOutcome.RouterFailed — tín hiệu này sau đó được ChatSkill/ChatViewModel dùng để đếm
- * lỗi liên tiếp và tạm dừng hands-free khi cần.
- */
 class GroqRoutingException(message: String) : Exception(message)
 
-// ─────────────────────────── TOOL ────────────────────────────────────
-
-/**
- * GroqClientTool v5
- *
- * Thay đổi so với v4:
- *  - PromptLogEntry giờ lưu TOÀN BỘ request body (system + history + qa_facts + input,
- *    không còn cắt ở 2000 ký tự) để người dùng kiểm soát chính xác token mỗi request.
- *  - Thêm response + promptTokens/completionTokens/totalTokens (từ usage.* trong response
- *    Groq) — log được cập nhật (update theo id) sau khi nhận response, không chỉ log
- *    trước khi gửi như trước.
- *  - Tăng PROMPT_LOG_SIZE 5 → 10 để chắc chắn luôn giữ được ít nhất 5 request gần nhất,
- *    bất kể là lệnh điều khiển (routeIntent) hay chat thường (chat/analyzeImage).
- *
- * Thay đổi so với v3:
- *  - Inject AppConfigProvider để đọc model / max_tokens động từ DB thay vì hardcode.
- *  - Thêm _promptLog: StateFlow<List<PromptLogEntry>> dùng cho UI Settings hiển thị debug.
- *  - Các model/token constants cũ giữ lại làm FALLBACK nếu DB chưa có giá trị.
- */
 @Singleton
 class GroqClientTool @Inject constructor(
     private val apiKeyProvider: GroqApiKeyProvider,
@@ -118,7 +69,6 @@ class GroqClientTool @Inject constructor(
     companion object {
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-        // Fallback — chỉ dùng khi DB chưa seed xong
         private const val DEFAULT_MODEL_TEXT    = "openai/gpt-oss-120b"
         private const val DEFAULT_MODEL_VISION  = "meta-llama/llama-4-scout-17b-16e-instruct"
         private const val DEFAULT_MODEL_ROUTER  = "openai/gpt-oss-20b"
@@ -134,13 +84,7 @@ class GroqClientTool @Inject constructor(
             DEFAULT_MODEL_TEXT, DEFAULT_MODEL_VISION, DEFAULT_MODEL_ROUTER
         )
 
-        // Giữ tối thiểu 5 request gần nhất theo yêu cầu; để dư 10 cho an toàn
-        // (1 lượt chat có thể sinh ra 2 request: routeIntent + chat thường).
         private const val PROMPT_LOG_SIZE = 10
-
-        // Cap an toàn để tránh 1 request bất thường (vd lịch sử quá dài) làm phình
-        // StateFlow trong bộ nhớ / treo UI Compose. Trong điều kiện bình thường,
-        // request sẽ KHÔNG bị cắt — cap này chỉ là lưới an toàn cuối.
         private const val PROMPT_LOG_MAX_CHARS = 20_000
     }
 
@@ -151,7 +95,6 @@ class GroqClientTool @Inject constructor(
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    // ── Rate-limit ────────────────────────────────────────────────────
     private val _rateLimitByModel =
         MutableStateFlow<Map<String, GroqRateLimitInfo>>(loadPersistedRateLimits())
     val rateLimitByModel: StateFlow<Map<String, GroqRateLimitInfo>> = _rateLimitByModel.asStateFlow()
@@ -164,21 +107,9 @@ class GroqClientTool @Inject constructor(
     private val _routerRateLimitInfo = MutableStateFlow(_rateLimitByModel.value[DEFAULT_MODEL_ROUTER])
     val routerRateLimitInfo: StateFlow<GroqRateLimitInfo?> = _routerRateLimitInfo.asStateFlow()
 
-    // ── Prompt log (≥5 entries gần nhất, kèm response + token usage) ──
     private val _promptLog = MutableStateFlow<List<PromptLogEntry>>(emptyList())
-    /**
-     * StateFlow chứa tối đa PROMPT_LOG_SIZE request gần nhất gửi đến Groq
-     * (chat + routeIntent + analyzeImage — không phân biệt loại).
-     * UI Settings bind trực tiếp để hiển thị debug box: toàn bộ nội dung gửi đi
-     * + nội dung trả về + số token (prompt/completion/total) của mỗi request.
-     */
     val promptLog: StateFlow<List<PromptLogEntry>> = _promptLog.asStateFlow()
 
-    /**
-     * Log prompt NGAY khi gửi request (trước khi có response) — để vẫn thấy được
-     * request trong log dù sau đó network lỗi / timeout. Trả về id để update lại
-     * entry này với response + token usage khi nhận được kết quả.
-     */
     private fun logPrompt(caller: String, model: String, prompt: String): String {
         val entry = PromptLogEntry(
             caller = caller,
@@ -191,7 +122,6 @@ class GroqClientTool @Inject constructor(
         return entry.id
     }
 
-    /** Cập nhật entry đã log trước đó (theo id) với response + token usage thực tế. */
     private fun updatePromptLogResult(id: String, responseText: String?, usage: GroqUsage?) {
         val current = _promptLog.value.toMutableList()
         val idx = current.indexOfFirst { it.id == id }
@@ -205,7 +135,6 @@ class GroqClientTool @Inject constructor(
         _promptLog.value = current
     }
 
-    /** Parse usage.{prompt,completion,total}_tokens (chuẩn OpenAI-compatible) từ response body Groq. */
     private fun parseUsage(bodyStr: String): GroqUsage? = try {
         val usageObj = JSONObject(bodyStr).optJSONObject("usage")
         if (usageObj == null) null
@@ -218,12 +147,6 @@ class GroqClientTool @Inject constructor(
         null
     }
 
-    /**
-     * Pretty-print TOÀN BỘ messages array sẽ gửi cho Groq (system + history + user),
-     * để hiển thị trong prompt log. Ảnh base64 trong "image_url" được rút gọn thành
-     * placeholder kích thước — base64 không phải nội dung text cần kiểm soát token,
-     * và để full sẽ làm log phình to vô ích (1 ảnh ~vài trăm KB base64).
-     */
     private fun sanitizeMessagesForLog(messages: JSONArray): String {
         val sanitized = JSONArray()
         for (i in 0 until messages.length()) {
@@ -260,7 +183,6 @@ class GroqClientTool @Inject constructor(
         }
     }
 
-    /** Build chuỗi log cho TOÀN BỘ request body (model + messages + max_tokens...). */
     private fun requestBodyForLog(model: String, messages: JSONArray, extra: Map<String, Any?> = emptyMap()): String {
         return buildString {
             append("model: $model\n")
@@ -270,14 +192,14 @@ class GroqClientTool @Inject constructor(
         }
     }
 
-    // ── SharedPrefs listener (multi-instance sync) ─────────────────────
     private val prefsListener =
         android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == null || key !in PERSISTED_MODELS) return@OnSharedPreferenceChangeListener
             val raw = prefs.getString(key, null) ?: return@OnSharedPreferenceChangeListener
             val info = parseRateLimitJson(raw) ?: return@OnSharedPreferenceChangeListener
 
-            _rateLimitByModel.value = _rateLimitByModel.value + (key to info)
+            // Đồng bộ nguyên tử thread-safe đối với SharedPrefs listener
+            _rateLimitByModel.update { it + (key to info) }
             when (key) {
                 DEFAULT_MODEL_TEXT, DEFAULT_MODEL_VISION -> _chatRateLimitInfo.value = info
                 DEFAULT_MODEL_ROUTER -> _routerRateLimitInfo.value = info
@@ -288,16 +210,12 @@ class GroqClientTool @Inject constructor(
         prefs.registerOnSharedPreferenceChangeListener(prefsListener)
     }
 
-    // ── Config helpers ────────────────────────────────────────────────
-
     private suspend fun modelText()   = configProvider.getString(AppConfigDefaults.GROQ_MODEL_TEXT, DEFAULT_MODEL_TEXT)
     private suspend fun modelVision() = configProvider.getString(AppConfigDefaults.GROQ_MODEL_VISION, DEFAULT_MODEL_VISION)
     private suspend fun modelRouter() = configProvider.getString(AppConfigDefaults.GROQ_MODEL_ROUTER, DEFAULT_MODEL_ROUTER)
     private suspend fun maxTokensChat()   = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_CHAT, DEFAULT_MAX_TOKENS_CHAT)
     private suspend fun maxTokensVision() = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_VISION, DEFAULT_MAX_TOKENS_VISION)
     private suspend fun maxTokensRouter() = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_ROUTER, DEFAULT_MAX_TOKENS_ROUTER)
-
-    // ── Rate-limit persistence ────────────────────────────────────────
 
     private fun loadPersistedRateLimits(): Map<String, GroqRateLimitInfo> {
         val map = mutableMapOf<String, GroqRateLimitInfo>()
@@ -365,8 +283,9 @@ class GroqClientTool @Inject constructor(
             capturedAtMillis = now
         )
 
-        _rateLimitByModel.value = _rateLimitByModel.value + (model to info)
-        // Cập nhật đúng StateFlow theo loại model
+        // SỬA ĐỒNG BỘ NỀN: Áp dụng cập nhật .update nguyên tử tránh Race Condition khi đa luồng gọi đồng thời
+        _rateLimitByModel.update { it + (model to info) }
+        
         val chatModel   = _rateLimitByModel.value.keys.firstOrNull { it == DEFAULT_MODEL_TEXT || it == DEFAULT_MODEL_VISION }
         val routerModel = _rateLimitByModel.value.keys.firstOrNull { it == DEFAULT_MODEL_ROUTER }
         if (model == chatModel || (chatModel == null && (model == DEFAULT_MODEL_TEXT || model == DEFAULT_MODEL_VISION))) {
@@ -397,7 +316,7 @@ class GroqClientTool @Inject constructor(
         return if (matched) total else null
     }
 
-    // ─────────────────────────── CHAT ────────────────────────────────
+    // ─── CHAT ────────────────────────────────────────────────────────
 
     suspend fun chat(
         message: String,
@@ -442,8 +361,6 @@ class GroqClientTool @Inject constructor(
                 put("content", userContent)
             })
 
-            // Log TOÀN BỘ request (model + max_tokens + messages đầy đủ system/history/user)
-            // trước khi gửi — id dùng để update lại với response + token usage sau.
             val logId = logPrompt(
                 "chat",
                 model,
@@ -456,17 +373,19 @@ class GroqClientTool @Inject constructor(
                 put("max_tokens", maxTokens)
             }.toString()
 
-            val response = client.newCall(
+            // KHẮC PHỤC RÒ RỈ: Giải phóng socket tự động bằng khối '.use' của OkHttp Response
+            val parsed = client.newCall(
                 Request.Builder()
                     .url(BASE_URL)
                     .addHeader("Authorization", "Bearer $apiKey")
                     .addHeader("Content-Type", "application/json")
                     .post(body.toRequestBody("application/json".toMediaType()))
                     .build()
-            ).execute()
+            ).execute().use { response ->
+                captureRateLimit(response, model)
+                parseResponse(response, "chat")
+            }
 
-            captureRateLimit(response, model)
-            val parsed = parseResponse(response, "chat")
             updatePromptLogResult(logId, parsed.text, parsed.usage)
             parsed.text
 
@@ -476,11 +395,9 @@ class GroqClientTool @Inject constructor(
         }
     }
 
-    // ─────────────────────────── ROUTE INTENT ────────────────────────
+    // ─── ROUTE INTENT ────────────────────────────────────────────────
 
     suspend fun routeIntent(prompt: String): String = withContext(Dispatchers.IO) {
-        // ✅ Thiếu API key là lỗi cấu hình thật — throw để AgentKernel biết, không âm thầm
-        // coi như "user đang chat" (trước đây return@withContext SAFE_FALLBACK_INTENT).
         val apiKey = apiKeyProvider.getKey()
             ?: throw GroqRoutingException("Chưa cấu hình Groq API key")
 
@@ -504,10 +421,8 @@ class GroqClientTool @Inject constructor(
             put("temperature", 0)
         }.toString()
 
-        // ✅ Lỗi mạng thật (mất kết nối, DNS, OkHttp timeout 15s/30s...) — KHÔNG nuốt thành
-        // SAFE_FALLBACK_INTENT nữa. Đây chính là tín hiệu mà AgentKernel cần để trả
-        // RouterFailed, từ đó ChatViewModel mới đếm được lỗi liên tiếp.
-        val response = try {
+        // KHẮC PHỤC RÒ RỈ: Sửa triệt để rò rỉ Socket mạng bằng cấu trúc '.use' khép kín dữ liệu Response
+        val resultPair = try {
             client.newCall(
                 Request.Builder()
                     .url(BASE_URL)
@@ -515,30 +430,33 @@ class GroqClientTool @Inject constructor(
                     .addHeader("Content-Type", "application/json")
                     .post(body.toRequestBody("application/json".toMediaType()))
                     .build()
-            ).execute()
+            ).execute().use { response ->
+                captureRateLimit(response, model)
+                val bodyStr = response.body?.string() ?: ""
+                val usage = parseUsage(bodyStr)
+
+                if (!response.isSuccessful) {
+                    logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
+                    updatePromptLogResult(logId, "❌ HTTP ${response.code}", usage)
+                    throw GroqRoutingException("Router HTTP ${response.code}")
+                }
+                if (bodyStr.isBlank()) {
+                    updatePromptLogResult(logId, "❌ Empty response", usage)
+                    throw GroqRoutingException("Router trả về response rỗng")
+                }
+                Pair(bodyStr, usage)
+            }
+        } catch (e: GroqRoutingException) {
+            throw e
         } catch (e: Exception) {
             logger.e("GroqClientTool", "routeIntent network error: ${e.message}", e)
             updatePromptLogResult(logId, "❌ Network error: ${e.message}", null)
             throw GroqRoutingException("Lỗi mạng khi gọi router: ${e.message}")
         }
 
-        captureRateLimit(response, model)
-        val bodyStr = response.body?.string() ?: ""
-        val usage = parseUsage(bodyStr)
+        val bodyStr = resultPair.first
+        val usage = resultPair.second
 
-        if (!response.isSuccessful) {
-            logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
-            updatePromptLogResult(logId, "❌ HTTP ${response.code}", usage)
-            throw GroqRoutingException("Router HTTP ${response.code}")
-        }
-        if (bodyStr.isBlank()) {
-            updatePromptLogResult(logId, "❌ Empty response", usage)
-            throw GroqRoutingException("Router trả về response rỗng")
-        }
-
-        // Model trả lời THÀNH CÔNG (HTTP 2xx, có body) nhưng content rỗng/không parse được
-        // → đây KHÔNG phải lỗi hạ tầng, mà là model "không xác định được ý định" — vẫn dùng
-        // SAFE_FALLBACK_INTENT như cũ, hợp lý vì router thật sự không chắc đây có phải lệnh.
         val resultText = try {
             JSONObject(bodyStr)
                 .getJSONArray("choices")
@@ -561,7 +479,7 @@ class GroqClientTool @Inject constructor(
         resultText
     }
 
-    // ─────────────────────────── ANALYZE IMAGE ───────────────────────
+    // ─── ANALYZE IMAGE ───────────────────────────────────────────────
 
     suspend fun analyzeImage(imageBytes: ByteArray, prompt: String): String = withContext(Dispatchers.IO) {
         val apiKey = apiKeyProvider.getKey()
@@ -599,17 +517,19 @@ class GroqClientTool @Inject constructor(
                 put("max_tokens", maxTokens)
             }.toString()
 
-            val response = client.newCall(
+            // KHẮC PHỤC RÒ RỈ: Giải phóng socket tự động bằng khối '.use' của OkHttp Response
+            val parsed = client.newCall(
                 Request.Builder()
                     .url(BASE_URL)
                     .addHeader("Authorization", "Bearer $apiKey")
                     .addHeader("Content-Type", "application/json")
                     .post(body.toRequestBody("application/json".toMediaType()))
                     .build()
-            ).execute()
+            ).execute().use { response ->
+                captureRateLimit(response, model)
+                parseResponse(response, "analyzeImage")
+            }
 
-            captureRateLimit(response, model)
-            val parsed = parseResponse(response, "analyzeImage")
             updatePromptLogResult(logId, parsed.text, parsed.usage)
             parsed.text
 
@@ -619,7 +539,7 @@ class GroqClientTool @Inject constructor(
         }
     }
 
-    // ─────────────────────────── PARSE ───────────────────────────────
+    // ─── PARSE ───────────────────────────────────────────────────────
 
     private fun parseResponse(response: okhttp3.Response, caller: String): GroqParsedResponse {
         val bodyStr = response.body?.string() ?: ""
@@ -640,7 +560,6 @@ class GroqClientTool @Inject constructor(
                 .getJSONObject("message")
                 .getString("content")
                 .trim()
-            // Strip <think>...</think> — Qwen3, DeepSeek R1 và các model thinking mode
             raw.replace(Regex("<think>[\\s\\S]*?</think>", setOf(RegexOption.IGNORE_CASE)), "")
                 .trim()
         } catch (e: Exception) {

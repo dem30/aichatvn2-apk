@@ -7,27 +7,28 @@ import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.ScheduleSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import javax.inject.Inject
 
 @HiltViewModel
 class ScheduleViewModel @Inject constructor(
     private val scheduleSkill: ScheduleSkill,
-    private val agentKernel: AgentKernel // ✅ MỚI: để build dropdown Plugin/Action cho UI
+    private val agentKernel: AgentKernel
 ) : ViewModel() {
 
     val schedules: StateFlow<List<ScheduleEntity>> = scheduleSkill.schedules
 
-    /**
-     * ✅ MỚI: Danh sách plugin có thể lên lịch, dùng cho dropdown trong AddScheduleDialog.
-     * Loại "schedule" ra khỏi danh sách - không có lý do gì để lên lịch tự gọi lại chính
-     * ScheduleSkill (add/list/delete/toggle lịch trình khác), tránh gây nhiễu UI.
-     * Plugin list cố định theo vòng đời Singleton -> build 1 lần là đủ, không cần StateFlow.
-     */
     val schedulablePlugins: List<Plugin> =
         agentKernel.getAvailablePluginsForUI().filter { it.id != "schedule" }
+
+    init {
+        // Tự động tải trước dữ liệu lịch trình khi khởi tạo để tránh màn hình rỗng ban đầu
+        loadSchedules()
+    }
 
     fun loadSchedules() {
         viewModelScope.launch {
@@ -37,15 +38,15 @@ class ScheduleViewModel @Inject constructor(
 
     fun addSchedule(schedule: ScheduleEntity) {
         viewModelScope.launch {
-            // ✅ FIX: schedule.params là JSON String — phải parse thành Map<String,Any>
-            // trước khi truyền vào execute(). ScheduleSkill.handleAdd() expect key "params"
-            // là Map<*,*>; nếu nhận String thì nestedParams = emptyMap() → params mất hết.
-            val paramsMap: Map<String, Any> = try {
-                val json = JSONObject(schedule.params.ifBlank { "{}" })
-                buildMap {
-                    json.keys().forEach { k -> put(k, json.get(k)) }
+            // Chuyển việc parse chuỗi JSON sang Dispatchers.Default để tránh chiếm dụng luồng chính
+            val paramsMap: Map<String, Any> = withContext(Dispatchers.Default) {
+                try {
+                    val json = JSONObject(schedule.params.ifBlank { "{}" })
+                    jsonToMap(json)
+                } catch (_: Exception) {
+                    emptyMap()
                 }
-            } catch (_: Exception) { emptyMap() }
+            }
 
             scheduleSkill.execute(
                 "add",
@@ -54,11 +55,36 @@ class ScheduleViewModel @Inject constructor(
                     "action" to schedule.action,
                     "cron" to schedule.cron,
                     "intervalMinutes" to schedule.intervalMinutes,
-                    "params" to paramsMap   // ✅ Map, không phải String
+                    "params" to paramsMap
                 )
             )
             loadSchedules()
         }
+    }
+
+    // Đệ quy giải mã chuỗi JSON lồng ghép sang Map và List chuẩn Kotlin bản địa
+    private fun jsonToMap(json: JSONObject): Map<String, Any> {
+        val map = mutableMapOf<String, Any>()
+        json.keys().forEach { key ->
+            val value = json.get(key)
+            if (value != JSONObject.NULL) {
+                map[key] = when (value) {
+                    is JSONObject -> jsonToMap(value)
+                    is org.json.JSONArray -> {
+                        val list = mutableListOf<Any>()
+                        for (i in 0 until value.length()) {
+                            val item = value.get(i)
+                            if (item != JSONObject.NULL) {
+                                list.add(if (item is JSONObject) jsonToMap(item) else item)
+                            }
+                        }
+                        list
+                    }
+                    else -> value
+                }
+            }
+        }
+        return map
     }
 
     fun toggleSchedule(id: String) {

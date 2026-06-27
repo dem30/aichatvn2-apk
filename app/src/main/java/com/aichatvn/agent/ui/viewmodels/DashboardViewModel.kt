@@ -4,27 +4,28 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
-import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry
+import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val providers: Set<@JvmSuppressWildcards DashboardProvider>,
+    private val deviceRegistry: DeviceRegistry,
     private val agentKernel: AgentKernel,
     private val logger: Logger
 ) : ViewModel() {
 
-    private val _deviceNodes = MutableStateFlow<List<DeviceNode>>(emptyList())
-    val deviceNodes: StateFlow<List<DeviceNode>> = _deviceNodes.asStateFlow()
+    // Lắng nghe trực tiếp luồng dữ liệu thời gian thực của Registry trung tâm
+    val deviceNodes: StateFlow<List<DeviceNode>> = deviceRegistry.deviceNodes
 
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing.asStateFlow()
@@ -32,72 +33,76 @@ class DashboardViewModel @Inject constructor(
     private val _executionMessage = MutableStateFlow<String?>(null)
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
-    init {
-        viewModelScope.launch {
-            while (isActive) {
-                refreshDashboardNodes()
-                delay(5000)
-            }
-        }
-    }
-
+    /**
+     * Quét thủ công ép buộc làm mới sơ đồ thiết bị.
+     * Vòng lặp 5s đã bị gỡ bỏ, chỉ chạy quét khi người dùng click nút làm mới
+     */
     fun refreshDashboardNodes() {
         viewModelScope.launch {
+            _isProcessing.value = true
             try {
-                val allNodes = providers.flatMap { it.getDashboardNodes() }
-                _deviceNodes.value = allNodes
+                val activePlugins = agentKernel.getAvailablePluginsForUI()
+                withContext(Dispatchers.IO) {
+                    activePlugins.forEach { plugin ->
+                        if (plugin is DashboardProvider) {
+                            val nodes = plugin.getDashboardNodes()
+                            deviceRegistry.registerNodes(nodes)
+                        }
+                    }
+                }
+                _executionMessage.value = "✅ Sơ đồ thiết bị đã được làm mới"
             } catch (e: Exception) {
-                logger.e("DashboardViewModel", "Lỗi nạp danh sách sơ đồ: ${e.message}", e)
+                _executionMessage.value = "❌ Lỗi làm mới: ${e.message}"
+                logger.e("DashboardViewModel", "Làm mới sơ đồ thiết bị thất bại", e)
+            } finally {
+                _isProcessing.value = false
             }
         }
     }
 
     /**
-     * Thực thi hành động điều khiển thiết bị hướng cấu hình.
-     * Dashboard hoàn toàn không có logic nghiệp vụ hay quy ước tham số của từng loại thiết bị.
+     * Gửi lệnh thực thi hành động vật lý của thiết bị
      */
-    fun sendDeviceAction(
-        node: DeviceNode,
-        actionId: String = node.defaultAction,
-        customParams: Map<String, Any> = emptyMap()
-    ) {
+    fun sendDeviceAction(node: DeviceNode, actionId: String, extraParams: Map<String, Any>) {
         viewModelScope.launch {
             _isProcessing.value = true
             _executionMessage.value = null
-
-            // Tìm thông tin cấu hình tương ứng của hành động đang được gọi
-            val actionConfig = node.supportedActions.find { it.id == actionId }
-            val actionDefaultParams = actionConfig?.defaultParams ?: emptyMap()
-
-            // Hợp nhất tham số theo thứ tự ưu tiên tăng dần:
-            // 1. Tham số chung của thiết bị (ví dụ: cameraId)
-            // 2. Tham số mặc định riêng cho hành động này (ví dụ: active = true)
-            // 3. Tham số động nhận được từ tương tác trực tiếp của người dùng trên UI (ví dụ: toạ độ GPS)
-            val mergedParams = node.defaultParams + actionDefaultParams + customParams
-
-            logger.d("DashboardViewModel", "Thực thi trực tiếp: ${node.pluginId}.$actionId | Tham số: $mergedParams")
-            
             try {
-                val result = agentKernel.executePluginAction(
-                    pluginId = node.pluginId,
-                    action = actionId,
-                    params = mergedParams
-                )
+                // Lồng ghép tham số nhận diện mặc định của node với tham số hành động
+                val finalParams = node.defaultParams + extraParams
+                val result = withContext(Dispatchers.IO) {
+                    agentKernel.executePluginAction(node.pluginId, actionId, finalParams)
+                }
                 
-                _executionMessage.value = when (result) {
+                when (result) {
                     is PluginResult.Success -> {
-                        val msg = (result.data as? Map<*, *>)?.get("message") as? String
-                        "✅ ${msg ?: "Đã thực hiện thành công"}"
+                        val msg = (result.data as? Map<*, *>)?.get("message") as? String ?: "✅ Đã thực hiện thành công"
+                        _executionMessage.value = msg
+                        
+                        // ĐỒNG BỘ DIGITAL TWIN CHỦ ĐỘNG: Ghi nhận trạng thái mới tức thời lên Bản sao số ngay khi gửi lệnh bật/tắt thành công
+                        val stateValue = extraParams["state"] as? Boolean
+                        if (stateValue != null) {
+                            deviceRegistry.updateNode(node.id) { current ->
+                                current.copy(
+                                    online = true,
+                                    status = if (stateValue) "Đang bật" else "Đang tắt",
+                                    lastSeen = System.currentTimeMillis()
+                                )
+                            }
+                        }
                     }
-                    is PluginResult.Failure -> "❌ Lỗi: ${result.error}"
-                    is PluginResult.NeedMoreInfo -> "⚠️ ${result.question}"
+                    is PluginResult.Failure -> {
+                        _executionMessage.value = "❌ Thất bại: ${result.error}"
+                    }
+                    is PluginResult.NeedMoreInfo -> {
+                        _executionMessage.value = "⚠️ Trợ lý: ${result.question}"
+                    }
                 }
             } catch (e: Exception) {
-                _executionMessage.value = "❌ Exception: ${e.message}"
-                logger.e("DashboardViewModel", "Lỗi khi xử lý lệnh trực tiếp: ${e.message}", e)
+                _executionMessage.value = "❌ Lỗi thực thi: ${e.message}"
+                logger.e("DashboardViewModel", "Lỗi gửi lệnh $actionId tới node ${node.id}", e)
             } finally {
                 _isProcessing.value = false
-                refreshDashboardNodes()
             }
         }
     }

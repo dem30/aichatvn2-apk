@@ -29,7 +29,7 @@ class EmailSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("email", "Gửi email", logger), Plugin {
 
-  override val routable: Boolean = true
+    override val routable: Boolean = true
     override val visibleOnDashboard: Boolean = false
     override val autoGenerateQA: Boolean = true
 
@@ -37,8 +37,8 @@ class EmailSkill @Inject constructor(
         private const val RESEND_API_URL = "https://api.resend.com/emails"
     }
 
-    private suspend fun loadApiKey(): String {
-        return try {
+    private suspend fun loadApiKey(): String = withContext(Dispatchers.IO) {
+        try {
             val prefs = context.dataStore.data.first()
             val key = prefs[stringPreferencesKey("resend_api_key")] ?: ""
             if (key.isNotBlank()) key else BuildConfig.RESEND_API_KEY
@@ -47,8 +47,8 @@ class EmailSkill @Inject constructor(
         }
     }
 
-    private suspend fun loadSenderEmail(): String {
-        return try {
+    private suspend fun loadSenderEmail(): String = withContext(Dispatchers.IO) {
+        try {
             val prefs = context.dataStore.data.first()
             val sender = prefs[stringPreferencesKey("resend_sender")] ?: ""
             if (sender.isNotBlank()) sender else BuildConfig.RESEND_SENDER
@@ -63,9 +63,15 @@ class EmailSkill @Inject constructor(
         return listOf(
             PluginAction(
                 name = "send",
-                description = "Gửi email",
+                description = "Soạn thảo và gửi email tới địa chỉ đích",
+                examples = listOf(
+                    "gửi email cho sếp báo cáo",
+                    "soạn mail gửi tới me@gmail.com",
+                    "viết thư báo cáo tình hình"
+                ),
+                aliases = listOf("gửi mail", "soạn thư", "gửi báo cáo"),
+                tags = listOf("mail", "send", "report", "notification"),
                 parameters = listOf(
-                    // Khai báo kiểu ngữ nghĩa (semanticType) rõ ràng là "email"
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
                     PluginParameter("subject", "string", "Tiêu đề email", false, "string"),
                     PluginParameter("body", "string", "Nội dung email", false, "string")
@@ -73,7 +79,14 @@ class EmailSkill @Inject constructor(
             ),
             PluginAction(
                 name = "test",
-                description = "Gửi email test",
+                description = "Gửi một bức email thử nghiệm kết nối hệ thống",
+                examples = listOf(
+                    "gửi mail test tới tôi",
+                    "kiểm tra kết nối email",
+                    "test gui mail"
+                ),
+                aliases = listOf("gửi test", "test mail"),
+                tags = listOf("test", "diagnostic"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email")
                 )

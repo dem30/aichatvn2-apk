@@ -4,7 +4,7 @@ import android.content.Context
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.dataStore  // ✅ Import extension function
+import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.utils.Logger
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -24,6 +24,8 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Singleton
 class TuyaManager @Inject constructor(
@@ -66,11 +68,7 @@ class TuyaManager @Inject constructor(
         val productName: String = ""
     )
 
-    // ============================================================
-    // LOAD DEVICES TỪ DATABASE
-    // ============================================================
-
-    suspend fun loadDevicesFromDB() {
+    suspend fun loadDevicesFromDB() = withContext(Dispatchers.IO) {
         val devices = tuyaDeviceDao.getAllDevices()
         deviceCache.clear()
         devices.forEach { entity ->
@@ -85,11 +83,7 @@ class TuyaManager @Inject constructor(
         logger.i("TuyaManager", "📂 Loaded ${deviceCache.size} devices from DB")
     }
 
-    // ============================================================
-    // SCAN DEVICES - QUÉT TỪ API + LƯU VÀO DB
-    // ============================================================
-
-    suspend fun scanDevices(): Map<String, DeviceInfo> {
+    suspend fun scanDevices(): Map<String, DeviceInfo> = withContext(Dispatchers.IO) {
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""
@@ -152,17 +146,13 @@ class TuyaManager @Inject constructor(
         }
         
         logger.i("TuyaManager", "✅ Tìm thấy ${deviceCache.size} thiết bị")
-        return deviceCache
+        deviceCache
     }
 
-    // ============================================================
-    // GET DEVICE - TỪ CACHE HOẶC DB
-    // ============================================================
-
-    private suspend fun getDeviceInfo(deviceName: String): DeviceInfo {
+    private suspend fun getDeviceInfo(deviceName: String): DeviceInfo = withContext(Dispatchers.IO) {
         val cached = deviceCache[deviceName]
         if (cached != null) {
-            return cached
+            return@withContext cached
         }
         
         val entity = tuyaDeviceDao.getDeviceByName(deviceName)
@@ -175,31 +165,23 @@ class TuyaManager @Inject constructor(
                 productName = entity.productName
             )
             deviceCache[entity.name] = info
-            return info
+            return@withContext info
         }
         
         throw IllegalArgumentException("Không tìm thấy thiết bị '$deviceName'")
     }
 
-    // ============================================================
-    // UPDATE STATUS KHI ĐIỀU KHIỂN
-    // ============================================================
-
-    private suspend fun updateDeviceStatus(deviceId: String, online: Boolean) {
+    private suspend fun updateDeviceStatus(deviceId: String, online: Boolean) = withContext(Dispatchers.IO) {
         tuyaDeviceDao.updateOnlineStatus(deviceId, online, System.currentTimeMillis())
         deviceCache.values.find { it.id == deviceId }?.let { info ->
             deviceCache[info.name] = info.copy(online = online)
         }
     }
 
-    // ============================================================
-    // AUTHENTICATION
-    // ============================================================
-
-    suspend fun getAccessToken(): String {
+    suspend fun getAccessToken(): String = withContext(Dispatchers.IO) {
         mutex.withLock {
             if (accessToken != null && System.currentTimeMillis() < tokenExpiry) {
-                return accessToken!!
+                return@withLock accessToken!!
             }
             
             val prefs = context.dataStore.data.first()
@@ -245,7 +227,7 @@ class TuyaManager @Inject constructor(
             tokenExpiry = System.currentTimeMillis() + (expireSeconds - 60) * 1000L
             
             logger.i("TuyaManager", "🔑 Đã lấy token mới")
-            return accessToken!!
+            accessToken!!
         }
     }
 
@@ -268,23 +250,19 @@ class TuyaManager @Inject constructor(
         return API_URLS[region] ?: API_URLS[DEFAULT_REGION]!!
     }
 
-    // ============================================================
-    // CONTROL
-    // ============================================================
-
-    suspend fun turnOn(deviceName: String) {
+    suspend fun turnOn(deviceName: String) = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, true)
         logger.i("TuyaManager", "💡 BẬT ${device.name}")
     }
 
-    suspend fun turnOff(deviceName: String) {
+    suspend fun turnOff(deviceName: String) = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, false)
         logger.i("TuyaManager", "💡 TẮT ${device.name}")
     }
 
-    suspend fun getStatus(deviceName: String): Boolean {
+    suspend fun getStatus(deviceName: String): Boolean = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
@@ -317,7 +295,7 @@ class TuyaManager @Inject constructor(
                 val status = result.getJSONObject(i)
                 if (status.optString("code") == powerDps) {
                     val value = status.opt("value")
-                    return when (value) {
+                    return@withContext when (value) {
                         is Boolean -> value
                         is Int -> value == 1
                         is String -> value == "true" || value == "1"
@@ -327,10 +305,10 @@ class TuyaManager @Inject constructor(
             }
         }
         
-        return false
+        false
     }
 
-    private suspend fun setDeviceState(device: DeviceInfo, state: Boolean) {
+    private suspend fun setDeviceState(device: DeviceInfo, state: Boolean) = withContext(Dispatchers.IO) {
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""

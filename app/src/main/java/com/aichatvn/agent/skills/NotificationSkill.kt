@@ -27,7 +27,7 @@ class NotificationSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("notification", "Gửi thông báo", logger), Plugin {
 
-  override val routable: Boolean = true
+    override val routable: Boolean = true
     override val visibleOnDashboard: Boolean = false
     override val autoGenerateQA: Boolean = true
 
@@ -37,7 +37,7 @@ class NotificationSkill @Inject constructor(
 
     private val notificationCounter = AtomicInteger(1001)
 
-    override suspend fun initialize() {
+    override suspend fun initialize() = withContext(Dispatchers.IO) {
         createNotificationChannel()
     }
 
@@ -47,10 +47,17 @@ class NotificationSkill @Inject constructor(
         return listOf(
             PluginAction(
                 name = "send",
-                description = "Gửi thông báo",
+                description = "Gửi thông báo đẩy hiển thị trên màn hình thiết bị",
+                examples = listOf(
+                    "gửi thông báo cảnh báo",
+                    "báo cho tôi có khách",
+                    "gửi cảnh báo an ninh hệ thống"
+                ),
+                aliases = listOf("gửi thông báo", "cảnh báo", "báo tin"),
+                tags = listOf("notification", "alert", "message"),
                 parameters = listOf(
-                    PluginParameter("title", "string", "Tiêu đề", true, "string"),
-                    PluginParameter("message", "string", "Nội dung", true, "string")
+                    PluginParameter("title", "string", "Tiêu đề thông báo", true, "string"),
+                    PluginParameter("message", "string", "Nội dung chi tiết thông báo", true, "string")
                 )
             )
         )
@@ -78,11 +85,12 @@ class NotificationSkill @Inject constructor(
         )
     }
 
+    // Di chuyển toàn bộ tiến trình phân tích PackageManager và dựng Builder sang Dispatchers.IO để giải phóng luồng chính
     suspend fun sendNotification(
         title: String,
         message: String,
         channelId: String = CHANNEL_ID
-    ): Int = withContext(Dispatchers.Main) {
+    ): Int = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (notificationManager.getNotificationChannel(channelId) == null) {
                 createNotificationChannel()

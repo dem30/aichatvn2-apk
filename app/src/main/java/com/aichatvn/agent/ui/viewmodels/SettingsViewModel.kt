@@ -22,6 +22,7 @@ import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.EmailSkill
+import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.PromptLogEntry
@@ -50,6 +51,7 @@ class SettingsViewModel @Inject constructor(
     private val tuyaManager: TuyaManager,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
+    private val trainingSkill: TrainingSkill, // ✅ ĐÃ TIÊM: Sử dụng để đồng bộ hóa RAM Cache sau khi khôi phục dữ liệu
     private val logger: Logger
 ) : ViewModel() {
 
@@ -106,7 +108,6 @@ class SettingsViewModel @Inject constructor(
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
 
-    // ─── UI state cho config editing ─────────────────────────────────────────
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
@@ -131,7 +132,6 @@ class SettingsViewModel @Inject constructor(
 
     fun clearConfigSaveResult() { _configSaveResult.value = null }
 
-    // ─── Export/Import ────────────────────────────────────────────────────────
     private val _exportResult = MutableStateFlow<String?>(null)
     val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
@@ -149,7 +149,6 @@ class SettingsViewModel @Inject constructor(
     fun clearImportResult() { _importResult.value = null }
     fun clearExportResult() { _exportResult.value = null }
 
-    // ─── Save ─────────────────────────────────────────────────────────────────
     fun saveGroqApiKey(key: String) {
         viewModelScope.launch {
             context.dataStore.edit { it[GROQ_API_KEY] = key.trim() }
@@ -183,7 +182,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ─── Test Groq ────────────────────────────────────────────────────────────
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
         val trimmedKey = apiKey.trim()
         if (trimmedKey.isEmpty()) {
@@ -203,14 +201,19 @@ class SettingsViewModel @Inject constructor(
                     })
                     put("max_tokens", 5)
                 }.toString()
-                val response = httpClient.newCall(
-                    Request.Builder()
-                        .url("https://api.groq.com/openai/v1/chat/completions")
-                        .addHeader("Authorization", "Bearer $trimmedKey")
-                        .addHeader("Content-Type", "application/json")
-                        .post(body.toRequestBody("application/json".toMediaType()))
-                        .build()
-                ).execute()
+
+                // CHỐNG CRASH: Bao bọc cuộc gọi mạng đồng bộ bằng Dispatchers.IO để triệt tiêu lỗi NetworkOnMainThreadException
+                val response = withContext(Dispatchers.IO) {
+                    httpClient.newCall(
+                        Request.Builder()
+                            .url("https://api.groq.com/openai/v1/chat/completions")
+                            .addHeader("Authorization", "Bearer $trimmedKey")
+                            .addHeader("Content-Type", "application/json")
+                            .post(body.toRequestBody("application/json".toMediaType()))
+                            .build()
+                    ).execute()
+                }
+
                 withContext(Dispatchers.Main) {
                     if (response.isSuccessful) onResult(true, "✅ Kết nối Groq thành công!")
                     else onResult(false, "❌ HTTP ${response.code}: ${response.body?.string()?.take(200)}")
@@ -223,7 +226,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ─── Test Email ───────────────────────────────────────────────────────────
     suspend fun testSendEmail(to: String): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -244,7 +246,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ─── Test Tuya ────────────────────────────────────────────────────────────
     suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -260,7 +261,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ─── Export ───────────────────────────────────────────────────────────────
     suspend fun exportSettings(context: Context): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -281,7 +281,6 @@ class SettingsViewModel @Inject constructor(
                 val customers       = database.customerDao().getAllCustomers()
                 val tuyaDevices     = database.tuyaDeviceDao().getAllDevices()
                 
-                // ✅ SỬA ĐỔI: Lọc bỏ toàn bộ QA tự động (auto_init), chỉ giữ lại QA của người dùng huấn luyện
                 val qaList          = database.qaDao().getAllQAs(username = "default_user")
                     .filter { it.category != "auto_init" }
                 
@@ -323,7 +322,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ─── Import ───────────────────────────────────────────────────────────────
     suspend fun importSettings(context: Context, jsonString: String): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -378,7 +376,6 @@ class SettingsViewModel @Inject constructor(
                         restoredCount += list.size
                     }
                     
-                    // ✅ SỬA ĐỔI: Bỏ qua toàn bộ các QA tự sinh (auto_init) từ file import nếu có
                     dataJson.optJSONArray("qa_data")?.let { arr ->
                         val list: List<QAEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<QAEntity>>() {}.type)
                         val filteredList = list.filter { it.category != "auto_init" }
@@ -392,6 +389,9 @@ class SettingsViewModel @Inject constructor(
                         restoredCount += list.size
                     }
                 }
+
+                // ĐỒNG BỘ HÓA CACHE: Đảm bảo RAM Cache của TrainingSkill được cập nhật tức thời ngay sau khi Import dữ liệu thành công
+                trainingSkill.refreshQAList("default_user")
 
                 if (dataJson?.has("schedules") == true) {
                     com.aichatvn.agent.scheduler.TaskScheduler.runNow(context)

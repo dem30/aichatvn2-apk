@@ -37,9 +37,10 @@ import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.ui.viewmodels.ChatViewModel
 import com.aichatvn.agent.ui.viewmodels.QuickCommandGroup
 import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-// Icons.Default.Mic / MicOff có sẵn trong material-icons-extended
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,14 +54,14 @@ fun ChatScreen(
     val chatMode by viewModel.chatMode.collectAsState()
     val groqRateLimit by viewModel.groqRateLimit.collectAsState()
     val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
-    val isListening by viewModel.isListening.collectAsState()         // ✅ Mic đang bật?
-    val voiceModeActive by viewModel.voiceModeActive.collectAsState() // ✅ Hands-free bật?
-    val pausedDueToError by viewModel.pausedDueToError.collectAsState() // ✅ Tự dừng do lỗi mạng?
+    val isListening by viewModel.isListening.collectAsState()
+    val voiceModeActive by viewModel.voiceModeActive.collectAsState()
+    val pausedDueToError by viewModel.pausedDueToError.collectAsState()
     
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedChipTab by remember { mutableStateOf(0) } // 0=Camera 1=Đèn 2=Email 3=Khác
+    var selectedChipTab by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     
@@ -95,14 +96,6 @@ fun ChatScreen(
         }
     }
 
-    // ✅ FIX: Dùng ON_START/ON_STOP thay vì ON_RESUME/ON_PAUSE.
-    //
-    // ON_RESUME/ON_PAUSE bắn quá nhiều: mỗi khi dialog mở/đóng, keyboard xuất hiện/ẩn,
-    // màn hình sáng lại, navigation... → stopListening() liên tục → destroy recognizer
-    // đang hoạt động tốt → restart → ERROR_RECOGNIZER_BUSY → hên xui.
-    //
-    // ON_START/ON_STOP chỉ bắn khi app thật sự vào/ra foreground (chuyển app, home button)
-    // — đúng với mục đích: dừng mic khi user rời app, restart khi quay lại.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -127,10 +120,6 @@ fun ChatScreen(
             TopAppBar(
                 title = { Text("Trò chuyện với AI") },
                 actions = {
-                    // ✅ MỚI: label rate-limit Groq — báo người dùng biết còn token/đang cooldown
-                    // hay không trước khi họ gửi tin nhắn (gửi lúc hết token/đang limit cũng vô dụng).
-                    // Truyền CẢ 2 model: "chat" (chỉ gọi khi tin nhắn KHÔNG phải lệnh) và "router"
-                    // (gọi ở MỌI tin nhắn) — xem comment trong GroqRateLimitLabel để hiểu vì sao.
                     GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
                     IconButton(onClick = { navController.navigate("logs") }) {
@@ -215,9 +204,8 @@ fun ChatScreen(
                 )
             }
             
-            // ✅ Banner trạng thái voice — người chăm sóc thấy rõ mic đang ở trạng thái nào
             Surface(
-                modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(),
                 color = when {
                     pausedDueToError -> MaterialTheme.colorScheme.errorContainer
                     isListening -> MaterialTheme.colorScheme.errorContainer
@@ -226,7 +214,7 @@ fun ChatScreen(
                 }
             ) {
                 Row(
-                    modifier = androidx.compose.ui.Modifier
+                    modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -234,9 +222,6 @@ fun ChatScreen(
                 ) {
                     Text(
                         text = when {
-                            // ✅ MỚI: phân biệt rõ "tự tạm dừng do lỗi mạng liên tiếp" với
-                            // "người chăm sóc tắt thủ công" — để biết cần kiểm tra mạng trước
-                            // khi bật lại, không nghĩ nhầm là ai đó vừa tắt.
                             pausedDueToError -> "⚠️ Đã tạm dừng do lỗi mạng liên tục — kiểm tra mạng rồi bật lại"
                             isListening -> "🎙️ Đang nghe..."
                             voiceModeActive -> "✅ Hands-free bật — đang chờ"
@@ -245,7 +230,6 @@ fun ChatScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                    // Nút toggle cho người chăm sóc — không ảnh hưởng người dùng chính
                     TextButton(onClick = { viewModel.toggleVoiceMode() }) {
                         Text(
                             text = if (voiceModeActive) "Tắt mic" else "Bật mic",
@@ -302,7 +286,6 @@ fun ChatScreen(
                 }
             }
             
-            // ── Gợi ý lệnh nhanh (tự động từ danh sách plugin, không hardcode) ──────
             QuickCommandBar(
                 groups = viewModel.quickCommandGroups,
                 selectedTab = selectedChipTab,
@@ -352,8 +335,6 @@ fun ChatScreen(
                     Icon(Icons.Default.Image, contentDescription = "Chọn ảnh")
                 }
 
-                // ✅ Nút Mic: toggle hands-free on/off — dành cho người chăm sóc hoặc
-                // trường hợp người dùng muốn dừng. Đổi màu rõ ràng theo trạng thái.
                 IconButton(
                     onClick = { viewModel.toggleVoiceMode() },
                     enabled = !isLoading
@@ -394,9 +375,6 @@ fun ChatScreen(
             }
         }
 
-        // ✅ FIX: Thêm loading overlay khi isLoading = true
-        // Hiển thị spinner + text "Đang xử lý..." để người dùng biết app đang làm việc
-        // Thay vì chỉ dựa vào "typing indicator" (quá nhanh người không thấy)
         if (isLoading) {
             Box(
                 modifier = Modifier
@@ -467,10 +445,6 @@ private fun GroqRateLimitLabel(
     )
 }
 
-// ── Chip lệnh gợi ý: lấy ĐỘNG từ ChatViewModel.quickCommandGroups, build từ
-// Plugin.getActions() của từng skill (xem AgentKernel.getAvailablePluginsForUI()).
-// Không còn list hardcode — thêm plugin mới ở AppModule là tự xuất hiện ở đây.
-
 @Composable
 private fun QuickCommandBar(
     groups: List<QuickCommandGroup>,
@@ -487,7 +461,6 @@ private fun QuickCommandBar(
     Column {
         HorizontalDivider()
 
-        // Tab nhóm (1 tab / plugin)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -504,7 +477,6 @@ private fun QuickCommandBar(
             }
         }
 
-        // Chip lệnh (1 chip / action của plugin đang chọn)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -522,11 +494,6 @@ private fun QuickCommandBar(
     }
 }
 
-// Giữ (long-press) vào bong bóng tin nhắn để copy nội dung — combinedClickable cần
-// @OptIn vì API này còn experimental ở Compose Foundation.
-// ✅ MỚI: map id plugin -> nhãn thân thiện hiển thị trên badge "lệnh" của tin nhắn.
-// Plugin nào không có trong danh sách (vd thêm plugin mới sau này) vẫn hiện được nhờ
-// nhánh else, không cần sửa hàm này mỗi khi thêm plugin.
 private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin) {
     "learn" -> "📚 Học"
     "camera" -> "📷 Camera"
@@ -550,6 +517,24 @@ fun ChatBubble(message: ChatMessageEntity) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
+        // TỐI ƯU HÓA LỚN: Tải và giải mã hình ảnh bất đồng bộ trên luồng IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
+        var bitmap by remember(message.fileUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
+        
+        LaunchedEffect(message.fileUrl) {
+            if (message.type == "image" && message.fileUrl != null) {
+                bitmap = withContext(Dispatchers.IO) {
+                    try {
+                        val file = java.io.File(message.fileUrl)
+                        if (file.exists()) {
+                            BitmapFactory.decodeFile(message.fileUrl)
+                        } else null
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }
+        }
+
         Card(
             shape = RoundedCornerShape(
                 topStart = 16.dp,
@@ -576,9 +561,6 @@ fun ChatBubble(message: ChatMessageEntity) {
             Column(
                 modifier = Modifier.padding(12.dp)
             ) {
-                // ✅ MỚI: badge nhỏ góc trên-phải báo đây là kết quả của 1 LỆNH điều khiển
-                // (sourcePlugin != null) - giúp phân biệt với câu trả lời chat tự do.
-                // Chỉ hiện cho tin nhắn của assistant, không bao giờ hiện ở tin nhắn user.
                 if (!isUser && message.sourcePlugin != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -599,28 +581,15 @@ fun ChatBubble(message: ChatMessageEntity) {
                     Spacer(Modifier.height(4.dp))
                 }
 
-                if (message.type == "image" && message.fileUrl != null) {
-                    val bitmap = remember(message.fileUrl) {
-                        try {
-                            val file = java.io.File(message.fileUrl)
-                            if (file.exists()) {
-                                BitmapFactory.decodeFile(message.fileUrl)
-                            } else null
-                        } catch (e: Exception) {
-                            null
-                        }
-                    }
-                    
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = null,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(150.dp)
-                        )
-                        Spacer(Modifier.height(4.dp))
-                    }
+                if (message.type == "image" && bitmap != null) {
+                    Image(
+                        bitmap = bitmap!!.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp)
+                    )
+                    Spacer(Modifier.height(4.dp))
                 }
                 
                 Text(

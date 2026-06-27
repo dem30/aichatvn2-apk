@@ -41,7 +41,6 @@ fun LogScreen(
     var selectedLogEntry by remember { mutableStateOf<Logger.LogEntry?>(null) }
     var exportMessage by remember { mutableStateOf<String?>(null) }
 
-    // Auto scroll to top when new log arrives (logs mới được thêm vào đầu danh sách)
     LaunchedEffect(logs.size) {
         if (logs.isNotEmpty()) {
             listState.animateScrollToItem(0)
@@ -58,7 +57,6 @@ fun LogScreen(
                     }
                 },
                 actions = {
-                    // Filter button
                     Box {
                         IconButton(onClick = { expandedFilterMenu = true }) {
                             Icon(Icons.Default.FilterList, contentDescription = "Filter")
@@ -90,20 +88,20 @@ fun LogScreen(
                         }
                     }
 
-                    // Export button
+                    // SỬA LỖI BIÊN DỊCH: Tương thích hoàn toàn với cấu trúc gọi bất đồng bộ an toàn của LogViewModel
                     IconButton(onClick = {
-                        try {
-                            val file = viewModel.exportLogs()
-                            
-                            exportMessage = "Đã lưu: ${file.absolutePath}"
-                        } catch (e: Exception) {
-                            exportMessage = "Lỗi xuất log: ${e.message}"
-                        }
+                        viewModel.exportLogs(
+                            onSuccess = { file ->
+                                exportMessage = "Đã lưu: ${file.absolutePath}"
+                            },
+                            onError = { error ->
+                                exportMessage = "Lỗi xuất log: $error"
+                            }
+                        )
                     }) {
                         Icon(Icons.Default.Save, contentDescription = "Export")
                     }
 
-                    // Clear button
                     IconButton(onClick = { viewModel.clearLogs() }) {
                         Icon(Icons.Default.Delete, contentDescription = "Clear")
                     }
@@ -116,7 +114,6 @@ fun LogScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Filter info bar
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.primaryContainer
@@ -199,7 +196,6 @@ fun LogScreen(
         }
     }
 
-    // Detail dialog
     val entry = selectedLogEntry
     if (entry != null) {
         AlertDialog(

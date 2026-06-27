@@ -25,6 +25,8 @@ import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
 import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -68,7 +70,6 @@ fun CameraDetailScreen(
         }
     }
 
-    // Bottom sheet form thêm/sửa lịch
     if (scheduleDraft != null) {
         ModalBottomSheet(
             onDismissRequest = { viewModel.closeScheduleEditor() },
@@ -137,14 +138,24 @@ fun CameraDetailScreen(
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        val bitmap = remember(liveSnapshot) {
-                            liveSnapshot?.let { bytes ->
-                                runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+                        // TỐI ƯU HÓA LỚN: Tải và giải mã mảng byte ảnh snapshot bất đồng bộ hoàn toàn dưới luồng ngầm IO
+                        var bitmap by remember(liveSnapshot) { mutableStateOf<android.graphics.Bitmap?>(null) }
+                        
+                        LaunchedEffect(liveSnapshot) {
+                            if (liveSnapshot != null) {
+                                bitmap = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        BitmapFactory.decodeByteArray(liveSnapshot!!, 0, liveSnapshot!!.size)
+                                    }.getOrNull()
+                                }
+                            } else {
+                                bitmap = null
                             }
                         }
+
                         if (bitmap != null) {
                             Image(
-                                bitmap = bitmap.asImageBitmap(),
+                                bitmap = bitmap!!.asImageBitmap(),
                                 contentDescription = null,
                                 contentScale = ContentScale.FillWidth,
                                 modifier = Modifier
@@ -347,7 +358,6 @@ fun CameraDetailScreen(
                         }
 
                         AnimatedVisibility(visible = configDraft == null) {
-                            // Chế độ xem (read-only)
                             Column {
                                 Spacer(Modifier.height(4.dp))
                                 DetailRow("Snapshot URL", cam.snapshoturl.ifBlank { "—" })
@@ -359,7 +369,6 @@ fun CameraDetailScreen(
                         }
 
                         AnimatedVisibility(visible = configDraft != null) {
-                            // Chế độ chỉnh sửa inline
                             configDraft?.let { draft ->
                                 Column {
                                     Spacer(Modifier.height(8.dp))
@@ -647,7 +656,6 @@ private fun ScheduleFormSheet(
             style = MaterialTheme.typography.titleMedium
         )
 
-        // Action
         Text("Action", style = MaterialTheme.typography.labelMedium)
         val actions = listOf("scan")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -660,7 +668,6 @@ private fun ScheduleFormSheet(
             }
         }
 
-        // Cron hoặc interval
         OutlinedTextField(
             value = draft.cron,
             onValueChange = { onUpdate { copy(cron = it) } },

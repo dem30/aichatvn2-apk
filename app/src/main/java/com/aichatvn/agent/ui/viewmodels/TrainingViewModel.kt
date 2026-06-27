@@ -8,10 +8,14 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import javax.inject.Inject
 
@@ -45,7 +49,7 @@ class TrainingViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            trainingSkill.initialize()
+            // Đã loại bỏ hoàn toàn lời gọi initialize() dư thừa để tránh ghi đè dữ liệu và dọn cache RAM sai thời điểm
             loadMoreQAs()
         }
     }
@@ -68,7 +72,6 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    // Thêm hàm Overload cho màn hình TrainingScreen gọi khi không chỉ định 'type'
     fun addQA(question: String, answer: String, category: String) {
         addQA(question, answer, "alias", category)
     }
@@ -79,7 +82,6 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    // Thêm hàm Overload cho màn hình TrainingScreen gọi khi không chỉ định 'type'
     fun updateQA(id: String, question: String?, answer: String?, category: String?) {
         updateQA(id, question, answer, "alias", category)
     }
@@ -157,7 +159,9 @@ class TrainingViewModel @Inject constructor(
                     try {
                         val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
                         val file = File(downloadsDir, "qa_export_${System.currentTimeMillis()}.json")
-                        file.writeText(jsonString)
+                        withContext(Dispatchers.IO) {
+                            file.writeText(jsonString)
+                        }
                         _exportResult.value = "✅ Đã lưu tại: ${file.absolutePath}"
                     } catch (e: Exception) {
                         _exportResult.value = "❌ Lỗi lưu file: ${e.message}"
@@ -176,7 +180,9 @@ class TrainingViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val jsonString = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                val jsonString = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                }
                 if (jsonString.isNullOrBlank()) {
                     _importResult.value = "❌ File rỗng"
                 } else {
@@ -198,29 +204,55 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
+    // Tối ưu hóa lớn: Chuyển đổi tệp CSV thành chuỗi cấu trúc JSONArray trước khi gọi cơ chế Import theo lô
+    // Điều này hạn chế tối đa việc gọi SQLite ghi đĩa liên tục gây đơ màn hình và bảo vệ tính nhất quán của RAM Cache
     fun importQAFromCsvUri(context: Context, uri: Uri) {
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val lines = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readLines()?.drop(1) ?: emptyList()
-                var imported = 0
+                val lines = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.readLines()
+                } ?: emptyList()
+
+                if (lines.size <= 1) {
+                    _importResult.value = "❌ File CSV không có dữ liệu hợp lệ"
+                    _isLoading.value = false
+                    return@launch
+                }
+
+                val csvLines = lines.drop(1) // Bỏ qua tiêu đề
+                val jsonArray = JSONArray()
                 var skipped = 0
-                for (line in lines) {
+
+                for (line in csvLines) {
                     val cols = line.split(",").map { it.trim().removeSurrounding("\"") }
                     if (cols.size >= 2 && cols[0].isNotBlank() && cols[1].isNotBlank()) {
-                        trainingSkill.addQA(
-                            question = cols[0],
-                            answer = cols[1],
-                            type = cols.getOrElse(2) { "alias" },
-                            category = cols.getOrElse(3) { "general" },
-                            username = "default_user"
-                        )
-                        imported++
+                        val obj = JSONObject().apply {
+                            put("question", cols[0])
+                            put("answer", cols[1])
+                            put("type", cols.getOrElse(2) { "alias" })
+                            put("category", cols.getOrElse(3) { "general" })
+                        }
+                        jsonArray.put(obj)
                     } else {
                         skipped++
                     }
                 }
-                _importResult.value = "✅ Import CSV: $imported dòng OK" + if (skipped > 0) ", $skipped dòng bỏ qua" else ""
+
+                if (jsonArray.length() > 0) {
+                    val result = trainingSkill.importQAs(jsonArray.toString(), "default_user")
+                    _importResult.value = when (result) {
+                        is PluginResult.Success -> {
+                            val data = result.data as? Map<*, *>
+                            val imported = data?.get("imported") as? Int ?: jsonArray.length()
+                            "✅ Đã import thành công $imported dòng CSV" + if (skipped > 0) ", bỏ qua $skipped dòng lỗi" else ""
+                        }
+                        is PluginResult.Failure -> "❌ Import CSV thất bại: ${result.error}"
+                        else -> "❌ Import CSV thất bại"
+                    }
+                } else {
+                    _importResult.value = "❌ Không tìm thấy dòng CSV nào hợp lệ để xử lý"
+                }
             } catch (e: Exception) {
                 _importResult.value = "❌ Lỗi đọc CSV: ${e.message}"
             }

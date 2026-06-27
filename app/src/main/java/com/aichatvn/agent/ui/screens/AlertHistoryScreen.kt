@@ -26,6 +26,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.ui.viewmodels.AlertHistoryViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -112,15 +114,23 @@ fun AlertHistoryScreen(
     // Xem ảnh full size
     if (fullImagePath != null) {
         Dialog(onDismissRequest = { fullImagePath = null }) {
-            val bitmap = remember(fullImagePath) {
-                runCatching {
-                    val f = java.io.File(fullImagePath!!)
-                    if (f.exists()) BitmapFactory.decodeFile(fullImagePath) else null
-                }.getOrNull()
+            // TỐI ƯU HÓA LỚN: Giải mã ảnh phóng to kích thước đầy đủ trên luồng IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
+            var fullBitmap by remember(fullImagePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+            
+            LaunchedEffect(fullImagePath) {
+                if (fullImagePath != null) {
+                    fullBitmap = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val f = java.io.File(fullImagePath!!)
+                            if (f.exists()) BitmapFactory.decodeFile(fullImagePath) else null
+                        }.getOrNull()
+                    }
+                }
             }
-            if (bitmap != null) {
+
+            if (fullBitmap != null) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    bitmap = fullBitmap!!.asImageBitmap(),
                     contentDescription = null,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -163,12 +173,19 @@ private fun AlertCard(
         SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.getDefault()).format(Date(alert.timestamp))
     }
 
-    val thumbnail = remember(alert.imagePath) {
-        alert.imagePath?.let { path ->
-            runCatching {
-                val f = java.io.File(path)
-                if (f.exists()) BitmapFactory.decodeFile(path) else null
-            }.getOrNull()
+    // TỐI ƯU HÓA LỚN: Giải mã ảnh thumbnail bất đồng bộ trên luồng ngầm IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
+    var thumbnailBitmap by remember(alert.imagePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    
+    LaunchedEffect(alert.imagePath) {
+        if (alert.imagePath != null) {
+            thumbnailBitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = java.io.File(alert.imagePath!!)
+                    if (f.exists()) BitmapFactory.decodeFile(alert.imagePath) else null
+                }.getOrNull()
+            }
+        } else {
+            thumbnailBitmap = null
         }
     }
 
@@ -188,9 +205,9 @@ private fun AlertCard(
                 .padding(12.dp),
             verticalAlignment = Alignment.Top
         ) {
-            if (thumbnail != null) {
+            if (thumbnailBitmap != null) {
                 Image(
-                    bitmap = thumbnail.asImageBitmap(),
+                    bitmap = thumbnailBitmap!!.asImageBitmap(),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier

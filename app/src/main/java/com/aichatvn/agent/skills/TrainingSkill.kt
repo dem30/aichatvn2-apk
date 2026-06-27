@@ -12,12 +12,18 @@ import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.LinkedHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +33,11 @@ class TrainingSkill @Inject constructor(
     private val configProvider: AppConfigProvider,
     logger: Logger, 
 ) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
+
+    companion object {
+        private val SPACE_REGEX = Regex("\\s+")
+        private const val MAX_QUERY_CACHE_SIZE = 500
+    }
 
     override val routable: Boolean = false
     override val visibleOnDashboard: Boolean = false
@@ -40,18 +51,45 @@ class TrainingSkill @Inject constructor(
     private val _stats = MutableStateFlow<Map<String, Any>>(emptyMap())
     val stats: StateFlow<Map<String, Any>> = _stats.asStateFlow()
 
-    data class MatchResult(
-        val intentMatches: List<Pair<QAEntity, Double>>,
-        val aliasMatches: List<Pair<QAEntity, Double>>
+    private val cacheMutex = Mutex()
+    
+    @Volatile
+    private var cachedQAList: List<QAEntity> = emptyList()
+    
+    private val queryCache = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, MatchResult>(MAX_QUERY_CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, MatchResult>?): Boolean {
+                return size > MAX_QUERY_CACHE_SIZE
+            }
+        }
     )
 
-    suspend fun countQAByType(type: String): Int {
-        return try {
-            database.qaDao().getAllQAs("default_user").count { it.type == type }
-        } catch (e: Exception) {
-            logger.e("TrainingSkill", "Lỗi đếm QA theo type: ${e.message}", e)
-            0
+    init {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                refreshQAList("default_user")
+            } catch (e: Exception) {
+                logger.e("TrainingSkill", "Không thể tải sớm cachedQAList lúc khởi chạy", e)
+            }
         }
+    }
+
+    private fun invalidateCache() {
+        queryCache.clear()
+    }
+
+    data class MatchResult(
+        val intentMatches: List<Pair<QAEntity, Double>>,
+        val aliasMatches: List<Pair<QAEntity, Double>>,
+        val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap()
+    )
+
+    fun getRawCachedQAList(username: String): List<QAEntity> {
+        return cachedQAList.filter { it.createdBy == username }
+    }
+
+    suspend fun countQAByType(type: String): Int {
+        return cachedQAList.count { it.type == type }
     }
 
     fun isIntentQA(qa: QAEntity): Boolean {
@@ -231,7 +269,7 @@ class TrainingSkill @Inject constructor(
     override suspend fun shutdown() { }
     
     private fun updateStats() {
-        val qas = _qaList.value
+        val qas = cachedQAList
         val categories = qas.groupBy { it.category }.mapValues { it.value.size }
         _stats.value = mapOf(
             "total" to qas.size,
@@ -241,13 +279,24 @@ class TrainingSkill @Inject constructor(
     }
     
     suspend fun refreshQAList(username: String) {
-        _qaList.value = database.qaDao().getAllQAs(username)
+        cacheMutex.withLock {
+            val userQAs = database.qaDao().getAllQAs(username)
+            // ĐỒNG BỘ ĐA TÀI KHOẢN: Luôn tự động tải các Intents & Aliases hệ thống (default_user) để đảm bảo AI hoạt động
+            val systemQAs = if (username != "default_user") {
+                database.qaDao().getAllQAs("default_user")
+            } else {
+                emptyList()
+            }
+            cachedQAList = (userQAs + systemQAs).distinctBy { it.id }
+            _qaList.value = cachedQAList
+            invalidateCache()
+        }
         updateStats()
     }
     
     suspend fun getQAsPaginated(page: Int, pageSize: Int, username: String): PluginResult {
         return try {
-            val allQAs = database.qaDao().getAllQAs(username)
+            val allQAs = cachedQAList.filter { it.createdBy == username }
             val start = (page - 1) * pageSize
             val end = minOf(start + pageSize, allQAs.size)
             val paginated = if (start < allQAs.size) allQAs.subList(start, end) else emptyList()
@@ -268,8 +317,7 @@ class TrainingSkill @Inject constructor(
     
     suspend fun exportQAs(username: String): PluginResult {
         return try {
-            val allQAs = database.qaDao().getAllQAs(username)
-                .filter { it.category != "auto_init" }
+            val allQAs = cachedQAList.filter { it.createdBy == username && it.category != "auto_init" }
             val jsonArray = JSONArray()
             for (qa in allQAs) {
                 val obj = JSONObject().apply {
@@ -299,7 +347,7 @@ class TrainingSkill @Inject constructor(
     suspend fun importQAs(jsonString: String, username: String): PluginResult {
         return try {
             val jsonArray = JSONArray(jsonString)
-            val existingQAs = database.qaDao().getAllQAs(username)
+            val existingQAs = cachedQAList.filter { it.createdBy == username }
             val existingByQuestion = existingQAs.associateBy { it.question.trim().lowercase() }
 
             var imported = 0
@@ -358,7 +406,6 @@ class TrainingSkill @Inject constructor(
         }
     }
 
-    // ✅ BỔ SUNG: Hàm Overload addQA (4 tham số) giúp tương thích với các lệnh gọi cũ từ UI và ChatSkill
     suspend fun addQA(
         question: String, 
         answer: String, 
@@ -369,7 +416,7 @@ class TrainingSkill @Inject constructor(
             question = question,
             answer = answer,
             type = type,
-            category = "general", // Gán danh mục mặc định là "general"
+            category = "general",
             username = username
         )
     }
@@ -392,7 +439,9 @@ class TrainingSkill @Inject constructor(
                 createdAt = System.currentTimeMillis(),
                 timestamp = System.currentTimeMillis()
             )
-            database.qaDao().insertQA(qa)
+            cacheMutex.withLock {
+                database.qaDao().insertQA(qa)
+            }
             refreshQAList(username)
             PluginResult.Success(
                 mapOf(
@@ -424,7 +473,9 @@ class TrainingSkill @Inject constructor(
                 category = category ?: existing.category,
                 timestamp = System.currentTimeMillis()
             )
-            database.qaDao().updateQA(updated)
+            cacheMutex.withLock {
+                database.qaDao().updateQA(updated)
+            }
             refreshQAList(username)
             PluginResult.Success(
                 mapOf(
@@ -440,7 +491,9 @@ class TrainingSkill @Inject constructor(
     
     suspend fun deleteQA(id: String, username: String): PluginResult {
         return try {
-            database.qaDao().deleteQA(id, username)
+            cacheMutex.withLock {
+                database.qaDao().deleteQA(id, username)
+            }
             refreshQAList(username)
             PluginResult.Success(mapOf("message" to "QA deleted"))
         } catch (e: Exception) {
@@ -451,7 +504,9 @@ class TrainingSkill @Inject constructor(
     
     suspend fun deleteAllQAs(username: String): PluginResult {
         return try {
-            database.qaDao().deleteAllQAs(username)
+            cacheMutex.withLock {
+                database.qaDao().deleteAllQAs(username)
+            }
             refreshQAList(username)
             PluginResult.Success(mapOf("message" to "All QAs deleted"))
         } catch (e: Exception) {
@@ -476,7 +531,6 @@ class TrainingSkill @Inject constructor(
         }
     }
 
-    // ✅ BỔ SUNG: Hàm fuzzyMatchQuestion giúp ChatSkill thực hiện truy vấn so khớp mờ trực tiếp
     suspend fun fuzzyMatchQuestion(
         query: String,
         username: String,
@@ -503,18 +557,32 @@ class TrainingSkill @Inject constructor(
         username: String, 
         threshold: Float? = null
     ): MatchResult {
+        val normalizedQuery = normalizeVietnamese(query)
+        val cacheKey = "$username:$normalizedQuery:${threshold ?: "default"}"
+        
+        val cachedResult = queryCache[cacheKey]
+        if (cachedResult != null) return cachedResult
+
         return try {
             val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.5f)
             val activeThreshold = threshold ?: configThreshold
 
-            val allQAs = database.qaDao().getAllQAs(username)
+            val allQAs = cachedQAList.filter { it.createdBy == username }
             val intents = mutableListOf<Pair<QAEntity, Double>>()
             val aliases = mutableListOf<Pair<QAEntity, Double>>()
 
             for (qa in allQAs) {
-                val questionSimilarity = calculateSimilarity(query.lowercase(), qa.question.lowercase())
-                val answerSimilarity = calculateSimilarity(query.lowercase(), qa.answer.lowercase())
-                val maxSimilarity = maxOf(questionSimilarity, answerSimilarity).toDouble()
+                if (qa.type == "intent" && (qa.answer.length > 500 || qa.category in setOf("story", "knowledge", "document"))) {
+                    continue
+                }
+
+                val maxSimilarity = if (qa.type == "intent") {
+                    calculateSimilarity(normalizedQuery, qa.question).toDouble()
+                } else {
+                    val questionSim = calculateSimilarity(normalizedQuery, qa.question)
+                    val answerSim = calculateSimilarity(normalizedQuery, qa.answer)
+                    (questionSim * 0.7 + answerSim * 0.3)
+                }
 
                 if (maxSimilarity >= activeThreshold) {
                     if (qa.type == "intent") {
@@ -525,23 +593,66 @@ class TrainingSkill @Inject constructor(
                 }
             }
 
-            MatchResult(
+            val bestAliasMatches = aliases
+                .groupBy { it.first.type }
+                .mapValues { entry -> entry.value.maxByOrNull { it.second } }
+                .filterValues { it != null }
+                .mapValues { it.value!! }
+
+            val finalResult = MatchResult(
                 intentMatches = intents.sortedByDescending { it.second },
-                aliasMatches = aliases.sortedByDescending { it.second }
+                aliasMatches = aliases.sortedByDescending { it.second },
+                bestAliasMatches = bestAliasMatches
             )
+            
+            queryCache[cacheKey] = finalResult
+            finalResult
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Fuzzy match categorized failed: ${e.message}", e)
-            MatchResult(emptyList(), emptyList())
+            MatchResult(emptyList(), emptyList(), emptyMap())
         }
     }
+
+    private fun normalizeVietnamese(text: String): String {
+        val temp = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
+        val regex = "\\p{InCombiningDiacriticalMarks}+".toRegex()
+        return regex.replace(temp, "")
+            .replace("đ", "d")
+            .replace("Đ", "D")
+            .lowercase()
+            .trim()
+            .replace(SPACE_REGEX, " ")
+    }
     
-    private fun calculateSimilarity(s1: String, s2: String): Float {
-        if (s1.isEmpty() || s2.isEmpty()) return 0f
-        val longer = if (s1.length > s2.length) s1 else s2
-        val shorter = if (s1.length > s2.length) s2 else s1
-        if (longer.contains(shorter)) return 1f
-        val distance = levenshteinDistance(s1, s2)
-        return 1f - (distance.toFloat() / maxOf(s1.length, s2.length))
+    private fun calculateSimilarity(clean1: String, clean2: String): Float {
+        if (clean1.isEmpty() || clean2.isEmpty()) return 0f
+        if (clean1 == clean2) return 1f
+        
+        val lenDiff = Math.abs(clean1.length - clean2.length)
+        val maxLen = maxOf(clean1.length, clean2.length)
+        if (maxLen > 10 && lenDiff.toFloat() / maxLen > 0.7f) {
+            return 0f
+        }
+        
+        val tokens1 = clean1.split(SPACE_REGEX).toSet()
+        val tokens2 = clean2.split(SPACE_REGEX).toSet()
+        val intersectionSize = tokens1.intersect(tokens2).size
+        
+        if (tokens1.size > 1 && tokens2.size > 1 && intersectionSize == 0) {
+            return 0f
+        }
+        
+        if (clean1.contains(clean2) || clean2.contains(clean1)) {
+            return 0.95f
+        }
+        
+        val union = tokens1.union(tokens2).size.toFloat()
+        val jaccard = if (union > 0) intersectionSize.toFloat() / union else 0f
+        
+        val levDistance = levenshteinDistance(clean1, clean2)
+        val levSim = 1f - (levDistance.toFloat() / maxLen)
+        
+        return (jaccard * 0.4f) + (levSim * 0.6f)
     }
     
     private fun levenshteinDistance(s1: String, s2: String): Int {

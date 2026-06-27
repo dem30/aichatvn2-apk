@@ -1,5 +1,3 @@
-// ChatSkill.kt
-
 package com.aichatvn.agent.skills
 
 import android.content.Context
@@ -14,12 +12,14 @@ import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
 import javax.inject.Inject
@@ -31,21 +31,11 @@ enum class ChatMode {
     COMBINED
 }
 
-/**
- * Cảnh báo ngắn LUÔN chèn vào extraContext khi rơi xuống chat thường (Groq/COMBINED) —
- * vì app này là AI quản gia điều khiển thiết bị, model lớn dễ "đồng thuận" và bịa ra
- * là đã thực hiện hành động vật lý nếu không được nhắc rõ là nó không có quyền đó.
- * Cố tình ngắn (~1 câu) để không tốn nhiều token mỗi lượt.
- */
 private const val ANTI_HALLUCINATION_GUARD =
     "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
     "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
     "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được."
 
-/**
- * Chỉ chèn thêm khi router ĐÃ THỬ định tuyến lệnh nhưng thất bại (RouterOutcome.RouterFailed) —
- * cho model lớn biết rõ là có 1 lệnh vừa KHÔNG chạy được, để nó báo lại cho user thay vì bịa.
- */
 private fun routerFailedNotice(reason: String) =
     "⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định " +
     "được chính xác (lý do nội bộ: $reason). Hãy báo cho user là lệnh CHƯA thực hiện được và " +
@@ -75,7 +65,9 @@ class ChatSkill @Inject constructor(
     private val messagesMutex = Mutex()
 
     override suspend fun initialize() {
-        val loaded = database.chatMessageDao().getMessages(currentUsername, 500)
+        val loaded = withContext(Dispatchers.IO) {
+            database.chatMessageDao().getMessages(currentUsername, 500)
+        }
         _messages.value = loaded
         logger.d("ChatSkill", "Initialized with ${loaded.size} messages for user '$currentUsername'")
     }
@@ -153,11 +145,6 @@ class ChatSkill @Inject constructor(
         _chatMode.value = mode
     }
 
-    /**
-     * ✅ HÀM PHỐI HỢP VỚI TRAININGSKILL
-     * 
-     * Build QA context cho Groq chat (không phải lệnh điều khiển)
-     */
     private suspend fun buildQAContext(message: String, username: String): String {
         val result = trainingSkill.fuzzyMatchQuestion(message, username, 0.7f)
         return when (result) {
@@ -195,7 +182,9 @@ class ChatSkill @Inject constructor(
             type = "text",
             timestamp = System.currentTimeMillis()
         )
-        database.chatMessageDao().insertMessage(assistantMessage)
+        withContext(Dispatchers.IO) {
+            database.chatMessageDao().insertMessage(assistantMessage)
+        }
         
         messagesMutex.withLock {
             _messages.value = _messages.value + assistantMessage
@@ -211,14 +200,18 @@ class ChatSkill @Inject constructor(
         imageBase64: String? = null
     ): PluginResult {
         return try {
-            if (currentUsername != username) {
-                currentUsername = username
-                val loaded = database.chatMessageDao().getMessages(username, 500)
-                _messages.value = loaded
-                logger.d("ChatSkill", "Username changed to '$username', reloaded ${loaded.size} messages")
+            // SỬA ĐỒNG BỘ: Bảo bọc khối logic đổi tài khoản người dùng ngầm bằng Khóa Mutex an toàn
+            messagesMutex.withLock {
+                if (currentUsername != username) {
+                    currentUsername = username
+                    val loaded = withContext(Dispatchers.IO) {
+                        database.chatMessageDao().getMessages(username, 500)
+                    }
+                    _messages.value = loaded
+                    logger.d("ChatSkill", "Username changed to '$username', reloaded ${loaded.size} messages")
+                }
             }
 
-            // Lưu user message
             val userMessageId = UUID.randomUUID().toString()
             val userMessage = ChatMessageEntity(
                 id = userMessageId,
@@ -230,29 +223,18 @@ class ChatSkill @Inject constructor(
                 fileUrl = fileUrl,
                 timestamp = System.currentTimeMillis()
             )
-            database.chatMessageDao().insertMessage(userMessage)
+            withContext(Dispatchers.IO) {
+                database.chatMessageDao().insertMessage(userMessage)
+            }
 
             messagesMutex.withLock {
                 _messages.value = _messages.value + userMessage
             }
 
-            // ============================================================
-            // ROUTING:
-            // 1. Lệnh học → TrainingSkill
-            // 2. Có ảnh → Groq vision
-            // 3. Thử AgentKernel.tryDeviceCommand() (local router SmolLM2)
-            //    - khớp lệnh thiết bị → thực thi offline
-            //    - không khớp (null) → rơi xuống (4)
-            // 4. Chat thuần → Groq / QA (có QA context)
-            // ============================================================
-            
             val responseText: String
             val usedMode: String
-            // ✅ MỚI: id plugin đã thực thi lệnh (null = chat thường) - lưu vào
-            // ChatMessageEntity.sourcePlugin để UI gắn badge "⚡ lệnh".
             var usedPluginId: String? = null
             
-            // ✅ 1. LỆNH HỌC
             if (message.startsWith("Học:") || message.startsWith("Dạy:")) {
                 val parts = message.substringAfter(":").split("→").map { it.trim() }
                 if (parts.size == 2) {
@@ -271,23 +253,25 @@ class ChatSkill @Inject constructor(
                     usedMode = "learn_error"
                 }
             }
-            // ✅ 2. CÓ ẢNH
             else if (imageBase64 != null || fileUrl != null) {
                 usedMode = "vision"
+                
+                // TỐI ƯU HÓA LỚN: Bao bọc tác vụ đọc dữ liệu tệp tin ảnh ổ cứng trong IO Dispatcher ngầm
                 val imageDataUrl = if (!imageBase64.isNullOrEmpty()) {
                     "data:image/jpeg;base64,$imageBase64"
                 } else if (!fileUrl.isNullOrEmpty()) {
-                    try {
-                        val file = java.io.File(fileUrl)
-                        if (file.exists()) {
-                            val bytes = file.readBytes()
-                            val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                            "data:image/jpeg;base64,$base64"
-                        } else null
-                    } catch (e: Exception) { null }
+                    withContext(Dispatchers.IO) {
+                        try {
+                            val file = java.io.File(fileUrl)
+                            if (file.exists()) {
+                                val bytes = file.readBytes()
+                                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                "data:image/jpeg;base64,$base64"
+                            } else null
+                        } catch (e: Exception) { null }
+                    }
                 } else null
                 
-                // ✅ Giảm từ 10 → 6 message thô (≈3 lượt) — đủ ngữ cảnh cho ảnh, đỡ tốn token.
                 val historySnapshot = _messages.value.takeLast(6).map {
                     mapOf("role" to it.role, "content" to it.content)
                 }
@@ -305,9 +289,6 @@ class ChatSkill @Inject constructor(
                     "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
                 }
             }
-            // ✅ 3+4. THỬ ĐỊNH TUYẾN LỆNH THIẾT BỊ (AgentKernel + LocalRouterEngine).
-            // RouterOutcome phân biệt rõ 3 case — quan trọng để biết khi nào cần
-            // chèn cảnh báo "lệnh thất bại" cho model lớn (tránh nó bịa).
             else {
                 when (val outcome = agentKernel.tryDeviceCommand(message, username)) {
 
@@ -329,19 +310,12 @@ class ChatSkill @Inject constructor(
                     is AgentKernel.RouterOutcome.RouterFailed -> {
                         val routerFailed = outcome is AgentKernel.RouterOutcome.RouterFailed
                         usedMode = _chatMode.value.name
-                        // ✅ MỚI: đánh dấu rõ đây là LỖI HẠ TẦNG (network/HTTP khi gọi router),
-                        // không phải chat thường — ChatViewModel.observeAndSpeak() dùng dấu
-                        // hiệu này để đếm số lỗi liên tiếp và tạm dừng hands-free khi cần,
-                        // đúng theo yêu cầu "tier 1 lỗi thì phải dừng".
                         if (routerFailed) usedPluginId = "router_error"
                         val currentMode = _chatMode.value
-                        // ✅ Giảm từ 10 → 6 message thô (≈3 lượt) — đỡ tốn token,
-                        // không gửi thêm gì khác ngoài cảnh báo chống bịa (rất ngắn).
                         val historySnapshot = _messages.value.takeLast(6).map {
                             mapOf("role" to it.role, "content" to it.content)
                         }
 
-                        // ✅ Lấy QA context cho chat
                         val qaContext = buildQAContext(message, username)
                         val guard = if (routerFailed) {
                             ANTI_HALLUCINATION_GUARD + "\n" +
@@ -390,7 +364,6 @@ class ChatSkill @Inject constructor(
                 }
             }
 
-            // Lưu assistant message
             val assistantMessageId = UUID.randomUUID().toString()
             val assistantMessage = ChatMessageEntity(
                 id = assistantMessageId,
@@ -402,7 +375,9 @@ class ChatSkill @Inject constructor(
                 timestamp = System.currentTimeMillis(),
                 sourcePlugin = usedPluginId
             )
-            database.chatMessageDao().insertMessage(assistantMessage)
+            withContext(Dispatchers.IO) {
+                database.chatMessageDao().insertMessage(assistantMessage)
+            }
 
             messagesMutex.withLock {
                 _messages.value = _messages.value + assistantMessage
@@ -424,7 +399,9 @@ class ChatSkill @Inject constructor(
 
     suspend fun clearHistory(username: String): PluginResult {
         return try {
-            database.chatMessageDao().clearMessages(username)
+            withContext(Dispatchers.IO) {
+                database.chatMessageDao().clearMessages(username)
+            }
             messagesMutex.withLock {
                 _messages.value = emptyList()
             }
@@ -437,7 +414,9 @@ class ChatSkill @Inject constructor(
 
     suspend fun getChatHistory(username: String, limit: Int = 100): PluginResult {
         return try {
-            val history = database.chatMessageDao().getMessages(username, limit)
+            val history = withContext(Dispatchers.IO) {
+                database.chatMessageDao().getMessages(username, limit)
+            }
             PluginResult.Success(history)
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)

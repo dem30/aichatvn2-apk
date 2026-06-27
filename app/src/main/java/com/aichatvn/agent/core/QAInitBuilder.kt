@@ -2,9 +2,13 @@ package com.aichatvn.agent.core
 
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
+import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.utils.Logger
 import org.json.JSONObject
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
@@ -13,154 +17,145 @@ import kotlin.jvm.JvmSuppressWildcards
 class QAInitBuilder @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
     private val trainingSkill: TrainingSkill,
+    private val database: AppDatabase, // ✅ ĐÃ TIÊM: Sử dụng để ghi đĩa trực tiếp không dọn cache giữa vòng lặp
     private val logger: Logger
 ) {
     suspend fun buildInitialQA(username: String = "default_user") {
-        val existingIntents = trainingSkill.countQAByType("intent")
-        if (existingIntents > 0) {
-            logger.i("QAInitBuilder", "Hệ thống đã có $existingIntents Intent QA, bỏ qua khởi tạo.")
-            return
-        }
-
         var intentCount = 0
         var aliasCount = 0
         
-        // SỬA ĐỔI: Sử dụng flag autoGenerateQA để lọc plugin sinh QA tự động
-        val targetPlugins = plugins.filter { it.autoGenerateQA }
+        val existingQAs = trainingSkill.getRawCachedQAList(username)
+        val existingByQuestion = existingQAs.associateBy { it.question.trim().lowercase() }
 
-        // 1. Sinh Intent QA tiêu chuẩn cho tất cả các Action của từng Plugin
+        val targetPlugins = plugins.filter { it.autoGenerateQA }
+        val qaDao = database.qaDao()
+
+        // 1. Đồng bộ hóa Intent QA động từ metadata của Plugin Action
         targetPlugins.forEach { plugin ->
-            plugin.getActions().forEach { action ->
+            plugin.getActions().filter { it.enabled }.forEach { action ->
                 val schemaParams = JSONObject()
                 action.parameters.forEach { param ->
-                    schemaParams.put(param.name, getDefaultPlaceholder(param.name, param.type))
+                    schemaParams.put(param.name, param.defaultValue ?: getDefaultPlaceholder(param))
                 }
 
                 val jsonSchema = JSONObject().apply {
                     put("plugin", plugin.id)
+                    put("pluginVersion", plugin.pluginVersion)
+                    put("schemaVersion", plugin.schemaVersion)
                     put("action", action.name)
                     put("params", schemaParams)
                 }
 
-                val friendlyAction = getFriendlyActionName(action.name)
-                val friendlyPlugin = getFriendlyPluginName(plugin.id)
+                val triggers = mutableListOf<String>()
+                if (action.examples.isNotEmpty()) {
+                    triggers.addAll(action.examples)
+                } else {
+                    triggers.add("${plugin.name} ${action.name}")
+                    triggers.add(action.name)
+                }
+                
+                action.aliases.forEach { alias ->
+                    triggers.add(alias)
+                    triggers.add("$alias ${plugin.name}")
+                }
 
-                val triggers = listOf(
-                    "yêu cầu $friendlyAction $friendlyPlugin",
-                    "$friendlyAction $friendlyPlugin",
-                    "${plugin.id} ${action.name}",
-                    friendlyAction,
-                    friendlyPlugin
-                ).map { it.trim().lowercase() }.distinct()
+                action.tags.forEach { tag ->
+                    triggers.add(tag)
+                    triggers.add("$tag ${plugin.name}")
+                }
 
-                triggers.forEach { question ->
-                    trainingSkill.addQA(
-                        question = question,
-                        answer = jsonSchema.toString(),
-                        type = "intent",
-                        category = "auto_init",
-                        username = username
-                    )
-                    intentCount++
+                val finalTriggers = triggers
+                    .map { it.trim().lowercase() }
+                    .distinctBy { it }
+
+                finalTriggers.forEach { question ->
+                    val schemaString = jsonSchema.toString()
+                    val existing = existingByQuestion[question]
+                    
+                    if (existing == null) {
+                        // Tối ưu hóa: Ghi trực tiếp SQLite bằng cấu trúc DAO thuần để ngăn dọn cache RAM lặp lại
+                        val qa = QAEntity(
+                            id = UUID.randomUUID().toString(),
+                            question = question,
+                            answer = schemaString,
+                            type = "intent",
+                            category = "auto_init",
+                            createdBy = username,
+                            createdAt = System.currentTimeMillis(),
+                            timestamp = System.currentTimeMillis()
+                        )
+                        qaDao.insertQA(qa)
+                        intentCount++
+                    } else if (!isJsonStructureIdentical(existing.answer, schemaString)) {
+                        val updated = existing.copy(
+                            answer = schemaString,
+                            timestamp = System.currentTimeMillis()
+                        )
+                        qaDao.updateQA(updated)
+                        intentCount++
+                    }
                 }
             }
         }
 
-        // 2. Sinh Intent QA đặc biệt cho Plugin Lên Lịch (Generic composite schedule)
-        val schedulePlugin = plugins.firstOrNull { it.id == "schedule" || it.id == "scheduler" }
-        if (schedulePlugin != null && schedulePlugin.autoGenerateQA) { // Kiểm tra thêm flag cấu hình sinh QA
-            val scheduleAction = schedulePlugin.getActions().firstOrNull {
-                it.name == "add" || it.name == "create" || it.name == "schedule"
-            } ?: schedulePlugin.getActions().firstOrNull()
-
-            if (scheduleAction != null) {
-                val scheduleTriggers = listOf("lên lịch", "đặt lịch", "hẹn giờ", "tạo lịch trình")
-                val jsonSchema = JSONObject().apply {
-                    put("plugin", schedulePlugin.id)
-                    put("action", scheduleAction.name)
-                    put("params", JSONObject().apply {
-                        put("pluginId", "")
-                        put("action", "")
-                        put("cron", "")
-                        put("intervalMinutes", 0)
-                        put("params", JSONObject())
-                    })
-                }
-
-                scheduleTriggers.forEach { trigger ->
-                    trainingSkill.addQA(
-                        question = trigger,
-                        answer = jsonSchema.toString(),
-                        type = "intent",
-                        category = "auto_init",
-                        username = username
+        // 2. Tự động thu thập bootstrap QA khai báo cục bộ từ bên trong các Plugin độc lập
+        plugins.forEach { plugin ->
+            plugin.getBootstrapQA().forEach { bootstrap ->
+                val questionKey = bootstrap.question.trim().lowercase()
+                val existing = existingByQuestion[questionKey]
+                if (existing == null) {
+                    val qa = QAEntity(
+                        id = UUID.randomUUID().toString(),
+                        question = bootstrap.question,
+                        answer = bootstrap.answer,
+                        type = bootstrap.type,
+                        category = bootstrap.category,
+                        createdBy = username,
+                        createdAt = System.currentTimeMillis(),
+                        timestamp = System.currentTimeMillis()
                     )
-                    intentCount++
+                    qaDao.insertQA(qa)
+                    if (bootstrap.type == "intent") intentCount++ else aliasCount++
+                } else if (existing.answer != bootstrap.answer || existing.type != bootstrap.type) {
+                    val updated = existing.copy(
+                        answer = bootstrap.answer,
+                        type = bootstrap.type,
+                        timestamp = System.currentTimeMillis()
+                    )
+                    qaDao.updateQA(updated)
+                    if (bootstrap.type == "intent") intentCount++ else aliasCount++
                 }
             }
         }
 
-        // 3. Khởi tạo một số Alias QA mẫu
-        val defaultAliases = listOf(
-            Triple("cổng", "camera_1", "camera"),
-            Triple("sân trước", "camera_2", "camera"),
-            Triple("đèn phòng khách", "relay_1", "device"),
-            Triple("đèn sân vườn", "relay_2", "device"),
-            Triple("sếp", "boss@gmail.com", "email"),
-            Triple("tôi", "me@gmail.com", "email")
-        )
-
-        defaultAliases.forEach { (question, answer, semanticType) ->
-            trainingSkill.addQA(
-                question = question,
-                answer = answer,
-                type = semanticType,
-                category = "default_alias",
-                username = username
-            )
-            aliasCount++
+        // Tối ưu hóa lớn: Chỉ kích hoạt đồng bộ hóa nạp bộ nhớ RAM đúng 1 lần duy nhất khi kết thúc toàn bộ chu kỳ ghi lô
+        if (intentCount > 0 || aliasCount > 0) {
+            trainingSkill.refreshQAList(username)
+            logger.i("QAInitBuilder", "✅ Đồng bộ Metadata hoàn tất: $intentCount Intents, $aliasCount Aliases được cập nhật hoặc thêm mới.")
+        } else {
+            logger.i("QAInitBuilder", "Hệ thống metadata đã đồng bộ trùng khớp, không có cập nhật mới.")
         }
-
-        logger.d("QAInitBuilder", "✅ Khởi tạo hoàn tất: $intentCount Intents, $aliasCount Aliases")
     }
 
-    private fun getDefaultPlaceholder(name: String, type: String): Any {
-        return when (type.lowercase()) {
-            "boolean" -> true
+    private fun isJsonStructureIdentical(jsonStr1: String, jsonStr2: String): Boolean {
+        return try {
+            val obj1 = JSONObject(jsonStr1)
+            val obj2 = JSONObject(jsonStr2)
+            
+            obj1.optString("plugin") == obj2.optString("plugin") &&
+            obj1.optString("action") == obj2.optString("action") &&
+            obj1.optString("schemaVersion") == obj2.optString("schemaVersion")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun getDefaultPlaceholder(param: PluginParameter): Any {
+        if (param.placeholder.isNotBlank()) return param.placeholder
+        return when (param.type.lowercase()) {
+            "boolean" -> false
             "number"  -> 0
-            else -> {
-                when (name.lowercase()) {
-                    "to", "email", "recipient" -> "example@gmail.com"
-                    "device", "deviceid", "device_id" -> "device_1"
-                    "camera", "cameraid", "camera_id" -> "camera_1"
-                    else -> ""
-                }
-            }
-        }
-    }
-
-    private fun getFriendlyActionName(action: String): String {
-        return when (action.lowercase()) {
-            "scan" -> "quét"
-            "send", "sendemail" -> "gửi"
-            "turn_on", "turnon", "on", "power" -> "bật"
-            "turn_off", "turnoff", "off" -> "tắt"
-            "capture", "snapshot" -> "chụp ảnh"
-            "add", "create" -> "thêm"
-            "delete" -> "xóa"
-            "status" -> "kiểm tra"
-            else -> action
-        }
-    }
-
-    private fun getFriendlyPluginName(pluginId: String): String {
-        return when (pluginId.lowercase()) {
-            "camera" -> "camera"
-            "email", "resend" -> "email"
-            "tuya" -> "thiết bị"
-            "schedule" -> "lịch trình"
-            "notification" -> "thông báo"
-            else -> pluginId
+            else -> ""
         }
     }
 }

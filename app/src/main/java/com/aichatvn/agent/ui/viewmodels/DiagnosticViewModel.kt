@@ -5,10 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -49,7 +51,10 @@ class DiagnosticsViewModel @Inject constructor(
                     "offlineCameras" to cameraStats.count { it["isOnline"] != 1 && it["manualOff"] == 0 },
                     "disabledCameras" to cameraStats.count { it["manualOff"] == 1 }
                 )
-            }.collect { _combinedStats.value = it }
+            }
+            // Tối ưu hóa lớn: Chuyển toàn bộ tác vụ ánh xạ mảng và tính toán đếm số lượng camera sang Dispatchers.Default
+            .flowOn(Dispatchers.Default) 
+            .collect { _combinedStats.value = it }
         }
     }
 

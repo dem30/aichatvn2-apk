@@ -46,8 +46,6 @@ fun TrainingScreen(
     val listState = rememberLazyListState()
     val displayList = if (searchQuery.isNotBlank()) searchResults else qaList
 
-    // ─── ActivityResultLaunchers cho file picker ──────────────────────────────
-
     val jsonPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -59,8 +57,6 @@ fun TrainingScreen(
     ) { uri ->
         uri?.let { viewModel.importQAFromCsvUri(context, it) }
     }
-
-    // ─── Feedback Toasts ──────────────────────────────────────────────────────
 
     LaunchedEffect(exportResult) {
         exportResult?.let {
@@ -76,16 +72,12 @@ fun TrainingScreen(
         }
     }
 
-    // ─── Infinite scroll ──────────────────────────────────────────────────────
-
     LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         if (lastVisible >= displayList.size - 3 && hasMore && !isLoading && searchQuery.isBlank()) {
             viewModel.loadMoreQAs()
         }
     }
-
-    // ─── UI ───────────────────────────────────────────────────────────────────
 
     Scaffold(
         topBar = {
@@ -109,7 +101,6 @@ fun TrainingScreen(
             .fillMaxSize()
             .padding(padding)) {
 
-            // Search bar
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = {
@@ -132,7 +123,6 @@ fun TrainingScreen(
                 singleLine = true
             )
 
-            // Import buttons — dùng launcher thật
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -157,7 +147,6 @@ fun TrainingScreen(
                 }
             }
 
-            // Batch selection bar (xuất hiện khi có mục được chọn)
             if (selectedQAs.isNotEmpty()) {
                 Surface(
                     color = MaterialTheme.colorScheme.primaryContainer,
@@ -189,7 +178,6 @@ fun TrainingScreen(
                 }
             }
 
-            // Content
             when {
                 isLoading && displayList.isEmpty() -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -243,8 +231,6 @@ fun TrainingScreen(
         }
     }
 
-    // ─── Dialogs ──────────────────────────────────────────────────────────────
-
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
@@ -290,8 +276,6 @@ fun TrainingScreen(
         )
     }
 }
-
-// ─── QACard ───────────────────────────────────────────────────────────────────
 
 @Composable
 fun QACard(
@@ -357,8 +341,6 @@ fun QACard(
         }
     }
 }
-
-// ─── QADialog ─────────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -25,6 +26,7 @@ import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.viewmodels.DashboardViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +41,13 @@ fun DashboardScreen(
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+
+    // Đo kích thước màn hình để tính toán tỉ lệ co giãn động cho sơ đồ bản đồ nhà tọa độ động
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp
+    val designWidth = 360f // Chiều rộng thiết kế tiêu chuẩn làm mốc
+    val scale = screenWidth.toFloat() / designWidth
 
     LaunchedEffect(executionMessage) {
         executionMessage?.let {
@@ -66,7 +75,6 @@ fun DashboardScreen(
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
         ) {
-            // SƠ ĐỒ ĐỊNH VỊ THIẾT BỊ (Canvas / Coordinate Layout)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -81,7 +89,6 @@ fun DashboardScreen(
                         shape = RoundedCornerShape(12.dp)
                     )
             ) {
-                // Background biểu diễn Sơ đồ Nhà (🏠)
                 Box(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -97,11 +104,14 @@ fun DashboardScreen(
                     )
                 }
 
-                // Vẽ các node thiết bị động dựa theo tọa độ x, y định nghĩa sẵn trong DB/Skill
+                // TỐI ƯU HÓA: Nhân tỉ lệ co giãn động 'scale' để sơ đồ hiển thị đồng đều trên mọi kích thước màn hình
                 deviceNodes.forEach { node ->
                     Box(
                         modifier = Modifier
-                            .offset(x = node.x.dp, y = node.y.dp)
+                            .offset(
+                                x = (node.x * scale).dp, 
+                                y = (node.y * scale).dp
+                            )
                             .clickable { selectedNode = node }
                             .padding(8.dp),
                         contentAlignment = Alignment.Center
@@ -146,7 +156,6 @@ fun DashboardScreen(
                 }
             }
 
-            // Trạng thái hệ thống đang gửi lệnh
             if (isProcessing) {
                 CircularProgressIndicator(
                     modifier = Modifier
@@ -156,7 +165,6 @@ fun DashboardScreen(
             }
         }
 
-        // BOTTOM SHEET ĐIỀU KHIỂN CHI TIẾT
         if (selectedNode != null) {
             val node = selectedNode!!
             ModalBottomSheet(
@@ -170,7 +178,6 @@ fun DashboardScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Tiêu đề Bottom Sheet
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -187,7 +194,6 @@ fun DashboardScreen(
                             }
                         }
                         
-                        // Trạng thái kết nối
                         Surface(
                             color = if (node.online) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
                             contentColor = if (node.online) Color(0xFF2E7D32) else Color(0xFFC62828),
@@ -202,7 +208,6 @@ fun DashboardScreen(
                         }
                     }
 
-                    // Thông số kỹ thuật của thiết bị
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
@@ -234,13 +239,11 @@ fun DashboardScreen(
 
                     Text("Hành động", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
-                    // HIỂN THỊ CÁC NÚT ĐIỀU KHIỂN HOÀN TOÀN ĐỘNG (FLOW / GRID STYLE)
                     if (node.supportedActions.isNotEmpty()) {
                         Column(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Nhóm các nút bấm thành từng cặp 2 nút trên 1 dòng
                             node.supportedActions.chunked(2).forEach { rowActions ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -253,9 +256,15 @@ fun DashboardScreen(
 
                                         Button(
                                             onClick = {
-                                                // Sửa đổi sang sử dụng positional arguments để tránh xung đột tên tham số
+                                                // TỐI ƯU HÓA: Kích hoạt hoạt ảnh thu hồi an toàn trước khi hủy selectedNode State để chống rách hình
+                                                coroutineScope.launch {
+                                                    try {
+                                                        sheetState.hide()
+                                                    } finally {
+                                                        selectedNode = null
+                                                    }
+                                                }
                                                 viewModel.sendDeviceAction(node, action.id, emptyMap())
-                                                selectedNode = null
                                             },
                                             colors = when {
                                                 isPositive -> ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
@@ -269,7 +278,6 @@ fun DashboardScreen(
                                             Text(action.title, maxLines = 1)
                                         }
                                     }
-                                    // Bổ sung khoảng trống giữ tỉ lệ nếu hàng chỉ có 1 nút đơn lẻ
                                     if (rowActions.size < 2) {
                                         Spacer(modifier = Modifier.weight(1f))
                                     }
@@ -277,12 +285,16 @@ fun DashboardScreen(
                             }
                         }
                     } else {
-                        // Trường hợp dự phòng nếu plugin chưa cấu hình supportedActions
                         Button(
                             onClick = { 
-                                // Sửa đổi sang sử dụng positional arguments để tránh xung đột tên tham số
+                                coroutineScope.launch {
+                                    try {
+                                        sheetState.hide()
+                                    } finally {
+                                        selectedNode = null
+                                    }
+                                }
                                 viewModel.sendDeviceAction(node, node.defaultAction, emptyMap())
-                                selectedNode = null 
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {

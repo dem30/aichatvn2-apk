@@ -25,8 +25,8 @@ class TaskScheduler @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     companion object {
-        const val WORK_NAME = "aichatvn_scheduler"  // public: BootReceiver cần dùng
-        private const val CHECK_INTERVAL_MINUTES = 15L  // ✅ FIX: WorkManager minimum = 15 phút; giá trị < 15 bị clamp silently
+        const val WORK_NAME = "aichatvn_scheduler"
+        private const val CHECK_INTERVAL_MINUTES = 15L
 
         fun schedule(context: Context) {
             val constraints = Constraints.Builder()
@@ -57,13 +57,8 @@ class TaskScheduler @AssistedInject constructor(
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
         }
 
-        /**
-         * Gọi từ Application.onCreate() và BootReceiver.onReceive() để đảm bảo
-         * periodic worker luôn chạy sau khi app khởi động hoặc thiết bị reboot.
-         * Dùng KEEP: nếu worker đang chạy rồi thì không restart (tránh mất interval).
-         */
         fun ensureRunning(context: Context) {
-            schedule(context)  // schedule() đã dùng KEEP policy
+            schedule(context)
         }
     }
 
@@ -100,12 +95,13 @@ class TaskScheduler @AssistedInject constructor(
 
     private fun shouldRunNow(schedule: ScheduleEntity, now: Long): Boolean {
         if (schedule.cron.isNotEmpty()) {
-            return CronParser.matches(schedule.cron, now)
+            return CronParser.matches(schedule.cron, now, schedule.lastRunAt)
         }
         
         if (schedule.intervalMinutes > 0) {
             val lastRun = schedule.lastRunAt
-            return (now - lastRun) >= schedule.intervalMinutes * 60_000L
+            // Thêm dung sai trễ 10 giây để đảm bảo không bỏ sót tác vụ do trễ dịch vụ WorkManager
+            return (now - lastRun) >= (schedule.intervalMinutes * 60_000L - 10_000L)
         }
         
         return false
@@ -145,36 +141,44 @@ class TaskScheduler @AssistedInject constructor(
 }
 
 // ============================================================
-// CRON PARSER - ĐƠN GIẢN
+// CRON PARSER - HỖ TRỢ DUNG SAI TRỄ HỆ THỐNG
 // ============================================================
 
 object CronParser {
-    // ✅ FIX: bỏ pattern thứ 3 (trùng pattern thứ 1)
-    // Pattern 1: "MINUTE HOUR * * *"  (vd: "0 8 * * *")
-    // Pattern 2: "*/N * * * *"        (vd: "*/30 * * * *")
     private val dailyPattern  = Regex("""^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$""")
     private val intervalPattern = Regex("""^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$""")
 
-    fun matches(cron: String, timestamp: Long): Boolean {
-        val calendar = java.util.Calendar.getInstance().apply {
-            timeInMillis = timestamp
-        }
-        val hour   = calendar.get(java.util.Calendar.HOUR_OF_DAY)
-        val minute = calendar.get(java.util.Calendar.MINUTE)
+    fun matches(cron: String, timestamp: Long, lastRunAt: Long): Boolean {
+        val nowCalendar = java.util.Calendar.getInstance().apply { timeInMillis = timestamp }
+        val nowHour = nowCalendar.get(java.util.Calendar.HOUR_OF_DAY)
+        val nowMinute = nowCalendar.get(java.util.Calendar.MINUTE)
+        val nowDayOfYear = nowCalendar.get(java.util.Calendar.DAY_OF_YEAR)
+        val nowYear = nowCalendar.get(java.util.Calendar.YEAR)
 
-        // "*/N * * * *" — chạy mỗi N phút kể từ 00:00
+        val lastCalendar = java.util.Calendar.getInstance().apply { timeInMillis = lastRunAt }
+        val lastDayOfYear = lastCalendar.get(java.util.Calendar.DAY_OF_YEAR)
+        val lastYear = lastCalendar.get(java.util.Calendar.YEAR)
+
+        // Kiểm tra xem lịch trình đã chạy trong ngày hôm nay chưa
+        val isDifferentDay = nowYear != lastYear || nowDayOfYear != lastDayOfYear
+
+        // "*/N * * * *" — chạy mỗi N phút
         intervalPattern.matchEntire(cron.trim())?.let { m ->
-            val interval = m.groupValues[1].toIntOrNull() ?: return false
-            // ✅ FIX: tính totalMinutes từ đầu ngày (00:00), không phải từ giờ hiện tại
-            val totalMinutes = hour * 60 + minute
-            return totalMinutes % interval == 0
+            val interval = m.groupValues[1].toLongOrNull() ?: return false
+            val elapsedMinutes = (timestamp - lastRunAt) / 60_000L
+            return elapsedMinutes >= (interval - 1) // Cho phép lệch tối đa 1 phút
         }
 
-        // "MINUTE HOUR * * *" — chạy đúng giờ:phút mỗi ngày
+        // "MINUTE HOUR * * *" — chạy đúng giờ:phút mỗi ngày (hỗ trợ lệch giờ của HĐH)
         dailyPattern.matchEntire(cron.trim())?.let { m ->
             val cronMinute = m.groupValues[1].toIntOrNull() ?: return false
             val cronHour   = m.groupValues[2].toIntOrNull() ?: return false
-            return minute == cronMinute && hour == cronHour
+            
+            val currentTotalMinutes = nowHour * 60 + nowMinute
+            val targetTotalMinutes = cronHour * 60 + cronMinute
+            
+            // Nếu đã vượt qua thời gian hẹn trong ngày và chưa từng chạy trong ngày hôm nay
+            return currentTotalMinutes >= targetTotalMinutes && isDifferentDay
         }
 
         return false
@@ -185,22 +189,27 @@ private fun JSONObject.toMap(): Map<String, Any> {
     val map = mutableMapOf<String, Any>()
     keys().forEach { key ->
         val value = get(key)
-        map[key] = when (value) {
-            is JSONObject -> value.toMap()
-            is org.json.JSONArray -> {
-                val list = mutableListOf<Any>()
-                for (i in 0 until value.length()) {
-                    val item = value.get(i)
-                    list.add(
-                        when (item) {
-                            is JSONObject -> item.toMap()
-                            else -> item
+        // Chặn sớm rủi ro kiểu dữ liệu rác JSONObject.NULL khi chuyển sang Map của Kotlin
+        if (value != org.json.JSONObject.NULL) {
+            map[key] = when (value) {
+                is JSONObject -> value.toMap()
+                is org.json.JSONArray -> {
+                    val list = mutableListOf<Any>()
+                    for (i in 0 until value.length()) {
+                        val item = value.get(i)
+                        if (item != org.json.JSONObject.NULL) {
+                            list.add(
+                                when (item) {
+                                    is JSONObject -> item.toMap()
+                                    else -> item
+                                }
+                            )
                         }
-                    )
+                    }
+                    list
                 }
-                list
+                else -> value
             }
-            else -> value
         }
     }
     return map

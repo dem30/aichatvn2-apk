@@ -22,8 +22,10 @@ import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 // ── ViewModel ────────────────────────────────────────────────────────────────
@@ -47,7 +49,6 @@ class CustomerCameraViewModel @Inject constructor(
     private val _masterSmartMode = MutableStateFlow(false)
     val masterSmartMode: StateFlow<Boolean> = _masterSmartMode.asStateFlow()
 
-    // key=cameraId, value=camera.smartMode==1
     private val _cameraSmartModes = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val cameraSmartModes: StateFlow<Map<String, Boolean>> = _cameraSmartModes.asStateFlow()
 
@@ -63,24 +64,31 @@ class CustomerCameraViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                _customer.value = database.customerDao().getCustomerById(customerId)
-                val cams = database.cameraDao().getCamerasByCustomer(customerId)
-                _cameras.value = cams
-                // Đảm bảo CustomerSetting tồn tại
-                val setting = database.cameraDao().getCustomerSetting(customerId)
-                if (setting == null && customerId.isNotEmpty()) {
-                    database.cameraDao().insertCustomerSetting(
-                        CustomerSettingEntity(
-                            customerId = customerId,
-                            smartMode = 0,
-                            isActive = 1,
-                            updatedAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
+                // TỐI ƯU HÓA: Chuyển toàn bộ các giao dịch cơ sở dữ liệu ngầm ra khỏi Luồng chính
+                withContext(Dispatchers.IO) {
+                    val cust = database.customerDao().getCustomerById(customerId)
+                    val cams = database.cameraDao().getCamerasByCustomer(customerId)
+                    val setting = database.cameraDao().getCustomerSetting(customerId)
+                    
+                    if (setting == null && customerId.isNotEmpty()) {
+                        database.cameraDao().insertCustomerSetting(
+                            CustomerSettingEntity(
+                                customerId = customerId,
+                                smartMode = 0,
+                                isActive = 1,
+                                updatedAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
                         )
-                    )
+                    }
+
+                    _customer.value = cust
+                    _cameras.value = cams
+                    _masterSmartMode.value = setting?.smartMode == 1
+                    _cameraSmartModes.value = cams.associate { it.id to (it.smartMode == 1) }
                 }
-                _masterSmartMode.value = setting?.smartMode == 1
-                _cameraSmartModes.value = cams.associate { it.id to (it.smartMode == 1) }
+            } catch (e: Exception) {
+                logger.e("CustomerCameraViewModel", "Lỗi tải cấu hình: ${e.message}", e)
             } finally {
                 _isLoading.value = false
             }
@@ -90,7 +98,9 @@ class CustomerCameraViewModel @Inject constructor(
     fun saveCamera(config: Map<String, Any>) {
         viewModelScope.launch {
             _isLoading.value = true
-            cameraSkill.saveCameraConfig(config)
+            withContext(Dispatchers.IO) {
+                cameraSkill.saveCameraConfig(config)
+            }
             load()
             _isLoading.value = false
         }
@@ -98,16 +108,23 @@ class CustomerCameraViewModel @Inject constructor(
 
     fun deleteCamera(cameraId: String) {
         viewModelScope.launch {
-            cameraSkill.deleteCamera(cameraId)
+            withContext(Dispatchers.IO) {
+                cameraSkill.deleteCamera(cameraId)
+            }
             load()
         }
     }
 
     fun toggleCameraActive(cameraId: String) {
         viewModelScope.launch {
-            val camera = database.cameraDao().getCameraById(cameraId) ?: return@launch
+            val camera = withContext(Dispatchers.IO) {
+                database.cameraDao().getCameraById(cameraId)
+            } ?: return@launch
+            
             val newManualOff = if (camera.manualOff == 0) 1 else 0
-            database.cameraDao().updateCamera(camera.copy(manualOff = newManualOff))
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCamera(camera.copy(manualOff = newManualOff))
+            }
             load()
         }
     }
@@ -115,7 +132,9 @@ class CustomerCameraViewModel @Inject constructor(
     fun toggleMasterSmartMode() {
         viewModelScope.launch {
             val newMode = !_masterSmartMode.value
-            cameraSkill.execute("set_smart_mode", mapOf("customerId" to customerId, "enabled" to newMode))
+            withContext(Dispatchers.IO) {
+                cameraSkill.execute("set_smart_mode", mapOf("customerId" to customerId, "enabled" to newMode))
+            }
             _masterSmartMode.value = newMode
             logger.i("CustomerCameraViewModel", "MasterSmartMode $customerId → $newMode")
         }
@@ -125,7 +144,9 @@ class CustomerCameraViewModel @Inject constructor(
         viewModelScope.launch {
             val current = _cameraSmartModes.value[cameraId] ?: true
             val newMode = !current
-            database.cameraDao().updateCameraSmartMode(cameraId, if (newMode) 1 else 0)
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCameraSmartMode(cameraId, if (newMode) 1 else 0)
+            }
             _cameraSmartModes.value = _cameraSmartModes.value.toMutableMap().apply { put(cameraId, newMode) }
             logger.i("CustomerCameraViewModel", "CameraSmartMode $cameraId → $newMode")
         }
@@ -135,33 +156,34 @@ class CustomerCameraViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _testResult.value = null
+            
+            val camera = withContext(Dispatchers.IO) {
+                database.cameraDao().getCameraById(cameraId)
+            }
+            val setting = camera?.let {
+                withContext(Dispatchers.IO) {
+                    database.cameraDao().getCustomerSetting(it.customerId)
+                }
+            }
+            val wasSmartOff = setting?.smartMode != 1
+            
             try {
-                val camera = database.cameraDao().getCameraById(cameraId)
-                val setting = camera?.let { database.cameraDao().getCustomerSetting(it.customerId) }
-                val wasSmartOff = setting?.smartMode != 1
                 if (wasSmartOff && camera != null) {
-                    database.cameraDao().insertCustomerSetting(
-                        CustomerSettingEntity(
-                            customerId = camera.customerId,
-                            smartMode = 1,
-                            isActive = setting?.isActive ?: 1,
-                            updatedAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
+                    withContext(Dispatchers.IO) {
+                        database.cameraDao().insertCustomerSetting(
+                            CustomerSettingEntity(
+                                customerId = camera.customerId,
+                                smartMode = 1,
+                                isActive = setting?.isActive ?: 1,
+                                updatedAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
                         )
-                    )
+                    }
                 }
+                
                 val result = cameraSkill.scanCamera(cameraId, isDailyReport = false)
-                if (wasSmartOff && camera != null) {
-                    database.cameraDao().insertCustomerSetting(
-                        CustomerSettingEntity(
-                            customerId = camera.customerId,
-                            smartMode = 0,
-                            isActive = setting?.isActive ?: 1,
-                            updatedAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
-                        )
-                    )
-                }
+                
                 when (result) {
                     is com.aichatvn.agent.core.AgentKernel.PluginResult.Success -> {
                         val data = result.data as? Map<*, *>
@@ -194,6 +216,24 @@ class CustomerCameraViewModel @Inject constructor(
                 _testResult.value = "❌ Exception: ${e.message}"
                 logger.e("CustomerCameraViewModel", "testCamera error: ${e.message}", e)
             } finally {
+                // CHỐNG RÒ RỈ TRẠNG THÁI: Bảo bọc việc khôi phục cấu hình smartMode gốc trong "finally" để luôn khôi phục kể cả khi có ngoại lệ xảy ra
+                if (wasSmartOff && camera != null) {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            database.cameraDao().insertCustomerSetting(
+                                CustomerSettingEntity(
+                                    customerId = camera.customerId,
+                                    smartMode = 0,
+                                    isActive = setting?.isActive ?: 1,
+                                    createdAt = System.currentTimeMillis(),
+                                    timestamp = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    } catch (e: Exception) {
+                        logger.e("CustomerCameraViewModel", "Lỗi hạ smartMode thiết lập gốc", e)
+                    }
+                }
                 _isLoading.value = false
             }
         }
@@ -239,7 +279,6 @@ fun CustomerCameraScreen(
             camera = selectedCamera,
             onDismiss = { showAddDialog = false; selectedCamera = null },
             onSave = { config ->
-                // Đảm bảo customerId đúng
                 val merged = config.toMutableMap().apply { put("customerId", viewModel.customerId) }
                 viewModel.saveCamera(merged)
                 showAddDialog = false; selectedCamera = null

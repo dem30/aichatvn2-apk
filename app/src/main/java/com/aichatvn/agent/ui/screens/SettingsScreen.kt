@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
@@ -28,6 +29,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.work.WorkManager
 import com.aichatvn.agent.data.model.AppConfigEntity
+import com.aichatvn.agent.scheduler.TaskScheduler // ✅ ĐÃ IMPORT: Sử dụng để lấy hằng số WORK_NAME chính xác của TaskScheduler
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -72,7 +74,9 @@ fun SettingsScreen(
         uri?.let {
             scope.launch {
                 try {
-                    val json = context.contentResolver.openInputStream(it)?.bufferedReader()?.readText()
+                    val json = context.contentResolver.openInputStream(it)?.bufferedReader()?.use { reader ->
+                        reader.readText()
+                    }
                     if (!json.isNullOrBlank()) viewModel.importSettings(context, json)
                 } catch (_: Exception) {}
             }
@@ -82,7 +86,8 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         val wm = WorkManager.getInstance(context)
         try {
-            val info = wm.getWorkInfosForUniqueWork("smart_scan_15min_work").get()
+            // SỬA LỖI TRA CỨU: Đồng bộ hóa mã khóa sử dụng hằng số chuẩn của lõi TaskScheduler.WORK_NAME
+            val info = wm.getWorkInfosForUniqueWork(TaskScheduler.WORK_NAME).get()
             workerStatus = mapOf(
                 "Smart Scan (15 phút)" to when (info.firstOrNull()?.state?.name) {
                     "ENQUEUED"  -> "⏳ Đang chờ"
@@ -106,8 +111,6 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-
-            // ── Worker schedule status ───────────────────────────────────────
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
@@ -126,7 +129,6 @@ fun SettingsScreen(
                 }
             }
 
-            // ── Groq API ────────────────────────────────────────────────────
             Text("🤖 Groq API", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(
                 value = groqKeyInput,
@@ -150,7 +152,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Tuya Cloud API ───────────────────────────────────────────────
             Text("🔌 Tuya Smart Life", style = MaterialTheme.typography.titleMedium)
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -178,7 +179,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Resend Email ─────────────────────────────────────────────────
             Text("📧 Resend Email API", style = MaterialTheme.typography.titleMedium)
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
                 Column(modifier = Modifier.padding(10.dp)) {
@@ -211,7 +211,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Plugin Config ────────────────────────────────────────────────
             PluginConfigSection(
                 configs = allConfigs,
                 configSaveResult = configSaveResult,
@@ -221,12 +220,10 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Prompt Log ───────────────────────────────────────────────────
             PromptLogSection(promptLog = promptLog)
 
             HorizontalDivider()
 
-            // ── Export/Import ────────────────────────────────────────────────
             Text("💾 Sao lưu cài đặt", style = MaterialTheme.typography.titleMedium)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
@@ -247,7 +244,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Dark mode ────────────────────────────────────────────────────
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 Text("Chế độ tối", style = MaterialTheme.typography.bodyLarge)
                 Switch(checked = darkMode, onCheckedChange = { viewModel.toggleDarkMode(it) })
@@ -255,7 +251,6 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ── Lưu tất cả ──────────────────────────────────────────────────
             Button(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
@@ -282,8 +277,6 @@ fun SettingsScreen(
         }
     }
 }
-
-// ─────────────────────────── Plugin Config Section ───────────────────────────
 
 @Composable
 private fun PluginConfigSection(
@@ -327,7 +320,6 @@ private fun PluginConfigSection(
         }
     }
 
-    // Nhóm theo pluginId
     val grouped = configs.groupBy { it.pluginId }
     val pluginOrder = listOf("groq", "camera", "email", "schedule", "global")
     val sortedGroups = (pluginOrder.mapNotNull { pid -> grouped[pid]?.let { pid to it } } +
@@ -431,8 +423,6 @@ private fun ConfigItemRow(
         )
     }
 }
-
-// ─────────────────────────── Prompt Log Section ──────────────────────────────
 
 @Composable
 private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
@@ -572,8 +562,6 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
         }
     }
 }
-
-// ─────────────────────────── Helpers ─────────────────────────────────────────
 
 private fun fmtTs(millis: Long): String {
     if (millis <= 0) return "—"

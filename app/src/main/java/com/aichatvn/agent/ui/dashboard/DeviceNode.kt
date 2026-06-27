@@ -1,9 +1,6 @@
 package com.aichatvn.agent.ui.dashboard
 
-/**
- * Định nghĩa hành động khả thi của một thiết bị trên Dashboard.
- * Giúp giao diện tự động vẽ nút bấm tương ứng mà không cần hardcode.
- */
+
 
 data class DeviceNode(
     val id: String,
@@ -11,14 +8,23 @@ data class DeviceNode(
     val type: DeviceType,
     val pluginId: String,
     
-    val defaultAction: String,                    // Hành động mặc định khi bấm trực tiếp vào Node
-    val defaultParams: Map<String, Any> = emptyMap(), // Toàn bộ tham số nhận diện thiết bị của Plugin
-    val supportedActions: List<DeviceAction> = emptyList(), // Danh sách nút bấm chức năng đi kèm thiết bị
+    val defaultAction: String,
+    val defaultParams: Map<String, Any> = emptyMap(),
+    val supportedActions: List<DeviceAction> = emptyList(),
     
-    val x: Float,                                 // Tọa độ vẽ X
-    val y: Float,                                 // Tọa độ vẽ Y
+    val x: Float,
+    val y: Float,
     val online: Boolean,
     val icon: String,
     val ip: String = "",
-    val battery: Int? = null
+    val battery: Int? = null,
+    
+    // ─── [MỚI] SIÊU DỮ LIỆU DIGITAL TWIN ───
+    val status: String = "",          // Trạng thái hiển thị (ví dụ: "Đang bật", "Công suất 45W")
+    val lastSeen: Long = System.currentTimeMillis(), // Lần cuối phản hồi hệ thống
+    val rssi: Int? = null,            // Cường độ sóng Wi-Fi (dBm)
+    val room: String = "Phòng chung",  // Phân bổ không gian phòng
+    val scene: String = "",           // Kịch bản tự động liên kết
+    val group: String = ""            // Nhóm thiết bị liên kết vật lý
 )
+

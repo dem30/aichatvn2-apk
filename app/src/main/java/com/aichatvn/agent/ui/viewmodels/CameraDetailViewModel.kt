@@ -13,6 +13,7 @@ import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,11 +22,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
 
-// ── State cho form chỉnh sửa config inline ──────────────────────────────────
 data class CameraConfigDraft(
     val snapshotUrl: String = "",
     val landInfo: String = "",
@@ -34,12 +35,11 @@ data class CameraConfigDraft(
     val aiNegativeKeywords: String = ""
 )
 
-// ── State cho form thêm/sửa lịch trình ─────────────────────────────────────
 data class ScheduleDraft(
-    val id: String = "",           // rỗng = tạo mới, có giá trị = đang sửa
-    val action: String = "scan",   // mặc định scan
-    val cron: String = "",         // vd "0 7 * * *"
-    val intervalMinutes: Int = 0,  // hoặc dùng interval, ưu tiên cron nếu có
+    val id: String = "",
+    val action: String = "scan",
+    val cron: String = "",
+    val intervalMinutes: Int = 0,
     val enabled: Boolean = true
 )
 
@@ -54,7 +54,6 @@ class CameraDetailViewModel @Inject constructor(
 
     val cameraId: String = savedStateHandle.get<String>("cameraId") ?: ""
 
-    // ── State hiện tại ────────────────────────────────────────────────────────
     private val _camera = MutableStateFlow<CameraConfigEntity?>(null)
     val camera: StateFlow<CameraConfigEntity?> = _camera.asStateFlow()
 
@@ -73,27 +72,21 @@ class CameraDetailViewModel @Inject constructor(
     private val _liveSnapshot = MutableStateFlow<ByteArray?>(null)
     val liveSnapshot: StateFlow<ByteArray?> = _liveSnapshot.asStateFlow()
 
-    // ── [MỚI] Config inline ───────────────────────────────────────────────────
-    // Draft đang chỉnh sửa (null = chưa mở editor)
     private val _configDraft = MutableStateFlow<CameraConfigDraft?>(null)
     val configDraft: StateFlow<CameraConfigDraft?> = _configDraft.asStateFlow()
 
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
-    // ── [MỚI] CRUD Schedule ───────────────────────────────────────────────────
-    // Danh sách lịch của camera này (lọc từ params JSON)
     private val _schedules = MutableStateFlow<List<ScheduleEntity>>(emptyList())
     val schedules: StateFlow<List<ScheduleEntity>> = _schedules.asStateFlow()
 
-    // Draft đang thêm/sửa (null = đóng form)
     private val _scheduleDraft = MutableStateFlow<ScheduleDraft?>(null)
     val scheduleDraft: StateFlow<ScheduleDraft?> = _scheduleDraft.asStateFlow()
 
     private val _scheduleResult = MutableStateFlow<String?>(null)
     val scheduleResult: StateFlow<String?> = _scheduleResult.asStateFlow()
 
-    // ── Alerts ────────────────────────────────────────────────────────────────
     val recentAlerts: StateFlow<List<AlertEntity>> = database.alertDao()
         .getAlertsByCameraFlow(cameraId)
         .stateIn(
@@ -105,18 +98,20 @@ class CameraDetailViewModel @Inject constructor(
     init {
         loadCamera()
         loadSchedules()
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
-                _diagnostics.value = cameraSkill.getDiagnostics()[cameraId] as? Map<String, Any>
+                val diagMap = cameraSkill.getDiagnostics()
+                _diagnostics.value = diagMap[cameraId] as? Map<String, Any>
                 delay(5000)
             }
         }
     }
 
-    // ── Load camera ───────────────────────────────────────────────────────────
     fun loadCamera() {
         viewModelScope.launch {
-            val cam = database.cameraDao().getCameraById(cameraId)
+            val cam = withContext(Dispatchers.IO) {
+                database.cameraDao().getCameraById(cameraId)
+            }
             _camera.value = cam
             cam?.let {
                 _smartMode.value = it.smartMode == 1
@@ -128,7 +123,6 @@ class CameraDetailViewModel @Inject constructor(
     // CONFIG INLINE
     // ═════════════════════════════════════════════════════════════════════════
 
-    /** Mở editor config, copy giá trị hiện tại vào draft */
     fun openConfigEditor() {
         val cam = _camera.value ?: return
         _configDraft.value = CameraConfigDraft(
@@ -140,18 +134,15 @@ class CameraDetailViewModel @Inject constructor(
         )
     }
 
-    /** Đóng editor (huỷ thay đổi) */
     fun closeConfigEditor() {
         _configDraft.value = null
         _configSaveResult.value = null
     }
 
-    /** Cập nhật từng field trong draft khi user gõ */
     fun updateConfigDraft(update: CameraConfigDraft.() -> CameraConfigDraft) {
         _configDraft.value = _configDraft.value?.update()
     }
 
-    /** Lưu config vào DB */
     fun saveConfig() {
         val draft = _configDraft.value ?: return
         val cam = _camera.value ?: return
@@ -165,7 +156,9 @@ class CameraDetailViewModel @Inject constructor(
                     aiPositiveKeywords = draft.aiPositiveKeywords.trim(),
                     aiNegativeKeywords = draft.aiNegativeKeywords.trim()
                 )
-                database.cameraDao().updateCamera(updated)
+                withContext(Dispatchers.IO) {
+                    database.cameraDao().updateCamera(updated)
+                }
                 loadCamera()
                 _configDraft.value = null
                 _configSaveResult.value = "✅ Đã lưu cấu hình"
@@ -187,19 +180,22 @@ class CameraDetailViewModel @Inject constructor(
     // CRUD SCHEDULE
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Load tất cả schedule, lọc ra những cái có params["cameraId"] == cameraId
-     * (ScheduleDao không có query filter theo cameraId nên lọc in-memory)
-     */
     fun loadSchedules() {
         viewModelScope.launch {
             try {
-                val all = database.scheduleDao().getAllSchedules()
-                _schedules.value = all.filter { schedule ->
-                    runCatching {
-                        JSONObject(schedule.params).getString("cameraId") == cameraId
-                    }.getOrDefault(false)
+                val all = withContext(Dispatchers.IO) {
+                    database.scheduleDao().getAllSchedules()
                 }
+                // Tối ưu hiệu năng: Đưa tác vụ lọc dữ liệu mảng lớn và phân tích JSON ra khỏi Luồng chính
+                val filtered = withContext(Dispatchers.Default) {
+                    all.filter { schedule ->
+                        runCatching {
+                            // Chuyển sang dùng optString để loại bỏ rủi ro ném ngoại lệ JSONException
+                            JSONObject(schedule.params).optString("cameraId") == cameraId
+                        }.getOrDefault(false)
+                    }
+                }
+                _schedules.value = filtered
                 logger.d("CameraDetailViewModel", "loadSchedules: ${_schedules.value.size} lịch cho cameraId=$cameraId")
             } catch (e: Exception) {
                 logger.e("CameraDetailViewModel", "loadSchedules error: ${e.message}", e)
@@ -207,13 +203,11 @@ class CameraDetailViewModel @Inject constructor(
         }
     }
 
-    /** Mở form thêm mới lịch */
     fun openAddSchedule() {
         _scheduleDraft.value = ScheduleDraft()
         _scheduleResult.value = null
     }
 
-    /** Mở form sửa lịch đã có */
     fun openEditSchedule(schedule: ScheduleEntity) {
         _scheduleDraft.value = ScheduleDraft(
             id = schedule.id,
@@ -225,18 +219,15 @@ class CameraDetailViewModel @Inject constructor(
         _scheduleResult.value = null
     }
 
-    /** Đóng form (huỷ) */
     fun closeScheduleEditor() {
         _scheduleDraft.value = null
         _scheduleResult.value = null
     }
 
-    /** Cập nhật draft khi user chỉnh */
     fun updateScheduleDraft(update: ScheduleDraft.() -> ScheduleDraft) {
         _scheduleDraft.value = _scheduleDraft.value?.update()
     }
 
-    /** Lưu (thêm mới hoặc cập nhật) */
     fun saveSchedule() {
         val draft = _scheduleDraft.value ?: return
         if (draft.cron.isBlank() && draft.intervalMinutes <= 0) {
@@ -260,22 +251,21 @@ class CameraDetailViewModel @Inject constructor(
                     intervalMinutes = draft.intervalMinutes,
                     enabled = if (draft.enabled) 1 else 0,
                     createdAt = if (isNew) System.currentTimeMillis() else {
-                        // giữ nguyên createdAt cũ
                         _schedules.value.find { it.id == draft.id }?.createdAt
                             ?: System.currentTimeMillis()
                     }
                 )
 
-                if (isNew) {
-                    database.scheduleDao().insertSchedule(schedule)
-                    _scheduleResult.value = "✅ Đã thêm lịch mới"
-                    logger.i("CameraDetailViewModel", "saveSchedule: thêm mới id=${schedule.id} cameraId=$cameraId")
-                } else {
-                    database.scheduleDao().updateSchedule(schedule)
-                    _scheduleResult.value = "✅ Đã cập nhật lịch"
-                    logger.i("CameraDetailViewModel", "saveSchedule: cập nhật id=${schedule.id} cameraId=$cameraId")
+                withContext(Dispatchers.IO) {
+                    if (isNew) {
+                        database.scheduleDao().insertSchedule(schedule)
+                    } else {
+                        database.scheduleDao().updateSchedule(schedule)
+                    }
                 }
 
+                _scheduleResult.value = if (isNew) "✅ Đã thêm lịch mới" else "✅ Đã cập nhật lịch"
+                logger.i("CameraDetailViewModel", "saveSchedule: hoàn tất id=${schedule.id} cameraId=$cameraId")
                 loadSchedules()
                 _scheduleDraft.value = null
             } catch (e: Exception) {
@@ -287,12 +277,13 @@ class CameraDetailViewModel @Inject constructor(
         }
     }
 
-    /** Bật/tắt một lịch trình */
     fun toggleSchedule(schedule: ScheduleEntity) {
         viewModelScope.launch {
             try {
                 val newEnabled = if (schedule.enabled == 1) 0 else 1
-                database.scheduleDao().toggleSchedule(schedule.id, newEnabled)
+                withContext(Dispatchers.IO) {
+                    database.scheduleDao().toggleSchedule(schedule.id, newEnabled)
+                }
                 loadSchedules()
                 logger.d("CameraDetailViewModel", "toggleSchedule id=${schedule.id} enabled=$newEnabled")
             } catch (e: Exception) {
@@ -302,11 +293,12 @@ class CameraDetailViewModel @Inject constructor(
         }
     }
 
-    /** Xoá lịch trình */
     fun deleteSchedule(scheduleId: String) {
         viewModelScope.launch {
             try {
-                database.scheduleDao().deleteSchedule(scheduleId)
+                withContext(Dispatchers.IO) {
+                    database.scheduleDao().deleteSchedule(scheduleId)
+                }
                 loadSchedules()
                 _scheduleResult.value = "🗑️ Đã xoá lịch"
                 logger.i("CameraDetailViewModel", "deleteSchedule id=$scheduleId cameraId=$cameraId")
@@ -329,7 +321,9 @@ class CameraDetailViewModel @Inject constructor(
         viewModelScope.launch {
             val cam = _camera.value ?: return@launch
             val newManualOff = if (cam.manualOff == 0) 1 else 0
-            database.cameraDao().updateCamera(cam.copy(manualOff = newManualOff))
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCamera(cam.copy(manualOff = newManualOff))
+            }
             loadCamera()
         }
     }
@@ -338,7 +332,9 @@ class CameraDetailViewModel @Inject constructor(
         viewModelScope.launch {
             val cam = _camera.value ?: return@launch
             val newMode = !_smartMode.value
-            database.cameraDao().updateCameraSmartMode(cam.id, if (newMode) 1 else 0)
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCameraSmartMode(cam.id, if (newMode) 1 else 0)
+            }
             _smartMode.value = newMode
             logger.i("CameraDetailViewModel", "CameraSmartMode ${cam.id} → $newMode")
         }
@@ -352,7 +348,9 @@ class CameraDetailViewModel @Inject constructor(
                 if (url.isNullOrBlank()) {
                     logger.w("CameraDetailViewModel", "loadLiveSnapshot: snapshotUrl trống, id=$cameraId")
                 } else {
-                    val bytes = snapshotFetcher.fetchSnapshot(url)
+                    val bytes = withContext(Dispatchers.IO) {
+                        snapshotFetcher.fetchSnapshot(url)
+                    }
                     if (bytes != null) {
                         logger.d("CameraDetailViewModel", "loadLiveSnapshot: OK (${bytes.size} bytes) | id=$cameraId")
                     } else {
@@ -372,49 +370,47 @@ class CameraDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _testResult.value = null
+            
+            val cam = withContext(Dispatchers.IO) {
+                database.cameraDao().getCameraById(cameraId)
+            }
+            
+            if (cam == null) {
+                _testResult.value = "❌ Không tìm thấy camera"
+                logger.w("CameraDetailViewModel", "testCamera: không tìm thấy camera id=$cameraId")
+                _isLoading.value = false
+                return@launch
+            }
+
+            if (cam.snapshoturl.isBlank()) {
+                _testResult.value = "❌ Camera chưa cấu hình URL ảnh chụp"
+                logger.w("CameraDetailViewModel", "testCamera: snapshotUrl trống, id=$cameraId")
+                _isLoading.value = false
+                return@launch
+            }
+
+            val setting = withContext(Dispatchers.IO) {
+                database.cameraDao().getCustomerSetting(cam.customerId)
+            }
+            val wasSmartOff = setting?.smartMode != 1
+
             try {
-                val cam = database.cameraDao().getCameraById(cameraId)
-                if (cam == null) {
-                    _testResult.value = "❌ Không tìm thấy camera"
-                    logger.w("CameraDetailViewModel", "testCamera: không tìm thấy camera id=$cameraId")
-                    return@launch
-                }
-
-                if (cam.snapshoturl.isBlank()) {
-                    _testResult.value = "❌ Camera chưa cấu hình URL ảnh chụp"
-                    logger.w("CameraDetailViewModel", "testCamera: snapshotUrl trống, id=$cameraId")
-                    return@launch
-                }
-
-                val setting = database.cameraDao().getCustomerSetting(cam.customerId)
-                val wasSmartOff = setting?.smartMode != 1
-
                 if (wasSmartOff) {
-                    database.cameraDao().insertCustomerSetting(
-                        CustomerSettingEntity(
-                            customerId = cam.customerId,
-                            smartMode = 1,
-                            isActive = setting?.isActive ?: 1,
-                            updatedAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
+                    withContext(Dispatchers.IO) {
+                        database.cameraDao().insertCustomerSetting(
+                            CustomerSettingEntity(
+                                customerId = cam.customerId,
+                                smartMode = 1,
+                                isActive = setting?.isActive ?: 1,
+                                updatedAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
                         )
-                    )
+                    }
                 }
 
                 logger.d("CameraDetailViewModel", "testCamera: bắt đầu scan id=$cameraId, url=${cam.snapshoturl}")
                 val response = cameraSkill.scanCamera(cameraId, isDailyReport = false)
-
-                if (wasSmartOff) {
-                    database.cameraDao().insertCustomerSetting(
-                        CustomerSettingEntity(
-                            customerId = cam.customerId,
-                            smartMode = 0,
-                            isActive = setting?.isActive ?: 1,
-                            updatedAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
-                        )
-                    )
-                }
 
                 when (response) {
                     is PluginResult.Success -> {
@@ -456,12 +452,30 @@ class CameraDetailViewModel @Inject constructor(
                         _testResult.value = "❌ Kết quả không xác định"
                     }
                 }
-                loadCamera()
             } catch (e: Exception) {
                 _testResult.value = "❌ Exception: ${e.message}"
                 logger.e("CameraDetailViewModel", "testCamera error: ${e.message}", e)
             } finally {
+                // CHỐNG RÒ RỈ TRẠNG THÁI: Khối "finally" đảm bảo hạ smartMode về chế độ gốc ban đầu kể cả khi tiến trình bị lỗi đột ngột
+                if (wasSmartOff) {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            database.cameraDao().insertCustomerSetting(
+                                CustomerSettingEntity(
+                                    customerId = cam.customerId,
+                                    smartMode = 0,
+                                    isActive = setting?.isActive ?: 1,
+                                    createdAt = System.currentTimeMillis(),
+                                    timestamp = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    } catch (e: Exception) {
+                        logger.e("CameraDetailViewModel", "Không thể khôi phục thiết lập smartMode gốc", e)
+                    }
+                }
                 _isLoading.value = false
+                loadCamera()
             }
         }
     }

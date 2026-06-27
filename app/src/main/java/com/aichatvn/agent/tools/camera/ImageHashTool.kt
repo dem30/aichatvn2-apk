@@ -3,16 +3,14 @@ package com.aichatvn.agent.tools.camera
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.cos
 import kotlin.math.sqrt
 
-/**
- * Pure Kotlin pHash implementation — no external library required.
- * Uses a 32x32 DCT-based perceptual hash.
- */
 @Singleton
 class ImageHashTool @Inject constructor() {
 
@@ -21,13 +19,15 @@ class ImageHashTool @Inject constructor() {
         private const val DCT_SIZE = 8
     }
 
-    fun calculatePhash(imageBytes: ByteArray): String {
-        return try {
-            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+    // Tối ưu hóa lớn: Di chuyển toàn bộ tiến trình phân tích ảnh nặng ra khỏi Luồng chính bằng Dispatchers.Default
+    suspend fun calculatePhash(imageBytes: ByteArray): String = withContext(Dispatchers.Default) {
+        try {
+            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size) 
+                ?: return@withContext "" // Chống lỗi NPE nếu mảng byte ảnh hỏng
+                
             val scaled = Bitmap.createScaledBitmap(bitmap, HASH_SIZE, HASH_SIZE, true)
             if (bitmap != scaled) bitmap.recycle()
 
-            // Convert to grayscale luma values
             val pixels = Array(HASH_SIZE) { y ->
                 DoubleArray(HASH_SIZE) { x ->
                     val pixel = scaled.getPixel(x, y)
@@ -36,16 +36,13 @@ class ImageHashTool @Inject constructor() {
             }
             scaled.recycle()
 
-            // Apply 2D DCT and take top-left 8x8
             val dct = applyDCT(pixels)
             val subDct = DoubleArray(DCT_SIZE * DCT_SIZE) { i ->
                 dct[i / DCT_SIZE][i % DCT_SIZE]
             }
 
-            // Compute mean (excluding first coefficient)
             val mean = subDct.drop(1).average()
 
-            // Build binary hash
             buildString {
                 subDct.forEach { v -> append(if (v > mean) '1' else '0') }
             }
@@ -82,8 +79,9 @@ class ImageHashTool @Inject constructor() {
         return distance
     }
 
-    fun optimizeImage(imageBytes: ByteArray, maxWidth: Int = 480, maxHeight: Int = 270): ByteArray {
-        return try {
+    // Tối ưu hóa lớn: Di chuyển toàn bộ tiến trình giảm dung lượng ảnh nặng ra Dispatchers.Default
+    suspend fun optimizeImage(imageBytes: ByteArray, maxWidth: Int = 480, maxHeight: Int = 270): ByteArray = withContext(Dispatchers.Default) {
+        try {
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
 
@@ -93,7 +91,8 @@ class ImageHashTool @Inject constructor() {
             }
 
             val decodeOptions = BitmapFactory.Options().apply { inSampleSize = scale }
-            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions)
+            val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions) 
+                ?: return@withContext imageBytes // Chống lỗi NPE và sập app nếu ảnh thô bị hỏng từ đầu vào
 
             val scaledBitmap = Bitmap.createScaledBitmap(bitmap, maxWidth, maxHeight, true)
             if (bitmap != scaledBitmap) bitmap.recycle()

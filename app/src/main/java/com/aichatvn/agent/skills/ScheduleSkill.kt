@@ -11,9 +11,11 @@ import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
@@ -25,7 +27,7 @@ class ScheduleSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("schedule", "Lên lịch trình", logger), Plugin {
 
-  override val routable: Boolean = true
+    override val routable: Boolean = true
     override val visibleOnDashboard: Boolean = false
     override val autoGenerateQA: Boolean = true
 
@@ -45,8 +47,12 @@ class ScheduleSkill @Inject constructor(
                     "(pluginId.action), tra đúng theo schema action đó trong danh sách plugin — " +
                     "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
                     "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
+                examples = listOf(
+                    "lên lịch tự động chụp ảnh cổng",
+                    "tạo lịch trình hẹn giờ",
+                    "dat lich tu dong gui bao cao"
+                ),
                 parameters = listOf(
-                    // Định nghĩa siêu dữ liệu cho phép Schema Composer nhận diện vai trò lồng ghép
                     PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
                     PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
                     PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false, "time"),
@@ -57,11 +63,21 @@ class ScheduleSkill @Inject constructor(
             PluginAction(
                 name = "list",
                 description = "Liệt kê lịch trình",
+                examples = listOf(
+                    "danh sách lịch đang chạy",
+                    "xem lich trình",
+                    "cac lich trinh da tao"
+                ),
                 parameters = emptyList()
             ),
             PluginAction(
                 name = "delete",
                 description = "Xóa lịch trình",
+                examples = listOf(
+                    "xóa lịch hẹn giờ",
+                    "huy lich trinh",
+                    "delete schedule"
+                ),
                 parameters = listOf(
                     PluginParameter("id", "string", "ID lịch trình", true, "string")
                 )
@@ -69,6 +85,11 @@ class ScheduleSkill @Inject constructor(
             PluginAction(
                 name = "toggle",
                 description = "Bật/tắt lịch trình",
+                examples = listOf(
+                    "tắt lịch tự động chụp ảnh",
+                    "kích hoạt lịch hẹn giờ",
+                    "bat lich trinh"
+                ),
                 parameters = listOf(
                     PluginParameter("id", "string", "ID lịch trình", true, "string"),
                     PluginParameter("enabled", "boolean", "true: bật, false: tắt", true, "boolean")
@@ -128,10 +149,11 @@ class ScheduleSkill @Inject constructor(
             createdAt = System.currentTimeMillis()
         )
         
-        database.scheduleDao().insertSchedule(schedule)
+        withContext(Dispatchers.IO) {
+            database.scheduleDao().insertSchedule(schedule)
+            TaskScheduler.runNow(context)
+        }
         loadSchedules()
-
-        TaskScheduler.runNow(context)
 
         return success(
             message = "✅ Đã tạo lịch: $pluginId.$action sẽ chạy ${if(cron.isNotEmpty()) "theo cron ($cron)" else "mỗi $intervalMinutes phút"}",
@@ -140,14 +162,18 @@ class ScheduleSkill @Inject constructor(
     }
 
     private suspend fun handleList(): AgentKernel.PluginResult {
-        val list = database.scheduleDao().getAllSchedules()
+        val list = withContext(Dispatchers.IO) {
+            database.scheduleDao().getAllSchedules()
+        }
         return AgentKernel.PluginResult.Success(list)
     }
 
     private suspend fun handleDelete(params: Map<String, Any>): AgentKernel.PluginResult {
         val id = params["id"] as? String ?: return failure("Thiếu id")
         
-        database.scheduleDao().deleteSchedule(id)
+        withContext(Dispatchers.IO) {
+            database.scheduleDao().deleteSchedule(id)
+        }
         loadSchedules()
         
         return success("✅ Đã xóa lịch trình")
@@ -157,14 +183,19 @@ class ScheduleSkill @Inject constructor(
         val id = params["id"] as? String ?: return failure("Thiếu id")
         val enabled = params["enabled"] as? Boolean ?: return failure("Thiếu enabled")
         
-        database.scheduleDao().toggleSchedule(id, if (enabled) 1 else 0)
+        withContext(Dispatchers.IO) {
+            database.scheduleDao().toggleSchedule(id, if (enabled) 1 else 0)
+        }
         loadSchedules()
         
         return success("✅ Đã ${if(enabled) "bật" else "tắt"} lịch trình")
     }
 
     suspend fun loadSchedules() {
-        _schedules.value = database.scheduleDao().getAllSchedules()
+        val list = withContext(Dispatchers.IO) {
+            database.scheduleDao().getAllSchedules()
+        }
+        _schedules.value = list
     }
 
     override suspend fun initialize() {
