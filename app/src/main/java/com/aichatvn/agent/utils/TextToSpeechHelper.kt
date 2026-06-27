@@ -85,7 +85,7 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
             val pending = pendingSpeak
             pendingSpeak = null
             if (pending != null) {
-                // SỬA LỖI ĐIỀU PHỐI LUỒNG: Ép chạy tác vụ đang chờ trên Main Thread thông qua Handler để đảm bảo an toàn luồng tuyệt đối
+                // Đảm bảo chạy tác vụ phát giọng nói còn chờ trên Main Thread một cách an toàn nhất
                 mainHandler.post(pending)
             }
         } else {
@@ -135,7 +135,14 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
             }
         }
 
-        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        // KHẮC PHỤC CRASH: Bao bọc cuộc gọi tts?.speak bằng try-catch đề phòng thiết bị lỗi hỏng dịch vụ TTS Engine ngầm
+        val result = try {
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        } catch (e: Exception) {
+            Log.e("TextToSpeechHelper", "Lỗi phát âm thanh TTS: ${e.message}", e)
+            TextToSpeech.ERROR
+        }
+
         if (result == TextToSpeech.ERROR) {
             _isSpeaking.set(false)
             synchronized(callbacks) { callbacks.remove(utteranceId) }
