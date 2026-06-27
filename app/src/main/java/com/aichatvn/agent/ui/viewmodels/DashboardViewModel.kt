@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.ui.dashboard.DashboardProvider
@@ -24,7 +25,6 @@ class DashboardViewModel @Inject constructor(
     private val logger: Logger
 ) : ViewModel() {
 
-    // Lắng nghe trực tiếp luồng dữ liệu thời gian thực của Registry trung tâm
     val deviceNodes: StateFlow<List<DeviceNode>> = deviceRegistry.deviceNodes
 
     private val _isProcessing = MutableStateFlow(false)
@@ -33,10 +33,6 @@ class DashboardViewModel @Inject constructor(
     private val _executionMessage = MutableStateFlow<String?>(null)
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
-    /**
-     * Quét thủ công ép buộc làm mới sơ đồ thiết bị.
-     * Vòng lặp 5s đã bị gỡ bỏ, chỉ chạy quét khi người dùng click nút làm mới
-     */
     fun refreshDashboardNodes() {
         viewModelScope.launch {
             _isProcessing.value = true
@@ -60,26 +56,24 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Gửi lệnh thực thi hành động vật lý của thiết bị
-     */
-    fun sendDeviceAction(node: DeviceNode, actionId: String, extraParams: Map<String, Any>) {
+    // ✅ FIX: Nhận DeviceAction thay vì actionId (String) để merge được action.defaultParams
+    fun sendDeviceAction(node: DeviceNode, action: DeviceAction, extraParams: Map<String, Any>) {
         viewModelScope.launch {
             _isProcessing.value = true
             _executionMessage.value = null
             try {
-                // Lồng ghép tham số nhận diện mặc định của node với tham số hành động
-                val finalParams = node.defaultParams + extraParams
+                // ✅ FIX: Merge đủ 3 lớp params: node defaults + action defaults + caller extras
+                val finalParams = node.defaultParams + action.defaultParams + extraParams
                 val result = withContext(Dispatchers.IO) {
-                    agentKernel.executePluginAction(node.pluginId, actionId, finalParams)
+                    agentKernel.executePluginAction(node.pluginId, action.id, finalParams)
                 }
-                
+
                 when (result) {
                     is PluginResult.Success -> {
-                        val msg = (result.data as? Map<*, *>)?.get("message") as? String ?: "✅ Đã thực hiện thành công"
+                        val msg = (result.data as? Map<*, *>)?.get("message") as? String
+                            ?: "✅ Đã thực hiện thành công"
                         _executionMessage.value = msg
-                        
-                        // ĐỒNG BỘ DIGITAL TWIN CHỦ ĐỘNG: Ghi nhận trạng thái mới tức thời lên Bản sao số ngay khi gửi lệnh bật/tắt thành công
+
                         val stateValue = extraParams["state"] as? Boolean
                         if (stateValue != null) {
                             deviceRegistry.updateNode(node.id) { current ->
@@ -100,11 +94,18 @@ class DashboardViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _executionMessage.value = "❌ Lỗi thực thi: ${e.message}"
-                logger.e("DashboardViewModel", "Lỗi gửi lệnh $actionId tới node ${node.id}", e)
+                logger.e("DashboardViewModel", "Lỗi gửi lệnh ${action.id} tới node ${node.id}", e)
             } finally {
                 _isProcessing.value = false
             }
         }
+    }
+
+    // Overload giữ lại để tương thích với defaultAction (không có DeviceAction object)
+    fun sendDeviceAction(node: DeviceNode, actionId: String, extraParams: Map<String, Any>) {
+        val action = node.supportedActions.find { it.id == actionId }
+            ?: DeviceAction(id = actionId, title = actionId, icon = "")
+        sendDeviceAction(node, action, extraParams)
     }
 
     fun clearExecutionMessage() {

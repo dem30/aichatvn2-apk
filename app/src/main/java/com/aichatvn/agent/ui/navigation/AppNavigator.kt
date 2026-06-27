@@ -28,6 +28,7 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
     object Diagnostics: Screen("diagnostics", R.string.tab_diagnostics, Icons.Default.MonitorHeart)
     object Logs       : Screen("logs",        R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",    R.string.tab_settings,    Icons.Default.Settings)
+    object Tuya       : Screen("tuya",        R.string.tab_settings,    Icons.Default.Devices)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -82,6 +83,7 @@ fun AppNavigator() {
             composable(Screen.Diagnostics.route) { DiagnosticsScreen(navController) }
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
+            composable(Screen.Tuya.route)        { TuyaScreen(navController) }
 
             // Camera theo khách hàng
             composable(

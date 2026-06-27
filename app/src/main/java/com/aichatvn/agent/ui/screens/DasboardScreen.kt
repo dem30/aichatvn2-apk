@@ -264,7 +264,7 @@ fun DashboardScreen(
                                                         selectedNode = null
                                                     }
                                                 }
-                                                viewModel.sendDeviceAction(node, action.id, emptyMap())
+                                                viewModel.sendDeviceAction(node, action, emptyMap())
                                             },
                                             colors = when {
                                                 isPositive -> ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))

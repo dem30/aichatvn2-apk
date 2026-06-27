@@ -176,6 +176,12 @@ fun SettingsScreen(
                 Text(tuyaTestResult!!, style = MaterialTheme.typography.bodySmall,
                     color = if (tuyaTestResult!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
             }
+            OutlinedButton(
+                onClick = { navController.navigate("tuya") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🔌 Quản lý thiết bị Tuya")
+            }
 
             HorizontalDivider()
 
