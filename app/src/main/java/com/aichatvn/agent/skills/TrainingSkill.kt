@@ -281,7 +281,6 @@ class TrainingSkill @Inject constructor(
     suspend fun refreshQAList(username: String) {
         cacheMutex.withLock {
             val userQAs = database.qaDao().getAllQAs(username)
-            // ĐỒNG BỘ ĐA TÀI KHOẢN: Luôn tự động tải các Intents & Aliases hệ thống (default_user) để đảm bảo AI hoạt động
             val systemQAs = if (username != "default_user") {
                 database.qaDao().getAllQAs("default_user")
             } else {
@@ -613,18 +612,11 @@ class TrainingSkill @Inject constructor(
         }
     }
 
-    private fun normalizeVietnamese(text: String): String {
-        val temp = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
-        val regex = "\\p{InCombiningDiacriticalMarks}+".toRegex()
-        return regex.replace(temp, "")
-            .replace("đ", "d")
-            .replace("Đ", "D")
-            .lowercase()
-            .trim()
-            .replace(SPACE_REGEX, " ")
-    }
-    
-    private fun calculateSimilarity(clean1: String, clean2: String): Float {
+    // Tối ưu hóa lớn: Chuẩn hóa không dấu cho CẢ HAI đối số đầu vào s1 và s2 của calculateSimilarity
+    // Việc này triệt tiêu hoàn toàn lỗi lệch Jaccard Token (intersection = 0) khi so khớp mờ tìm kiếm Q&A Tiếng Việt có dấu
+    private fun calculateSimilarity(s1: String, s2: String): Float {
+        val clean1 = normalizeVietnamese(s1)
+        val clean2 = normalizeVietnamese(s2)
         if (clean1.isEmpty() || clean2.isEmpty()) return 0f
         if (clean1 == clean2) return 1f
         
