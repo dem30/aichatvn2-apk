@@ -17,8 +17,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
-private val EMAIL_REGEX = Regex("[A-Za-0-9+_.-]+@[A-Za-0-9.-]+\\.[A-Za-z]{2,}")
-
+private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
 data class LocalCandidate(
     val pluginId: String,
     val action: String,
@@ -30,6 +29,15 @@ data class Tier2Result(
     val plugin: Plugin,
     val intent: AgentKernel.Intent,
     val confidence: Double
+)
+
+data class NormalizedActionMetadata(
+    val plugin: Plugin,
+    val action: PluginAction,
+    val normalizedDescription: String,
+    val normalizedExamples: List<String>,
+    val normalizedAliases: List<String>,
+    val normalizedTags: List<String>
 )
 
 @Singleton
@@ -60,9 +68,18 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    private val pluginActionList: List<Pair<Plugin, PluginAction>> by lazy {
+    private val normalizedActionMetadataList: List<NormalizedActionMetadata> by lazy {
         plugins.flatMap { plugin ->
-            plugin.getActions().map { action -> plugin to action }
+            plugin.getActions().map { action ->
+                NormalizedActionMetadata(
+                    plugin = plugin,
+                    action = action,
+                    normalizedDescription = normalizeVietnamese(action.description),
+                    normalizedExamples = action.examples.map { normalizeVietnamese(it) },
+                    normalizedAliases = action.aliases.map { normalizeVietnamese(it) },
+                    normalizedTags = action.tags.map { normalizeVietnamese(it) }
+                )
+            }
         }
     }
 
@@ -75,22 +92,23 @@ class AgentKernel @Inject constructor(
         secondaryIntentQA: QAEntity?,
         devicePlugins: List<Plugin>,
         excludeIntentId: String?,
-        depth: Int
+        depth: Int,
+        userMessage: String
     ) -> Any?> = mapOf(
-        "time" to { _, currentValue, _, _, localEntities, _, _, _, _ ->
+        "time" to { _, currentValue, _, _, localEntities, _, _, _, _, _ ->
             localEntities["cron"] ?: currentValue ?: ""
         },
-        "interval" to { _, currentValue, _, _, localEntities, _, _, _, _ ->
+        "interval" to { _, currentValue, _, _, localEntities, _, _, _, _, _ ->
             localEntities["intervalMinutes"] ?: currentValue ?: 0
         },
-        "plugin_id" to { _, currentValue, isPlh, _, _, secondaryIntent, _, _, _ ->
+        "plugin_id" to { _, currentValue, isPlh, _, _, secondaryIntent, _, _, _, _ ->
             if (isPlh && secondaryIntent != null) resolvePluginIdFromSecondary(secondaryIntent) else currentValue ?: ""
         },
-        "action_id" to { _, currentValue, isPlh, _, _, secondaryIntent, _, _, _ ->
+        "action_id" to { _, currentValue, isPlh, _, _, secondaryIntent, _, _, _, _ ->
             if (isPlh && secondaryIntent != null) resolveActionIdFromSecondary(secondaryIntent) else currentValue ?: ""
         },
-        "params" to { param, currentValue, _, matchResult, _, secondaryIntent, devicePlugins, excludeId, depth ->
-            resolveNestedParams(param, currentValue, matchResult, secondaryIntent, devicePlugins, excludeId, depth)
+        "params" to { param, currentValue, _, matchResult, _, secondaryIntent, devicePlugins, excludeId, depth, userMessage ->
+            resolveNestedParams(param, currentValue, matchResult, secondaryIntent, devicePlugins, excludeId, depth, userMessage)
         }
     )
 
@@ -220,22 +238,22 @@ class AgentKernel @Inject constructor(
         
         val normalizedUserQuery = normalizeVietnamese(userMessage)
 
-        pluginActionList.forEach { (plugin, action) ->
-            if (!plugin.routable || !action.enabled) return@forEach
+        normalizedActionMetadataList.forEach { meta ->
+            if (!meta.plugin.routable || !meta.action.enabled) return@forEach
 
-            val maxExampleScore = action.examples.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
-            val maxAliasScore = action.aliases.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
-            val maxTagScore = action.tags.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
-            val descriptionScore = calculateLocalSimilarity(normalizedUserQuery, action.description)
+            val maxExampleScore = meta.normalizedExamples.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
+            val maxAliasScore = meta.normalizedAliases.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
+            val maxTagScore = meta.normalizedTags.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
+            val descriptionScore = calculateLocalSimilarity(normalizedUserQuery, meta.normalizedDescription)
 
             val actionBestScore = maxOf(maxExampleScore, maxAliasScore, maxTagScore, descriptionScore)
             if (actionBestScore > bestScore) {
                 bestScore = actionBestScore
-                bestMatch = plugin to action
+                bestMatch = meta.plugin to meta.action
             }
         }
 
-        if (bestScore >= 0.82 && bestMatch != null) {
+        if (bestScore >= 0.80 && bestMatch != null) {
             val (plugin, action) = bestMatch!!
 
             val schemaParams = mutableMapOf<String, Any>()
@@ -259,9 +277,8 @@ class AgentKernel @Inject constructor(
         return null
     }
 
-    private fun calculateLocalSimilarity(clean1: String, s2: String): Double {
-        if (clean1.isEmpty() || s2.isEmpty()) return 0.0
-        val clean2 = normalizeVietnamese(s2)
+    private fun calculateLocalSimilarity(clean1: String, clean2: String): Double {
+        if (clean1.isEmpty() || clean2.isEmpty()) return 0.0
         if (clean1 == clean2) return 1.0
 
         val lenDiff = Math.abs(clean1.length - clean2.length)
@@ -278,7 +295,23 @@ class AgentKernel @Inject constructor(
             return 0.0
         }
 
-        if (clean1.contains(clean2) || clean2.contains(clean1)) {
+        val isWordMatch = when {
+            clean1.contains(clean2) -> {
+                val index = clean1.indexOf(clean2)
+                val charBefore = if (index > 0) clean1[index - 1] else ' '
+                val charAfter = if (index + clean2.length < clean1.length) clean1[index + clean2.length] else ' '
+                charBefore.isWhitespace() && charAfter.isWhitespace()
+            }
+            clean2.contains(clean1) -> {
+                val index = clean2.indexOf(clean1)
+                val charBefore = if (index > 0) clean2[index - 1] else ' '
+                val charAfter = if (index + clean1.length < clean2.length) clean2[index + clean1.length] else ' '
+                charBefore.isWhitespace() && charAfter.isWhitespace()
+            }
+            else -> false
+        }
+
+        if (isWordMatch) {
             return 0.95
         }
 
@@ -331,9 +364,11 @@ class AgentKernel @Inject constructor(
         if (depth > MAX_DEPTH) return emptyMap()
 
         val localEntities = mutableMapOf<String, Any>()
-        EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
-        parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
-        parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
+        if (userMessage.isNotBlank()) {
+            EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
+            parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
+            parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
+        }
 
         val secondaryIntentQA = matchResult.intentMatches
             .filter { it.first.type == "intent" }
@@ -350,7 +385,7 @@ class AgentKernel @Inject constructor(
             if (resolver != null) {
                 resolved[param.name] = resolver(
                     param, currentValue, isPlh, matchResult, localEntities,
-                    secondaryIntentQA, devicePlugins, excludeIntentId, depth
+                    secondaryIntentQA, devicePlugins, excludeIntentId, depth, userMessage
                 ) ?: ""
             } else {
                 resolved[param.name] = resolveAliasOrFallback(param, currentValue, isPlh, matchResult, localEntities)
@@ -375,7 +410,8 @@ class AgentKernel @Inject constructor(
         secondaryIntentQA: QAEntity?,
         devicePlugins: List<Plugin>,
         excludeIntentId: String?,
-        depth: Int
+        depth: Int,
+        userMessage: String
     ): Any {
         if (secondaryIntentQA == null) return currentValue ?: emptyMap<String, Any>()
         return try {
@@ -392,7 +428,7 @@ class AgentKernel @Inject constructor(
                     parameters = secAction.parameters,
                     inputParams = secParams,
                     matchResult = matchResult,
-                    userMessage = "",
+                    userMessage = userMessage,
                     devicePlugins = devicePlugins,
                     excludeIntentId = excludeIntentId,
                     depth = depth + 1
@@ -483,8 +519,12 @@ class AgentKernel @Inject constructor(
 
             if (param.semanticType == "params") {
                 val nestedParams = value as? Map<*, *>
-                val targetPluginId = params["pluginId"]?.toString() ?: ""
-                val targetAction = params["action"]?.toString() ?: ""
+                val targetPluginId = params["plugin_id"]?.toString()
+                    ?: params["pluginId"]?.toString()
+                    ?: params["plugin"]?.toString() ?: ""
+                val targetAction = params["action_id"]?.toString()
+                    ?: params["action"]?.toString()
+                    ?: params["actionId"]?.toString() ?: ""
                 
                 if (targetPluginId.isNotBlank() && targetAction.isNotBlank()) {
                     val tPlugin = plugins.find { it.id == targetPluginId }
@@ -533,7 +573,7 @@ class AgentKernel @Inject constructor(
             "body"                                     -> "Nội dung email bạn muốn viết gì?"
             "title"                                    -> "Tiêu đề thông báo là gì vậy bạn?"
             "message"                                  -> "Nội dung thông báo bạn muốn gửi là gì?"
-            "pluginId"                                 -> "Bạn muốn lên lịch cho chức năng nào?"
+            "pluginId", "plugin_id"                    -> "Bạn muốn lên lịch cho chức năng nào?"
             else                                       -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
         }
     }
@@ -637,8 +677,12 @@ class AgentKernel @Inject constructor(
             val actualKey = if (isNested) param.removePrefix("params.") else param
 
             val paramMeta = if (isNested) {
-                val targetPluginId = pending.knownParams["pluginId"]?.toString() ?: ""
-                val targetActionName = pending.knownParams["action"]?.toString() ?: ""
+                val targetPluginId = pending.knownParams["plugin_id"]?.toString()
+                    ?: pending.knownParams["pluginId"]?.toString()
+                    ?: pending.knownParams["plugin"]?.toString() ?: ""
+                val targetActionName = pending.knownParams["action_id"]?.toString()
+                    ?: pending.knownParams["action"]?.toString()
+                    ?: pending.knownParams["actionId"]?.toString() ?: ""
                 val tPlugin = devicePlugins.find { it.id == targetPluginId }
                 tPlugin?.getActions()?.find { it.name == targetActionName }?.parameters?.find { it.name == actualKey }
             } else {
@@ -764,7 +808,7 @@ class AgentKernel @Inject constructor(
         }
 
         if (stillMissing.isNotEmpty()) {
-            val madeProgress = normalizedMergedParams.size > pending.knownParams.size
+            val madeProgress = stillMissing.size < pending.missingParams.size
             val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
             val question = getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action)
 
@@ -870,8 +914,12 @@ class AgentKernel @Inject constructor(
             if (key == "params" && value is Map<*, *>) {
                 @Suppress("UNCHECKED_CAST")
                 val nested = value as Map<String, Any>
-                val targetPluginId = params["pluginId"]?.toString() ?: ""
-                val targetAction = params["action"]?.toString() ?: ""
+                val targetPluginId = params["plugin_id"]?.toString()
+                    ?: params["pluginId"]?.toString()
+                    ?: params["plugin"]?.toString() ?: ""
+                val targetAction = params["action_id"]?.toString()
+                    ?: params["action"]?.toString()
+                    ?: params["actionId"]?.toString() ?: ""
                 val targetPlugin = plugins.find { it.id == targetPluginId }
                 return@mapValues if (targetPlugin != null && targetAction.isNotEmpty()) {
                     normalizeParams(nested, targetPlugin, targetAction, userMessage)
@@ -887,19 +935,7 @@ class AgentKernel @Inject constructor(
                 rawValue = extractBooleanFromMessage(userMessage) ?: value
             }
 
-            paramMeta.normalize(rawValue) ?: value
-        }
-    }
-
-    private fun parseBooleanSmart(value: Any?): Boolean? {
-        if (value is Boolean) return value
-        val str = value?.toString()?.trim()?.lowercase() ?: return null
-        val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "enable")
-        val falseWords = setOf("false", "tắt", "no", "off", "0", "dừng", "vô hiệu", "disable")
-        return when (str) {
-            in trueWords -> true
-            in falseWords -> false
-            else -> null
+            paramMeta.normalize(rawValue) ?: paramMeta.defaultValue ?: ""
         }
     }
 
