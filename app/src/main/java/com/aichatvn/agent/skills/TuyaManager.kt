@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -38,12 +39,13 @@ class TuyaManager @Inject constructor(
         private val CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
         private val DATA_CENTER = stringPreferencesKey("tuya_data_center")
         
+        // Cập nhật URL máy chủ Singapore theo tài liệu chính thức của Tuya
         private val API_URLS = mapOf(
             "us" to "https://openapi.tuyaus.com",
             "eu" to "https://openapi.tuyaeu.com",
             "cn" to "https://openapi.tuyacn.com",
             "in" to "https://openapi.tuyain.com",
-            "sg" to "https://openapi.tuyasg.com"
+            "sg" to "https://openapi-sg.iotbing.com"
         )
         
         private const val DEFAULT_REGION = "sg"
@@ -88,13 +90,34 @@ class TuyaManager @Inject constructor(
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""
+        val clientSecret = prefs[CLIENT_SECRET] ?: ""
         val baseUrl = getApiBaseUrl()
         
-        val url = "$baseUrl/v1.0/iot-01/associated-users/devices"
+        val urlPath = "/v1.0/iot-01/associated-users/devices"
+        val timestamp = System.currentTimeMillis()
+        val nonce = UUID.randomUUID().toString()
+        
+        // Tạo chữ ký cho API nghiệp vụ (Business API)
+        val sign = calculateSignature(
+            clientId = clientId,
+            accessToken = token,
+            timestamp = timestamp,
+            nonce = nonce,
+            secret = clientSecret,
+            method = "GET",
+            urlPathAndQuery = urlPath,
+            bodyStr = ""
+        )
+        
+        val url = "$baseUrl$urlPath"
         val request = Request.Builder()
             .url(url)
             .addHeader("client_id", clientId)
             .addHeader("access_token", token)
+            .addHeader("sign", sign)
+            .addHeader("t", timestamp.toString())
+            .addHeader("nonce", nonce)
+            .addHeader("sign_method", "HMAC-SHA256")
             .get()
             .build()
         
@@ -188,6 +211,7 @@ class TuyaManager @Inject constructor(
             val prefs = context.dataStore.data.first()
             val clientId = prefs[CLIENT_ID] ?: ""
             val clientSecret = prefs[CLIENT_SECRET] ?: ""
+            val region = prefs[DATA_CENTER] ?: DEFAULT_REGION
             val baseUrl = getApiBaseUrl()
             
             if (clientId.isBlank() || clientSecret.isBlank()) {
@@ -196,13 +220,24 @@ class TuyaManager @Inject constructor(
             
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
-            val signString = clientId + timestamp.toString()
-            val sign = hmacSha256(signString, clientSecret)
+            val urlPath = "/v1.0/token?grant_type=1"
+            
+            // Tính chữ ký theo định dạng chuẩn mới cho API lấy Token
+            val sign = calculateSignature(
+                clientId = clientId,
+                accessToken = null,
+                timestamp = timestamp,
+                nonce = nonce,
+                secret = clientSecret,
+                method = "GET",
+                urlPathAndQuery = urlPath,
+                bodyStr = ""
+            )
 
             logger.i("TuyaManager", "Region=$region BaseUrl=$baseUrl ClientId=$clientId")
             logger.i("TuyaManager", "Timestamp=$timestamp Nonce=$nonce Sign=$sign")
 
-            val url = "$baseUrl/v1.0/token?grant_type=1"
+            val url = "$baseUrl$urlPath"
             val request = Request.Builder()
                 .url(url)
                 .addHeader("client_id", clientId)
@@ -238,13 +273,50 @@ class TuyaManager @Inject constructor(
         }
     }
 
+    // Hàm mã hóa SHA256 cho phần Body
+    private fun sha256(data: String): String {
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val hash = digest.digest(data.toByteArray(StandardCharsets.UTF_8))
+            hash.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" // Mã SHA256 mặc định khi chuỗi rỗng
+        }
+    }
+
+    // Hàm tạo chữ ký HMAC-SHA256 chung theo tài liệu nhà phát triển Tuya
+    private fun calculateSignature(
+        clientId: String,
+        accessToken: String?,
+        timestamp: Long,
+        nonce: String,
+        secret: String,
+        method: String,
+        urlPathAndQuery: String,
+        bodyStr: String = ""
+    ): String {
+        val contentSha256 = sha256(bodyStr)
+        
+        // Cấu trúc chuỗi stringToSign = HTTPMethod + "\n" + Content-SHA256 + "\n" + Headers + "\n" + Url
+        // Đoạn Headers để trống ("") nên có 2 dấu xuống dòng liên tiếp
+        val stringToSign = "$method\n$contentSha256\n\n$urlPathAndQuery"
+        
+        val signString = if (accessToken.isNullOrEmpty()) {
+            clientId + timestamp.toString() + nonce + stringToSign
+        } else {
+            clientId + accessToken + timestamp.toString() + nonce + stringToSign
+        }
+        
+        return hmacSha256(signString, secret)
+    }
+
     private fun hmacSha256(data: String, key: String): String {
         try {
             val mac = Mac.getInstance("HmacSHA256")
-            val secretKey = SecretKeySpec(key.toByteArray(), "HmacSHA256")
+            val secretKey = SecretKeySpec(key.toByteArray(StandardCharsets.UTF_8), "HmacSHA256")
             mac.init(secretKey)
-            val hash = mac.doFinal(data.toByteArray())
-            return hash.joinToString("") { "%02X".format(it) }
+            val hash = mac.doFinal(data.toByteArray(StandardCharsets.UTF_8))
+            return hash.joinToString("") { "%02X".format(it) } // Tuya yêu cầu chữ ký dạng in hoa
         } catch (e: Exception) {
             logger.e("TuyaManager", "HMAC error: ${e.message}", e)
             throw e
@@ -275,13 +347,33 @@ class TuyaManager @Inject constructor(
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""
+        val clientSecret = prefs[CLIENT_SECRET] ?: ""
         val baseUrl = getApiBaseUrl()
         
-        val url = "$baseUrl/v1.0/devices/${device.id}/status"
+        val urlPath = "/v1.0/devices/${device.id}/status"
+        val timestamp = System.currentTimeMillis()
+        val nonce = UUID.randomUUID().toString()
+        
+        val sign = calculateSignature(
+            clientId = clientId,
+            accessToken = token,
+            timestamp = timestamp,
+            nonce = nonce,
+            secret = clientSecret,
+            method = "GET",
+            urlPathAndQuery = urlPath,
+            bodyStr = ""
+        )
+        
+        val url = "$baseUrl$urlPath"
         val request = Request.Builder()
             .url(url)
             .addHeader("client_id", clientId)
             .addHeader("access_token", token)
+            .addHeader("sign", sign)
+            .addHeader("t", timestamp.toString())
+            .addHeader("nonce", nonce)
+            .addHeader("sign_method", "HMAC-SHA256")
             .get()
             .build()
         
@@ -320,24 +412,46 @@ class TuyaManager @Inject constructor(
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""
+        val clientSecret = prefs[CLIENT_SECRET] ?: ""
         val baseUrl = getApiBaseUrl()
         
-        val body = JSONObject().apply {
+        val urlPath = "/v1.0/devices/${device.id}/commands"
+        val timestamp = System.currentTimeMillis()
+        val nonce = UUID.randomUUID().toString()
+        
+        val bodyJson = JSONObject().apply {
             put("commands", org.json.JSONArray().apply {
                 put(JSONObject().apply {
                     put("code", powerDps)
                     put("value", state)
                 })
             })
-        }.toString()
+        }
+        val bodyStr = bodyJson.toString()
         
-        val url = "$baseUrl/v1.0/devices/${device.id}/commands"
+        // Tính chữ ký chứa SHA256 mã hóa của Request Body (vì là request POST)
+        val sign = calculateSignature(
+            clientId = clientId,
+            accessToken = token,
+            timestamp = timestamp,
+            nonce = nonce,
+            secret = clientSecret,
+            method = "POST",
+            urlPathAndQuery = urlPath,
+            bodyStr = bodyStr
+        )
+        
+        val url = "$baseUrl$urlPath"
         val request = Request.Builder()
             .url(url)
             .addHeader("client_id", clientId)
             .addHeader("access_token", token)
+            .addHeader("sign", sign)
+            .addHeader("t", timestamp.toString())
+            .addHeader("nonce", nonce)
+            .addHeader("sign_method", "HMAC-SHA256")
             .addHeader("Content-Type", "application/json")
-            .post(body.toRequestBody("application/json".toMediaType()))
+            .post(bodyStr.toRequestBody("application/json".toMediaType()))
             .build()
         
         val response = client.newCall(request).execute()
