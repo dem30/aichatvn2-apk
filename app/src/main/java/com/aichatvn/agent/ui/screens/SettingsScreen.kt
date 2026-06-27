@@ -353,6 +353,7 @@ private fun PluginGroupCard(
         "camera"   -> "📷"
         "email"    -> "📧"
         "schedule" -> "⏰"
+        "global"   -> "🌐"
         else       -> "🔧"
     }
 

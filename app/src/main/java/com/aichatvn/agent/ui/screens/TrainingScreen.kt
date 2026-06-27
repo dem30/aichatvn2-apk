@@ -21,7 +21,7 @@ import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
 
-val PRESET_CATEGORIES = listOf("chat", "camera", "faq", "general", "alert")
+val PRESET_CATEGORIES = listOf("chat", "email", "device", "camera", "faq", "general", "alert")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -268,9 +268,9 @@ fun TrainingScreen(
         QADialog(
             existing = editingQA,
             onDismiss = { showAddDialog = false; editingQA = null },
-            onSave = { q, a, cat ->
-                if (editingQA != null) viewModel.updateQA(editingQA!!.id, q, a, cat)
-                else viewModel.addQA(q, a, cat)
+            onSave = { q, a, cat, t ->
+                if (editingQA != null) viewModel.updateQA(editingQA!!.id, q, a, t, cat)
+                else viewModel.addQA(q, a, t, cat)
                 showAddDialog = false; editingQA = null
             }
         )
@@ -347,12 +347,14 @@ fun QACard(
 fun QADialog(
     existing: QAEntity?,
     onDismiss: () -> Unit,
-    onSave: (String, String, String) -> Unit
+    onSave: (String, String, String, String) -> Unit
 ) {
     var question by remember { mutableStateOf(existing?.question ?: "") }
     var answer by remember { mutableStateOf(existing?.answer ?: "") }
     var category by remember { mutableStateOf(existing?.category ?: "chat") }
+    var type by remember { mutableStateOf(existing?.type ?: "alias") }
     var expanded by remember { mutableStateOf(false) }
+    var typeExpanded by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -380,7 +382,7 @@ fun QADialog(
                         value = category,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Danh mục") },
+                        label = { Text("Danh mục (semanticType)") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -398,12 +400,41 @@ fun QADialog(
                         }
                     }
                 }
+                ExposedDropdownMenuBox(
+                    expanded = typeExpanded,
+                    onExpandedChange = { typeExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = type,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Loại QA") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = typeExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = typeExpanded,
+                        onDismissRequest = { typeExpanded = false }
+                    ) {
+                        listOf(
+                            "alias" to "Alias — tra cứu giá trị (tên, email...)",
+                            "intent" to "Intent — lệnh điều khiển (JSON)"
+                        ).forEach { (t, label) ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = { type = t; typeExpanded = false }
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    if (question.isNotBlank() && answer.isNotBlank()) onSave(question, answer, category)
+                    if (question.isNotBlank() && answer.isNotBlank()) onSave(question, answer, category, type)
                 }
             ) { Text("Lưu") }
         },

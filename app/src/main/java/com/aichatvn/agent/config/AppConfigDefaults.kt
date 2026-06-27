@@ -38,8 +38,10 @@ object AppConfigDefaults {
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
     // ───────────────────────── GLOBAL ───────────────────────
-    const val GLOBAL_FUZZY_THRESHOLD = "global.fuzzy_threshold"
-    const val GLOBAL_TIER2_MIN_SCORE = "global.tier2_min_score"
+    const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
+    const val GLOBAL_TIER2_MIN_SCORE        = "global.tier2_min_score"
+    const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
+    const val GLOBAL_TIER2_5_MIN_SCORE      = "global.tier2_5_min_score"
 
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
@@ -206,6 +208,22 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Ngưỡng điểm Tier 2 QA (Tier 2 Min Score)",
             description = "Giá trị từ 0.0 đến 1.0. Ngưỡng điểm số tối thiểu để kích hoạt Fuzzy QA Intent ở tầng 2 mà không cần LLM."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_TIER2_HIGH_CONFIDENCE,
+            value = "0.80",
+            type = "string",
+            pluginId = "global",
+            label = "Ngưỡng tin cậy cao Tier 2 (High Confidence)",
+            description = "Giá trị từ 0.0 đến 1.0. Nếu Tier 2 đạt ngưỡng này thì bỏ qua Tier 2.5, không cần LLM. Mặc định 0.80."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_TIER2_5_MIN_SCORE,
+            value = "0.80",
+            type = "string",
+            pluginId = "global",
+            label = "Ngưỡng điểm Tier 2.5 Metadata (Tier 2.5 Min Score)",
+            description = "Giá trị từ 0.0 đến 1.0. Ngưỡng điểm tối thiểu để Tier 2.5 (metadata matcher) nhận diện action mà không cần LLM. Mặc định 0.80."
         )
     )
 }

@@ -65,16 +65,18 @@ class EmailSkill @Inject constructor(
                 name = "send",
                 description = "Soạn thảo và gửi email tới địa chỉ đích",
                 examples = listOf(
-                    "gửi email cho sếp báo cáo",
-                    "soạn mail gửi tới me@gmail.com",
+                    "gửi email cho tôi",
+                    "gửi email cho",
+                    "soạn mail gửi tới",
+                    "gửi mail",
                     "viết thư báo cáo tình hình"
                 ),
                 aliases = listOf("gửi mail", "soạn thư", "gửi báo cáo"),
                 tags = listOf("mail", "send", "report", "notification"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
-                    PluginParameter("subject", "string", "Tiêu đề email", false, "string"),
-                    PluginParameter("body", "string", "Nội dung email", false, "string")
+                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"),
+                    PluginParameter("body", "string", "Nội dung email", true, "string")
                 )
             ),
             PluginAction(
@@ -109,8 +111,8 @@ class EmailSkill @Inject constructor(
 
     private suspend fun handleSend(params: Map<String, Any>): PluginResult {
         val to = params["to"] as? String ?: return PluginResult.Failure("Bạn muốn gửi email tới địa chỉ nào?")
-        val subject = params["subject"] as? String ?: "Không có tiêu đề"
-        val body = params["body"] as? String ?: ""
+        val subject = (params["subject"] as? String).takeIf { !it.isNullOrBlank() } ?: "Không có tiêu đề"
+        val body = (params["body"] as? String).takeIf { !it.isNullOrBlank() } ?: "(Không có nội dung)"
         return sendEmail(to, subject, body, null)
     }
 
@@ -175,7 +177,7 @@ class EmailSkill @Inject constructor(
             put("from", from)
             put("to", JSONArray().put(to))
             put("subject", subject)
-            put("html", html)
+            if (html.isNotBlank()) put("html", html) else put("text", "(Không có nội dung)")
             if (imageBytes != null) {
                 val attachments = JSONArray().put(
                     JSONObject().apply {

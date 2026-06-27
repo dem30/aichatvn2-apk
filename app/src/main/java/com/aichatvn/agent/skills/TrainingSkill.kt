@@ -594,7 +594,7 @@ class TrainingSkill @Inject constructor(
             }
 
             val bestAliasMatches = aliases
-                .groupBy { it.first.type }
+                .groupBy { it.first.category }
                 .mapValues { entry -> entry.value.maxByOrNull { it.second } }
                 .filterValues { it != null }
                 .mapValues { it.value!! }

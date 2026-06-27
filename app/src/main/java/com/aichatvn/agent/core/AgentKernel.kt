@@ -153,9 +153,13 @@ class AgentKernel @Inject constructor(
 
         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, threshold = dynamicMinScore)
 
+        val tier2HighConf = configProvider.allConfigs.value
+            .find { it.key == AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE }
+            ?.value?.toDoubleOrNull() ?: 0.80
+
         val tier2Result = tryTier2SemanticSlotResolver(userMessage, matchResult, devicePlugins)
         if (tier2Result != null) {
-            if (tier2Result.confidence >= 0.80) {
+            if (tier2Result.confidence >= tier2HighConf) {
                 val plugin = tier2Result.plugin
                 val intent = tier2Result.intent
                 logger.d("AgentKernel", "[$traceId] ✅ [Tier 2 Hit - Confidence: ${tier2Result.confidence}] Semantic Compose: ${intent.pluginId}.${intent.action}")
@@ -253,7 +257,11 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        if (bestScore >= 0.80 && bestMatch != null) {
+        val tier2_5MinScore = configProvider.allConfigs.value
+            .find { it.key == AppConfigDefaults.GLOBAL_TIER2_5_MIN_SCORE }
+            ?.value?.toDoubleOrNull() ?: 0.80
+
+        if (bestScore >= tier2_5MinScore && bestMatch != null) {
             val (plugin, action) = bestMatch!!
 
             val schemaParams = mutableMapOf<String, Any>()
