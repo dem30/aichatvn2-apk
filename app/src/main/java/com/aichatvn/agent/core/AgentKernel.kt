@@ -9,8 +9,6 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
@@ -123,7 +121,6 @@ class AgentKernel @Inject constructor(
     private fun generateTraceId(): String = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
 
     private fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
-        // CẮT BỎ KHOẢNG TRẮNG PHÒNG THỦ: Tránh rủi ro dư khoảng trắng thô ở đầu/cuối của tên thiết bị
         val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
         if (strVal.isBlank()) return true
         
@@ -136,7 +133,7 @@ class AgentKernel @Inject constructor(
         
         val defaultPlaceholders = setOf(
             "device_1", "device_2", "camera_1", "camera_2",
-            "device 1", "device 2", "camera 1", "camera 2", // Bổ sung khoảng trắng
+            "device 1", "device 2", "camera 1", "camera 2",
             "example@gmail.com", "example@email.com",
             "schedule_1", "schedule_id_here"
         )
@@ -272,7 +269,7 @@ class AgentKernel @Inject constructor(
         return executeTier3LlmRouting(userMessage, matchResult, devicePlugins, traceId)
     }
 
-    // ── TẦNG 3: Phân rã mệnh đề & So khớp động cụm từ (Intent + Alias từ DB) ──
+    // ── TẦNG 3: Phân rã mệnh đề & So khớp động cụm từ (Intent + Alias từ DB) (ĐÃ ĐỒNG BỘ HẤP THỤ ĐA NHIỆM) ──
     private suspend fun processLayer3ClauseEntitySpotter(
         userMessage: String,
         username: String,
@@ -287,9 +284,10 @@ class AgentKernel @Inject constructor(
             .sortedByDescending { it.question.length }
 
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
+        val absorbedActions = mutableSetOf<String>() // Đăng ký lưu các hành động đích đã bị hấp thụ lồng ghép
 
+        // VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
-            // SỬA LỖI ĐỒNG BỘ: Chuẩn hóa bỏ dấu tiếng Việt toàn bộ mệnh đề để so khớp không dấu chuẩn xác (cho cả STT, gõ không dấu)
             val clauseNorm = normalizeVietnamese(clause)
             var matchedIntentQA: QAEntity? = null
             
@@ -306,13 +304,66 @@ class AgentKernel @Inject constructor(
                 val rootPluginId = rootJson?.optString("plugin") ?: ""
                 val rootActionName = rootJson?.optString("action") ?: ""
                 
-                if (rootPluginId.isNotBlank() && rootActionName.isNotBlank()) {
+                if (rootPluginId == "schedule") { // Nếu là Wrapper
                     val targetPlugin = devicePlugins.find { it.id == rootPluginId }
                     val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
                     
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                         
+                        // Sử dụng toàn bộ câu nói gốc để đệ quy bóc tách đầy đủ hành động lồng phía sau
+                        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
+
+                        val resolvedParams = resolveParametersWithMeta(
+                            parameters = targetAction.parameters,
+                            inputParams = rootParams,
+                            matchResult = matchResult,
+                            userMessage = userMessage, // Truyền câu lệnh đầy đủ
+                            devicePlugins = devicePlugins,
+                            excludeIntentId = matchedIntentQA.id,
+                            depth = 0
+                        )
+
+                        resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+
+                        // Ghi nhận hành động đã bị hấp thụ thành công vào lịch trình
+                        val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
+                        val nestedAction = resolvedParams["action"]?.toString() ?: ""
+                        if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
+                            absorbedActions.add("$nestedPluginId.$nestedAction")
+                        }
+                    }
+                }
+            }
+        }
+
+        // VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
+        for (clause in clauses) {
+            val clauseNorm = normalizeVietnamese(clause)
+            var matchedIntentQA: QAEntity? = null
+            
+            for (qa in intentQAs) {
+                val qaNorm = normalizeVietnamese(qa.question)
+                if (clauseNorm.contains(qaNorm)) {
+                    matchedIntentQA = qa
+                    break
+                }
+            }
+
+            if (matchedIntentQA != null) {
+                val rootJson = try { JSONObject(matchedIntentQA.answer) } catch (e: Exception) { null }
+                val rootPluginId = rootJson?.optString("plugin") ?: ""
+                val rootActionName = rootJson?.optString("action") ?: ""
+                
+                if (rootPluginId != "schedule") { // Bỏ qua Wrapper, chỉ xử lý Leaf
+                    // Nếu hành động này đã bị hấp thụ lồng ghép ở vòng lặp 1 thì bỏ qua không thực hiện riêng lẻ trùng lặp
+                    if (absorbedActions.contains("$rootPluginId.$rootActionName")) continue
+
+                    val targetPlugin = devicePlugins.find { it.id == rootPluginId }
+                    val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
+                    
+                    if (targetPlugin != null && targetAction != null) {
+                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                         val matchResult = trainingSkill.fuzzyMatchCategorized(clause, username, aliasThreshold = 0.0f)
 
                         val resolvedParams = resolveParametersWithMeta(
@@ -381,7 +432,7 @@ class AgentKernel @Inject constructor(
         return Layer2Result(rootPlugin, Intent(rootPluginId, rootActionName, resolvedParams), confidence)
     }
 
-    // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin (ĐA NHIỆM) ──
+    // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin (ĐÃ ĐỒNG BỘ HẤP THỤ ĐA NHIỆM) ──
     private suspend fun tryTier2_5ActionMetadataMatcher(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
@@ -391,7 +442,9 @@ class AgentKernel @Inject constructor(
         val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
 
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
+        val absorbedActions = mutableSetOf<String>()
 
+        // VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
             var bestMatch: NormalizedActionMetadata? = null
@@ -418,9 +471,72 @@ class AgentKernel @Inject constructor(
                 }
             }
 
-            if (bestMatch != null) {
+            if (bestMatch != null && bestMatch.plugin.id == "schedule") {
                 val plugin = bestMatch.plugin
                 val action = bestMatch.action
+
+                val schemaParams = mutableMapOf<String, Any>()
+                action.parameters.forEach { param ->
+                    schemaParams[param.name] = param.defaultValue ?: ""
+                }
+
+                // Sử dụng toàn bộ câu nói gốc để đệ quy bóc tách đầy đủ hành động lồng phía sau
+                val fullMatchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = 0.0f)
+
+                val resolvedParams = resolveParametersWithMeta(
+                    parameters = action.parameters,
+                    inputParams = schemaParams,
+                    matchResult = fullMatchResult,
+                    userMessage = userMessage, // Truyền câu lệnh đầy đủ
+                    devicePlugins = devicePlugins,
+                    excludeIntentId = null,
+                    depth = 0
+                )
+
+                resolvedIntents.add(plugin to Intent(plugin.id, action.name, resolvedParams))
+
+                // Ghi nhận hành động đã bị hấp thụ thành công vào lịch trình
+                val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
+                val nestedAction = resolvedParams["action"]?.toString() ?: ""
+                if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
+                    absorbedActions.add("$nestedPluginId.$nestedAction")
+                }
+            }
+        }
+
+        // VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
+        for (clause in clauses) {
+            val clauseNormalized = normalizeVietnamese(clause)
+            var bestMatch: NormalizedActionMetadata? = null
+            var bestMatchLen = 0
+
+            for (meta in normalizedActionMetadataList) {
+                if (!meta.plugin.routable || !meta.action.enabled) continue
+
+                val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
+                                clauseNormalized.contains(meta.normalizedDescription) ||
+                                meta.normalizedAliases.any { alias -> 
+                                    alias.length >= 3 && (clauseNormalized.contains(alias) || alias.contains(clauseNormalized)) 
+                                } ||
+                                meta.normalizedExamples.any { ex -> 
+                                    ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
+                                }
+
+                if (isMatched) {
+                    val matchLen = meta.action.description.length
+                    if (matchLen > bestMatchLen) {
+                        bestMatchLen = matchLen
+                        bestMatch = meta
+                    }
+                }
+            }
+
+            if (bestMatch != null && bestMatch.plugin.id != "schedule") {
+                val plugin = bestMatch.plugin
+                val action = bestMatch.action
+
+                // Nếu hành động này đã bị hấp thụ lồng ghép ở vòng lặp 1 thì bỏ qua không thực hiện riêng lẻ trùng lặp
+                if (absorbedActions.contains("${plugin.id}.${action.name}")) continue
 
                 val schemaParams = mutableMapOf<String, Any>()
                 action.parameters.forEach { param ->
@@ -706,7 +822,7 @@ class AgentKernel @Inject constructor(
         return null
     }
 
-  private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
+    private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
         val missing = mutableListOf<String>()
         val action = plugin.getActions().find { it.name == actionName } ?: return missing
 
