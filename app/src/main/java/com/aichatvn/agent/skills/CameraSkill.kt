@@ -18,23 +18,9 @@ import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
-import com.aichatvn.agent.ui.dashboard.DeviceAction
-import com.aichatvn.agent.ui.dashboard.DeviceActionParameter
-import com.aichatvn.agent.skills.base.BaseDevicePlugin
-import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
-import com.aichatvn.agent.core.ChatHistoryManager
-import com.aichatvn.agent.skills.EmailSkill
-import com.aichatvn.agent.skills.TuyaManager
-import com.aichatvn.agent.skills.NotificationSkill
-import com.aichatvn.agent.ui.viewmodels.DiagnosticInfo
-import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
-import com.aichatvn.agent.ui.screens.PRESET_CATEGORIES
-import com.aichatvn.agent.ui.screens.QACard
-import com.aichatvn.agent.ui.screens.QADialog
-import com.aichatvn.agent.ui.screens.AgentKernelDiagnosticsPanel
-import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction as DashboardDeviceAction
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -128,7 +114,7 @@ class CameraSkill @Inject constructor(
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái kết nối của camera",
-                examples = emptyList(), // Rút gọn triệt để do có tham số bắt buộc
+                examples = emptyList(),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera")
                 )
@@ -168,13 +154,12 @@ class CameraSkill @Inject constructor(
             PluginAction(
                 name = "list_cameras",
                 description = "Liệt kê danh sách tất cả các camera hiện có trong hệ thống",
-                examples = listOf("danh sách camera", "liệt kê camera"), // Action không tham số -> Cho phép ví dụ
+                examples = listOf("danh sách camera", "liệt kê camera"),
                 parameters = emptyList()
             )
         )
     }
 
-    // TỐI ƯU HÓA TUYỆT ĐỐI: Mỗi action chỉ giữ lại đúng 1 hoặc 2 từ khóa kích hoạt nguyên bản và tinh gọn nhất
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
         "scan"           to listOf("quét camera", "chụp ảnh camera"),
         "list_cameras"   to listOf("danh sách camera", "xem camera"),
@@ -289,7 +274,8 @@ class CameraSkill @Inject constructor(
         )
         database.cameraDao().updateCamera(updated)
 
-        val changed = buildList {
+        // SỬA LỖI BIÊN DỊCH: Sử dụng khai báo tường minh kiểu dữ liệu String cho buildList
+        val changed = buildList<String> {
             if (updated.aiPrompt != cam.aiPrompt) add("prompt AI")
             if (updated.aiPositiveKeywords != cam.aiPositiveKeywords) add("từ khoá cảnh báo")
             if (updated.aiNegativeKeywords != cam.aiNegativeKeywords) add("từ khoá bình thường")
@@ -865,31 +851,547 @@ class CameraSkill @Inject constructor(
                 val isMature = state.baselineWindow.size >= 3
                 
                 val shouldReset = checkPendingReset(camera.id, currentDiff, absDiffTrigger)
-                if (shouldReset != null) { // if pending reset is true
-                     // ... logic
+                if (shouldReset) {
+                    learningStates[camera.id] = CameraLearningState(
+                        lastPhash = currentPhash,
+                        lastDiff = currentDiff
+                    )
+                    return@withLock mapOf(
+                        "cameraId" to camera.id,
+                        "success" to true,
+                        "hasChange" to false,
+                        "message" to "Learning reset due to stable scene change"
+                    )
                 }
-
-                val changed = buildList {
-                    // Placeholder logic check
-                }
-
-                if (isSuspicious(isPassed = true)) {
-                    // Logic alert
-                }
-
-                // ... Giữ nguyên toàn bộ logic xử lý ảnh và phát hiện chuyển động của camera ...
-                // Code gốc không đổi để đảm bảo tính an toàn hệ thống
                 
-                PluginResult.Success(mapOf("cameraId" to camera.id, "success" to true))
+                val shouldCallAi = isSuddenChange && isSmartMode && now >= state.cooldownUntil
+                
+                var aiComment: String? = null
+                var isSuspicious = false
+                
+                if (shouldCallAi) {
+                    val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
+                    val aiResult: String = try {
+                        withTimeout(20_000L) {
+                            groqClient.analyzeImage(optimizedBytes, prompt)
+                        }
+                    } catch (e: TimeoutCancellationException) {
+                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id}, bỏ qua phân tích AI lần này")
+                        "Không thể phân tích (AI timeout)"
+                    }
+                    aiComment = aiResult
+                    
+                    val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
+                        camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
+                    } else {
+                        defaultPositiveKw()
+                    }
+                    val negativeKeywords = if (camera.aiNegativeKeywords.isNotEmpty()) {
+                        camera.aiNegativeKeywords.split(",").map { it.trim().lowercase() }
+                    } else {
+                        defaultNegativeKw()
+                    }
+                    
+                    val textClean = aiComment.lowercase()
+                    val hasPositive = positiveKeywords.any { textClean.contains(it) }
+                    val hasNegative = negativeKeywords.any { textClean.contains(it) }
+                    isSuspicious = hasPositive && !hasNegative
+                    
+                    if (isSuspicious) {
+                        state.realEvents++
+                        state.cooldownUntil = now + cooldownDurationMs()
+                        
+                        val cameraDailyEvents = dailyEvents.getOrPut(camera.id) { mutableListOf() }
+                        cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
+                        if (cameraDailyEvents.size > maxDailyEvents()) {
+                            cameraDailyEvents.removeAt(0)
+                        }
+                        
+                        val customerEmail = camera.customeremail
+                        var emailSent = false
+                        if (customerEmail.isNotEmpty()) {
+                            emailSkill.sendEmail(
+                                to = customerEmail,
+                                subject = "🚨 CẢNH BÁO AN NINH KHẨN CẤP!",
+                                body = buildAlertEmailBody(camera, aiComment),
+                                imageBytes = optimizedBytes
+                            )
+                            emailSent = true
+                        }
+                        
+                        notificationSkill.sendNotification(
+                            title = "Cảnh Báo Camera ${camera.customername}",
+                            message = aiComment.take(100)
+                        )
+                        
+                        saveAlertToHistory(
+                            camera = camera,
+                            aiComment = aiComment,
+                            imageBytes = optimizedBytes,
+                            diff = currentDiff,
+                            deltaTrigger = deltaTrigger,
+                            absDiffTrigger = absDiffTrigger,
+                            emailSent = emailSent
+                        )
+                        
+                        logger.i("CameraSkill", "🚨 ALERT detected for camera ${camera.id}: $aiComment")
+                        
+                    } else {
+                        if (isMature && isSuddenChange) {
+                            pendingResets[camera.id] = PendingResetState(currentDiff, now)
+                            logger.i("CameraSkill", "⚠️ Pending reset for camera ${camera.id} - monitoring next cycle")
+                        }
+                    }
+                }
+                
+                if (!shouldCallAi || !isSuspicious) {
+                    state.baselineWindow.add(currentDiff)
+                    if (state.baselineWindow.size > 20) {
+                        state.baselineWindow.removeAt(0)
+                    }
+                    
+                    if (isSuddenChange && !isSuspicious) {
+                        state.falseDeltas.add(delta)
+                        state.falseDiffs.add(currentDiff)
+                        if (state.falseDeltas.size > 100) {
+                            state.falseDeltas.removeAt(0)
+                            state.falseDiffs.removeAt(0)
+                        }
+                    }
+                    
+                    if (state.falseDeltas.size >= 3) {
+                        val recentDeltas = state.falseDeltas.takeLast(30).sorted()
+                        val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
+                        state.deltaTrigger = (recentDeltas[idx] + 2).coerceAtMost(25)
+                        
+                        val recentDiffs = state.falseDiffs.takeLast(30).sorted()
+                        val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
+                        state.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+                    }
+                }
+                
+                state.lastPhash = currentPhash
+                state.lastDiff = currentDiff
+                
+                if (camera.isOnline != 1) {
+                    withContext(Dispatchers.IO) {
+                        database.cameraDao().updateCamera(camera.copy(isOnline = 1, status = "online"))
+                    }
+                }
+                
+                logger.d("CameraSkill", "📷 Camera ${camera.id} scanned, hasChange=$isSuddenChange")
+                
+                updateDiagnostics()
+                
+                return@withLock mapOf(
+                    "cameraId" to camera.id,
+                    "success" to true,
+                    "hasChange" to isSuddenChange,
+                    "isSuspicious" to isSuspicious,
+                    "aiComment" to (aiComment ?: "No analysis"),
+                    "diff" to currentDiff,
+                    "delta" to delta,
+                    "drift" to drift,
+                    "deltaTrigger" to deltaTrigger,
+                    "absDiffTrigger" to absDiffTrigger
+                )
+                
             } catch (e: Exception) {
-                PluginResult.Failure(e.message ?: "Unknown Error")
+                logger.e("CameraSkill", "Error in processImageWithLearning: ${e.message}", e)
+                return@withLock mapOf(
+                    "cameraId" to camera.id,
+                    "success" to false,
+                    "error" to (e.message ?: "Unknown error")
+                )
             }
         }
     }
+    
+    private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
+        try {
+            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
+            if (imageBytes == null) {
+                handleOfflineCamera(camera)
+                recordOffline(camera.id)
+                return mapOf(
+                    "cameraId" to camera.id,
+                    "success" to false,
+                    "error" to "Cannot fetch snapshot"
+                )
+            }
 
-    private fun setSmartMode(customerId: String, enabled: Boolean): PluginResult {
-        // Thực hiện ghi cấu hình AI Smart mode
-        return PluginResult.Success(mapOf("customerId" to customerId, "enabled" to enabled))
+            return processImageWithLearning(camera, imageBytes, isSmartMode)
+
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
+            return mapOf(
+                "cameraId" to camera.id,
+                "success" to false,
+                "error" to (e.message ?: "Unknown error")
+            )
+        }
+    }
+    
+    private suspend fun scanForDailyReport(camera: CameraConfigEntity): Map<String, Any> {
+        return try {
+            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
+            if (imageBytes == null) {
+                return mapOf(
+                    "cameraId" to camera.id,
+                    "success" to false,
+                    "error" to "Cannot fetch snapshot for daily report"
+                )
+            }
+            
+            val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
+            val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
+            val aiComment = try {
+                withTimeout(20_000L) {
+                    groqClient.analyzeImage(optimizedBytes, prompt)
+                }
+            } catch (e: TimeoutCancellationException) {
+                logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id} (daily report)")
+                "Không thể phân tích (AI timeout)"
+            }
+            
+            mapOf(
+                "cameraId" to camera.id,
+                "success" to true,
+                "aiComment" to aiComment,
+                "imageBytes" to optimizedBytes
+            )
+            
+        } catch (e: Exception) {
+            mapOf(
+                "cameraId" to camera.id,
+                "success" to false,
+                "error" to (e.message ?: "Unknown error")
+            )
+        }
+    }
+    
+    private suspend fun handleOfflineCamera(camera: CameraConfigEntity) {
+        if (camera.isOnline != 0) {
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCamera(camera.copy(isOnline = 0, status = "offline"))
+            }
+            
+            deviceRegistry.updateOnlineStatus(camera.id, false, status = "Mất kết nối")
+            
+            notificationSkill.sendNotification(
+                title = "Camera ${camera.customername} mất kết nối",
+                message = "Không thể kết nối đến camera. Vui lòng kiểm tra!"
+            )
+            sendAdminAlert(camera, "Không thể kết nối đến camera. Vui lòng kiểm tra đường truyền!")
+        }
+    }
+    
+    private suspend fun sendAdminAlert(camera: CameraConfigEntity, reason: String) {
+        val subject = "🚨 [HỆ THỐNG] LỖI CAMERA: ${camera.customername} (${camera.id})"
+        val body = """
+            <html>
+            <body>
+                <h2 style="color: #dc2626;">🚨 CẢNH BÁO SỰ CỐ VẬN HÀNH CAMERA</h2>
+                <p>Hệ thống phát hiện sự cố tại thiết bị camera giám sát thửa đất:</p>
+                <table>
+                    <tr><td><strong>Tên Camera:</strong></td><td>${camera.customername}</td></tr>
+                    <tr><td><strong>Mã Camera:</strong></td><td>${camera.id}</td></tr>
+                    <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
+                </table>
+                <div style="background: #fef2f2; padding: 10px; border-left: 4px solid #dc2626;">
+                    <strong>Chi tiết lỗi:</strong><br>$reason
+                </div>
+                <p>Vui lòng kiểm tra hạ tầng đường truyền camera.</p>
+            </body>
+            </html>
+        """.trimIndent()
+        
+        val adminEmail = "admin@aichatvn.com"
+        if (adminEmail.isNotBlank()) {
+            emailSkill.sendEmail(adminEmail, subject, body, null)
+        }
+    }
+    
+    suspend fun saveCameraConfig(config: Map<String, Any>): PluginResult {
+        return try {
+            val id = config["id"] as? String ?: return PluginResult.Failure("Missing camera id")
+            val existing = withContext(Dispatchers.IO) {
+                database.cameraDao().getCameraById(id)
+            }
+
+            val camera = CameraConfigEntity(
+                id = id,
+                customerId = config["customerId"] as? String ?: existing?.customerId ?: "",
+                customername = config["customername"] as? String ?: existing?.customername ?: "",
+                customeremail = config["customeremail"] as? String ?: existing?.customeremail ?: "",
+                snapshoturl = config["snapshoturl"] as? String ?: existing?.snapshoturl ?: "",
+                landinfo = config["landinfo"] as? String ?: existing?.landinfo,
+                snapshotPath = existing?.snapshotPath,
+                timestamp = System.currentTimeMillis(),
+                status = config["status"] as? String ?: existing?.status ?: "online",
+                isOnline = (config["isOnline"] as? Int) ?: (config["isOnline"] as? Number)?.toInt() ?: existing?.isOnline ?: 1,
+                manualOff = (config["manualOff"] as? Int) ?: (config["manualOff"] as? Number)?.toInt() ?: existing?.manualOff ?: 0,
+                aiPrompt = config["aiPrompt"] as? String ?: existing?.aiPrompt ?: "",
+                aiPositiveKeywords = config["aiPositiveKeywords"] as? String ?: existing?.aiPositiveKeywords ?: "",
+                aiNegativeKeywords = config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: ""
+            )
+            
+            withContext(Dispatchers.IO) {
+                database.cameraDao().insertCamera(camera)
+            }
+            
+            val existingSetting = withContext(Dispatchers.IO) {
+                database.cameraDao().getCustomerSetting(camera.customerId)
+            }
+            if (existingSetting == null && camera.customerId.isNotEmpty()) {
+                val setting = CustomerSettingEntity(
+                    customerId = camera.customerId,
+                    smartMode = 0,
+                    isActive = 1,
+                    updatedAt = System.currentTimeMillis(),
+                    timestamp = System.currentTimeMillis()
+                )
+                withContext(Dispatchers.IO) {
+                    database.cameraDao().insertCustomerSetting(setting)
+                }
+            }
+            
+            if (!learningStates.containsKey(camera.id)) {
+                learningStates[camera.id] = CameraLearningState()
+                circuitBreakers[camera.id] = CircuitBreakerState()
+            }
+            
+            syncToDeviceRegistry()
+            
+            PluginResult.Success(mapOf("message" to "Camera saved"))
+            
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveCameraConfig error: ${e.message}", e)
+            PluginResult.Failure(e.message ?: "Save camera failed")
+        }
+    }
+    
+    suspend fun deleteCamera(cameraId: String): PluginResult {
+        return try {
+            withContext(Dispatchers.IO) {
+                database.cameraDao().deleteCamera(cameraId)
+            }
+            learningStates.remove(cameraId)
+            circuitBreakers.remove(cameraId)
+            pendingResets.remove(cameraId)
+            dailyEvents.remove(cameraId)
+            cameraMutexMap.remove(cameraId)
+            
+            syncToDeviceRegistry()
+            
+            PluginResult.Success(mapOf("message" to "Camera deleted"))
+        } catch (e: Exception) {
+            PluginResult.Failure(e.message ?: "Delete camera failed")
+        }
+    }
+    
+    suspend fun deleteCustomer(customerId: String): PluginResult {
+        return try {
+            val cameras = withContext(Dispatchers.IO) {
+                database.cameraDao().getCamerasByCustomer(customerId)
+            }
+            withContext(Dispatchers.IO) {
+                database.cameraDao().deleteCamerasByCustomer(customerId)
+                database.cameraDao().deleteCustomerSetting(customerId)
+            }
+            
+            cameras.forEach { camera ->
+                learningStates.remove(camera.id)
+                circuitBreakers.remove(camera.id)
+                pendingResets.remove(camera.id)
+                dailyEvents.remove(camera.id)
+                cameraMutexMap.remove(camera.id)
+            }
+            
+            syncToDeviceRegistry()
+            
+            PluginResult.Success(mapOf("message" to "Customer deleted"))
+        } catch (e: Exception) {
+            PluginResult.Failure(e.message ?: "Delete customer failed")
+        }
+    }
+    
+    suspend fun setSmartMode(customerId: String, enabled: Boolean): PluginResult {
+        return try {
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateSmartMode(customerId, enabled, System.currentTimeMillis())
+            }
+            PluginResult.Success(mapOf("message" to "Smart mode updated"))
+        } catch (e: Exception) {
+            PluginResult.Failure(e.message ?: "Update smart mode failed")
+        }
+    }
+    
+    suspend fun setCustomerActive(customerId: String, active: Boolean): PluginResult {
+        return try {
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateActiveStatus(customerId, active, System.currentTimeMillis())
+            }
+            PluginResult.Success(mapOf("message" to "Customer status updated"))
+        } catch (e: Exception) {
+            PluginResult.Failure(e.message ?: "Update customer status failed")
+        }
+    }
+    
+    suspend fun getCamerasPaginated(page: Int, pageSize: Int): PluginResult {
+        return try {
+            val cameras = withContext(Dispatchers.IO) {
+                database.cameraDao().getActiveCameras()
+            }
+            val start = (page - 1) * pageSize
+            val end = minOf(start + pageSize, cameras.size)
+            val paginated = if (start < cameras.size) cameras.subList(start, end) else emptyList()
+            
+            PluginResult.Success(
+                mapOf(
+                    "cameras" to paginated,
+                    "total" to cameras.size,
+                    "page" to page,
+                    "pageSize" to pageSize
+                )
+            )
+        } catch (e: Exception) {
+            PluginResult.Failure(e.message ?: "Get cameras failed")
+        }
+    }
+    
+    fun observeCameras() = database.cameraDao().getAllCamerasFlow()
+
+    suspend fun testCameraUrl(snapshotUrl: String): PluginResult {
+        return try {
+            logger.i("CameraSkill", "🧪 testCameraUrl: $snapshotUrl")
+            val imageBytes = snapshotFetcher.fetchSnapshot(snapshotUrl)
+
+            if (imageBytes == null) {
+                logger.w("CameraSkill", "🧪 testCameraUrl: fetch trả về null (URL sai hoặc camera offline)")
+                return PluginResult.Failure("Không thể fetch ảnh từ URL này. Kiểm tra: URL đúng định dạng? Camera online? Network ok?")
+            }
+
+            val optimized = imageHashTool.optimizeImage(imageBytes)
+            val phash = imageHashTool.calculatePhash(optimized)
+            logger.i("CameraSkill", "🧪 testCameraUrl OK: ${optimized.size} bytes, phash=$phash")
+
+            PluginResult.Success(
+                mapOf(
+                    "imageBytes" to optimized,
+                    "originalSize" to imageBytes.size,
+                    "optimizedSize" to optimized.size,
+                    "phash" to phash,
+                    "message" to "Camera fetch OK — ${optimized.size} bytes"
+                )
+            )
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "🧪 testCameraUrl error: ${e.message}", e)
+            PluginResult.Failure(e.message ?: "Test camera URL failed")
+        }
+    }
+
+    fun resetCircuitBreaker(cameraId: String) {
+        circuitBreakers[cameraId] = CircuitBreakerState()
+        learningStates[cameraId] = CameraLearningState()
+        logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $cameraId")
+    }
+
+    fun resetAllCircuitBreakers() {
+        circuitBreakers.keys.forEach { id ->
+            circuitBreakers[id] = CircuitBreakerState()
+        }
+        logger.i("CameraSkill", "🔄 All Circuit Breakers reset manually")
+    }
+
+    fun getDiagnostics(): Map<String, Any> = _diagnostics.value
+    
+    private suspend fun updateDiagnostics() {
+        val stats = learningStates.mapValues { (cameraId, state) ->
+            val cb = circuitBreakers[cameraId]
+            mapOf(
+                "samples" to state.falseDeltas.size,
+                "realEvents" to state.realEvents,
+                "deltaTrigger" to state.deltaTrigger,
+                "absDiffTrigger" to state.absDiffTrigger,
+                "baselineSize" to state.baselineWindow.size,
+                "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
+                "circuitBreakerOpen" to (cb?.isOpen ?: false),
+                "offlineCount" to (cb?.offlineCount ?: 0),
+                "pendingReset" to pendingResets.containsKey(cameraId)
+            )
+        }
+        _diagnostics.value = stats
+    }
+    
+    private suspend fun saveAlertToHistory(
+        camera: CameraConfigEntity,
+        aiComment: String,
+        imageBytes: ByteArray?,
+        diff: Int,
+        deltaTrigger: Int,
+        absDiffTrigger: Int,
+        emailSent: Boolean
+    ) {
+        try {
+            val alertId = UUID.randomUUID().toString()
+            val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
+
+            val alert = AlertEntity(
+                id = alertId,
+                cameraId = camera.id,
+                customerId = camera.customerId,
+                cameraName = camera.customername,
+                timestamp = System.currentTimeMillis(),
+                aiComment = aiComment,
+                diff = diff,
+                deltaTrigger = deltaTrigger,
+                absDiffTrigger = absDiffTrigger,
+                imagePath = imagePath,
+                emailSent = if (emailSent) 1 else 0,
+                isSuspicious = 1,
+                isRead = 0
+            )
+            withContext(Dispatchers.IO) {
+                database.alertDao().insertAlert(alert)
+            }
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
+        }
+    }
+
+    private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
+        return try {
+            val dir = File(context.filesDir, "alert_images")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "$alertId.jpg")
+            FileOutputStream(file).use { it.write(bytes) }
+            file.absolutePath
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveAlertImage error: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun buildAlertEmailBody(camera: CameraConfigEntity, analysis: String): String {
+        return """
+            <html>
+            <body style="font-family: Arial, sans-serif; padding: 20px;">
+                <h2 style="color: #dc2626;">🚨 CẢNH BÁO AN NINH KHẨN CẤP</h2>
+                <p>Hệ thống phát hiện biến động bất thường tại camera <strong>${camera.customername}</strong></p>
+                <table style="margin: 15px 0;">
+                    <tr><td><strong>Vị trí:</strong></td><td>${camera.landinfo ?: "Không xác định"}</td></tr>
+                    <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
+                </table>
+                <div style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107;">
+                    <strong>🤖 Phân tích AI:</strong><br>
+                    $analysis
+                </div>
+                <p><small>Bug evidence attachment in the email.</small></p>
+            </body>
+            </html>
+        """.trimIndent()
     }
     
     override suspend fun shutdown() {}

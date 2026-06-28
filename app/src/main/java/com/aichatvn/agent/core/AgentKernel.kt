@@ -1,3 +1,4 @@
+
 package com.aichatvn.agent.core
 
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -248,7 +249,7 @@ class AgentKernel @Inject constructor(
     ): Layer3Result {
         val lower = userMessage.lowercase()
 
-        // 1. Quét danh sách Intent QA trong DB xem câu nói có chứa Intent nào đã học không
+        // 1. Quét danh sách Intent QA trong DB xem câu nói có chứa cụm từ Intent nào đã học không
         val intentQAs = trainingSkill.getRawCachedQAList(username)
             .filter { it.type == "intent" }
             .sortedByDescending { it.question.length } // Ưu tiên cụm từ dài nhất trước để tránh khớp nhầm
@@ -271,7 +272,8 @@ class AgentKernel @Inject constructor(
                 val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
                 
                 if (targetPlugin != null && targetAction != null) {
-                    val rootParams = rootJson.optJSONObject("params")?.toMap() ?: emptyMap()
+                    // SỬA LỖI BIÊN DỊCH: Sử dụng toán tử an toàn (?.) trên rootJson nullable
+                    val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
 
                     // Tạo MatchResult giả lập chứa các alias đã tìm thấy để phục vụ hàm gán tham số
                     val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username)
@@ -318,10 +320,11 @@ class AgentKernel @Inject constructor(
         
         if (rootPluginId.isBlank() || rootActionName.isBlank()) return null
         
-        val rootParams = rootJson.optJSONObject("params")?.toMap() ?: emptyMap()
-
         val rootPlugin = devicePlugins.find { it.id == rootPluginId } ?: return null
         val rootAction = rootPlugin.getActions().find { it.name == rootActionName } ?: return null
+
+        // SỬA LỖI BIÊN DỊCH: Sử dụng toán tử an toàn (?.) trên rootJson nullable
+        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
 
         val resolvedParams = resolveParametersWithMeta(
             parameters = rootAction.parameters,
@@ -1196,3 +1199,4 @@ class AgentKernel @Inject constructor(
         data class NeedMoreInfo(val missingParams: List<String>, val question: String) : PluginResult()
     }
 }
+
