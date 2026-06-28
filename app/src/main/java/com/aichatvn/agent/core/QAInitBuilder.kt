@@ -46,25 +46,12 @@ class QAInitBuilder @Inject constructor(
                     put("params", schemaParams)
                 }
 
-                val triggers = mutableListOf<String>()
-                if (action.examples.isNotEmpty()) {
-                    triggers.addAll(action.examples)
-                } else {
-                    triggers.add("${plugin.name} ${action.name}")
-                    triggers.add(action.name)
-                }
-                
-                action.aliases.forEach { alias ->
-                    triggers.add(alias)
-                    triggers.add("$alias ${plugin.name}")
-                }
+                // Chỉ dùng examples làm trigger intent QA
+                // aliases/tags đã được Tier 2.5 dùng trực tiếp từ plugin metadata
+                // Không sinh câu ghép vô nghĩa như "$alias ${plugin.name}"
+                if (action.examples.isEmpty()) return@forEach
 
-                action.tags.forEach { tag ->
-                    triggers.add(tag)
-                    triggers.add("$tag ${plugin.name}")
-                }
-
-                val finalTriggers = triggers
+                val finalTriggers = action.examples
                     .map { it.trim().lowercase() }
                     .distinctBy { it }
 

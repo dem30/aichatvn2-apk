@@ -537,7 +537,7 @@ class TrainingSkill @Inject constructor(
         threshold: Float? = null
     ): PluginResult {
         return try {
-            val matches = fuzzyMatchCategorized(query, username, threshold)
+            val matches = fuzzyMatchCategorized(query, username, intentThreshold = threshold)
             val combined = (matches.intentMatches + matches.aliasMatches)
                 .map { (qa, similarity) ->
                     mapOf(
@@ -555,18 +555,24 @@ class TrainingSkill @Inject constructor(
     suspend fun fuzzyMatchCategorized(
         query: String, 
         username: String, 
-        threshold: Float? = null
+        intentThreshold: Float? = null,
+        aliasThreshold: Float? = null
     ): MatchResult {
         val normalizedQuery = normalizeVietnamese(query)
-        val cacheKey = "$username:$normalizedQuery:${threshold ?: "default"}"
+        
+        // Đọc cấu hình động từ Provider hoặc fallback về mặc định
+        val configIntentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
+        val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+
+        val activeIntentThreshold = intentThreshold ?: configIntentThreshold
+        val activeAliasThreshold = aliasThreshold ?: configAliasThreshold
+
+        val cacheKey = "$username:$normalizedQuery:$activeIntentThreshold:$activeAliasThreshold"
         
         val cachedResult = queryCache[cacheKey]
         if (cachedResult != null) return cachedResult
 
         return try {
-            val configThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.5f)
-            val activeThreshold = threshold ?: configThreshold
-
             val allQAs = cachedQAList.filter { it.createdBy == username }
             val intents = mutableListOf<Pair<QAEntity, Double>>()
             val aliases = mutableListOf<Pair<QAEntity, Double>>()
@@ -576,18 +582,14 @@ class TrainingSkill @Inject constructor(
                     continue
                 }
 
-                val maxSimilarity = if (qa.type == "intent") {
-                    calculateSimilarity(normalizedQuery, qa.question).toDouble()
-                } else {
-                    val questionSim = calculateSimilarity(normalizedQuery, qa.question)
-                    val answerSim = calculateSimilarity(normalizedQuery, qa.answer)
-                    (questionSim * 0.7 + answerSim * 0.3)
-                }
+                val maxSimilarity = calculateSimilarity(normalizedQuery, qa.question).toDouble()
 
-                if (maxSimilarity >= activeThreshold) {
-                    if (qa.type == "intent") {
+                if (qa.type == "intent") {
+                    if (maxSimilarity >= activeIntentThreshold) {
                         intents.add(qa to maxSimilarity)
-                    } else {
+                    }
+                } else {
+                    if (maxSimilarity >= activeAliasThreshold) {
                         aliases.add(qa to maxSimilarity)
                     }
                 }
@@ -624,8 +626,6 @@ class TrainingSkill @Inject constructor(
             .replace(SPACE_REGEX, " ")
     }
 
-    // ĐÃ SỬA: Chuẩn hóa tự thân cả hai đối số đầu vào (clean1, clean2) thay vì giả định chúng đã sạch.
-    // Và sửa lỗi "Comparable compareTo operator" bằng cách thay thế maxOf thành biểu thức rẽ nhánh nguyên bản của Kotlin
     private fun calculateSimilarity(s1: String, s2: String): Float {
         val clean1 = normalizeVietnamese(s1)
         val clean2 = normalizeVietnamese(s2)

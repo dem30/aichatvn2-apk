@@ -38,10 +38,12 @@ object AppConfigDefaults {
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
     // ───────────────────────── GLOBAL ───────────────────────
+    // global.fuzzy_threshold: ngưỡng duy nhất cho fuzzyMatchCategorized + Tier 2 min score
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
-    const val GLOBAL_TIER2_MIN_SCORE        = "global.tier2_min_score"
+    // global.alias_threshold: ngưỡng tìm thực thể alias (danh từ riêng, thiết bị...)
+    const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
+    // global.tier2_high_confidence: Tier 2 phải đạt điểm này mới execute
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
-    const val GLOBAL_TIER2_5_MIN_SCORE      = "global.tier2_5_min_score"
 
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
@@ -195,35 +197,27 @@ object AppConfigDefaults {
         // ── GLOBAL ──
         AppConfigEntity(
             key = GLOBAL_FUZZY_THRESHOLD,
-            value = "0.5",
-            type = "string",
-            pluginId = "global",
-            label = "Ngưỡng lọc lệnh cục bộ (Fuzzy Threshold)",
-            description = "Giá trị từ 0.0 đến 1.0. Thấp sẽ nhạy hơn nhưng dễ nhầm lẫn, cao sẽ khắt khe hơn."
-        ),
-        AppConfigEntity(
-            key = GLOBAL_TIER2_MIN_SCORE,
             value = "0.3",
             type = "string",
             pluginId = "global",
-            label = "Ngưỡng điểm Tier 2 QA (Tier 2 Min Score)",
-            description = "Giá trị từ 0.0 đến 1.0. Ngưỡng điểm số tối thiểu để kích hoạt Fuzzy QA Intent ở tầng 2 mà không cần LLM."
+            label = "Ngưỡng fuzzy match (Fuzzy Threshold)",
+            description = "Điểm tối thiểu để fuzzyMatchCategorized đưa kết quả intent vào Tier 2. 0.0–1.0. Thấp = nhạy hơn, dễ nhầm. Cao = chặt hơn, bỏ sót. Mặc định 0.3."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_ALIAS_THRESHOLD,
+            value = "0.2",
+            type = "string",
+            pluginId = "global",
+            label = "Ngưỡng fuzzy cho alias (Alias Threshold)",
+            description = "Điểm tương đồng tối thiểu để nhận diện các thực thể alias (danh từ riêng). Nên đặt thấp để tránh lọc bỏ alias khi gán slot. Mặc định 0.2."
         ),
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
             value = "0.80",
             type = "string",
             pluginId = "global",
-            label = "Ngưỡng tin cậy cao Tier 2 (High Confidence)",
-            description = "Giá trị từ 0.0 đến 1.0. Nếu Tier 2 đạt ngưỡng này thì bỏ qua Tier 2.5, không cần LLM. Mặc định 0.80."
-        ),
-        AppConfigEntity(
-            key = GLOBAL_TIER2_5_MIN_SCORE,
-            value = "0.80",
-            type = "string",
-            pluginId = "global",
-            label = "Ngưỡng điểm Tier 2.5 Metadata (Tier 2.5 Min Score)",
-            description = "Giá trị từ 0.0 đến 1.0. Ngưỡng điểm tối thiểu để Tier 2.5 (metadata matcher) nhận diện action mà không cần LLM. Mặc định 0.80."
+            label = "Ngưỡng tin cậy Tier 2 (High Confidence)",
+            description = "Tier 2 phải đạt điểm này mới execute. 0.0–1.0. Thấp = dễ execute hơn. Cao = phải khớp rất sát. Mặc định 0.80."
         )
     )
 }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
@@ -19,9 +21,20 @@ import org.json.JSONObject
 import java.io.File
 import javax.inject.Inject
 
+// Cấu trúc dữ liệu phục vụ hiển thị phân tích chẩn đoán cho người dùng trên UI
+data class DiagnosticInfo(
+    val query: String,
+    val intentMatches: List<Pair<QAEntity, Double>>,
+    val aliasMatches: List<Pair<QAEntity, Double>>,
+    val bestAliasMatches: Map<String, Pair<QAEntity, Double>>,
+    val intentThreshold: Float,
+    val aliasThreshold: Float
+)
+
 @HiltViewModel
 class TrainingViewModel @Inject constructor(
-    private val trainingSkill: TrainingSkill
+    private val trainingSkill: TrainingSkill,
+    private val configProvider: AppConfigProvider // Tiêm configProvider để lấy cấu hình ngưỡng trực tiếp từ DB
 ) : ViewModel() {
 
     val qaList: StateFlow<List<QAEntity>> = trainingSkill.qaList
@@ -31,6 +44,9 @@ class TrainingViewModel @Inject constructor(
 
     private val _searchResults = MutableStateFlow<List<QAEntity>>(emptyList())
     val searchResults: StateFlow<List<QAEntity>> = _searchResults.asStateFlow()
+
+    private val _diagnosticInfo = MutableStateFlow<DiagnosticInfo?>(null)
+    val diagnosticInfo: StateFlow<DiagnosticInfo?> = _diagnosticInfo.asStateFlow()
 
     private val _exportResult = MutableStateFlow<String?>(null)
     val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
@@ -49,7 +65,6 @@ class TrainingViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            // Đã loại bỏ hoàn toàn lời gọi initialize() dư thừa để tránh ghi đè dữ liệu và dọn cache RAM sai thời điểm
             loadMoreQAs()
         }
     }
@@ -115,11 +130,7 @@ class TrainingViewModel @Inject constructor(
     }
 
     private suspend fun refreshSearchResults() {
-        val result = trainingSkill.searchQAs(activeSearchQuery, "default_user")
-        if (result is PluginResult.Success) {
-            @Suppress("UNCHECKED_CAST")
-            _searchResults.value = (result.data as? Map<String, Any>)?.get("results") as? List<QAEntity> ?: emptyList()
-        }
+        searchQAs(activeSearchQuery)
     }
 
     fun deleteAllQAs() {
@@ -132,13 +143,34 @@ class TrainingViewModel @Inject constructor(
         activeSearchQuery = query
         viewModelScope.launch {
             _isLoading.value = true
-            val result = trainingSkill.searchQAs(query, "default_user")
-            if (result is PluginResult.Success) {
-                @Suppress("UNCHECKED_CAST")
-                _searchResults.value = (result.data as? Map<String, Any>)?.get("results") as? List<QAEntity> ?: emptyList()
-            } else {
-                _searchResults.value = emptyList()
-            }
+            
+            // Đọc cấu hình ngưỡng hiện hành từ DB
+            val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
+            val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+
+            // Thiết lập gọi tìm kiếm không giới hạn ngưỡng thô để lấy đầy đủ chi tiết chẩn đoán
+            val matchResult = trainingSkill.fuzzyMatchCategorized(
+                query = query,
+                username = "default_user",
+                intentThreshold = 0.0f, // Đặt ngưỡng 0.0 để có thể phân tích cả các phương án bị loại
+                aliasThreshold = 0.0f
+            )
+
+            // Cập nhật thông tin phân tích
+            _diagnosticInfo.value = DiagnosticInfo(
+                query = query,
+                intentMatches = matchResult.intentMatches,
+                aliasMatches = matchResult.aliasMatches,
+                bestAliasMatches = matchResult.bestAliasMatches,
+                intentThreshold = intentThreshold,
+                aliasThreshold = aliasThreshold
+            )
+
+            // Lưu danh sách thô đã lọc theo ngưỡng chuẩn vào searchResults để giữ tính nguyên bản của danh sách hiển thị
+            val filteredIntents = matchResult.intentMatches.filter { it.second >= intentThreshold }
+            val filteredAliases = matchResult.aliasMatches.filter { it.second >= aliasThreshold }
+            _searchResults.value = (filteredIntents + filteredAliases).map { it.first }
+
             _isLoading.value = false
         }
     }
@@ -146,6 +178,7 @@ class TrainingViewModel @Inject constructor(
     fun clearSearch() {
         activeSearchQuery = ""
         _searchResults.value = emptyList()
+        _diagnosticInfo.value = null
     }
 
     fun exportQAToJson(context: Context) {
@@ -204,8 +237,6 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    // Tối ưu hóa lớn: Chuyển đổi tệp CSV thành chuỗi cấu trúc JSONArray trước khi gọi cơ chế Import theo lô
-    // Điều này hạn chế tối đa việc gọi SQLite ghi đĩa liên tục gây đơ màn hình và bảo vệ tính nhất quán của RAM Cache
     fun importQAFromCsvUri(context: Context, uri: Uri) {
         viewModelScope.launch {
             _isLoading.value = true
@@ -220,7 +251,7 @@ class TrainingViewModel @Inject constructor(
                     return@launch
                 }
 
-                val csvLines = lines.drop(1) // Bỏ qua tiêu đề
+                val csvLines = lines.drop(1)
                 val jsonArray = JSONArray()
                 var skipped = 0
 

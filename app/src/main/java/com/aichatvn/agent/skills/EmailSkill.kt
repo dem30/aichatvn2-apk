@@ -66,17 +66,16 @@ class EmailSkill @Inject constructor(
                 description = "Soạn thảo và gửi email tới địa chỉ đích",
                 examples = listOf(
                     "gửi email cho tôi",
-                    "gửi email cho",
-                    "soạn mail gửi tới",
                     "gửi mail",
-                    "viết thư báo cáo tình hình"
+                    "viết thư báo cáo tình hình",
+                    "soạn và gửi email"
                 ),
                 aliases = listOf("gửi mail", "soạn thư", "gửi báo cáo"),
                 tags = listOf("mail", "send", "report", "notification"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
-                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"),
-                    PluginParameter("body", "string", "Nội dung email", true, "string")
+                    PluginParameter("subject", "string", "Tiêu đề email", false, "string"),
+                    PluginParameter("body", "string", "Nội dung email", false, "string")
                 )
             ),
             PluginAction(

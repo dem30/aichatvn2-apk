@@ -40,6 +40,13 @@ data class NormalizedActionMetadata(
     val normalizedTags: List<String>
 )
 
+sealed class Tier1_5Result {
+    data class Single(val plugin: Plugin, val intent: AgentKernel.Intent) : Tier1_5Result()
+    data class Nested(val wrapper: Plugin, val intent: AgentKernel.Intent) : Tier1_5Result()
+    data class Multi(val intents: List<Pair<Plugin, AgentKernel.Intent>>) : Tier1_5Result()
+    object NoMatch : Tier1_5Result()
+}
+
 @Singleton
 class AgentKernel @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
@@ -147,11 +154,14 @@ class AgentKernel @Inject constructor(
             if (resolved != null) return RouterOutcome.Matched(resolved)
         }
 
+        // ── Tier 2: Match nguyên câu với intent QA training ──────────────────
+        // Ưu tiên cao nhất vì đây là câu lệnh người dùng đã train sẵn, khớp nguyên câu
         val dynamicMinScore = configProvider.allConfigs.value
-            .find { it.key == AppConfigDefaults.GLOBAL_TIER2_MIN_SCORE }
+            .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toFloatOrNull() ?: 0.3f
 
-        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, threshold = dynamicMinScore)
+        // ĐÃ SỬA: Chuyển tên tham số 'threshold' sang 'intentThreshold' để đồng bộ với TrainingSkill mới
+        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, intentThreshold = dynamicMinScore)
 
         val tier2HighConf = configProvider.allConfigs.value
             .find { it.key == AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE }
@@ -162,7 +172,7 @@ class AgentKernel @Inject constructor(
             if (tier2Result.confidence >= tier2HighConf) {
                 val plugin = tier2Result.plugin
                 val intent = tier2Result.intent
-                logger.d("AgentKernel", "[$traceId] ✅ [Tier 2 Hit - Confidence: ${tier2Result.confidence}] Semantic Compose: ${intent.pluginId}.${intent.action}")
+                logger.d("AgentKernel", "[$traceId] ✅ [Tier 2 Hit - Confidence: ${tier2Result.confidence}] ${intent.pluginId}.${intent.action}")
                 return try {
                     val result = executeIntent(plugin, intent, userMessage, traceId)
                     RouterOutcome.Matched(DeviceCommandResult(pluginId = intent.pluginId, result = result))
@@ -171,14 +181,53 @@ class AgentKernel @Inject constructor(
                     RouterOutcome.RouterFailed("Tier 2 execute failed: ${e.message}")
                 }
             } else {
-                logger.d("AgentKernel", "[$traceId] ⚠️ [Tier 2 Low Confidence: ${tier2Result.confidence}] -> Chuyển hướng xử lý sang Tier 2.5")
+                logger.d("AgentKernel", "[$traceId] ⚠️ [Tier 2 Low Confidence: ${tier2Result.confidence}] -> Tier 1.5")
             }
         }
 
+        // ── Tier 1.5: Phân rã câu → intent trigger + alias QA ────────────────
+        // Dùng khi Tier 2 không khớp hoặc confidence thấp
+        // Dữ liệu: QA training (DB), không dùng scoring, chỉ contains()
+        val tier1_5Result = tryTier1_5EntitySpotter(userMessage, username, devicePlugins, traceId)
+        when (tier1_5Result) {
+            is Tier1_5Result.Single -> {
+                logger.d("AgentKernel", "[$traceId] ✅ [Tier 1.5 Single] ${tier1_5Result.intent.pluginId}.${tier1_5Result.intent.action}")
+                val result = executeIntent(tier1_5Result.plugin, tier1_5Result.intent, userMessage, traceId)
+                return RouterOutcome.Matched(DeviceCommandResult(tier1_5Result.plugin.id, result))
+            }
+            is Tier1_5Result.Nested -> {
+                logger.d("AgentKernel", "[$traceId] ✅ [Tier 1.5 Nested] ${tier1_5Result.intent.pluginId}.${tier1_5Result.intent.action}")
+                val result = executeIntent(tier1_5Result.wrapper, tier1_5Result.intent, userMessage, traceId)
+                return RouterOutcome.Matched(DeviceCommandResult(tier1_5Result.wrapper.id, result))
+            }
+            is Tier1_5Result.Multi -> {
+                logger.d("AgentKernel", "[$traceId] ✅ [Tier 1.5 Multi] ${tier1_5Result.intents.size} actions")
+                val results = mutableListOf<String>()
+                tier1_5Result.intents.forEach { (plugin, intent) ->
+                    try {
+                        val r = executeIntent(plugin, intent, userMessage, traceId)
+                        val msg = when (r) {
+                            is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
+                            is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action}: ${r.question}"
+                        }
+                        results.add(msg)
+                    } catch (e: Exception) {
+                        results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
+                    }
+                }
+                val combined = results.joinToString("\n")
+                return RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined))))
+            }
+            is Tier1_5Result.NoMatch -> { /* tiếp tục Tier 2.5 */ }
+        }
+
+        // ── Tier 2.5: Phân rã câu → intent từ plugin metadata (code) ─────────
+        // Giống Tier 1.5 nhưng dùng PluginAction.aliases/examples thay vì getQATriggers()
         val tier2_5Result = tryTier2_5ActionMetadataMatcher(userMessage, matchResult, devicePlugins)
         if (tier2_5Result != null) {
             val (plugin, intent) = tier2_5Result
-            logger.d("AgentKernel", "[$traceId] ✅ [Tier 2.5 Hit] Action Metadata Matcher Compose: ${intent.pluginId}.${intent.action}")
+            logger.d("AgentKernel", "[$traceId] ✅ [Tier 2.5 Hit] ${intent.pluginId}.${intent.action}")
             return try {
                 val result = executeIntent(plugin, intent, userMessage, traceId)
                 RouterOutcome.Matched(DeviceCommandResult(pluginId = intent.pluginId, result = result))
@@ -188,8 +237,157 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        logger.d("AgentKernel", "[$traceId] 🔵 [Tier 2.5 Miss] -> Chuyển tiếp sang LLM Semantic Router")
+        logger.d("AgentKernel", "[$traceId] 🔵 [Tier 2.5 Miss] -> LLM")
         return executeTier3LlmRouting(userMessage, matchResult, devicePlugins, traceId)
+    }
+
+    private suspend fun tryTier1_5EntitySpotter(
+        userMessage: String,
+        username: String,
+        devicePlugins: List<Plugin>,
+        traceId: String
+    ): Tier1_5Result {
+
+        // ── Chuẩn bị dữ liệu ──────────────────────────────────────────────────
+        val aliasQAs = trainingSkill.getRawCachedQAList(username)
+            .filter { it.type == "alias" }
+            .sortedByDescending { it.question.length } // alias dài ưu tiên trước
+
+        data class DetectedAction(val plugin: Plugin, val actionName: String, val triggerPos: Int)
+
+        fun isWrapper(plugin: Plugin, actionName: String): Boolean =
+            plugin.getActions().find { it.name == actionName }
+                ?.parameters?.any { it.semanticType == "params" } == true
+
+        // ── Tách câu thành các clause độc lập ─────────────────────────────────
+        // Mỗi clause xử lý entity + action riêng → giải quyết multi-device
+        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
+        val clauses = clauseSeparator.split(userMessage)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        logger.d("AgentKernel", "[$traceId] [Tier 1.5] clauses=$clauses")
+
+        // ── Xử lý từng clause ─────────────────────────────────────────────────
+        data class ClauseResult(
+            val entityMap: Map<String, String>,
+            val detected: List<DetectedAction>
+        )
+
+        fun processClause(clause: String): ClauseResult {
+            val lower = clause.lowercase()
+
+            // 1. Duyệt alias QA → check clause có chứa qa.question không
+            val entityMap = mutableMapOf<String, String>()
+            aliasQAs.forEach { qa ->
+                if (lower.contains(qa.question.lowercase())) {
+                    entityMap.putIfAbsent(qa.category, qa.answer)
+                }
+            }
+
+            // 2. Extract state keyword
+            val stateTrue  = listOf("bật", "mở", "on", "khởi động")
+            val stateFalse = listOf("tắt", "off", "dừng", "ngừng")
+            val hasOn  = stateTrue.any  { lower.contains(it) }
+            val hasOff = stateFalse.any { lower.contains(it) }
+            if (hasOn  && !hasOff) entityMap.putIfAbsent("state", "true")
+            if (hasOff && !hasOn)  entityMap.putIfAbsent("state", "false")
+
+            // 3. Duyệt triggers của từng plugin → check clause có chứa trigger không
+            val detected = mutableListOf<DetectedAction>()
+            devicePlugins.forEach { plugin ->
+                plugin.getQATriggers().forEach { (actionName, triggers) ->
+                    val pos = triggers.mapNotNull { t ->
+                        val idx = lower.indexOf(t.lowercase())
+                        if (idx >= 0) idx else null
+                    }.minOrNull()
+                    if (pos != null) {
+                        detected.add(DetectedAction(plugin, actionName, pos))
+                    }
+                }
+            }
+            detected.sortBy { it.triggerPos }
+
+            return ClauseResult(entityMap, detected)
+        }
+
+        // ── Build params từ entityMap của clause ──────────────────────────────
+        fun buildParams(plugin: Plugin, actionName: String, entityMap: Map<String, String>): Map<String, Any> {
+            val action = plugin.getActions().find { it.name == actionName } ?: return emptyMap()
+            val params = mutableMapOf<String, Any>()
+            action.parameters.forEach { param ->
+                val value = when {
+                    entityMap.containsKey(param.semanticType) -> entityMap[param.semanticType]!!
+                    entityMap.containsKey(param.name)         -> entityMap[param.name]!!
+                    param.defaultValue != null                -> param.defaultValue!!
+                    else -> ""
+                }
+                params[param.name] = value
+            }
+            return params
+        }
+
+        // ── Xử lý kết quả từng clause ─────────────────────────────────────────
+        val clauseResults = clauses.map { processClause(it) }
+
+        // Gom tất cả intent từ các clause
+        val allIntents = mutableListOf<Pair<Plugin, Intent>>()
+
+        clauseResults.forEachIndexed { idx, cr ->
+            if (cr.detected.isEmpty()) return@forEachIndexed
+
+            val wrappers = cr.detected.filter { isWrapper(it.plugin, it.actionName) }
+            val leaves   = cr.detected.filter { !isWrapper(it.plugin, it.actionName) }
+
+            logger.d("AgentKernel", "[$traceId] [Tier 1.5] clause[$idx] entity=${cr.entityMap} actions=${cr.detected.map{"${it.plugin.id}.${it.actionName}"}}")
+
+            when {
+                // Clause có wrapper + leaf → Nested intent
+                wrappers.size == 1 && leaves.size == 1 -> {
+                    val wrapper = wrappers.first()
+                    val leaf    = leaves.first()
+                    val leafParams    = buildParams(leaf.plugin, leaf.actionName, cr.entityMap)
+                    val wrapperParams = buildParams(wrapper.plugin, wrapper.actionName, cr.entityMap).toMutableMap()
+                    wrapperParams["plugin_id"] = leaf.plugin.id
+                    wrapperParams["action_id"] = leaf.actionName
+                    wrapperParams["params"]    = leafParams
+                    allIntents.add(wrapper.plugin to Intent(wrapper.plugin.id, wrapper.actionName, wrapperParams))
+                }
+
+                // Clause chỉ có leaf(s)
+                wrappers.isEmpty() && leaves.isNotEmpty() -> {
+                    leaves.forEach { leaf ->
+                        val params = buildParams(leaf.plugin, leaf.actionName, cr.entityMap)
+                        allIntents.add(leaf.plugin to Intent(leaf.plugin.id, leaf.actionName, params))
+                    }
+                }
+
+                // Clause chỉ có wrapper (không có leaf) → Single wrapper
+                wrappers.size == 1 && leaves.isEmpty() -> {
+                    val wrapper = wrappers.first()
+                    val params = buildParams(wrapper.plugin, wrapper.actionName, cr.entityMap)
+                    allIntents.add(wrapper.plugin to Intent(wrapper.plugin.id, wrapper.actionName, params))
+                }
+            }
+        }
+
+        if (allIntents.isEmpty()) return Tier1_5Result.NoMatch
+
+        logger.d("AgentKernel", "[$traceId] [Tier 1.5] allIntents=${allIntents.map{"${it.first.id}.${it.second.action}"}}")
+
+        // ── Trả về kết quả phân loại ──────────────────────────────────────────
+        return when {
+            allIntents.size == 1 -> {
+                val (plugin, intent) = allIntents.first()
+                // Phân biệt Single vs Nested dựa trên params có plugin_id không
+                if (intent.params.containsKey("plugin_id")) {
+                    Tier1_5Result.Nested(plugin, intent)
+                } else {
+                    Tier1_5Result.Single(plugin, intent)
+                }
+            }
+            else -> Tier1_5Result.Multi(allIntents)
+        }
     }
 
     private suspend fun tryTier2SemanticSlotResolver(
@@ -198,7 +396,7 @@ class AgentKernel @Inject constructor(
         devicePlugins: List<Plugin>
     ): Tier2Result? {
         val dynamicMinScore = configProvider.allConfigs.value
-            .find { it.key == AppConfigDefaults.GLOBAL_TIER2_MIN_SCORE }
+            .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toDoubleOrNull() ?: 0.3
 
         val bestIntentPair = matchResult.intentMatches
@@ -237,49 +435,55 @@ class AgentKernel @Inject constructor(
         matchResult: TrainingSkill.MatchResult,
         devicePlugins: List<Plugin>
     ): Pair<Plugin, Intent>? {
-        var bestScore = 0.0
-        var bestMatch: Pair<Plugin, PluginAction>? = null
-        
-        val normalizedUserQuery = normalizeVietnamese(userMessage)
+        val lower = userMessage.lowercase()
 
-        normalizedActionMetadataList.forEach { meta ->
-            if (!meta.plugin.routable || !meta.action.enabled) return@forEach
+        // Tách clause để xử lý câu đa ý
+        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
+        val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
 
-            val maxExampleScore = meta.normalizedExamples.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
-            val maxAliasScore = meta.normalizedAliases.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
-            val maxTagScore = meta.normalizedTags.maxOfOrNull { calculateLocalSimilarity(normalizedUserQuery, it) } ?: 0.0
-            val descriptionScore = calculateLocalSimilarity(normalizedUserQuery, meta.normalizedDescription)
+        // Với Tier 2.5 chỉ xử lý single intent (multi đã được Tier 1.5 cover)
+        for (clause in clauses) {
+            val clauseLower = clause.lowercase()
+            var bestMatch: Pair<Plugin, PluginAction>? = null
+            var bestMatchLen = 0 // ưu tiên trigger dài hơn
 
-            val actionBestScore = maxOf(maxExampleScore, maxAliasScore, maxTagScore, descriptionScore)
-            if (actionBestScore > bestScore) {
-                bestScore = actionBestScore
-                bestMatch = meta.plugin to meta.action
-            }
-        }
+            normalizedActionMetadataList.forEach { meta ->
+                if (!meta.plugin.routable || !meta.action.enabled) return@forEach
 
-        val tier2_5MinScore = configProvider.allConfigs.value
-            .find { it.key == AppConfigDefaults.GLOBAL_TIER2_5_MIN_SCORE }
-            ?.value?.toDoubleOrNull() ?: 0.80
+                // Duyệt aliases và examples của action → check clause có chứa không
+                val allTriggers = (meta.action.aliases + meta.action.examples)
+                    .map { normalizeVietnamese(it) }
+                    .sortedByDescending { it.length }
 
-        if (bestScore >= tier2_5MinScore && bestMatch != null) {
-            val (plugin, action) = bestMatch!!
+                val matched = allTriggers.firstOrNull { trigger ->
+                    trigger.isNotBlank() && clauseLower.contains(trigger)
+                }
 
-            val schemaParams = mutableMapOf<String, Any>()
-            action.parameters.forEach { param ->
-                schemaParams[param.name] = param.defaultValue ?: ""
+                if (matched != null && matched.length > bestMatchLen) {
+                    bestMatchLen = matched.length
+                    bestMatch = meta.plugin to meta.action
+                }
             }
 
-            val resolvedParams = resolveParametersWithMeta(
-                parameters = action.parameters,
-                inputParams = schemaParams,
-                matchResult = matchResult,
-                userMessage = userMessage,
-                devicePlugins = devicePlugins,
-                excludeIntentId = null,
-                depth = 0
-            )
+            if (bestMatch != null) {
+                val (plugin, action) = bestMatch!!
+                val schemaParams = mutableMapOf<String, Any>()
+                action.parameters.forEach { param ->
+                    schemaParams[param.name] = param.defaultValue ?: ""
+                }
 
-            return plugin to Intent(plugin.id, action.name, resolvedParams)
+                val resolvedParams = resolveParametersWithMeta(
+                    parameters = action.parameters,
+                    inputParams = schemaParams,
+                    matchResult = matchResult,
+                    userMessage = userMessage,
+                    devicePlugins = devicePlugins,
+                    excludeIntentId = null,
+                    depth = 0
+                )
+
+                return plugin to Intent(plugin.id, action.name, resolvedParams)
+            }
         }
 
         return null
@@ -396,7 +600,7 @@ class AgentKernel @Inject constructor(
                     secondaryIntentQA, devicePlugins, excludeIntentId, depth, userMessage
                 ) ?: ""
             } else {
-                resolved[param.name] = resolveAliasOrFallback(param, currentValue, isPlh, matchResult, localEntities)
+                resolved[param.name] = resolveAliasOrFallback(param, currentValue, isPlh, matchResult, localEntities, userMessage)
             }
         }
 
@@ -454,18 +658,28 @@ class AgentKernel @Inject constructor(
         currentValue: Any?,
         isPlh: Boolean,
         matchResult: TrainingSkill.MatchResult,
-        localEntities: Map<String, Any>
+        localEntities: Map<String, Any>,
+        userMessage: String = ""
     ): Any {
         if (!isPlh) return currentValue ?: ""
-        
+
+        // 1. Score-based alias match (alias dài, cùng độ dài với query)
         val matchedAliasValue = aliasMatchesForType(matchResult, param.semanticType)
-        if (matchedAliasValue != null) {
-            return matchedAliasValue
+        if (matchedAliasValue != null) return matchedAliasValue
+
+        // 2. Contains-based entity extraction (alias ngắn như "anh A", "tôi", "sếp")
+        if (userMessage.isNotBlank()) {
+            val containsMatch = matchResult.aliasMatches
+                .filter { it.first.category == param.semanticType }
+                .sortedByDescending { it.first.question.length } // ưu tiên alias dài hơn để tránh nhầm
+                .firstOrNull { userMessage.contains(it.first.question, ignoreCase = true) }
+                ?.first?.answer
+            if (containsMatch != null) return containsMatch
         }
 
-        if (param.semanticType == "email" && localEntities.containsKey("email")) {
-            return localEntities["email"]!!
-        }
+        // 3. Generic localEntities lookup theo semanticType (email regex, cron, ...)
+        val localMatch = localEntities[param.semanticType]
+        if (localMatch != null) return localMatch
 
         return currentValue ?: ""
     }
@@ -566,7 +780,7 @@ class AgentKernel @Inject constructor(
         actionName: String? = null
     ): String {
         val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
-        val targetAction = plugin?.getActions().orEmpty().find { it.name == actionName }
+        val targetAction = plugin?.getActions().orEmpty().find { it.name == actualKey }
         val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
