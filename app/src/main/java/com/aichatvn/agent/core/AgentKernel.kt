@@ -579,7 +579,7 @@ class AgentKernel @Inject constructor(
                 .filter { it.first.category == param.semanticType }
                 .sortedByDescending { it.first.question.length }
                 .firstOrNull { userMessage.contains(it.first.question, ignoreCase = true) }
-                ?.first?.answer
+                ?.first?.answer?.trim()
             if (containsMatch != null) return containsMatch
         }
 
@@ -594,7 +594,7 @@ class AgentKernel @Inject constructor(
         matchResult: TrainingSkill.MatchResult,
         semanticType: String
     ): String? {
-        return matchResult.bestAliasMatches[semanticType]?.first?.answer
+        return matchResult.bestAliasMatches[semanticType]?.first?.answer?.trim()
     }
 
     private fun parseVietnameseTime(message: String): String? {
