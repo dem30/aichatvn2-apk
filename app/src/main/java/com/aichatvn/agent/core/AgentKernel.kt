@@ -1,4 +1,3 @@
-
 package com.aichatvn.agent.core
 
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -124,13 +123,20 @@ class AgentKernel @Inject constructor(
     private fun generateTraceId(): String = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
 
     private fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
-        val strVal = value?.toString() ?: ""
+        // CẮT BỎ KHOẢNG TRẮNG PHÒNG THỦ: Tránh rủi ro dư khoảng trắng thô ở đầu/cuối của tên thiết bị
+        val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
         if (strVal.isBlank()) return true
-        if (parameter != null && parameter.placeholder.isNotBlank() && strVal.equals(parameter.placeholder, ignoreCase = true)) {
-            return true
+        
+        if (parameter != null && parameter.placeholder.isNotBlank()) {
+            val paramPlh = parameter.placeholder.trim().replace(SPACE_REGEX, " ")
+            if (strVal.equals(paramPlh, ignoreCase = true)) {
+                return true
+            }
         }
+        
         val defaultPlaceholders = setOf(
             "device_1", "device_2", "camera_1", "camera_2",
+            "device 1", "device 2", "camera 1", "camera 2", // Bổ sung khoảng trắng
             "example@gmail.com", "example@email.com",
             "schedule_1", "schedule_id_here"
         )
@@ -162,7 +168,13 @@ class AgentKernel @Inject constructor(
             .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toFloatOrNull() ?: 0.3f
 
-        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, intentThreshold = dynamicMinScore)
+        // aliasThreshold = 0.0f để giữ nguyên danh sách alias thô phục vụ contains match chính xác
+        val matchResult = trainingSkill.fuzzyMatchCategorized(
+            userMessage, 
+            username, 
+            intentThreshold = dynamicMinScore,
+            aliasThreshold = 0.0f
+        )
 
         val tier2HighConf = configProvider.allConfigs.value
             .find { it.key == AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE }
@@ -249,16 +261,15 @@ class AgentKernel @Inject constructor(
     ): Layer3Result {
         val lower = userMessage.lowercase()
 
-        // 1. Quét danh sách Intent QA trong DB xem câu nói có chứa cụm từ Intent nào đã học không
         val intentQAs = trainingSkill.getRawCachedQAList(username)
             .filter { it.type == "intent" }
-            .sortedByDescending { it.question.length } // Ưu tiên cụm từ dài nhất trước để tránh khớp nhầm
+            .sortedByDescending { it.question.length }
 
         var matchedIntentQA: QAEntity? = null
         for (qa in intentQAs) {
             if (lower.contains(qa.question.lowercase())) {
                 matchedIntentQA = qa
-                break // Tìm thấy Intent dài nhất khớp cụm từ
+                break
             }
         }
 
@@ -272,13 +283,11 @@ class AgentKernel @Inject constructor(
                 val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
                 
                 if (targetPlugin != null && targetAction != null) {
-                    // SỬA LỖI BIÊN DỊCH: Sử dụng toán tử an toàn (?.) trên rootJson nullable
                     val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
 
-                    // Tạo MatchResult giả lập chứa các alias đã tìm thấy để phục vụ hàm gán tham số
-                    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username)
+                    // aliasThreshold = 0.0f giúp bóc tách Alias lồng trong Tầng 3 chính xác hoàn hảo
+                    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
 
-                    // Gọi hàm gán tham số tiêu chuẩn để hợp nhất Intent đã tìm thấy với các Alias bóc tách được
                     val resolvedParams = resolveParametersWithMeta(
                         parameters = targetAction.parameters,
                         inputParams = rootParams,
@@ -323,7 +332,6 @@ class AgentKernel @Inject constructor(
         val rootPlugin = devicePlugins.find { it.id == rootPluginId } ?: return null
         val rootAction = rootPlugin.getActions().find { it.name == rootActionName } ?: return null
 
-        // SỬA LỖI BIÊN DỊCH: Sử dụng toán tử an toàn (?.) trên rootJson nullable
         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
 
         val resolvedParams = resolveParametersWithMeta(
@@ -567,19 +575,30 @@ class AgentKernel @Inject constructor(
         localEntities: Map<String, Any>,
         userMessage: String = ""
     ): Any {
-        if (!isPlh) return currentValue ?: ""
+        var finalIsPlh = isPlh
+        
+        // FIX 1C: Nếu giá trị hiện hành là chữ thô khớp với một từ khóa Alias có trong câu lệnh người dùng, tự động coi là Placeholder để dịch
+        if (!finalIsPlh && currentValue != null) {
+            val isAliasVal = matchResult.aliasMatches.any { 
+                it.first.category == param.semanticType && 
+                it.first.question.equals(currentValue.toString().trim(), ignoreCase = true) 
+            }
+            if (isAliasVal) {
+                finalIsPlh = true
+            }
+        }
 
-        // 1. Score-based alias match (alias dài, cùng độ dài với query)
+        if (!finalIsPlh) return currentValue ?: ""
+
         val matchedAliasValue = aliasMatchesForType(matchResult, param.semanticType)
         if (matchedAliasValue != null) return matchedAliasValue
 
-        // 2. Contains-based entity extraction (alias ngắn như "anh A", "tôi", "sếp")
         if (userMessage.isNotBlank()) {
             val containsMatch = matchResult.aliasMatches
                 .filter { it.first.category == param.semanticType }
                 .sortedByDescending { it.first.question.length }
                 .firstOrNull { userMessage.contains(it.first.question, ignoreCase = true) }
-                ?.first?.answer?.trim()
+                ?.first?.answer
             if (containsMatch != null) return containsMatch
         }
 
@@ -594,7 +613,7 @@ class AgentKernel @Inject constructor(
         matchResult: TrainingSkill.MatchResult,
         semanticType: String
     ): String? {
-        return matchResult.bestAliasMatches[semanticType]?.first?.answer?.trim()
+        return matchResult.bestAliasMatches[semanticType]?.first?.answer
     }
 
     private fun parseVietnameseTime(message: String): String? {
@@ -792,7 +811,7 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user")
+        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = 0.0f)
 
         val localEntities = mutableMapOf<String, Any>()
         EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
@@ -989,18 +1008,23 @@ class AgentKernel @Inject constructor(
         devicePlugins: List<Plugin>,
         traceId: String
     ): RouterOutcome {
-        val queryLower = userMessage.lowercase()
+        val queryNormalized = normalizeVietnamese(userMessage)
         val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
 
         val foundAliases = matchResult.aliasMatches
             .filter { it.second >= configAliasThreshold }
             .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
 
+        // ĐÃ TỐI ƯU: Thêm điều kiện giới hạn độ dài ký tự tối thiểu để tránh bị gán bừa (False Positive) bởi các từ khóa quá ngắn
         val matchedActions = normalizedActionMetadataList.filter { meta ->
             meta.plugin.routable && meta.action.enabled && (
-                meta.normalizedDescription.contains(queryLower) || queryLower.contains(meta.normalizedDescription) ||
-                meta.normalizedAliases.any { alias -> queryLower.contains(alias) || alias.contains(queryLower) } ||
-                meta.normalizedExamples.any { ex -> queryLower.contains(ex) || ex.contains(queryLower) }
+                meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
+                meta.normalizedAliases.any { alias -> 
+                    alias.length >= 3 && (queryNormalized.contains(alias) || alias.contains(queryNormalized)) 
+                } ||
+                meta.normalizedExamples.any { ex -> 
+                    ex.length >= 5 && (queryNormalized.contains(ex) || ex.contains(queryNormalized)) 
+                }
             )
         }
 
@@ -1012,9 +1036,12 @@ class AgentKernel @Inject constructor(
                 "  - ${meta.plugin.id}.${meta.action.name}: ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
             }
         } else {
-            actionCandidates.joinToString("\n") { c ->
-                "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
-            }
+            // ĐÃ TỐI ƯU: Lọc bỏ các hành động quản trị hệ thống không thuộc devicePlugins (như TrainingSkill) tránh làm loãng LLM
+            actionCandidates
+                .filter { c -> devicePlugins.any { it.id == c.pluginId } }
+                .joinToString("\n") { c ->
+                    "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
+                }
         }
 
         val shortHistory = chatHistoryManager.getRecentTurnsAsText()
@@ -1199,4 +1226,3 @@ class AgentKernel @Inject constructor(
         data class NeedMoreInfo(val missingParams: List<String>, val question: String) : PluginResult()
     }
 }
-

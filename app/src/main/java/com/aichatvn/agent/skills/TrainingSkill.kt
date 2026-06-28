@@ -360,8 +360,8 @@ class TrainingSkill @Inject constructor(
             var skipped = 0
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
-                val question = obj.getString("question")
-                val answer = obj.getString("answer")
+                val question = obj.getString("question").trim() // Thêm .trim() tránh khoảng trắng thừa đầu cuối
+                val answer = obj.getString("answer").trim()     // Thêm .trim() tránh khoảng trắng thừa đầu cuối
                 val type = obj.optString("type", "alias")
                 val category = obj.optString("category", "general")
 
@@ -437,8 +437,8 @@ class TrainingSkill @Inject constructor(
         return try {
             val qa = QAEntity(
                 id = UUID.randomUUID().toString(),
-                question = question,
-                answer = answer,
+                question = question.trim(), // Tự động trim khoảng trắng đầu cuối
+                answer = answer.trim(),     // Tự động trim khoảng trắng đầu cuối
                 category = category,
                 type = type,
                 createdBy = username,
@@ -473,8 +473,8 @@ class TrainingSkill @Inject constructor(
             val existing = database.qaDao().getQAById(id, username) ?: return PluginResult.Failure("QA not found")
             
             val updated = existing.copy(
-                question = question ?: existing.question,
-                answer = answer ?: existing.answer,
+                question = question?.trim() ?: existing.question, // Thêm .trim() phòng thủ khoảng trắng
+                answer = answer?.trim() ?: existing.answer,       // Thêm .trim() phòng thủ khoảng trắng
                 type = type ?: existing.type,
                 category = category ?: existing.category,
                 timestamp = System.currentTimeMillis()
@@ -633,28 +633,34 @@ class TrainingSkill @Inject constructor(
             .replace(SPACE_REGEX, " ")
     }
 
+    // TÍNH ĐIỂM KHOA HỌC: Kết hợp Simpson Overlap Coefficient và Length Penalty Ratio cho Contains Match chân thực
     private fun calculateSimilarity(s1: String, s2: String): Float {
         val clean1 = normalizeVietnamese(s1)
         val clean2 = normalizeVietnamese(s2)
         if (clean1.isEmpty() || clean2.isEmpty()) return 0f
         if (clean1 == clean2) return 1f
         
-        val lenDiff = if (clean1.length > clean2.length) clean1.length - clean2.length else clean2.length - clean1.length
-        val maxLen = if (clean1.length > clean2.length) clean1.length else clean2.length
-        if (maxLen > 10 && lenDiff.toFloat() / maxLen > 0.7f) {
-            return 0f
-        }
-        
         val tokens1 = clean1.split(SPACE_REGEX).toSet()
         val tokens2 = clean2.split(SPACE_REGEX).toSet()
         val intersectionSize = tokens1.intersect(tokens2).size
         
-        if (tokens1.size > 1 && tokens2.size > 1 && intersectionSize == 0) {
-            return 0f
-        }
-        
+        // Nếu không có bất kỳ từ nào giao nhau, điểm tương đồng bằng 0
+        if (intersectionSize == 0) return 0f
+
+        val maxLen = maxOf(clean1.length, clean2.length)
+        val minLen = minOf(clean1.length, clean2.length)
+
+        // Tính toán điểm số đàng hoàng khoa học khi có chứa chuỗi con (Substring Match)
         if (clean1.contains(clean2) || clean2.contains(clean1)) {
-            return 0.95f
+            val simpson = intersectionSize.toFloat() / minOf(tokens1.size, tokens2.size)
+            val lengthRatio = minLen.toFloat() / maxLen.toFloat()
+            return (simpson * 0.7f) + (lengthRatio * 0.3f)
+        }
+
+        // Nếu không chứa nhau, tính điểm Jaccard + Levenshtein thông thường
+        val lenDiff = if (clean1.length > clean2.length) clean1.length - clean2.length else clean2.length - clean1.length
+        if (maxLen > 10 && lenDiff.toFloat() / maxLen > 0.7f) {
+            return 0f
         }
         
         val union = tokens1.union(tokens2).size.toFloat()
