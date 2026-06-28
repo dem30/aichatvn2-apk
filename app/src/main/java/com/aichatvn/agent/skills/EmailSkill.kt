@@ -64,19 +64,21 @@ class EmailSkill @Inject constructor(
             PluginAction(
                 name = "send",
                 description = "Soạn thảo và gửi email tới địa chỉ đích",
-                examples = emptyList(), // Chuyển thành rỗng để tránh sinh mẫu QA rác do có tham số bắt buộc
+                // ĐÃ SỬA: Thêm ví dụ siêu tinh gọn không tham số để kích hoạt QAInitBuilder sinh Intent QA mẫu sạch sẽ
+                examples = listOf("gửi email", "soạn email"), 
                 aliases = listOf("gửi mail", "soạn thư"),
                 tags = listOf("mail", "send", "report"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
-                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"), // ĐÃ SỬA: Chuyển sang bắt buộc (true)
-                    PluginParameter("body", "string", "Nội dung email", true, "string")    // ĐÃ SỬA: Chuyển sang bắt buộc (true)
+                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"),
+                    PluginParameter("body", "string", "Nội dung email", true, "string")
                 )
             ),
             PluginAction(
                 name = "test",
                 description = "Gửi một bức email thử nghiệm kết nối hệ thống",
-                examples = emptyList(),
+                // ĐÃ SỬA: Thêm ví dụ thô tinh gọn không tham số
+                examples = listOf("gửi email test"),
                 aliases = listOf("gửi test"),
                 tags = listOf("test", "diagnostic"),
                 parameters = listOf(
@@ -155,7 +157,7 @@ class EmailSkill @Inject constructor(
                 readTimeout    = 15_000
             }
 
-            OutputStreamWriter(connection.outputStream).use { it.write(json) }
+            OutputStreamWriter(connection.openOutputStream()).use { it.write(json) }
             val code = connection.responseCode
 
             if (code in 200..299) {

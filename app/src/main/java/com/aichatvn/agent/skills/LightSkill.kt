@@ -102,7 +102,7 @@ class LightSkill @Inject constructor(
             PluginAction(
                 name = "set",
                 description = "Bật hoặc tắt đèn thông minh",
-                examples = emptyList(), // Lược bỏ ví dụ có chứa thực thể cụ thể để tránh sinh mẫu rác
+                examples = listOf("bật đèn","tắt đèn"),
                 aliases = listOf("bật", "mở", "tắt", "đóng", "ngắt"),
                 tags = listOf("light", "switch", "relay", "device"),
                 parameters = listOf(

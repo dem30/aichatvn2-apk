@@ -48,7 +48,7 @@ class NotificationSkill @Inject constructor(
             PluginAction(
                 name = "send",
                 description = "Gửi thông báo đẩy hiển thị trên màn hình thiết bị",
-                examples = emptyList(), // Chuyển thành rỗng để tránh sinh mẫu QA rác do có tham số bắt buộc
+                examples = listOf("gửi thông báo"),
                 aliases = listOf("gửi thông báo", "cảnh báo", "báo tin"),
                 tags = listOf("notification", "alert", "message"),
                 parameters = listOf(

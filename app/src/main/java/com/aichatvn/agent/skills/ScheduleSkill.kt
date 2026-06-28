@@ -47,7 +47,7 @@ class ScheduleSkill @Inject constructor(
                     "(pluginId.action), tra đúng theo schema action đó trong danh sách plugin — " +
                     "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
                     "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
-                examples = emptyList(), // Lược bỏ ví dụ có tham số bắt buộc để tránh sinh mẫu QA rác
+                examples = listOf("tạo lịch","thêm lịch"),
                 parameters = listOf(
                     PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
                     PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
