@@ -249,7 +249,13 @@ class TrainingSkill @Inject constructor(
         val jsonString = params["json"] as? String ?: return PluginResult.Failure("Thiếu dữ liệu JSON")
         val result = importQAs(jsonString, username)
         return when (result) {
-            is PluginResult.Success -> result
+            is PluginResult.Success -> {
+                val data = result.data as? Map<*, *>
+                val imported = data?.get("imported") as? Int ?: 0
+                val skipped = data?.get("skipped") as? Int ?: 0
+                val message = "Import: $imported Q&As đã xử lý, $skipped bỏ qua"
+                PluginResult.Success(mapOf("message" to message, "imported" to imported, "skipped" to skipped))
+            }
             is PluginResult.Failure -> result
             else -> PluginResult.Failure("Nhập dữ liệu thất bại")
         }
@@ -560,7 +566,6 @@ class TrainingSkill @Inject constructor(
     ): MatchResult {
         val normalizedQuery = normalizeVietnamese(query)
         
-        // Đọc cấu hình động từ Provider hoặc fallback về mặc định
         val configIntentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
         val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
 
@@ -595,7 +600,9 @@ class TrainingSkill @Inject constructor(
                 }
             }
 
+            // ĐỒNG BỘ: Chỉ đưa vào danh mục Best Mapped những thực thể thực sự vượt qua ngưỡng cấu hình thực tế trong DB
             val bestAliasMatches = aliases
+                .filter { it.second >= configAliasThreshold } 
                 .groupBy { it.first.category }
                 .mapValues { entry -> entry.value.maxByOrNull { it.second } }
                 .filterValues { it != null }

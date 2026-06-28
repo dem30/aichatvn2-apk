@@ -38,11 +38,11 @@ object AppConfigDefaults {
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
     // ───────────────────────── GLOBAL ───────────────────────
-    // global.fuzzy_threshold: ngưỡng duy nhất cho fuzzyMatchCategorized + Tier 2 min score
+    // global.fuzzy_threshold: Ngưỡng lọc thô của Tầng 2 so khớp ý định (Intent Match)
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
-    // global.alias_threshold: ngưỡng tìm thực thể alias (danh từ riêng, thiết bị...)
+    // global.alias_threshold: Ngưỡng tìm thực thể alias (danh từ riêng, thiết bị...) ở Tầng 3
     const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
-    // global.tier2_high_confidence: Tier 2 phải đạt điểm này mới execute
+    // global.tier2_high_confidence: Tầng 2 đạt điểm này trở lên sẽ thực thi trực tiếp ngay lập tức
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
 
     // ─────────────────────────────────────────────────────────
@@ -201,7 +201,7 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "global",
             label = "Ngưỡng fuzzy match (Fuzzy Threshold)",
-            description = "Điểm tối thiểu để fuzzyMatchCategorized đưa kết quả intent vào Tier 2. 0.0–1.0. Thấp = nhạy hơn, dễ nhầm. Cao = chặt hơn, bỏ sót. Mặc định 0.3."
+            description = "Điểm tối thiểu để fuzzyMatchCategorized đưa kết quả intent vào Tầng 2 (Exact/Fuzzy QA Match). 0.0–1.0. Thấp = nhạy hơn, dễ nhầm. Cao = chặt hơn, dễ bỏ sót. Mặc định 0.3."
         ),
         AppConfigEntity(
             key = GLOBAL_ALIAS_THRESHOLD,
@@ -209,15 +209,15 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "global",
             label = "Ngưỡng fuzzy cho alias (Alias Threshold)",
-            description = "Điểm tương đồng tối thiểu để nhận diện các thực thể alias (danh từ riêng). Nên đặt thấp để tránh lọc bỏ alias khi gán slot. Mặc định 0.2."
+            description = "Điểm tương đồng tối thiểu để nhận diện các thực thể alias ở Tầng 3 (Bóc tách thực thể). Nên đặt thấp để tránh lọc bỏ alias khi gán tham số. Mặc định 0.2."
         ),
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
             value = "0.80",
             type = "string",
             pluginId = "global",
-            label = "Ngưỡng tin cậy Tier 2 (High Confidence)",
-            description = "Tier 2 phải đạt điểm này mới execute. 0.0–1.0. Thấp = dễ execute hơn. Cao = phải khớp rất sát. Mặc định 0.80."
+            label = "Ngưỡng tin cậy Tầng 2 (High Confidence)",
+            description = "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.80."
         )
     )
 }

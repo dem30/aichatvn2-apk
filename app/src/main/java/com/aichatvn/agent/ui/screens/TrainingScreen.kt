@@ -159,13 +159,6 @@ fun TrainingScreen(
                 }
             }
 
-            // Gắn bảng Diagnostics giả lập hiển thị phân tích Agent Kernel
-            AnimatedVisibility(visible = searchQuery.isNotBlank() && diagnosticInfo != null) {
-                diagnosticInfo?.let { info ->
-                    AgentKernelDiagnosticsPanel(info)
-                }
-            }
-
             if (selectedQAs.isNotEmpty()) {
                 Surface(
                     color = MaterialTheme.colorScheme.primaryContainer,
@@ -203,33 +196,51 @@ fun TrainingScreen(
                         CircularProgressIndicator()
                     }
                 }
-                displayList.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (searchQuery.isNotBlank()) "Không có kết quả nào đạt ngưỡng cấu hình" else "Chưa có dữ liệu huấn luyện",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
                 else -> {
                     LazyColumn(
                         state = listState,
                         contentPadding = PaddingValues(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize()
                     ) {
-                        items(displayList, key = { it.id }) { qa ->
-                            QACard(
-                                qa = qa,
-                                isSelected = selectedQAs.contains(qa.id),
-                                onSelect = {
-                                    selectedQAs = if (selectedQAs.contains(qa.id))
-                                        selectedQAs - qa.id
-                                    else
-                                        selectedQAs + qa.id
-                                },
-                                onEdit = { editingQA = qa },
-                                onDelete = { viewModel.deleteQA(qa.id) }
-                            )
+                        // TÍCH HỢP DIAGNOSTICS PANEL VÀO ĐẦU DANH SÁCH CUỘN
+                        if (searchQuery.isNotBlank() && diagnosticInfo != null) {
+                            item {
+                                AgentKernelDiagnosticsPanel(diagnosticInfo!!)
+                            }
+                        }
+
+                        // Hiển thị thông báo khi rỗng mà vẫn giữ Panel Diagnostics cuộn tự do phía trên
+                        if (displayList.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (searchQuery.isNotBlank()) "Không có kết quả nào đạt ngưỡng cấu hình" else "Chưa có dữ liệu huấn luyện",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                            }
+                        } else {
+                            items(displayList, key = { it.id }) { qa ->
+                                QACard(
+                                    qa = qa,
+                                    isSelected = selectedQAs.contains(qa.id),
+                                    onSelect = {
+                                        selectedQAs = if (selectedQAs.contains(qa.id))
+                                            selectedQAs - qa.id
+                                        else
+                                            selectedQAs + qa.id
+                                    },
+                                    onEdit = { editingQA = qa },
+                                    onDelete = { viewModel.deleteQA(qa.id) }
+                                )
+                            }
                         }
 
                         if (hasMore && searchQuery.isBlank() && isLoading) {
@@ -307,7 +318,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 4.dp, vertical = 6.dp),
         colors = CardDefaults.elevatedCardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         ),
@@ -361,7 +372,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                                 .padding(8.dp)
                         ) {
                             Column {
-                                Text("Ngưỡng Lọc Intent", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Ngưỡng Lọc Tầng 2 (Intent)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("${info.intentThreshold}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                             }
                         }
@@ -373,7 +384,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                                 .padding(8.dp)
                         ) {
                             Column {
-                                Text("Ngưỡng Lọc Alias", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Ngưỡng Lọc Tầng 3 (Alias)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("${info.aliasThreshold}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
                             }
                         }
@@ -381,9 +392,9 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // 1. Phân nhóm: Best Mapped Entities (Kết quả gán slot thực tế)
+                    // 1. Phân nhóm: Best Mapped Entities (Slot Filling)
                     Text(
-                        "1. Thực thể tốt nhất được chọn (Best Mapped Entities)",
+                        "1. Bóc tách thực thể tốt nhất (Slot Filling - Tầng 3 & 4)",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.secondary
@@ -391,7 +402,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                     Spacer(modifier = Modifier.height(4.dp))
                     if (info.bestAliasMatches.isEmpty()) {
                         Text(
-                            "Không nhận diện được thực thể nào trong câu nhập vào.",
+                            "Không nhận diện được thực thể hợp lệ nào trong câu nhập vào (Điểm so khớp thấp hơn Ngưỡng Tầng 3).",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
@@ -412,13 +423,13 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                                 ) {
                                     Column {
                                         Text(
-                                            text = "Khóa: $category",
+                                            text = "Khóa (semanticType): $category",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Từ khóa: \"${pair.first.question}\" → Giá trị: \"${pair.first.answer}\"",
+                                            text = "Từ khóa: \"${pair.first.question}\" → Ánh xạ ID: \"${pair.first.answer}\"",
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -435,9 +446,9 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         }
                     }
 
-                    // 2. Phân nhóm: Intent Matches (So khớp ý định)
+                    // 2. Phân nhóm: Intent Matches (Tầng 2)
                     Text(
-                        "2. Danh sách khớp Ý định (Intent Matches)",
+                        "2. Tầng 2: So khớp Ý định (Intent Matches)",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -445,7 +456,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                     Spacer(modifier = Modifier.height(4.dp))
                     if (info.intentMatches.isEmpty()) {
                         Text(
-                            "Không tìm thấy ý định trùng khớp.",
+                            "Không tìm thấy ứng viên ý định nào.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
@@ -510,9 +521,9 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         }
                     }
 
-                    // 3. Phân nhóm: Alias Matches (So khớp thô thực thể)
+                    // 3. Phân nhóm: Alias Matches (Tầng 3)
                     Text(
-                        "3. Chi tiết thực thể thô (Alias Matches)",
+                        "3. Tầng 3: Chi tiết thực thể thô (Alias Matches)",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.outline
