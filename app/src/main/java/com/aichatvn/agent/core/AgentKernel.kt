@@ -706,32 +706,41 @@ class AgentKernel @Inject constructor(
         return null
     }
 
-    private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
+  private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
         val missing = mutableListOf<String>()
         val action = plugin.getActions().find { it.name == actionName } ?: return missing
 
+        // 1. Quét các tham số bắt buộc của bản thân Action hiện hành (như pluginId, action)
         action.parameters.filter { it.required }.forEach { param ->
             val value = params[param.name]
+            if (isPlaceholder(value, param)) {
+                missing.add(param.name)
+            }
+        }
 
-            if (param.semanticType == "params") {
-                val nestedParams = value as? Map<*, *>
-                val targetPluginId = params["plugin_id"]?.toString()
-                    ?: params["pluginId"]?.toString()
-                    ?: params["plugin"]?.toString() ?: ""
-                val targetAction = params["action_id"]?.toString()
-                    ?: params["action"]?.toString()
-                    ?: params["actionId"]?.toString() ?: ""
+        // 2. ĐÃ SỬA: Quét độc lập các tham số lồng bên trong "params" (không phụ thuộc vào việc params có required hay không)
+        val paramsMeta = action.parameters.find { it.semanticType == "params" || it.name == "params" }
+        if (paramsMeta != null) {
+            val value = params[paramsMeta.name]
+            val nestedParams = value as? Map<*, *>
+            val targetPluginId = params["plugin_id"]?.toString()
+                ?: params["pluginId"]?.toString()
+                ?: params["plugin"]?.toString() ?: ""
+            val targetAction = params["action_id"]?.toString()
+                ?: params["action"]?.toString()
+                ?: params["actionId"]?.toString() ?: ""
+            
+            if (targetPluginId.isNotBlank() && targetAction.isNotBlank()) {
+                val tPlugin = plugins.find { it.id == targetPluginId }
+                val tAction = tPlugin?.getActions()?.find { it.name == targetAction }
                 
-                if (targetPluginId.isNotBlank() && targetAction.isNotBlank()) {
-                    val tPlugin = plugins.find { it.id == targetPluginId }
-                    val tAction = tPlugin?.getActions()?.find { it.name == targetAction }
-                    
+                if (tAction != null) {
                     if (nestedParams == null) {
-                        tAction?.parameters?.filter { it.required }?.forEach { subParam ->
+                        tAction.parameters.filter { it.required }.forEach { subParam ->
                             missing.add("params.${subParam.name}")
                         }
                     } else {
-                        tAction?.parameters?.filter { it.required }?.forEach { subParam ->
+                        tAction.parameters.filter { it.required }.forEach { subParam ->
                             val subVal = nestedParams[subParam.name]
                             if (isPlaceholder(subVal, subParam)) {
                                 missing.add("params.${subParam.name}")
@@ -739,12 +748,9 @@ class AgentKernel @Inject constructor(
                         }
                     }
                 }
-            } else {
-                if (isPlaceholder(value, param)) {
-                    missing.add(param.name)
-                }
             }
         }
+
         return missing.distinct()
     }
 
