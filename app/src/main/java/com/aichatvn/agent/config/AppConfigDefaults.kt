@@ -40,7 +40,7 @@ object AppConfigDefaults {
     // ───────────────────────── GLOBAL ───────────────────────
     // global.fuzzy_threshold: Ngưỡng lọc thô của Tầng 2 so khớp ý định (Intent Match)
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
-    // global.alias_threshold: Ngưỡng tìm thực thể alias (danh từ riêng, thiết bị...) ở Tầng 3
+    // global.alias_threshold: Ngưỡng lọc alias gửi vào context LLM Tầng 5. Tầng 1-4 luôn dùng 0.0f cứng.
     const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
     // global.tier2_high_confidence: Tầng 2 đạt điểm này trở lên sẽ thực thi trực tiếp ngay lập tức
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
@@ -127,7 +127,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = CAMERA_COOLDOWN_MS,
-            value = "${3 * 60 * 60 * 1000L}",   // 3 giờ
+            value = "${3 * 60 * 60 * 1000L}",
             type = "long",
             pluginId = "camera",
             label = "Cooldown giữa 2 cảnh báo (ms)",
@@ -151,7 +151,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = CAMERA_CIRCUIT_BREAKER_RESET_MS,
-            value = "${30 * 60 * 1000L}",  // 30 phút
+            value = "${30 * 60 * 1000L}",
             type = "long",
             pluginId = "camera",
             label = "Circuit breaker – reset (ms)",
@@ -205,19 +205,19 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GLOBAL_ALIAS_THRESHOLD,
-            value = "0.2",
+            value = "0.0",
             type = "string",
             pluginId = "global",
-            label = "Ngưỡng fuzzy cho alias (Alias Threshold)",
-            description = "Điểm tương đồng tối thiểu để nhận diện các thực thể alias ở Tầng 3 (Bóc tách thực thể). Nên đặt thấp để tránh lọc bỏ alias khi gán tham số. Mặc định 0.2."
+            label = "Ngưỡng alias gửi LLM (Alias Threshold)",
+            description = "Ngưỡng lọc alias khi hiển thị context gửi LLM ở Tầng 5. Không ảnh hưởng đến resolve alias ở Tầng 1-4 (luôn dùng 0.0 cứng). Mặc định 0.0 = gửi toàn bộ alias lên Groq."
         ),
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
-            value = "0.80",
+            value = "0.85",
             type = "string",
             pluginId = "global",
             label = "Ngưỡng tin cậy Tầng 2 (High Confidence)",
-            description = "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.80."
+            description = "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.85."
         )
     )
 }
