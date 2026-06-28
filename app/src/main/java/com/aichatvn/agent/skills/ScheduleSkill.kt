@@ -47,7 +47,9 @@ class ScheduleSkill @Inject constructor(
                     "(pluginId.action), tra đúng theo schema action đó trong danh sách plugin — " +
                     "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
                     "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
-                examples = listOf("tạo lịch","thêm lịch"),
+                // ĐÃ SỬA: Bổ sung ví dụ và bí danh tinh gọn không tham số để kích hoạt nhận diện dứt điểm ở Tầng 3 và Tầng 4
+                examples = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"), 
+                aliases = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"), 
                 parameters = listOf(
                     PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
                     PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
@@ -58,8 +60,9 @@ class ScheduleSkill @Inject constructor(
             ),
             PluginAction(
                 name = "list",
-                description = "Liệt kê toàn bộ các lịch trình tự động đã thiết lập trong hệ thống",
-                examples = listOf("danh sách lịch trình", "xem lịch trình"), // Giữ lại ví dụ cho hành động không tham số
+                description = "Liệt kê danh sách tất cả các lịch trình đang hoạt động",
+                examples = listOf("danh sách lịch trình", "xem lịch trình"),
+                aliases = listOf("danh sách lịch trình", "xem lịch trình"),
                 parameters = emptyList()
             ),
             PluginAction(
@@ -82,7 +85,6 @@ class ScheduleSkill @Inject constructor(
         )
     }
 
-    // RÚT GỌN TỐI ƯU: Mỗi hành động chỉ giữ lại đúng 1 hoặc 2 cụm kích hoạt cô đọng và chuẩn xác nhất
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
         "add"    to listOf("đặt lịch trình", "thêm lịch trình"),
         "list"   to listOf("danh sách lịch trình", "xem lịch trình"),
