@@ -27,7 +27,9 @@ class QAInitBuilder @Inject constructor(
         val existingQAs = trainingSkill.getRawCachedQAList(username)
         val existingByQuestion = existingQAs.associateBy { it.question.trim().lowercase() }
 
-        val targetPlugins = plugins.filter { it.autoGenerateQA }
+        // ĐÃ SỬA: Lọc chặt chẽ chỉ tự động sinh câu hỏi cho các thiết bị điều khiển thực tế (routable == true)
+        // Loại bỏ hoàn toàn các kỹ năng hệ thống bổ trợ (routable == false) như appconfig ra khỏi phễu sinh Intent thô
+        val targetPlugins = plugins.filter { it.autoGenerateQA && it.routable }
         val qaDao = database.qaDao()
 
         // 1. Đồng bộ hóa Intent QA động từ metadata của Plugin Action
@@ -47,8 +49,6 @@ class QAInitBuilder @Inject constructor(
                 }
 
                 // Chỉ dùng examples làm trigger intent QA
-                // aliases/tags đã được Tier 2.5 dùng trực tiếp từ plugin metadata
-                // Không sinh câu ghép vô nghĩa như "$alias ${plugin.name}"
                 if (action.examples.isEmpty()) return@forEach
 
                 val finalTriggers = action.examples
@@ -85,8 +85,8 @@ class QAInitBuilder @Inject constructor(
             }
         }
 
-        // 2. Tự động thu thập bootstrap QA khai báo cục bộ từ bên trong các Plugin độc lập
-        plugins.forEach { plugin ->
+        // 2. Tự động thu thập bootstrap QA khai báo cục bộ từ bên trong các Plugin độc lập (chỉ áp dụng cho các Plugin routable)
+        plugins.filter { it.routable }.forEach { plugin ->
             plugin.getBootstrapQA().forEach { bootstrap ->
                 val questionKey = bootstrap.question.trim().lowercase()
                 val existing = existingByQuestion[questionKey]

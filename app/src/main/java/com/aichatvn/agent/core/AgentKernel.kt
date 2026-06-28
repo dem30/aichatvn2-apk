@@ -123,6 +123,7 @@ class AgentKernel @Inject constructor(
     private fun generateTraceId(): String = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
 
     private fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
+        // CẮT BỎ KHOẢNG TRẮNG PHÒNG THỦ: Tránh rủi ro dư khoảng trắng thô ở đầu/cuối của tên thiết bị
         val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
         if (strVal.isBlank()) return true
         
@@ -135,7 +136,7 @@ class AgentKernel @Inject constructor(
         
         val defaultPlaceholders = setOf(
             "device_1", "device_2", "camera_1", "camera_2",
-            "device 1", "device 2", "camera 1", "camera 2",
+            "device 1", "device 2", "camera 1", "camera 2", // Bổ sung khoảng trắng
             "example@gmail.com", "example@email.com",
             "schedule_1", "schedule_id_here"
         )
@@ -278,7 +279,6 @@ class AgentKernel @Inject constructor(
         devicePlugins: List<Plugin>,
         traceId: String
     ): Layer3Result {
-        // Tích hợp phễu tách mệnh đề đa nhiệm dứt điểm
         val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
         val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
 
@@ -289,11 +289,13 @@ class AgentKernel @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
 
         for (clause in clauses) {
-            val clauseLower = clause.lowercase()
+            // SỬA LỖI ĐỒNG BỘ: Chuẩn hóa bỏ dấu tiếng Việt toàn bộ mệnh đề để so khớp không dấu chuẩn xác (cho cả STT, gõ không dấu)
+            val clauseNorm = normalizeVietnamese(clause)
             var matchedIntentQA: QAEntity? = null
             
             for (qa in intentQAs) {
-                if (clauseLower.contains(qa.question.lowercase())) {
+                val qaNorm = normalizeVietnamese(qa.question)
+                if (clauseNorm.contains(qaNorm)) {
                     matchedIntentQA = qa
                     break
                 }
@@ -311,14 +313,13 @@ class AgentKernel @Inject constructor(
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                         
-                        // Cô lập kết quả phân tách Alias động chỉ giới hạn trong phạm vi của mệnh đề này
                         val matchResult = trainingSkill.fuzzyMatchCategorized(clause, username, aliasThreshold = 0.0f)
 
                         val resolvedParams = resolveParametersWithMeta(
                             parameters = targetAction.parameters,
                             inputParams = rootParams,
                             matchResult = matchResult,
-                            userMessage = clause, // Truyền riêng lẻ mệnh đề
+                            userMessage = clause,
                             devicePlugins = devicePlugins,
                             excludeIntentId = matchedIntentQA.id,
                             depth = 0
@@ -380,13 +381,12 @@ class AgentKernel @Inject constructor(
         return Layer2Result(rootPlugin, Intent(rootPluginId, rootActionName, resolvedParams), confidence)
     }
 
-    // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin (ĐÃ ĐỒNG BỘ ĐA NHIỆM) ──
+    // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin (ĐA NHIỆM) ──
     private suspend fun tryTier2_5ActionMetadataMatcher(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
         devicePlugins: List<Plugin>
     ): Layer3Result {
-        // Tích hợp phễu tách mệnh đề đa nhiệm dứt điểm
         val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
         val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
 
@@ -400,7 +400,6 @@ class AgentKernel @Inject constructor(
             for (meta in normalizedActionMetadataList) {
                 if (!meta.plugin.routable || !meta.action.enabled) continue
 
-                // So khớp đa chiều bỏ dấu chuỗi con chuẩn xác giữa mô tả, alias và ví dụ của hành động
                 val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
                                 clauseNormalized.contains(meta.normalizedDescription) ||
                                 meta.normalizedAliases.any { alias -> 
@@ -428,14 +427,13 @@ class AgentKernel @Inject constructor(
                     schemaParams[param.name] = param.defaultValue ?: ""
                 }
 
-                // Cô lập kết quả bóc tách Alias động chỉ giới hạn trong phạm vi của mệnh đề này
                 val clauseMatchResult = trainingSkill.fuzzyMatchCategorized(clause, "default_user", aliasThreshold = 0.0f)
 
                 val resolvedParams = resolveParametersWithMeta(
                     parameters = action.parameters,
                     inputParams = schemaParams,
-                    matchResult = clauseMatchResult, // Dùng kết quả khớp riêng của mệnh đề
-                    userMessage = clause,            // Truyền riêng lẻ mệnh đề
+                    matchResult = clauseMatchResult,
+                    userMessage = clause,
                     devicePlugins = devicePlugins,
                     excludeIntentId = null,
                     depth = 0
@@ -756,7 +754,8 @@ class AgentKernel @Inject constructor(
         actionName: String? = null
     ): String {
         val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
-        val targetAction = plugin?.getActions().orEmpty().find { it.name == actualKey }
+        // ĐÃ SỬA LỖI 1: Tìm Action đích dựa trên actionName thực tế thay vì actualKey (tên của param thô)
+        val targetAction = plugin?.getActions().orEmpty().find { it.name == actionName }
         val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
@@ -935,7 +934,9 @@ class AgentKernel @Inject constructor(
                         } else if (paramMeta.type.lowercase() == "string" && trimmed.isNotBlank()) {
                             val textParams = setOf("subject", "body", "message", "title")
                             if (actualKey in textParams) {
-                                heuristicFilled[param] = trimmed
+                                if (param == pending.missingParams.first()) {
+                                    heuristicFilled[param] = trimmed
+                                }
                             }
                         }
                     }
