@@ -602,7 +602,7 @@ class TrainingSkill @Inject constructor(
 
             // ĐỒNG BỘ: Chỉ đưa vào danh mục Best Mapped những thực thể thực sự vượt qua ngưỡng cấu hình thực tế trong DB
             val bestAliasMatches = aliases
-                .filter { it.second >= configAliasThreshold } 
+    .filter { it.second >= activeAliasThreshold } 
                 .groupBy { it.first.category }
                 .mapValues { entry -> entry.value.maxByOrNull { it.second } }
                 .filterValues { it != null }

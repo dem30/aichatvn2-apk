@@ -123,7 +123,6 @@ class AgentKernel @Inject constructor(
     private fun generateTraceId(): String = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
 
     private fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
-        // CẮT BỎ KHOẢNG TRẮNG PHÒNG THỦ: Tránh rủi ro dư khoảng trắng thô ở đầu/cuối của tên thiết bị
         val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
         if (strVal.isBlank()) return true
         
@@ -136,7 +135,7 @@ class AgentKernel @Inject constructor(
         
         val defaultPlaceholders = setOf(
             "device_1", "device_2", "camera_1", "camera_2",
-            "device 1", "device 2", "camera 1", "camera 2", // Bổ sung khoảng trắng
+            "device 1", "device 2", "camera 1", "camera 2",
             "example@gmail.com", "example@email.com",
             "schedule_1", "schedule_id_here"
         )
@@ -168,7 +167,6 @@ class AgentKernel @Inject constructor(
             .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toFloatOrNull() ?: 0.3f
 
-        // aliasThreshold = 0.0f để giữ nguyên danh sách alias thô phục vụ contains match chính xác
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             userMessage, 
             username, 
@@ -234,17 +232,38 @@ class AgentKernel @Inject constructor(
         }
 
         // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin ─────────────
-        val tier2_5Result = tryTier2_5ActionMetadataMatcher(userMessage, matchResult, devicePlugins)
-        if (tier2_5Result != null) {
-            val (plugin, intent) = tier2_5Result
-            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Hit] ${intent.pluginId}.${intent.action}")
-            return try {
-                val result = executeIntent(plugin, intent, userMessage, traceId)
-                RouterOutcome.Matched(DeviceCommandResult(pluginId = intent.pluginId, result = result))
-            } catch (e: Exception) {
-                logger.e("AgentKernel", "[$traceId] Tầng 4 execute error: ${e.message}", e)
-                RouterOutcome.RouterFailed("Tầng 4 execute failed: ${e.message}")
+        val layer4Result = tryTier2_5ActionMetadataMatcher(userMessage, matchResult, devicePlugins)
+        when (layer4Result) {
+            is Layer3Result.Single -> {
+                logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Single] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
+                val result = executeIntent(layer4Result.plugin, layer4Result.intent, userMessage, traceId)
+                return RouterOutcome.Matched(DeviceCommandResult(layer4Result.plugin.id, result))
             }
+            is Layer3Result.Nested -> {
+                logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Nested] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
+                val result = executeIntent(layer4Result.wrapper, layer4Result.intent, userMessage, traceId)
+                return RouterOutcome.Matched(DeviceCommandResult(layer4Result.wrapper.id, result))
+            }
+            is Layer3Result.Multi -> {
+                logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Multi] ${layer4Result.intents.size} actions")
+                val results = mutableListOf<String>()
+                layer4Result.intents.forEach { (plugin, intent) ->
+                    try {
+                        val r = executeIntent(plugin, intent, userMessage, traceId)
+                        val msg = when (r) {
+                            is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
+                            is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action}: ${r.question}"
+                        }
+                        results.add(msg)
+                    } catch (e: Exception) {
+                        results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
+                    }
+                }
+                val combined = results.joinToString("\n")
+                return RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined))))
+            }
+            is Layer3Result.NoMatch -> { /* tiếp tục Tầng 5 (LLM) */ }
         }
 
         // ── TẦNG 5: Phân loại ý định bằng mô hình ngôn ngữ lớn LLM ─────────────
@@ -259,52 +278,66 @@ class AgentKernel @Inject constructor(
         devicePlugins: List<Plugin>,
         traceId: String
     ): Layer3Result {
-        val lower = userMessage.lowercase()
+        // Tích hợp phễu tách mệnh đề đa nhiệm dứt điểm
+        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
+        val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
 
         val intentQAs = trainingSkill.getRawCachedQAList(username)
             .filter { it.type == "intent" }
             .sortedByDescending { it.question.length }
 
-        var matchedIntentQA: QAEntity? = null
-        for (qa in intentQAs) {
-            if (lower.contains(qa.question.lowercase())) {
-                matchedIntentQA = qa
-                break
-            }
-        }
+        val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
 
-        if (matchedIntentQA != null) {
-            val rootJson = try { JSONObject(matchedIntentQA.answer) } catch (e: Exception) { null }
-            val rootPluginId = rootJson?.optString("plugin") ?: ""
-            val rootActionName = rootJson?.optString("action") ?: ""
+        for (clause in clauses) {
+            val clauseLower = clause.lowercase()
+            var matchedIntentQA: QAEntity? = null
             
-            if (rootPluginId.isNotBlank() && rootActionName.isNotBlank()) {
-                val targetPlugin = devicePlugins.find { it.id == rootPluginId }
-                val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
+            for (qa in intentQAs) {
+                if (clauseLower.contains(qa.question.lowercase())) {
+                    matchedIntentQA = qa
+                    break
+                }
+            }
+
+            if (matchedIntentQA != null) {
+                val rootJson = try { JSONObject(matchedIntentQA.answer) } catch (e: Exception) { null }
+                val rootPluginId = rootJson?.optString("plugin") ?: ""
+                val rootActionName = rootJson?.optString("action") ?: ""
                 
-                if (targetPlugin != null && targetAction != null) {
-                    val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                if (rootPluginId.isNotBlank() && rootActionName.isNotBlank()) {
+                    val targetPlugin = devicePlugins.find { it.id == rootPluginId }
+                    val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
+                    
+                    if (targetPlugin != null && targetAction != null) {
+                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                        
+                        // Cô lập kết quả phân tách Alias động chỉ giới hạn trong phạm vi của mệnh đề này
+                        val matchResult = trainingSkill.fuzzyMatchCategorized(clause, username, aliasThreshold = 0.0f)
 
-                    // aliasThreshold = 0.0f giúp bóc tách Alias lồng trong Tầng 3 chính xác hoàn hảo
-                    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
+                        val resolvedParams = resolveParametersWithMeta(
+                            parameters = targetAction.parameters,
+                            inputParams = rootParams,
+                            matchResult = matchResult,
+                            userMessage = clause, // Truyền riêng lẻ mệnh đề
+                            devicePlugins = devicePlugins,
+                            excludeIntentId = matchedIntentQA.id,
+                            depth = 0
+                        )
 
-                    val resolvedParams = resolveParametersWithMeta(
-                        parameters = targetAction.parameters,
-                        inputParams = rootParams,
-                        matchResult = matchResult,
-                        userMessage = userMessage,
-                        devicePlugins = devicePlugins,
-                        excludeIntentId = matchedIntentQA.id,
-                        depth = 0
-                    )
-
-                    logger.d("AgentKernel", "[$traceId] [Tầng 3 Hit] Trùng khớp động cụm từ: \"${matchedIntentQA.question}\" → $rootPluginId.$rootActionName")
-                    return Layer3Result.Single(targetPlugin, Intent(rootPluginId, rootActionName, resolvedParams))
+                        resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                    }
                 }
             }
         }
 
-        return Layer3Result.NoMatch
+        return when {
+            resolvedIntents.isEmpty() -> Layer3Result.NoMatch
+            resolvedIntents.size == 1 -> {
+                val (plugin, intent) = resolvedIntents.first()
+                Layer3Result.Single(plugin, intent)
+            }
+            else -> Layer3Result.Multi(resolvedIntents)
+        }
     }
 
     private suspend fun tryTier2SemanticSlotResolver(
@@ -347,60 +380,79 @@ class AgentKernel @Inject constructor(
         return Layer2Result(rootPlugin, Intent(rootPluginId, rootActionName, resolvedParams), confidence)
     }
 
+    // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin (ĐÃ ĐỒNG BỘ ĐA NHIỆM) ──
     private suspend fun tryTier2_5ActionMetadataMatcher(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
         devicePlugins: List<Plugin>
-    ): Pair<Plugin, Intent>? {
-        val lower = userMessage.lowercase()
-
+    ): Layer3Result {
+        // Tích hợp phễu tách mệnh đề đa nhiệm dứt điểm
         val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
         val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
 
+        val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
+
         for (clause in clauses) {
-            val clauseLower = clause.lowercase()
-            var bestMatch: Pair<Plugin, PluginAction>? = null
+            val clauseNormalized = normalizeVietnamese(clause)
+            var bestMatch: NormalizedActionMetadata? = null
             var bestMatchLen = 0
 
-            normalizedActionMetadataList.forEach { meta ->
-                if (!meta.plugin.routable || !meta.action.enabled) return@forEach
+            for (meta in normalizedActionMetadataList) {
+                if (!meta.plugin.routable || !meta.action.enabled) continue
 
-                val allTriggers = (meta.action.aliases + meta.action.examples)
-                    .map { normalizeVietnamese(it) }
-                    .sortedByDescending { it.length }
+                // So khớp đa chiều bỏ dấu chuỗi con chuẩn xác giữa mô tả, alias và ví dụ của hành động
+                val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
+                                clauseNormalized.contains(meta.normalizedDescription) ||
+                                meta.normalizedAliases.any { alias -> 
+                                    alias.length >= 3 && (clauseNormalized.contains(alias) || alias.contains(clauseNormalized)) 
+                                } ||
+                                meta.normalizedExamples.any { ex -> 
+                                    ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
+                                }
 
-                val matched = allTriggers.firstOrNull { trigger ->
-                    trigger.isNotBlank() && clauseLower.contains(trigger)
-                }
-
-                if (matched != null && matched.length > bestMatchLen) {
-                    bestMatchLen = matched.length
-                    bestMatch = meta.plugin to meta.action
+                if (isMatched) {
+                    val matchLen = meta.action.description.length
+                    if (matchLen > bestMatchLen) {
+                        bestMatchLen = matchLen
+                        bestMatch = meta
+                    }
                 }
             }
 
             if (bestMatch != null) {
-                val (plugin, action) = bestMatch!!
+                val plugin = bestMatch.plugin
+                val action = bestMatch.action
+
                 val schemaParams = mutableMapOf<String, Any>()
                 action.parameters.forEach { param ->
                     schemaParams[param.name] = param.defaultValue ?: ""
                 }
 
+                // Cô lập kết quả bóc tách Alias động chỉ giới hạn trong phạm vi của mệnh đề này
+                val clauseMatchResult = trainingSkill.fuzzyMatchCategorized(clause, "default_user", aliasThreshold = 0.0f)
+
                 val resolvedParams = resolveParametersWithMeta(
                     parameters = action.parameters,
                     inputParams = schemaParams,
-                    matchResult = matchResult,
-                    userMessage = userMessage,
+                    matchResult = clauseMatchResult, // Dùng kết quả khớp riêng của mệnh đề
+                    userMessage = clause,            // Truyền riêng lẻ mệnh đề
                     devicePlugins = devicePlugins,
                     excludeIntentId = null,
                     depth = 0
                 )
 
-                return plugin to Intent(plugin.id, action.name, resolvedParams)
+                resolvedIntents.add(plugin to Intent(plugin.id, action.name, resolvedParams))
             }
         }
 
-        return null
+        return when {
+            resolvedIntents.isEmpty() -> Layer3Result.NoMatch
+            resolvedIntents.size == 1 -> {
+                val (plugin, intent) = resolvedIntents.first()
+                Layer3Result.Single(plugin, intent)
+            }
+            else -> Layer3Result.Multi(resolvedIntents)
+        }
     }
 
     private fun calculateLocalSimilarity(clean1: String, clean2: String): Double {
@@ -602,7 +654,6 @@ class AgentKernel @Inject constructor(
             if (containsMatch != null) return containsMatch
         }
 
-        // 3. Generic localEntities lookup theo semanticType (email regex, cron, ...)
         val localMatch = localEntities[param.semanticType]
         if (localMatch != null) return localMatch
 
@@ -979,7 +1030,7 @@ class AgentKernel @Inject constructor(
             )
             chatHistoryManager.addTurn(userMessage, question)
             return DeviceCommandResult(
-                pluginId = pending.pluginId,
+                pluginId = targetPlugin.id,
                 result = PluginResult.NeedMoreInfo(stillMissing, question)
             )
         }
