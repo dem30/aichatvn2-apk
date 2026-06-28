@@ -48,11 +48,7 @@ class NotificationSkill @Inject constructor(
             PluginAction(
                 name = "send",
                 description = "Gửi thông báo đẩy hiển thị trên màn hình thiết bị",
-                examples = listOf(
-                    "gửi thông báo cảnh báo",
-                    "báo cho tôi có khách",
-                    "gửi cảnh báo an ninh hệ thống"
-                ),
+                examples = emptyList(), // Chuyển thành rỗng để tránh sinh mẫu QA rác do có tham số bắt buộc
                 aliases = listOf("gửi thông báo", "cảnh báo", "báo tin"),
                 tags = listOf("notification", "alert", "message"),
                 parameters = listOf(
@@ -63,8 +59,9 @@ class NotificationSkill @Inject constructor(
         )
     }
 
+    // RÚT GỌN TỐI ƯU: Chỉ giữ lại 2 từ khóa kích hoạt nguyên bản và khái quát nhất
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "send" to listOf("gửi thông báo", "báo cho tôi", "gửi cảnh báo", "thông báo cho tôi")
+        "send" to listOf("gửi thông báo", "gửi cảnh báo")
     )
     
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
@@ -75,8 +72,11 @@ class NotificationSkill @Inject constructor(
     }
 
     private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
-        val title = params["title"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu title")
-        val message = params["message"] as? String ?: return AgentKernel.PluginResult.Failure("Thiếu message")
+        // Cập nhật thông điệp lỗi tự nhiên phục vụ slot filling
+        val title = params["title"] as? String 
+            ?: return AgentKernel.PluginResult.Failure("Tiêu đề thông báo là gì vậy bạn?")
+        val message = params["message"] as? String 
+            ?: return AgentKernel.PluginResult.Failure("Nội dung thông báo bạn muốn gửi là gì?")
 
         val id = sendNotification(title, message)
 

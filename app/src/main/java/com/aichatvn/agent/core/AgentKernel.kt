@@ -152,22 +152,22 @@ class AgentKernel @Inject constructor(
         val pending = chatHistoryManager.getActivePendingIntent()
         if (pending != null) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện tiến trình dở dang Pending Intent")
-            val resolved = processLayer1PendingIntent(pending, userMessage, devicePlugins, traceId)
+            val resolved = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId)
             if (resolved != null) return RouterOutcome.Matched(resolved)
         }
 
+        // ── TẦNG 2: So khớp nguyên câu Intent QA (Exact/Fuzzy) ────────────────
         val dynamicMinScore = configProvider.allConfigs.value
             .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toFloatOrNull() ?: 0.3f
 
         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, intentThreshold = dynamicMinScore)
 
-        // ── TẦNG 2: So khớp nguyên câu Intent QA (Exact/Fuzzy) ────────────────
         val tier2HighConf = configProvider.allConfigs.value
             .find { it.key == AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE }
             ?.value?.toDoubleOrNull() ?: 0.80
 
-        val layer2Result = processLayer2DeterministicFuzzyMatch(userMessage, matchResult, devicePlugins)
+        val layer2Result = tryTier2SemanticSlotResolver(userMessage, matchResult, devicePlugins)
         if (layer2Result != null) {
             if (layer2Result.confidence >= tier2HighConf) {
                 val plugin = layer2Result.plugin
@@ -185,7 +185,7 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── TẦNG 3: Phân rã mệnh đề bóc tách thực thể & QA Trigger ──────────
+        // ── TẦNG 3: Phân rã mệnh đề & So khớp động cụm từ (Intent + Alias từ DB) ──
         val layer3Result = processLayer3ClauseEntitySpotter(userMessage, username, devicePlugins, traceId)
         when (layer3Result) {
             is Layer3Result.Single -> {
@@ -221,9 +221,9 @@ class AgentKernel @Inject constructor(
         }
 
         // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin ─────────────
-        val layer4Result = processLayer4MetadataRuleMatcher(userMessage, matchResult, devicePlugins)
-        if (layer4Result != null) {
-            val (plugin, intent) = layer4Result
+        val tier2_5Result = tryTier2_5ActionMetadataMatcher(userMessage, matchResult, devicePlugins)
+        if (tier2_5Result != null) {
+            val (plugin, intent) = tier2_5Result
             logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Hit] ${intent.pluginId}.${intent.action}")
             return try {
                 val result = executeIntent(plugin, intent, userMessage, traceId)
@@ -235,147 +235,68 @@ class AgentKernel @Inject constructor(
         }
 
         // ── TẦNG 5: Phân loại ý định bằng mô hình ngôn ngữ lớn LLM ─────────────
-        logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> Chuyển tiếp Tầng 5 (LLM)")
-        return processLayer5LlmSemanticRouter(userMessage, matchResult, devicePlugins, traceId)
+        logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
+        return executeTier3LlmRouting(userMessage, matchResult, devicePlugins, traceId)
     }
 
-    // ── TẦNG 3: Clause-Based Entity & Trigger Spotter ─────────────────────────
+    // ── TẦNG 3: Phân rã mệnh đề & So khớp động cụm từ (Intent + Alias từ DB) ──
     private suspend fun processLayer3ClauseEntitySpotter(
         userMessage: String,
         username: String,
         devicePlugins: List<Plugin>,
         traceId: String
     ): Layer3Result {
+        val lower = userMessage.lowercase()
 
-        val aliasQAs = trainingSkill.getRawCachedQAList(username)
-            .filter { it.type == "alias" }
-            .sortedByDescending { it.question.length }
+        // 1. Quét danh sách Intent QA trong DB xem câu nói có chứa Intent nào đã học không
+        val intentQAs = trainingSkill.getRawCachedQAList(username)
+            .filter { it.type == "intent" }
+            .sortedByDescending { it.question.length } // Ưu tiên cụm từ dài nhất trước để tránh khớp nhầm
 
-        data class DetectedAction(val plugin: Plugin, val actionName: String, val triggerPos: Int)
-
-        fun isWrapper(plugin: Plugin, actionName: String): Boolean =
-            plugin.getActions().find { it.name == actionName }
-                ?.parameters?.any { it.semanticType == "params" } == true
-
-        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
-        val clauses = clauseSeparator.split(userMessage)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        logger.d("AgentKernel", "[$traceId] [Tầng 3] clauses=$clauses")
-
-        data class ClauseResult(
-            val entityMap: Map<String, String>,
-            val detected: List<DetectedAction>
-        )
-
-        fun processClause(clause: String): ClauseResult {
-            val lower = clause.lowercase()
-
-            val entityMap = mutableMapOf<String, String>()
-            aliasQAs.forEach { qa ->
-                if (lower.contains(qa.question.lowercase())) {
-                    entityMap.putIfAbsent(qa.category, qa.answer)
-                }
+        var matchedIntentQA: QAEntity? = null
+        for (qa in intentQAs) {
+            if (lower.contains(qa.question.lowercase())) {
+                matchedIntentQA = qa
+                break // Tìm thấy Intent dài nhất khớp cụm từ
             }
-
-            val stateTrue  = listOf("bật", "mở", "on", "khởi động")
-            val stateFalse = listOf("tắt", "off", "dừng", "ngừng")
-            val hasOn  = stateTrue.any  { lower.contains(it) }
-            val hasOff = stateFalse.any { lower.contains(it) }
-            if (hasOn  && !hasOff) entityMap.putIfAbsent("state", "true")
-            if (hasOff && !hasOn)  entityMap.putIfAbsent("state", "false")
-
-            val detected = mutableListOf<DetectedAction>()
-            devicePlugins.forEach { plugin ->
-                plugin.getQATriggers().forEach { (actionName, triggers) ->
-                    val pos = triggers.mapNotNull { t ->
-                        val idx = lower.indexOf(t.lowercase())
-                        if (idx >= 0) idx else null
-                    }.minOrNull()
-                    if (pos != null) {
-                        detected.add(DetectedAction(plugin, actionName, pos))
-                    }
-                }
-            }
-            detected.sortBy { it.triggerPos }
-
-            return ClauseResult(entityMap, detected)
         }
 
-        fun buildParams(plugin: Plugin, actionName: String, entityMap: Map<String, String>): Map<String, Any> {
-            val action = plugin.getActions().find { it.name == actionName } ?: return emptyMap()
-            val params = mutableMapOf<String, Any>()
-            action.parameters.forEach { param ->
-                val value = when {
-                    entityMap.containsKey(param.semanticType) -> entityMap[param.semanticType]!!
-                    entityMap.containsKey(param.name)         -> entityMap[param.name]!!
-                    param.defaultValue != null                -> param.defaultValue!!
-                    else -> ""
-                }
-                params[param.name] = value
-            }
-            return params
-        }
+        if (matchedIntentQA != null) {
+            val rootJson = try { JSONObject(matchedIntentQA.answer) } catch (e: Exception) { null }
+            val rootPluginId = rootJson?.optString("plugin") ?: ""
+            val rootActionName = rootJson?.optString("action") ?: ""
+            
+            if (rootPluginId.isNotBlank() && rootActionName.isNotBlank()) {
+                val targetPlugin = devicePlugins.find { it.id == rootPluginId }
+                val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
+                
+                if (targetPlugin != null && targetAction != null) {
+                    val rootParams = rootJson.optJSONObject("params")?.toMap() ?: emptyMap()
 
-        val clauseResults = clauses.map { processClause(it) }
+                    // Tạo MatchResult giả lập chứa các alias đã tìm thấy để phục vụ hàm gán tham số
+                    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username)
 
-        val allIntents = mutableListOf<Pair<Plugin, Intent>>()
+                    // Gọi hàm gán tham số tiêu chuẩn để hợp nhất Intent đã tìm thấy với các Alias bóc tách được
+                    val resolvedParams = resolveParametersWithMeta(
+                        parameters = targetAction.parameters,
+                        inputParams = rootParams,
+                        matchResult = matchResult,
+                        userMessage = userMessage,
+                        devicePlugins = devicePlugins,
+                        excludeIntentId = matchedIntentQA.id,
+                        depth = 0
+                    )
 
-        clauseResults.forEachIndexed { idx, cr ->
-            if (cr.detected.isEmpty()) return@forEachIndexed
-
-            val wrappers = cr.detected.filter { isWrapper(it.plugin, it.actionName) }
-            val leaves   = cr.detected.filter { !isWrapper(it.plugin, it.actionName) }
-
-            logger.d("AgentKernel", "[$traceId] [Tầng 3] clause[$idx] entity=${cr.entityMap} actions=${cr.detected.map{"${it.plugin.id}.${it.actionName}"}}")
-
-            when {
-                wrappers.size == 1 && leaves.size == 1 -> {
-                    val wrapper = wrappers.first()
-                    val leaf    = leaves.first()
-                    val leafParams    = buildParams(leaf.plugin, leaf.actionName, cr.entityMap)
-                    val wrapperParams = buildParams(wrapper.plugin, wrapper.actionName, cr.entityMap).toMutableMap()
-                    wrapperParams["plugin_id"] = leaf.plugin.id
-                    wrapperParams["action_id"] = leaf.actionName
-                    wrapperParams["params"]    = leafParams
-                    allIntents.add(wrapper.plugin to Intent(wrapper.plugin.id, wrapper.actionName, wrapperParams))
-                }
-
-                wrappers.isEmpty() && leaves.isNotEmpty() -> {
-                    leaves.forEach { leaf ->
-                        val params = buildParams(leaf.plugin, leaf.actionName, cr.entityMap)
-                        allIntents.add(leaf.plugin to Intent(leaf.plugin.id, leaf.actionName, params))
-                    }
-                }
-
-                wrappers.size == 1 && leaves.isEmpty() -> {
-                    val wrapper = wrappers.first()
-                    val params = buildParams(wrapper.plugin, wrapper.actionName, cr.entityMap)
-                    allIntents.add(wrapper.plugin to Intent(wrapper.plugin.id, wrapper.actionName, params))
+                    logger.d("AgentKernel", "[$traceId] [Tầng 3 Hit] Trùng khớp động cụm từ: \"${matchedIntentQA.question}\" → $rootPluginId.$rootActionName")
+                    return Layer3Result.Single(targetPlugin, Intent(rootPluginId, rootActionName, resolvedParams))
                 }
             }
         }
 
-        if (allIntents.isEmpty()) return Layer3Result.NoMatch
-
-        logger.d("AgentKernel", "[$traceId] [Tầng 3] allIntents=${allIntents.map{"${it.first.id}.${it.second.action}"}}")
-
-        return when {
-            allIntents.size == 1 -> {
-                val (plugin, intent) = allIntents.first()
-                if (intent.params.containsKey("plugin_id")) {
-                    Layer3Result.Nested(plugin, intent)
-                } else {
-                    Layer3Result.Single(plugin, intent)
-                }
-            }
-            else -> Layer3Result.Multi(allIntents)
-        }
+        return Layer3Result.NoMatch
     }
 
-    // ── TẦNG 2: Exact/Fuzzy QA Match ──────────────────────────────────────────
-    private suspend fun processLayer2DeterministicFuzzyMatch(
+    private suspend fun tryTier2SemanticSlotResolver(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
         devicePlugins: List<Plugin>
@@ -391,9 +312,9 @@ class AgentKernel @Inject constructor(
         val bestIntentQA = bestIntentPair.first
         val confidence = bestIntentPair.second
 
-        val rootJson = try { JSONObject(bestIntentQA.answer) } catch (e: Exception) { return null }
-        val rootPluginId = rootJson.optString("plugin")
-        val rootActionName = rootJson.optString("action")
+        val rootJson = try { JSONObject(bestIntentQA.answer) } catch (e: Exception) { null }
+        val rootPluginId = rootJson?.optString("plugin") ?: ""
+        val rootActionName = rootJson?.optString("action") ?: ""
         
         if (rootPluginId.isBlank() || rootActionName.isBlank()) return null
         
@@ -415,8 +336,7 @@ class AgentKernel @Inject constructor(
         return Layer2Result(rootPlugin, Intent(rootPluginId, rootActionName, resolvedParams), confidence)
     }
 
-    // ── TẦNG 4: Plugin Metadata Rule Matcher ──────────────────────────────────
-    private suspend fun processLayer4MetadataRuleMatcher(
+    private suspend fun tryTier2_5ActionMetadataMatcher(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
         devicePlugins: List<Plugin>
@@ -646,9 +566,11 @@ class AgentKernel @Inject constructor(
     ): Any {
         if (!isPlh) return currentValue ?: ""
 
+        // 1. Score-based alias match (alias dài, cùng độ dài với query)
         val matchedAliasValue = aliasMatchesForType(matchResult, param.semanticType)
         if (matchedAliasValue != null) return matchedAliasValue
 
+        // 2. Contains-based entity extraction (alias ngắn như "anh A", "tôi", "sếp")
         if (userMessage.isNotBlank()) {
             val containsMatch = matchResult.aliasMatches
                 .filter { it.first.category == param.semanticType }
@@ -658,6 +580,7 @@ class AgentKernel @Inject constructor(
             if (containsMatch != null) return containsMatch
         }
 
+        // 3. Generic localEntities lookup theo semanticType (email regex, cron, ...)
         val localMatch = localEntities[param.semanticType]
         if (localMatch != null) return localMatch
 
@@ -833,7 +756,7 @@ class AgentKernel @Inject constructor(
     }
 
     // ── TẦNG 1: Pending Intent State ──────────────────────────────────────────
-    private suspend fun processLayer1PendingIntent(
+    private suspend fun tryResolvePendingIntent(
         pending: PendingIntent,
         userMessage: String,
         devicePlugins: List<Plugin>,
@@ -950,11 +873,19 @@ class AgentKernel @Inject constructor(
         val filled = if (heuristicFilled.size >= pending.missingParams.size) {
             heuristicFilled
         } else {
+            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+            val foundAliasesContext = matchResult.aliasMatches
+                .filter { it.second >= configAliasThreshold }
+                .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang ID thực tế: \"${it.first.answer}\"" }
+
             val fillPrompt = buildString {
                 append("<system>Output ONLY raw JSON, NO explanation.\n")
                 append("Determine if user's input fills the missing parameter:\n")
                 append("{\"params\": {${pending.missingParams.joinToString(",") { "\"$it\": \"value\"" }}}}\n")
                 append("If the user wants to cancel or starts another task, output: {\"unrelated\": true}</system>\n")
+                if (foundAliasesContext.isNotBlank()) {
+                    append("<aliases_context>\n$foundAliasesContext\n</aliases_context>\n")
+                }
                 append("<missing>${pending.missingParams.joinToString(", ")}</missing>\n")
                 append("<question>${pending.askedQuestion}</question>\n")
                 append("<user_reply>$userMessage</user_reply>\n")
@@ -982,7 +913,8 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        val finalFilled = heuristicFilled + filled
+        // ĐỒNG BỘ: Local SQLite Heuristic luôn đè lên LLM thô để giữ nguyên ID chính xác (cam1, may01...)
+        val finalFilled = filled + heuristicFilled
 
         val flatFilled = finalFilled.filterKeys { !it.startsWith("params.") && it != "params" }
         val nestedFilled = finalFilled.filterKeys { it.startsWith("params.") }.mapKeys { it.key.removePrefix("params.") }
@@ -1048,7 +980,7 @@ class AgentKernel @Inject constructor(
     }
 
     // ── TẦNG 5: Phân loại ý định bằng mô hình ngôn ngữ lớn LLM ─────────────────
-    private suspend fun processLayer5LlmSemanticRouter(
+    private suspend fun executeTier3LlmRouting(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
         devicePlugins: List<Plugin>,
@@ -1057,12 +989,10 @@ class AgentKernel @Inject constructor(
         val queryLower = userMessage.lowercase()
         val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
 
-        // 1. Chỉ lọc ra các Alias thực sự trùng khớp được tìm thấy (vượt qua ngưỡng thực tế của DB)
         val foundAliases = matchResult.aliasMatches
             .filter { it.second >= configAliasThreshold }
             .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
 
-        // 2. Chỉ lọc ra các Plugin/Action có sự liên đới văn bản với thông điệp đầu vào
         val matchedActions = normalizedActionMetadataList.filter { meta ->
             meta.plugin.routable && meta.action.enabled && (
                 meta.normalizedDescription.contains(queryLower) || queryLower.contains(meta.normalizedDescription) ||
@@ -1071,7 +1001,6 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // Tạo danh sách cấu trúc Schema gửi kèm (Nếu không lọc được hành động nào, fallback về danh sách thô để tránh LLM trống thông tin)
         val candidateLines = if (matchedActions.isNotEmpty()) {
             matchedActions.joinToString("\n") { meta ->
                 val paramsInfo = meta.action.parameters.joinToString(", ") { p ->

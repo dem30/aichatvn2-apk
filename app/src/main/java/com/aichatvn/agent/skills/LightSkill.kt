@@ -102,12 +102,7 @@ class LightSkill @Inject constructor(
             PluginAction(
                 name = "set",
                 description = "Bật hoặc tắt đèn thông minh",
-                examples = listOf(
-                    "bật đèn phòng khách",
-                    "tắt đèn cổng",
-                    "mở quạt",
-                    "tat relay"
-                ),
+                examples = emptyList(), // Lược bỏ ví dụ có chứa thực thể cụ thể để tránh sinh mẫu rác
                 aliases = listOf("bật", "mở", "tắt", "đóng", "ngắt"),
                 tags = listOf("light", "switch", "relay", "device"),
                 parameters = listOf(
@@ -118,11 +113,7 @@ class LightSkill @Inject constructor(
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái hiện tại của đèn",
-                examples = listOf(
-                    "kiểm tra trạng thái đèn",
-                    "đèn cổng đang bật hay tắt",
-                    "xem đèn phòng ngủ"
-                ),
+                examples = emptyList(),
                 aliases = listOf("kiểm tra", "trạng thái", "status"),
                 tags = listOf("status", "query", "sensor"),
                 parameters = listOf(
@@ -132,11 +123,7 @@ class LightSkill @Inject constructor(
             PluginAction(
                 name = "scan",
                 description = "Quét các thiết bị đèn thông minh trong mạng",
-                examples = listOf(
-                    "quét thiết bị đèn",
-                    "tìm đèn tuya mới",
-                    "scan relay trong nha"
-                ),
+                examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới"), // Action không tham số -> Cho phép ví dụ
                 aliases = listOf("quét", "tìm", "scan"),
                 tags = listOf("discovery", "scan", "network"),
                 parameters = emptyList()
@@ -144,10 +131,11 @@ class LightSkill @Inject constructor(
         )
     }
 
+    // RÚT GỌN TỐI ƯU: Loại bỏ các thực thể phụ tĩnh và các từ lặp nghĩa, chỉ giữ lại cụm cốt lõi hành động
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "set"    to listOf("bật đèn", "tắt đèn", "mở đèn", "tắt relay", "bật relay"),
-        "status" to listOf("trạng thái đèn", "kiểm tra đèn", "đèn đang bật không"),
-        "scan"   to listOf("quét thiết bị", "tìm đèn", "scan relay")
+        "set"    to listOf("bật đèn", "tắt đèn"),
+        "status" to listOf("trạng thái đèn", "kiểm tra đèn"),
+        "scan"   to listOf("quét thiết bị", "tìm đèn")
     )
 
     private suspend fun handleScan(): AgentKernel.PluginResult = withContext(Dispatchers.IO) {

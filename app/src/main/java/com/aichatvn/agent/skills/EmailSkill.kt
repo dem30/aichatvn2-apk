@@ -64,29 +64,20 @@ class EmailSkill @Inject constructor(
             PluginAction(
                 name = "send",
                 description = "Soạn thảo và gửi email tới địa chỉ đích",
-                examples = listOf(
-                    "gửi email cho tôi",
-                    "gửi mail",
-                    "viết thư báo cáo tình hình",
-                    "soạn và gửi email"
-                ),
-                aliases = listOf("gửi mail", "soạn thư", "gửi báo cáo"),
-                tags = listOf("mail", "send", "report", "notification"),
+                examples = emptyList(), // Chuyển thành rỗng để tránh sinh mẫu QA rác do có tham số bắt buộc
+                aliases = listOf("gửi mail", "soạn thư"),
+                tags = listOf("mail", "send", "report"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
-                    PluginParameter("subject", "string", "Tiêu đề email", false, "string"),
-                    PluginParameter("body", "string", "Nội dung email", false, "string")
+                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"), // ĐÃ SỬA: Chuyển sang bắt buộc (true)
+                    PluginParameter("body", "string", "Nội dung email", true, "string")    // ĐÃ SỬA: Chuyển sang bắt buộc (true)
                 )
             ),
             PluginAction(
                 name = "test",
                 description = "Gửi một bức email thử nghiệm kết nối hệ thống",
-                examples = listOf(
-                    "gửi mail test tới tôi",
-                    "kiểm tra kết nối email",
-                    "test gui mail"
-                ),
-                aliases = listOf("gửi test", "test mail"),
+                examples = emptyList(),
+                aliases = listOf("gửi test"),
                 tags = listOf("test", "diagnostic"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email")
@@ -95,9 +86,10 @@ class EmailSkill @Inject constructor(
         )
     }
 
+    // RÚT GỌN TỐI ƯU: Chỉ giữ lại 1 đến 2 từ khóa kích hoạt nguyên bản, không chứa thực thể tĩnh
     override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "send" to listOf("gửi email", "soạn email", "gửi mail cho", "viết email cho"),
-        "test" to listOf("gửi email test", "test email", "kiểm tra gửi mail")
+        "send" to listOf("gửi email", "soạn email"),
+        "test" to listOf("gửi email test")
     )
     
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
@@ -110,8 +102,14 @@ class EmailSkill @Inject constructor(
 
     private suspend fun handleSend(params: Map<String, Any>): PluginResult {
         val to = params["to"] as? String ?: return PluginResult.Failure("Bạn muốn gửi email tới địa chỉ nào?")
-        val subject = (params["subject"] as? String).takeIf { !it.isNullOrBlank() } ?: "Không có tiêu đề"
-        val body = (params["body"] as? String).takeIf { !it.isNullOrBlank() } ?: "(Không có nội dung)"
+        
+        // ĐÃ SỬA: Kiểm tra bắt buộc nghiêm ngặt với subject và body
+        val subject = params["subject"] as? String ?: return PluginResult.Failure("Tiêu đề email là gì thế bạn?")
+        val body = params["body"] as? String ?: return PluginResult.Failure("Nội dung email bạn muốn viết gì?")
+        
+        if (subject.isBlank()) return PluginResult.Failure("Tiêu đề email không được để trống")
+        if (body.isBlank()) return PluginResult.Failure("Nội dung email không được để trống")
+        
         return sendEmail(to, subject, body, null)
     }
 
