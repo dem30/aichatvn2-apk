@@ -1,28 +1,24 @@
 package com.aichatvn.agent.ui.screens
 
-import android.widget.Toast
+import android.content.Context
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,9 +26,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.ui.viewmodels.DiagnosticInfo
+import com.aichatvn.agent.ui.viewmodels.DiagnosticTier
 import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
-
-val PRESET_CATEGORIES = listOf("chat", "email", "device", "camera", "faq", "general", "alert")
+import kotlinx.coroutines.launch
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,735 +38,375 @@ fun TrainingScreen(
     viewModel: TrainingViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     val qaList by viewModel.qaList.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val diagnosticInfo by viewModel.diagnosticInfo.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val hasMore by viewModel.hasMore.collectAsState()
     val exportResult by viewModel.exportResult.collectAsState()
     val importResult by viewModel.importResult.collectAsState()
+    val hasMore by viewModel.hasMore.collectAsState()
 
+    var searchQuery by remember { mutableStateOf("") }
     var showAddDialog by remember { mutableStateOf(false) }
     var editingQA by remember { mutableStateOf<QAEntity?>(null) }
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedQAs by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    val listState = rememberLazyListState()
-    val displayList = if (searchQuery.isNotBlank()) searchResults else qaList
-
-    val jsonPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
+    // Launcher cho nạp file JSON/CSV
+    val jsonPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.importQAFromUri(context, it) }
     }
-
-    val csvPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri ->
+    val csvPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { viewModel.importQAFromCsvUri(context, it) }
-    }
-
-    LaunchedEffect(exportResult) {
-        exportResult?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
-            viewModel.clearExportResult()
-        }
-    }
-
-    LaunchedEffect(importResult) {
-        importResult?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
-            viewModel.clearImportResult()
-        }
-    }
-
-    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-        if (lastVisible >= displayList.size - 3 && hasMore && !isLoading && searchQuery.isBlank()) {
-            viewModel.loadMoreQAs()
-        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Huấn luyện Q&A (${qaList.size})") },
+                title = { Text("Huấn luyện Q&A") },
                 actions = {
                     IconButton(onClick = { viewModel.exportQAToJson(context) }) {
-                        Icon(Icons.Default.Download, contentDescription = "Export JSON")
-                    }
-                    IconButton(onClick = { showDeleteConfirm = true }) {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = "Xóa tất cả")
-                    }
-                    IconButton(onClick = { showAddDialog = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "Thêm Q&A")
+                        Icon(Icons.Default.Download, contentDescription = "Xuất dữ liệu")
                     }
                 }
             )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showAddDialog = true }) {
+                Icon(Icons.Default.Add, contentDescription = "Thêm mới Q&A")
+            }
         }
     ) { padding ->
-        Column(modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)) {
-
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Thanh Tìm kiếm & Giả lập chẩn đoán
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = {
                     searchQuery = it
-                    if (it.isNotBlank()) viewModel.searchQAs(it) else viewModel.clearSearch()
+                    if (it.isNotBlank()) {
+                        viewModel.searchQAs(it)
+                    } else {
+                        viewModel.clearSearch()
+                    }
                 },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                placeholder = { Text("Nhập thử nghiệm lệnh giả lập...") },
+                label = { Text("Tìm kiếm hoặc Giả lập câu lệnh...") },
+                modifier = Modifier.fillMaxWidth(),
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 trailingIcon = {
                     if (searchQuery.isNotBlank()) {
                         IconButton(onClick = { searchQuery = ""; viewModel.clearSearch() }) {
-                            Icon(Icons.Default.Close, null)
+                            Icon(Icons.Default.Clear, null)
                         }
                     }
                 },
-                shape = RoundedCornerShape(24.dp),
                 singleLine = true
             )
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { jsonPickerLauncher.launch("application/json") },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Import JSON")
+            // Hiển thị kết quả Import/Export
+            if (importResult != null) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(importResult!!, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        IconButton(onClick = { viewModel.clearImportResult() }) { Icon(Icons.Default.Close, null) }
+                    }
                 }
-                OutlinedButton(
-                    onClick = { csvPickerLauncher.launch("text/*") },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Import CSV")
+            }
+            if (exportResult != null) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(exportResult!!, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        IconButton(onClick = { viewModel.clearExportResult() }) { Icon(Icons.Default.Close, null) }
+                    }
                 }
             }
 
-            if (selectedQAs.isNotEmpty()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.fillMaxWidth()
+            // ✅ CHẨN ĐOÁN THÔNG MINH: Vẽ sơ đồ giả lập 5 Tầng trực quan khớp hoàn chỉnh với Kernel
+            diagnosticInfo?.let { info ->
+                DiagnosticInfoSection(diagnosticInfo = info)
+            }
+
+            // Danh sách các cặp QA hiện hành
+            val displayList = if (searchQuery.isNotBlank()) searchResults else qaList
+            
+            Text(
+                text = if (searchQuery.isNotBlank()) "Kết quả tìm kiếm (${displayList.size})" else "Tất cả bản ghi huấn luyện",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            if (displayList.isEmpty()) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("Chưa có bản ghi huấn luyện nào.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            "Đã chọn ${selectedQAs.size}",
-                            style = MaterialTheme.typography.labelMedium
+                    items(displayList) { qa ->
+                        QARow(
+                            qa = qa,
+                            onEdit = { editingQA = it },
+                            onDelete = { viewModel.deleteQA(it.id, "default_user") }
                         )
-                        Row {
-                            TextButton(onClick = { selectedQAs = emptySet() }) {
-                                Text("Bỏ chọn")
-                            }
-                            TextButton(
-                                onClick = { showDeleteConfirm = true },
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error
-                                )
-                            ) {
-                                Text("Xoá")
+                    }
+
+                    // Tải thêm trang tiếp theo nếu đang hiển thị danh sách toàn bộ
+                    if (searchQuery.isBlank() && hasMore) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                                Button(onClick = { viewModel.loadMoreQAs() }, enabled = !isLoading) {
+                                    if (isLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                                    else Text("Tải thêm bản ghi")
+                                }
                             }
                         }
                     }
                 }
             }
 
-            when {
-                isLoading && displayList.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+            // Các nút tiện ích nhập CSV/JSON ở chân màn hình
+            if (searchQuery.isBlank()) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { jsonPickerLauncher.launch("application/json") }, modifier = Modifier.weight(1f)) {
+                        Text("📥 Nhập JSON", style = MaterialTheme.typography.labelSmall)
                     }
-                }
-                else -> {
-                    LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        // TÍCH HỢP DIAGNOSTICS PANEL VÀO ĐẦU DANH SÁCH CUỘN
-                        if (searchQuery.isNotBlank() && diagnosticInfo != null) {
-                            item {
-                                AgentKernelDiagnosticsPanel(diagnosticInfo!!)
-                            }
-                        }
-
-                        // Hiển thị thông báo khi rỗng mà vẫn giữ Panel Diagnostics cuộn tự do phía trên
-                        if (displayList.isEmpty()) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(32.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = if (searchQuery.isNotBlank()) "Không có kết quả nào đạt ngưỡng cấu hình" else "Chưa có dữ liệu huấn luyện",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
-                            }
-                        } else {
-                            items(displayList, key = { it.id }) { qa ->
-                                QACard(
-                                    qa = qa,
-                                    isSelected = selectedQAs.contains(qa.id),
-                                    onSelect = {
-                                        selectedQAs = if (selectedQAs.contains(qa.id))
-                                            selectedQAs - qa.id
-                                        else
-                                            selectedQAs + qa.id
-                                    },
-                                    onEdit = { editingQA = qa },
-                                    onDelete = { viewModel.deleteQA(qa.id) }
-                                )
-                            }
-                        }
-
-                        if (hasMore && searchQuery.isBlank() && isLoading) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                                }
-                            }
-                        }
+                    OutlinedButton(onClick = { csvPickerLauncher.launch("text/comma-separated-values") }, modifier = Modifier.weight(1f)) {
+                        Text("📥 Nhập CSV", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
         }
     }
 
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Xác nhận xóa") },
-            text = {
-                Text(
-                    if (selectedQAs.isNotEmpty())
-                        "Xóa ${selectedQAs.size} mục đã chọn?"
-                    else
-                        "Xóa tất cả Q&A? Hành động này không thể hoàn tác!"
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        if (selectedQAs.isNotEmpty()) {
-                            viewModel.batchDeleteQAs(selectedQAs.toList())
-                            selectedQAs = emptySet()
-                        } else {
-                            viewModel.deleteAllQAs()
-                        }
-                        showDeleteConfirm = false
-                    }
-                ) {
-                    Text("Xóa", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Hủy") }
+    // Dialog Thêm mới Q&A
+    if (showAddDialog) {
+        AddEditQADialog(
+            onDismiss = { showAddDialog = false },
+            onConfirm = { q, a, t, c ->
+                viewModel.addQA(q, a, t, c)
+                showAddDialog = false
             }
         )
     }
 
-    if (showAddDialog || editingQA != null) {
-        QADialog(
-            existing = editingQA,
-            onDismiss = { showAddDialog = false; editingQA = null },
-            onSave = { q, a, cat, t ->
-                if (editingQA != null) viewModel.updateQA(editingQA!!.id, q, a, t, cat)
-                else viewModel.addQA(q, a, t, cat)
-                showAddDialog = false; editingQA = null
+    // Dialog Chỉnh sửa Q&A
+    if (editingQA != null) {
+        AddEditQADialog(
+            qa = editingQA,
+            onDismiss = { editingQA = null },
+            onConfirm = { q, a, t, c ->
+                viewModel.updateQA(editingQA!!.id, q, a, t, c)
+                editingQA = null
             }
         )
     }
 }
 
-/**
- * Component mô tả trực quan và chi tiết phân tích của AgentKernel
- */
+// ✅ THIẾT KẾ MỚI: Khối hiển thị chẩn đoán giả lập 5 Tầng giao diện chuẩn hóa trực quan [1]
 @Composable
-fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
-    var isExpanded by remember { mutableStateOf(true) }
-    val rotationState by animateFloatAsState(targetValue = if (isExpanded) 180f else 0f)
+private fun DiagnosticInfoSection(diagnosticInfo: DiagnosticInfo) {
+    var expanded by remember { mutableStateOf(false) }
 
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 6.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-        shape = RoundedCornerShape(12.dp)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Thanh tiêu đề Panel
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { isExpanded = !isExpanded },
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Analytics,
-                        contentDescription = "Diagnostics",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Phân Tích Giải Lập Agent Kernel",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { isExpanded = !isExpanded }, modifier = Modifier.size(24.dp)) {
-                    Icon(
-                        Icons.Default.ArrowDropDown,
-                        contentDescription = null,
-                        modifier = Modifier.rotate(rotationState)
-                    )
-                }
+                Text(
+                    text = "🔍 Phân Tích Giả Lập Điều Phối (5 Tầng Core)",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = null
+                )
             }
 
-            AnimatedVisibility(visible = isExpanded) {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    // Tóm tắt cấu hình hiện hành
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            if (expanded) {
+                Spacer(modifier = Modifier.height(10.dp))
+                
+                // Vẽ tuần tự 5 tầng
+                diagnosticInfo.tiers.forEach { tier ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (tier.matched) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            }
+                        ),
+                        shape = RoundedCornerShape(6.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
-                                .padding(8.dp)
-                        ) {
-                            Column {
-                                Text("Ngưỡng Lọc Tầng 2 (Intent)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${info.intentThreshold}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = tier.tierName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (tier.matched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (tier.matched) "🟢 ĐẠT" else "⚪ BỎ QUA",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (tier.matched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
-                                .padding(8.dp)
-                        ) {
-                            Column {
-                                Text("Ngưỡng Lọc Tầng 3 (Alias)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${info.aliasThreshold}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                            if (tier.score > 0) {
+                                Text(
+                                    text = "Độ tương đồng: ${String.format("%.2f", tier.score)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
                             }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // 1. Phân nhóm: Best Mapped Entities (Slot Filling)
-                    Text(
-                        "1. Bóc tách thực thể tốt nhất (Slot Filling - Tầng 3 & 4)",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    if (info.bestAliasMatches.isEmpty()) {
-                        Text(
-                            "Không nhận diện được thực thể hợp lệ nào trong câu nhập vào (Điểm so khớp thấp hơn Ngưỡng Tầng 3).",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
-                        )
-                    } else {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        ) {
-                            info.bestAliasMatches.forEach { (category, pair) ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color.Green.copy(alpha = 0.05f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column {
-                                        Text(
-                                            text = "Khóa (semanticType): $category",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "Từ khóa: \"${pair.first.question}\" → Ánh xạ ID: \"${pair.first.answer}\"",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Text(
-                                        text = String.format("%.2f", pair.second),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = Color(0xFF2E7D32)
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. Phân nhóm: Intent Matches (Tầng 2)
-                    Text(
-                        "2. Tầng 2: So khớp Ý định (Intent Matches)",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    if (info.intentMatches.isEmpty()) {
-                        Text(
-                            "Không tìm thấy ứng viên ý định nào.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
-                        )
-                    } else {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        ) {
-                            info.intentMatches.take(3).forEach { (qa, score) ->
-                                val isPassed = score >= info.intentThreshold
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            if (isPassed) Color.Green.copy(alpha = 0.05f) else Color.Red.copy(alpha = 0.05f),
-                                            RoundedCornerShape(4.dp)
-                                        )
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = qa.question,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = (if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)).copy(alpha = 0.1f)
-                                            ) {
-                                                Text(
-                                                    text = if (isPassed) "ĐẠT" else "BỊ LOẠI",
-                                                    fontSize = 8.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = "Answer (JSON): ${qa.answer}",
-                                            fontSize = 9.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1
-                                        )
-                                    }
-                                    Text(
-                                        text = String.format("%.2f", score),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 3. Phân nhóm: Alias Matches (Tầng 3)
-                    Text(
-                        "3. Tầng 3: Chi tiết thực thể thô (Alias Matches)",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    if (info.aliasMatches.isEmpty()) {
-                        Text(
-                            "Không tìm thấy thực thể thô tương đồng nào.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                    } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            info.aliasMatches.take(3).forEach { (qa, score) ->
-                                val isPassed = score >= info.aliasThreshold
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            if (isPassed) Color.Green.copy(alpha = 0.05f) else Color.Red.copy(alpha = 0.05f),
-                                            RoundedCornerShape(4.dp)
-                                        )
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = "${qa.question} (${qa.category})",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = (if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)).copy(alpha = 0.1f)
-                                            ) {
-                                                Text(
-                                                    text = if (isPassed) "ĐẠT" else "BỊ LOẠI",
-                                                    fontSize = 8.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = "Value: ${qa.answer}",
-                                            fontSize = 9.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Text(
-                                        text = String.format("%.2f", score),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
-                                    )
-                                }
-                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = tier.details,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            )
                         }
                     }
                 }
+
+                if (diagnosticInfo.resolvedIntents.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("🎯 Ý định tìm thấy trong DB:", style = MaterialTheme.typography.labelMedium)
+                    diagnosticInfo.resolvedIntents.forEach { intent ->
+                        Text("• $intent", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                if (diagnosticInfo.resolvedAliases.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("📦 Aliases bóc tách:", style = MaterialTheme.typography.labelMedium)
+                    diagnosticInfo.resolvedAliases.forEach { (category, answer) ->
+                        Text("• $category -> $answer", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            } else {
+                Text(
+                    text = "Bấm để xem phân tích chi tiết cách Kernel xử lý câu lệnh này hằng ngày.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
     }
 }
 
 @Composable
-fun QACard(
+private fun QARow(
     qa: QAEntity,
-    isSelected: Boolean,
-    onSelect: () -> Unit,
-    onEdit: () -> Unit,
+    onEdit: (QAEntity) -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected)
-                MaterialTheme.colorScheme.primaryContainer
-            else
-                MaterialTheme.colorScheme.surface
-        )
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Checkbox(
-                checked = isSelected,
-                onCheckedChange = { onSelect() },
-                modifier = Modifier.padding(start = 4.dp, top = 12.dp)
-            )
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(12.dp)
-            ) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer
-                        ) {
-                            Text(
-                                qa.category,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (qa.type == "intent") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer
-                        ) {
-                            Text(
-                                qa.type.uppercase(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (qa.type == "intent") MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            text = qa.type.uppercase(),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
-                    Row {
-                        IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Edit, null, modifier = Modifier.size(18.dp))
-                        }
-                        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                            Icon(
-                                Icons.Default.Delete, null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
+                    Text(
+                        text = "Danh mục: ${qa.category}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
                 }
-                Text("Q: ${qa.question}", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "A: ${qa.answer}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+
+                Text("Q: ${qa.question}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text("A: ${qa.answer}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            IconButton(onClick = { onEdit(qa) }) {
+                Icon(Icons.Default.Edit, contentDescription = "Sửa", tint = MaterialTheme.colorScheme.primary)
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Default.Delete, contentDescription = "Xóa", tint = MaterialTheme.colorScheme.error)
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QADialog(
-    existing: QAEntity?,
+private fun AddEditQADialog(
+    qa: QAEntity? = null,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String) -> Unit
+    onConfirm: (question: String, answer: String, type: String, category: String) -> Unit
 ) {
-    var question by remember { mutableStateOf(existing?.question ?: "") }
-    var answer by remember { mutableStateOf(existing?.answer ?: "") }
-    var category by remember { mutableStateOf(existing?.category ?: "chat") }
-    var type by remember { mutableStateOf(existing?.type ?: "alias") }
-    var expanded by remember { mutableStateOf(false) }
-    var typeExpanded by remember { mutableStateOf(false) }
+    var question by remember { mutableStateOf(qa?.question ?: "") }
+    var answer by remember { mutableStateOf(qa?.answer ?: "") }
+    var type by remember { mutableStateOf(qa?.type ?: "alias") }
+    var category by remember { mutableStateOf(qa?.category ?: "general") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (existing == null) "Thêm Q&A" else "Sửa Q&A") },
+        title = { Text(if (qa == null) "Thêm mới Q&A" else "Cập nhật Q&A") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = question,
-                    onValueChange = { question = it },
-                    label = { Text("Câu hỏi") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = answer,
-                    onValueChange = { answer = it },
-                    label = { Text("Câu trả lời") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3
-                )
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = category,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Danh mục (semanticType)") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        PRESET_CATEGORIES.forEach { preset ->
-                            DropdownMenuItem(
-                                text = { Text(preset) },
-                                onClick = { category = preset; expanded = false }
-                            )
-                        }
+                OutlinedTextField(value = question, onValueChange = { question = it }, label = { Text("Câu hỏi (Trigger)") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = answer, onValueChange = { answer = it }, label = { Text("Câu trả lời (Answer / Schema)") }, modifier = Modifier.fillMaxWidth())
+                
+                Text("Loại ghi chép (Type)", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = type == "alias", onClick = { type = "alias" })
+                        Text("Alias (Dịch nghĩa)")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = type == "intent", onClick = { type = "intent" })
+                        Text("Intent (Lệnh)")
                     }
                 }
-                ExposedDropdownMenuBox(
-                    expanded = typeExpanded,
-                    onExpandedChange = { typeExpanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = type,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Loại QA") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = typeExpanded) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = typeExpanded,
-                        onDismissRequest = { typeExpanded = false }
-                    ) {
-                        listOf(
-                            "alias" to "Alias — tra cứu giá trị (tên, email...)",
-                            "intent" to "Intent — lệnh điều khiển (JSON)"
-                        ).forEach { (t, label) ->
-                            DropdownMenuItem(
-                                text = { Text(label) },
-                                onClick = { type = t; typeExpanded = false }
-                            )
-                        }
-                    }
-                }
+
+                OutlinedTextField(value = category, onValueChange = { category = it }, label = { Text("Danh mục (Ví dụ: camera, light, general)") }, modifier = Modifier.fillMaxWidth())
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    if (question.isNotBlank() && answer.isNotBlank()) onSave(question, answer, category, type)
-                }
-            ) { Text("Lưu") }
+            Button(
+                onClick = { onConfirm(question, answer, type, category) },
+                enabled = question.isNotBlank() && answer.isNotBlank()
+            ) { Text("Xác nhận") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Hủy bỏ") }
+        }
     )
 }
