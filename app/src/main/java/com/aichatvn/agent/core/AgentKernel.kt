@@ -1431,12 +1431,13 @@ class AgentKernel @Inject constructor(
         val shortHistory = chatHistoryManager.getRecentTurnsAsText()
         val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
 
+        // ── CẢI TIẾN PROMPT: ÉP PHÂN BIỆT CHAT THƯỜNG / KỂ CHUYỆN / TÁN GẪU ──
         val routerPrompt = buildString {
-            append("<sys>Intent Formatter. Chỉ xuất JSON: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
-            append("- Khớp thông điệp người dùng vào một trong các ứng viên (candidates) được tìm thấy bên dưới.\n")
-            append("- Nếu là hội thoại thông thường, xuất: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
-            append("- Dựa vào danh bạ aliases được tìm thấy gửi kèm để gán chính xác tham số ID.\n")
-            append("- Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.</sys>\n")
+            append("<sys>Intent Formatter. Bạn là bộ định tuyến lệnh. Chỉ được phép xuất JSON thô dạng: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
+            append("QUY TẮC BẮT BUỘC:\n")
+            append("1. Nếu câu lệnh của người dùng khớp với một hành động thiết bị trong danh sách <candidates>, hãy xuất JSON điều khiển tương ứng.\n")
+            append("2. Nếu người dùng đang nói chuyện phiếm, tán gẫu, yêu cầu kể chuyện (ví dụ: 'kể chuyện', 'một câu chuyện'), chào hỏi ('hello', 'hi'), hoặc hỏi đáp kiến thức tổng hợp KHÔNG liên quan trực tiếp đến việc điều khiển thiết bị, bạn BẮT BUỘC phải xuất đúng cấu trúc: {\"plugin\":\"chat\",\"action\":\"none\",\"params\":{}}\n")
+            append("3. Tuyệt đối KHÔNG được viết lời giải thích, không được tư vấn, không được trả lời hội thoại bằng văn bản thường. Chỉ xuất duy nhất JSON.</sys>\n")
             append("<candidates>\n$candidateLines\n</candidates>\n")
             if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
             append("<context>last_device: \"$lastDevice\"</context>\n")
@@ -1473,6 +1474,7 @@ class AgentKernel @Inject constructor(
         return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = result))
     }
 
+    
     private fun normalizeParams(
         params: Map<String, Any>, 
         plugin: Plugin, 
