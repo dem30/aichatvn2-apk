@@ -1257,9 +1257,14 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        val filled = if (heuristicFilled.size >= pending.missingParams.size) {
+        // ── ĐÃ SỬA: XÁC ĐỊNH THAM SỐ ĐANG HỎI ĐỂ ĐỐI CHIẾU BYPASS GROQ ──
+        val currentAskedParam = pending.missingParams.firstOrNull()
+        
+        val filled = if (currentAskedParam != null && heuristicFilled.containsKey(currentAskedParam)) {
+            logger.d("AgentKernel", "[$traceId] Heuristic tự xử lý thành công tham số '$currentAskedParam'. Bypass LLM.")
             heuristicFilled
         } else {
+            logger.d("AgentKernel", "[$traceId] Heuristic không khớp tự động được '$currentAskedParam'. Gọi LLM.")
             val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
             val foundAliasesContext = matchResult.aliasMatches
                 .filter { it.second >= configAliasThreshold }
@@ -1364,6 +1369,7 @@ class AgentKernel @Inject constructor(
 
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
+    
 
     private suspend fun executeTier3LlmRouting(
         userMessage: String,
