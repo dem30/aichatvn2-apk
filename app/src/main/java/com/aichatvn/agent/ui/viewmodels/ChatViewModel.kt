@@ -11,7 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
-import com.aichatvn.agent.data.AppDatabase // Import thêm DB để lưu vết giọng nói
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.skills.ChatSkill
@@ -47,7 +47,7 @@ class ChatViewModel @Inject constructor(
     private val agentKernel: AgentKernel,
     private val groqClient: GroqClientTool,
     private val database: AppDatabase, // Tiêm DB phục vụ ghi nhật ký voice tự động
-    val voiceManager: VoiceAssistantManager, // ✅ ĐÃ TIÊM: Sử dụng Singleton từ Hilt thay vì khởi tạo thủ công
+    val voiceManager: VoiceAssistantManager, // Sử dụng Singleton từ Hilt thay vì khởi tạo thủ công
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
@@ -80,8 +80,8 @@ class ChatViewModel @Inject constructor(
 
     val quickCommandGroups: List<QuickCommandGroup> = agentKernel.getAvailablePluginsForUI().map { plugin ->
         QuickCommandGroup(
-            tabLabel = plugin.name,
-            commands = plugin.getActions().map { action ->
+            tabLabel = plugin.manifest.name,
+            commands = plugin.manifest.actions.map { action ->
                 val requiredParams = action.parameters.filter { it.required }
                 val text = if (requiredParams.isEmpty()) action.description
                 else action.description + " (" + requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
@@ -97,7 +97,7 @@ class ChatViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             chatSkill.initialize()
-            observeVoiceManagerFlows() // ✅ ĐÃ SỬA: Lắng nghe trạng thái và dữ liệu Reactive Flow của Mic
+            observeVoiceManagerFlows() // Lắng nghe trạng thái và dữ liệu Reactive Flow của Mic
             observeAndSpeak()
             startVoiceSession()
         }
@@ -296,7 +296,7 @@ class ChatViewModel @Inject constructor(
                 if (response is PluginResult.Failure) {
                     logger.e("ChatViewModel", "Error: ${response.error}")
                 }
-            } {
+            } finally { // ✅ ĐÃ SỬA: Khôi phục chính xác từ khóa 'finally' bị thiếu
                 _isLoading.value = false
                 isProcessingQuery.set(false)
             }
