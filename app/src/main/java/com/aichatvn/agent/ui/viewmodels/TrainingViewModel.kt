@@ -21,7 +21,6 @@ import org.json.JSONObject
 import java.io.File
 import javax.inject.Inject
 
-// ✅ ĐÃ THIẾT KẾ LẠI: Định nghĩa cấu trúc DiagnosticTier mô tả trực quan 5 tầng
 data class DiagnosticTier(
     val tierName: String,
     val tierNum: Int,
@@ -30,12 +29,17 @@ data class DiagnosticTier(
     val score: Double = 0.0
 )
 
-// ✅ ĐÃ THIẾT KẾ LẠI: Định nghĩa siêu dữ liệu chẩn đoán động hoàn chỉnh
 data class DiagnosticInfo(
     val query: String,
     val tiers: List<DiagnosticTier>,
     val resolvedIntents: List<String> = emptyList(),
-    val resolvedAliases: Map<String, String> = emptyMap()
+    val resolvedAliases: Map<String, String> = emptyMap(),
+    // ✅ Thêm để TrainingScreen hiển thị chi tiết từng tầng
+    val intentMatches: List<Pair<QAEntity, Double>> = emptyList(),
+    val aliasMatches: List<Pair<QAEntity, Double>> = emptyList(),
+    val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap(),
+    val intentThreshold: Float = 0.3f,
+    val aliasThreshold: Float = 0.2f
 )
 
 @HiltViewModel
@@ -156,12 +160,12 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    // ✅ ĐÃ THIẾT KẾ LẠI: Mô phỏng đầy đủ luồng đi 5 tầng thực tế của Core Engine
+    // ✅ Mô phỏng đầy đủ luồng đi 5 tầng thực tế của Core Engine
     fun searchQAs(query: String) {
         activeSearchQuery = query
         viewModelScope.launch {
             _isLoading.value = true
-            
+
             val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
             val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
             val highConfThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.85f)
@@ -169,7 +173,7 @@ class TrainingViewModel @Inject constructor(
             val matchResult = trainingSkill.fuzzyMatchCategorized(
                 query = query,
                 username = "default_user",
-                intentThreshold = 0.0f, // Ngưỡng 0.0 để có thể phân tích cả các phương án bị loại
+                intentThreshold = 0.0f, // Ngưỡng 0.0 để phân tích cả các phương án bị loại
                 aliasThreshold = 0.0f
             )
 
@@ -191,7 +195,6 @@ class TrainingViewModel @Inject constructor(
             val hasBestIntent = bestIntentPair != null && bestIntentPair.second >= intentThreshold
             val isHighConf = bestIntentPair != null && bestIntentPair.second >= highConfThreshold
 
-            // Áp dụng luật ưu tiên Wrapper thiết lập ở Tầng 2
             val wrapperPair = matchResult.intentMatches
                 .filter { it.second >= intentThreshold }
                 .find { it.first.answer.contains("\"plugin\":\"schedule\"") }
@@ -266,8 +269,16 @@ class TrainingViewModel @Inject constructor(
             _diagnosticInfo.value = DiagnosticInfo(
                 query = query,
                 tiers = simulatedTiers,
-                resolvedIntents = matchResult.intentMatches.filter { it.second >= intentThreshold }.map { "${it.first.question} (điểm: ${String.format("%.2f", it.second)})" },
-                resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer }
+                resolvedIntents = matchResult.intentMatches
+                    .filter { it.second >= intentThreshold }
+                    .map { "${it.first.question} (điểm: ${String.format("%.2f", it.second)})" },
+                resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer },
+                // ✅ Populate đầy đủ để TrainingScreen hiển thị chi tiết
+                intentMatches = matchResult.intentMatches,
+                aliasMatches = matchResult.aliasMatches,
+                bestAliasMatches = matchResult.bestAliasMatches,
+                intentThreshold = intentThreshold,
+                aliasThreshold = aliasThreshold
             )
 
             val filteredIntents = matchResult.intentMatches.filter { it.second >= intentThreshold }
