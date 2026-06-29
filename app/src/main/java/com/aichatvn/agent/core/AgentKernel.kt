@@ -7,7 +7,7 @@ import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
-import com.aichatvn.agent.skills.SearchMatch // ✅ ĐÃ SỬA: Import đúng vị trí ở đầu tệp tin [1]
+import com.aichatvn.agent.skills.SearchMatch
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -160,7 +160,6 @@ class AgentKernel @Inject constructor(
 
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
 
-    // ✅ ĐÃ SỬA: Thay đổi kiểu trả về thành SearchMatch trực tiếp sạch sẽ [1]
     suspend fun search(
         query: String,
         username: String,
@@ -315,11 +314,49 @@ class AgentKernel @Inject constructor(
         val devicePlugins = plugins.filter { it.manifest.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
-        val pending = chatHistoryManager.getActivePendingIntent()
-        if (pending != null) {
-            logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện tiến trình dở dang Pending Intent")
-            val resolved = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId)
-            if (resolved != null) return RouterOutcome.Matched(resolved)
+        // ── TẦNG 1: Xử lý trạng thái dở dang đa lệnh song song (Pending Intents Queue) ──
+        // ✅ ĐÃ SỬA: Sửa đổi để chạy duyệt danh sách hàng đợi các câu lệnh đang thiếu tham số
+        val pendings = chatHistoryManager.getActivePendingIntents()
+        if (pendings.isNotEmpty()) {
+            logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
+            val results = mutableListOf<String>()
+            var allSucceeded = true
+            
+            for (pending in pendings) {
+                val resolvedResult = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId)
+                if (resolvedResult != null) {
+                    val r = resolvedResult.result
+                    val msg = when (r) {
+                        is PluginResult.Success -> {
+                            chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+                            (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ Thực hiện thành công"
+                        }
+                        is PluginResult.Failure -> {
+                            chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+                            "❌ Lỗi: ${r.error}"
+                        }
+                        is PluginResult.NeedMoreInfo -> {
+                            allSucceeded = false
+                            r.question
+                        }
+                    }
+                    results.add(msg)
+                }
+            }
+            
+            if (results.isNotEmpty()) {
+                val combined = results.distinct().joinToString("\n")
+                val finalResult = if (allSucceeded) {
+                    PluginResult.Success(mapOf("message" to combined))
+                } else {
+                    val remainingPending = chatHistoryManager.getActivePendingIntents()
+                    PluginResult.NeedMoreInfo(
+                        remainingPending.flatMap { it.missingParams },
+                        combined
+                    )
+                }
+                return RouterOutcome.Matched(DeviceCommandResult("multi_pending", finalResult))
+            }
         }
 
         val dynamicMinScore = configProvider.allConfigs.value
@@ -1061,7 +1098,7 @@ class AgentKernel @Inject constructor(
         }
 
         when (executionResult) {
-            is PluginResult.NeedMoreInfo -> chatHistoryManager.setPendingIntent(
+            is PluginResult.NeedMoreInfo -> chatHistoryManager.addPendingIntent(
                 PendingIntent(
                     pluginId = plugin.manifest.id,
                     action = normalizedIntent.action,
@@ -1071,7 +1108,7 @@ class AgentKernel @Inject constructor(
                     createdAt = System.currentTimeMillis()
                 )
             )
-            else -> chatHistoryManager.clearPendingIntent()
+            else -> chatHistoryManager.removePendingIntent(plugin.manifest.id, intent.action)
         }
 
         val replyForHistory = when (executionResult) {
@@ -1277,7 +1314,7 @@ class AgentKernel @Inject constructor(
             val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
             val question = getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action)
 
-            chatHistoryManager.setPendingIntent(
+            chatHistoryManager.addPendingIntent(
                 pending.copy(
                     knownParams = normalizedMergedParams + mapOf("_noProgressCount" to newNoProgressCount),
                     missingParams = stillMissing,
@@ -1292,7 +1329,7 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        chatHistoryManager.clearPendingIntent()
+        chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
         val executionResult = try {
             targetPlugin.execute(pending.action, normalizedMergedParams)
         } catch (e: Exception) {
@@ -1528,4 +1565,3 @@ class AgentKernel @Inject constructor(
         data class NeedMoreInfo(val missingParams: List<String>, val question: String) : PluginResult()
     }
 }
-
