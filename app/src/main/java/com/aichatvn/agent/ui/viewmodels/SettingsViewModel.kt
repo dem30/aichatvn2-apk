@@ -21,6 +21,7 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.skills.CameraSkill // Tiêm thêm CameraSkill để cập nhật sơ đồ
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.skills.TuyaManager
@@ -49,9 +50,10 @@ class SettingsViewModel @Inject constructor(
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
     private val tuyaManager: TuyaManager,
+    private val cameraSkill: CameraSkill, // ✅ ĐÃ TIÊM: Đồng bộ sơ đồ sau khi import
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
-    private val trainingSkill: TrainingSkill, // ✅ ĐÃ TIÊM: Sử dụng để đồng bộ hóa RAM Cache sau khi khôi phục dữ liệu
+    private val trainingSkill: TrainingSkill,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -202,7 +204,6 @@ class SettingsViewModel @Inject constructor(
                     put("max_tokens", 5)
                 }.toString()
 
-                // CHỐNG CRASH: Bao bọc cuộc gọi mạng đồng bộ bằng Dispatchers.IO để triệt tiêu lỗi NetworkOnMainThreadException
                 val response = withContext(Dispatchers.IO) {
                     httpClient.newCall(
                         Request.Builder()
@@ -357,7 +358,23 @@ class SettingsViewModel @Inject constructor(
                     }
                     dataJson.optJSONArray("cameras")?.let { arr ->
                         val list: List<CameraConfigEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CameraConfigEntity>>() {}.type)
-                        list.forEach { database.cameraDao().insertCamera(it) }
+                        list.forEach { camera -> 
+                            database.cameraDao().insertCamera(camera)
+                            
+                            // ✅ TỰ ĐỘNG BÙ ĐẮP THIẾT LẬP: Khắc phục mồ côi thiết lập khách hàng khiến camera bị bỏ qua [1]
+                            val setting = database.cameraDao().getCustomerSetting(camera.customerId)
+                            if (setting == null && camera.customerId.isNotEmpty()) {
+                                database.cameraDao().insertCustomerSetting(
+                                    CustomerSettingEntity(
+                                        customerId = camera.customerId,
+                                        smartMode = 0,
+                                        isActive = 1, // Kích hoạt trạng thái hoạt động tức thì [1]
+                                        updatedAt = System.currentTimeMillis(),
+                                        timestamp = System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        }
                         restoredCount += list.size
                     }
                     dataJson.optJSONArray("customer_settings")?.let { arr ->
@@ -390,8 +407,16 @@ class SettingsViewModel @Inject constructor(
                     }
                 }
 
-                // ĐỒNG BỘ HÓA CACHE: Đảm bảo RAM Cache của TrainingSkill được cập nhật tức thời ngay sau khi Import dữ liệu thành công
+                // Đồng bộ hóa RAM Cache của TrainingSkill được cập nhật tức thời ngay sau khi Import dữ liệu thành công
                 trainingSkill.refreshQAList("default_user")
+
+                // ✅ TỰ ĐỘNG ĐỒNG BỘ BẢN SAO SỐ LÊN DASHBOARD: Cập nhật sơ đồ thiết bị ngay lập tức sau khi import [1]
+                try {
+                    cameraSkill.initialize()
+                    tuyaManager.loadDevicesFromDB()
+                } catch (e: Exception) {
+                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya sau khi import thất bại", e)
+                }
 
                 if (dataJson?.has("schedules") == true) {
                     com.aichatvn.agent.scheduler.TaskScheduler.runNow(context)
