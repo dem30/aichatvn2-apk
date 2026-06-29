@@ -152,8 +152,8 @@ fun TrainingScreen(
                     items(displayList) { qa ->
                         QARow(
                             qa = qa,
-                            onEdit = { editingQA = it },
-                            onDelete = { viewModel.deleteQA(it.id, "default_user") }
+                             onEdit = { editingQA = it },
+onDelete = { viewModel.deleteQA(qa.id, "default_user") }
                         )
                     }
 
