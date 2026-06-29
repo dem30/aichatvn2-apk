@@ -936,35 +936,76 @@ class AgentKernel @Inject constructor(
     }
 
     private fun parseVietnameseTime(message: String): String? {
-        val lower = message.lowercase().trim()
-        
-        if (lower.contains("mỗi ngày") || lower.contains("hằng ngày") || lower.contains("hàng ngày")) {
-            return "0 0 * * *"
+    val lower = message.lowercase().trim()
+    
+    // 1. Trích xuất giờ trước (nếu có trong câu)
+    val hourRegex = Regex("\\b(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?\\b")
+    val hourMatch = hourRegex.find(lower)
+    var extractedHour: Int? = null
+    
+    if (hourMatch != null) {
+        var hour = hourMatch.groupValues[1].toIntOrNull() ?: 0
+        val period = hourMatch.groupValues[3]
+        if ((period == "chiều" || period == "tối") && hour < 12) {
+            hour += 12
+        } else if (period == "đêm" && hour == 12) {
+            hour = 0
         }
-        if (lower.contains("hằng tuần") || lower.contains("hàng tuần")) {
-            return "0 0 * * 0"
-        }
-        if (lower.contains("ngày mai") || lower.contains("mai")) {
-            return "0 8 * * *"
-        }
-        if (lower.contains("thứ hai") || lower.contains("thứ 2")) {
-            return "0 0 * * 1"
-        }
-
-        val hourRegex = Regex("(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?")
-        val match = hourRegex.find(lower)
-        if (match != null) {
-            var hour = match.groupValues[1].toIntOrNull() ?: return null
-            val period = match.groupValues[3]
-            if ((period == "chiều" || period == "tối") && hour < 12) {
-                hour += 12
-            } else if (period == "đêm" && hour == 12) {
-                hour = 0
-            }
-            return "0 $hour * * *"
-        }
-        return null
+        extractedHour = hour
     }
+
+    // 2. Trích xuất thứ trong tuần
+    var dayOfWeek = "*"
+    var dayOfWeekFound = false
+    
+    val mondayRegex = Regex("\\b(thứ hai|thứ 2)\\b")
+    val tuesdayRegex = Regex("\\b(thứ ba|thứ 3)\\b")
+    val wednesdayRegex = Regex("\\b(thứ tư|thứ 4)\\b")
+    val thursdayRegex = Regex("\\b(thứ năm|thứ 5)\\b")
+    val fridayRegex = Regex("\\b(thứ sáu|thứ 6)\\b")
+    val saturdayRegex = Regex("\\b(thứ bảy|thứ 7)\\b")
+    val sundayRegex = Regex("\\b(chủ nhật|cn)\\b")
+
+    if (mondayRegex.containsMatchIn(lower)) { dayOfWeek = "1"; dayOfWeekFound = true }
+    else if (tuesdayRegex.containsMatchIn(lower)) { dayOfWeek = "2"; dayOfWeekFound = true }
+    else if (wednesdayRegex.containsMatchIn(lower)) { dayOfWeek = "3"; dayOfWeekFound = true }
+    else if (thursdayRegex.containsMatchIn(lower)) { dayOfWeek = "4"; dayOfWeekFound = true }
+    else if (fridayRegex.containsMatchIn(lower)) { dayOfWeek = "5"; dayOfWeekFound = true }
+    else if (saturdayRegex.containsMatchIn(lower)) { dayOfWeek = "6"; dayOfWeekFound = true }
+    else if (sundayRegex.containsMatchIn(lower)) { dayOfWeek = "0"; dayOfWeekFound = true }
+
+    // Nếu tìm thấy thứ, kết hợp với giờ đã trích xuất (mặc định là 0h nếu không nói giờ)
+    if (dayOfWeekFound) {
+        val hour = extractedHour ?: 0
+        return "0 $hour * * $dayOfWeek"
+    }
+
+    // 3. Trích xuất các trường hợp lặp ngày/tuần hoặc "ngày mai"
+    val dailyRegex = Regex("\\b(mỗi ngày|hằng ngày|hàng ngày)\\b")
+    if (dailyRegex.containsMatchIn(lower)) {
+        val hour = extractedHour ?: 0
+        return "0 $hour * * *"
+    }
+    
+    val weeklyRegex = Regex("\\b(hằng tuần|hàng tuần)\\b")
+    if (weeklyRegex.containsMatchIn(lower)) {
+        val hour = extractedHour ?: 0
+        return "0 $hour * * 0" // Mặc định Chủ Nhật
+    }
+    
+    val tomorrowRegex = Regex("\\b(ngày mai|mai)\\b")
+    if (tomorrowRegex.containsMatchIn(lower)) {
+        val hour = extractedHour ?: 8 // Mặc định 8h sáng nếu không nói giờ cụ thể
+        return "0 $hour * * *"
+    }
+
+    // 4. Nếu chỉ có giờ độc lập (mỗi ngày vào giờ đó)
+    if (extractedHour != null) {
+        return "0 $extractedHour * * *"
+    }
+
+    return null
+}
 
     private fun parseVietnameseInterval(message: String): Int? {
         val lower = message.lowercase()

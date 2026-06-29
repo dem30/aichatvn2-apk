@@ -30,6 +30,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.ui.viewmodels.DiagnosticInfo
+import com.aichatvn.agent.ui.viewmodels.DiagnosticTier
 import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
 
 val PRESET_CATEGORIES = listOf("chat", "email", "device", "camera", "faq", "general", "alert")
@@ -122,7 +123,7 @@ fun TrainingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                placeholder = { Text("Nhập thử nghiệm lệnh giả lập...") },
+                placeholder = { Text("Nhập thử nghiệm câu lệnh thiết bị...") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 trailingIcon = {
                     if (searchQuery.isNotBlank()) {
@@ -203,14 +204,13 @@ fun TrainingScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        // TÍCH HỢP DIAGNOSTICS PANEL VÀO ĐẦU DANH SÁCH CUỘN
+                        // HIỂN THỊ DIAGNOSTICS PANEL Ở ĐẦU LIST KHI CÓ TRUY VẤN TEST
                         if (searchQuery.isNotBlank() && diagnosticInfo != null) {
                             item {
                                 AgentKernelDiagnosticsPanel(diagnosticInfo!!)
                             }
                         }
 
-                        // Hiển thị thông báo khi rỗng mà vẫn giữ Panel Diagnostics cuộn tự do phía trên
                         if (displayList.isEmpty()) {
                             item {
                                 Box(
@@ -220,7 +220,7 @@ fun TrainingScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = if (searchQuery.isNotBlank()) "Không có kết quả nào đạt ngưỡng cấu hình" else "Chưa có dữ liệu huấn luyện",
+                                        text = if (searchQuery.isNotBlank()) "Không có kết quả nào đạt ngưỡng cấu hình tĩnh (Kiểm tra luồng LLM Tầng 5 ở Panel phía trên)" else "Chưa có dữ liệu huấn luyện",
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.bodyMedium
                                     )
@@ -308,7 +308,7 @@ fun TrainingScreen(
 }
 
 /**
- * Component mô tả trực quan và chi tiết phân tích của AgentKernel
+ * PANEL DIAGNOSTICS CHUẨN HÓA 5 TẦNG PIPELINE TRỰC QUAN
  */
 @Composable
 fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
@@ -320,12 +320,12 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
             .fillMaxWidth()
             .padding(horizontal = 4.dp, vertical = 6.dp),
         colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
         ),
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Thanh tiêu đề Panel
+            // Header Panel
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -338,14 +338,14 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         Icons.Default.Analytics,
                         contentDescription = "Diagnostics",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Phân Tích Giải Lập Agent Kernel",
+                        text = "LUỒNG KIỂM TRA 5 TẦNG AGENT KERNEL",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
                 IconButton(onClick = { isExpanded = !isExpanded }, modifier = Modifier.size(24.dp)) {
@@ -358,8 +358,8 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
             }
 
             AnimatedVisibility(visible = isExpanded) {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    // Tóm tắt cấu hình hiện hành
+                Column(modifier = Modifier.padding(top = 10.dp)) {
+                    // Trạng thái cấu hình hiện tại
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -373,7 +373,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         ) {
                             Column {
                                 Text("Ngưỡng Lọc Tầng 2 (Intent)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${info.intentThreshold}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                Text("${info.intentThreshold}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                             }
                         }
                         Box(
@@ -385,58 +385,77 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         ) {
                             Column {
                                 Text("Ngưỡng Lọc Tầng 3 (Alias)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${info.aliasThreshold}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                                Text("${info.aliasThreshold}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // 1. Phân nhóm: Best Mapped Entities (Slot Filling)
+                    // PHẦN 1: DÒNG THỜI GIAN LÀM VIỆC CỦA 5 TẦNG PIPELINE (CHƯA TỪNG ĐƯỢC HIỂN THỊ)
                     Text(
-                        "1. Bóc tách thực thể tốt nhất (Slot Filling - Tầng 3 & 4)",
-                        style = MaterialTheme.typography.labelMedium,
+                        "1. Sơ đồ xử lý tuần tự 5 tầng:",
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.secondary
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 6.dp)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        info.tiers.forEach { tier ->
+                            TierRow(tier)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // PHẦN 2: CHI TIẾT DỮ LIỆU ĐỐI KHỚP DƯỚI TẦNG THẤP
+                    Text(
+                        "2. Các thực thể trích xuất tốt nhất (Best Aliases):",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    
                     if (info.bestAliasMatches.isEmpty()) {
                         Text(
-                            "Không nhận diện được thực thể hợp lệ nào trong câu nhập vào (Điểm so khớp thấp hơn Ngưỡng Tầng 3).",
+                            "Không nhận diện được từ khóa hoặc thực thể nào khớp tĩnh.",
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
                         )
                     } else {
                         Column(
                             verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(bottom = 8.dp)
+                            modifier = Modifier.padding(bottom = 12.dp)
                         ) {
                             info.bestAliasMatches.forEach { (category, pair) ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .background(Color.Green.copy(alpha = 0.05f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                        .background(Color(0xFF2E7D32).copy(alpha = 0.05f), RoundedCornerShape(6.dp))
+                                        .border(0.5.dp, Color(0xFF2E7D32).copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column {
                                         Text(
-                                            text = "Khóa (semanticType): $category",
+                                            text = "Danh mục (semanticType): $category",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Từ khóa: \"${pair.first.question}\" → Ánh xạ ID: \"${pair.first.answer}\"",
+                                            text = "Từ khóa: \"${pair.first.question}\" → Mã ID: \"${pair.first.answer}\"",
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     Text(
                                         text = String.format("%.2f", pair.second),
-                                        fontSize = 12.sp,
+                                        fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace,
                                         color = Color(0xFF2E7D32)
@@ -446,151 +465,181 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         }
                     }
 
-                    // 2. Phân nhóm: Intent Matches (Tầng 2)
+                    // PHẦN 3: RAW DETAILS (KẾT QUẢ ĐỐI KHỚP ĐẦY ĐỦ ĐỂ DEBUG)
                     Text(
-                        "2. Tầng 2: So khớp Ý định (Intent Matches)",
-                        style = MaterialTheme.typography.labelMedium,
+                        "3. Điểm khớp mẫu (Tĩnh & Heuristic):",
+                        style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(bottom = 6.dp)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    if (info.intentMatches.isEmpty()) {
-                        Text(
-                            "Không tìm thấy ứng viên ý định nào.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
-                        )
-                    } else {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        ) {
-                            info.intentMatches.take(3).forEach { (qa, score) ->
-                                val isPassed = score >= info.intentThreshold
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            if (isPassed) Color.Green.copy(alpha = 0.05f) else Color.Red.copy(alpha = 0.05f),
-                                            RoundedCornerShape(4.dp)
-                                        )
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = qa.question,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = (if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)).copy(alpha = 0.1f)
-                                            ) {
-                                                Text(
-                                                    text = if (isPassed) "ĐẠT" else "BỊ LOẠI",
-                                                    fontSize = 8.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
-                                        Text(
-                                            text = "Answer (JSON): ${qa.answer}",
-                                            fontSize = 9.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1
-                                        )
-                                    }
-                                    Text(
-                                        text = String.format("%.2f", score),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
-                                    )
-                                }
-                            }
-                        }
+
+                    var showRawScores by remember { mutableStateOf(false) }
+                    TextButton(
+                        onClick = { showRawScores = !showRawScores },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text(if (showRawScores) "Ẩn chi tiết" else "Xem chi tiết điểm số đối khớp...", fontSize = 11.sp)
                     }
 
-                    // 3. Phân nhóm: Alias Matches (Tầng 3)
-                    Text(
-                        "3. Tầng 3: Chi tiết thực thể thô (Alias Matches)",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    if (info.aliasMatches.isEmpty()) {
-                        Text(
-                            "Không tìm thấy thực thể thô tương đồng nào.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                    } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            info.aliasMatches.take(3).forEach { (qa, score) ->
-                                val isPassed = score >= info.aliasThreshold
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(
-                                            if (isPassed) Color.Green.copy(alpha = 0.05f) else Color.Red.copy(alpha = 0.05f),
-                                            RoundedCornerShape(4.dp)
-                                        )
-                                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                text = "${qa.question} (${qa.category})",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = (if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)).copy(alpha = 0.1f)
-                                            ) {
-                                                Text(
-                                                    text = if (isPassed) "ĐẠT" else "BỊ LOẠI",
-                                                    fontSize = 8.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828),
-                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                )
-                                            }
-                                        }
+                    AnimatedVisibility(visible = showRawScores) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                            // Khớp Intent
+                            Text("Ý định (Intent Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            if (info.intentMatches.isEmpty()) {
+                                Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } else {
+                                info.intentMatches.take(3).forEach { (qa, score) ->
+                                    val isPassed = score >= info.intentThreshold
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
                                         Text(
-                                            text = "Value: ${qa.answer}",
-                                            fontSize = 9.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            "Q: \"${qa.question}\" -> A: \"${qa.answer}\"",
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            String.format("%.2f [%s]", score, if (isPassed) "ĐẠT" else "LOẠI"),
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
                                         )
                                     }
-                                    Text(
-                                        text = String.format("%.2f", score),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
-                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            // Khớp Alias
+                            Text("Thực thể thô (Alias Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            if (info.aliasMatches.isEmpty()) {
+                                Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            } else {
+                                info.aliasMatches.take(3).forEach { (qa, score) ->
+                                    val isPassed = score >= info.aliasThreshold
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            "\"${qa.question}\" (${qa.category}) -> \"${qa.answer}\"",
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            String.format("%.2f [%s]", score, if (isPassed) "ĐẠT" else "LOẠI"),
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * COMPONENT HIỂN THỊ STEP-BY-STEP TỪNG TẦNG LOGIC CỦA CORE ENGINE
+ */
+@Composable
+fun TierRow(tier: DiagnosticTier) {
+    val isMatched = tier.matched
+    val activeBgColor = if (isMatched) Color(0xFF2E7D32).copy(alpha = 0.08f) else Color.Transparent
+    val borderStrokeWidth = if (isMatched) 1.5.dp else 0.5.dp
+    val borderColor = if (isMatched) Color(0xFF2E7D32).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = activeBgColor),
+        shape = RoundedCornerShape(8.dp),
+        border = androidx.compose.foundation.BorderStroke(borderStrokeWidth, borderColor)
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            // Vòng tròn hiển thị thứ tự Tầng
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .background(
+                        color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(12.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "${tier.tierNum}",
+                    color = if (isMatched) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = tier.tierName,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
+                    )
+                    
+                    // Hiển thị trạng thái hoạt động của tầng
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = (if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline).copy(alpha = 0.1f)
+                    ) {
+                        Text(
+                            text = if (isMatched) "KÍCH HOẠT" else "BỎ QUA",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                if (tier.score > 0) {
+                    Text(
+                        text = "Score: ${String.format("%.2f", tier.score)}",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = tier.details,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 10.5.sp,
+                    color = if (isMatched) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

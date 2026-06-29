@@ -34,7 +34,6 @@ data class DiagnosticInfo(
     val tiers: List<DiagnosticTier>,
     val resolvedIntents: List<String> = emptyList(),
     val resolvedAliases: Map<String, String> = emptyMap(),
-    // ✅ Thêm để TrainingScreen hiển thị chi tiết từng tầng
     val intentMatches: List<Pair<QAEntity, Double>> = emptyList(),
     val aliasMatches: List<Pair<QAEntity, Double>> = emptyList(),
     val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap(),
@@ -160,7 +159,7 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    // ✅ Mô phỏng đầy đủ luồng đi 5 tầng thực tế của Core Engine
+    // ✅ MÔ PHỎNG LUỒNG 5 TẦNG THỰC TẾ ĐỂ PHỤC VỤ TRỰC QUAN HÓA DIAGNOSTICS
     fun searchQAs(query: String) {
         activeSearchQuery = query
         viewModelScope.launch {
@@ -168,112 +167,143 @@ class TrainingViewModel @Inject constructor(
 
             val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
             val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
-            val highConfThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.85f)
+            val highConfThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
 
             val matchResult = trainingSkill.fuzzyMatchCategorized(
                 query = query,
                 username = "default_user",
-                intentThreshold = 0.0f, // Ngưỡng 0.0 để phân tích cả các phương án bị loại
+                intentThreshold = 0.0f,
                 aliasThreshold = 0.0f
             )
 
-            // Dựng sơ đồ giả lập 5 Tầng logic
             val simulatedTiers = mutableListOf<DiagnosticTier>()
 
-            // Tầng 1: Pending Intent
+            // ── TẦNG 1: TRẠNG THÁI DỞ DANG (PENDING INTENT) ──
+            val hasPendingIntents = false // Giả định trạng thái dở dang ban đầu
             simulatedTiers.add(
                 DiagnosticTier(
-                    tierName = "Tầng 1: Trạng thái dở dang (Pending Intent)",
+                    tierName = "Tầng 1: Trạng thái lệnh dở dang (Pending Intents)",
                     tierNum = 1,
-                    matched = false,
-                    details = "Không phát hiện hàng đợi lệnh dở dang cần gán tham số bổ sung."
+                    matched = hasPendingIntents,
+                    details = if (hasPendingIntents) {
+                        "Phát hiện tiến trình đang chờ thu thập thêm thông tin. Hệ thống tạm dừng khớp câu lệnh mới để giải quyết gán dữ liệu cho tham số bị thiếu."
+                    } else {
+                        "Không phát hiện hàng đợi lệnh dở dang nào. Bỏ qua và chuyển tiếp xuống Tầng 2."
+                    }
                 )
             )
 
-            // Tầng 2: So khớp Ý định (Fuzzy Intent Match)
+            // ── TẦNG 2: SO KHỚP Ý ĐỊNH CHẤT LƯỢNG CAO (SEMANTIC FUZZY QA MATCH) ──
             val bestIntentPair = matchResult.intentMatches.firstOrNull()
-            val hasBestIntent = bestIntentPair != null && bestIntentPair.second >= intentThreshold
-            val isHighConf = bestIntentPair != null && bestIntentPair.second >= highConfThreshold
-
+            
+            // Ưu tiên schedule nếu có trùng khớp
             val wrapperPair = matchResult.intentMatches
                 .filter { it.second >= intentThreshold }
                 .find { it.first.answer.contains("\"plugin\":\"schedule\"") }
 
             val selectedT2Pair = wrapperPair ?: bestIntentPair
+            val t2Score = selectedT2Pair?.second ?: 0.0
+            
+            val hasT2Match = selectedT2Pair != null && t2Score >= intentThreshold
+            val isT2HighConf = selectedT2Pair != null && t2Score >= highConfThreshold
 
             val t2Details = when {
-                selectedT2Pair == null -> "Không khớp bất kỳ ý định mẫu nào trong cơ sở dữ liệu."
-                wrapperPair != null -> "Phát hiện ý định Lập lịch (Wrapper) '${selectedT2Pair.first.question}' được ưu tiên so khớp trước để tránh cướp quyền."
-                isHighConf -> "Khớp ý định '${selectedT2Pair.first.question}' đạt ngưỡng tin cậy cao (>= $highConfThreshold). Bypass trực tiếp không qua LLM."
-                else -> "Khớp ý định '${selectedT2Pair.first.question}' nhưng chưa đạt ngưỡng tin cậy cao (< $highConfThreshold)."
-            }
-
-            simulatedTiers.add(
-                DiagnosticTier(
-                    tierName = "Tầng 2: So khớp Ý định (Exact/Fuzzy QA Match)",
-                    tierNum = 2,
-                    matched = hasBestIntent,
-                    details = t2Details,
-                    score = selectedT2Pair?.second ?: 0.0
-                )
-            )
-
-            // Tầng 3: Phân rã mệnh đề đa lệnh (Clause & Spotter)
-            val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
-            val clauses = clauseSeparator.split(query).map { it.trim() }.filter { it.isNotBlank() }
-            val hasMultiClauses = clauses.size > 1
-            val hasWrapper = query.contains("lịch", ignoreCase = true) || query.contains("schedule", ignoreCase = true)
-
-            val t3Details = buildString {
-                append("Tách mệnh đề thô thành ${clauses.size} cụm: ${clauses.joinToString(" | ") { "\"$it\"" }}.\n")
-                if (hasWrapper) {
-                    append("-> Phát hiện từ khóa Wrapper (Lập lịch). Hệ thống ưu tiên xử lý khung hẹn giờ trước để đệ quy nạp thông số lồng phía sau.")
-                } else if (hasMultiClauses) {
-                    append("-> Phát hiện nhiều câu lệnh song song. Kích hoạt đồng thời hàng đợi đa nhiệm Pending Intents.")
-                } else {
-                    append("-> Câu lệnh đơn, xử lý tuần tự thông thường.")
+                selectedT2Pair == null -> {
+                    "Không tìm thấy ý định mẫu nào khớp với nội dung bạn nhập."
+                }
+                wrapperPair != null -> {
+                    "Phát hiện ý định Lập lịch (schedule) '${selectedT2Pair.first.question}' đạt điểm ${String.format("%.2f", t2Score)}. Được ưu tiên dựng bộ khung lập lịch để tránh xung đột."
+                }
+                isT2HighConf -> {
+                    "Đã khớp ý định '${selectedT2Pair.first.question}' với điểm số cực cao (${String.format("%.2f", t2Score)} >= $highConfThreshold). Lệnh được thực thi trực tiếp tại Tầng 2 (Bypass qua LLM)."
+                }
+                else -> {
+                    "Tìm thấy ý định '${selectedT2Pair.first.question}' nhưng điểm tin cậy (${String.format("%.2f", t2Score)}) chưa đạt ngưỡng thực thi nhanh ($highConfThreshold). Chuyển tiếp xuống Tầng 3."
                 }
             }
 
             simulatedTiers.add(
                 DiagnosticTier(
-                    tierName = "Tầng 3: Phân rã mệnh đề & So khớp cụm từ (Clause Spotter)",
+                    tierName = "Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)",
+                    tierNum = 2,
+                    matched = isT2HighConf || (wrapperPair != null),
+                    details = t2Details,
+                    score = t2Score
+                )
+            )
+
+            // ── TẦNG 3: PHÂN RÃ MỆNH ĐỀ & CHỈ ĐỊNH THỰC THỂ (CLAUSE SPOTTER) ──
+            val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
+            val clauses = clauseSeparator.split(query).map { it.trim() }.filter { it.isNotBlank() }
+            val hasMultiClauses = clauses.size > 1
+            val hasScheduleKeyword = query.contains("lịch", ignoreCase = true) || query.contains("hẹn", ignoreCase = true)
+
+            val isT3Matched = !isT2HighConf && (hasMultiClauses || hasScheduleKeyword || hasT2Match)
+            
+            val t3Details = buildString {
+                append("Tách câu lệnh thành ${clauses.size} mệnh đề con: ${clauses.joinToString(" | ") { "\"$it\"" }}.\n")
+                if (hasScheduleKeyword) {
+                    append("-> Có từ khóa thời gian/lập lịch. Ưu tiên bóc tách cấu trúc lập lịch lồng nhau (Nested) tại Tầng 3.")
+                } else if (hasMultiClauses) {
+                    append("-> Kích hoạt cơ chế Đa lệnh (Multi-Intents) chạy song song hoặc tuần tự.")
+                } else if (hasT2Match) {
+                    append("-> Khớp câu lệnh đơn '${selectedT2Pair?.first?.question}' thông qua cơ chế bóc tách tham số (Slot-Filling) của Tầng 3.")
+                } else {
+                    append("-> Không nhận diện được mệnh đề hoặc thực thể mẫu nào hợp lệ.")
+                }
+            }
+
+            simulatedTiers.add(
+                DiagnosticTier(
+                    tierName = "Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)",
                     tierNum = 3,
-                    matched = hasMultiClauses || hasWrapper,
+                    matched = isT3Matched,
                     details = t3Details
                 )
             )
 
-            // Tầng 4: So khớp quy tắc từ khóa mô tả Metadata
-            val t4Matched = selectedT2Pair == null && query.length > 5
+            // ── TẦNG 4: KHỚP QUY TẮC PHẦN CỨNG/METADATA (ACTION MANIFEST MATCH) ──
+            val isT4Matched = !isT2HighConf && !isT3Matched && query.length > 5
+            val t4Details = if (isT4Matched) {
+                "Không khớp QA huấn luyện nhưng khớp với mô tả lệnh/ví dụ trong Manifest khai báo tĩnh của các Plugin thiết bị."
+            } else {
+                "Bỏ qua Tầng 4 do lệnh đã được giải quyết hoặc trích xuất thành công ở các tầng trước."
+            }
+
             simulatedTiers.add(
                 DiagnosticTier(
-                    tierName = "Tầng 4: So khớp quy tắc từ khóa Metadata",
+                    tierName = "Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)",
                     tierNum = 4,
-                    matched = t4Matched,
-                    details = if (t4Matched) "Không khớp Q&A tĩnh nhưng khớp mô tả/ví dụ mẫu trong Manifest của các Plugin." else "Bỏ qua do đã khớp ở tầng trước hoặc từ khóa quá ngắn."
+                    matched = isT4Matched,
+                    details = t4Details
                 )
             )
 
-            // Tầng 5: Phân loại bằng LLM (Groq Fallback)
-            val t5Matched = !isHighConf && wrapperPair == null
+            // ── TẦNG 5: TRÍ TUỆ NHÂN TẠO PHÂN LOẠI HẠN CHẾ (LLM ROUTING FALLBACK) ──
+            val isT5Matched = !isT2HighConf && !isT3Matched && !isT4Matched
+            val t5Details = if (isT5Matched) {
+                "Hệ thống không tìm thấy bất kỳ mẫu đối khớp tĩnh nào. Chuyển tiếp câu lệnh lên mô hình ngôn ngữ lớn (Groq LLM) để phân tích ngữ nghĩa tự do và sinh cấu trúc JSON."
+            } else {
+                "Bypass (Bỏ qua gọi LLM) để tiết kiệm tài nguyên hệ thống do bộ lọc heuristic phía trên đã xử lý xong câu lệnh."
+            }
+
             simulatedTiers.add(
                 DiagnosticTier(
-                    tierName = "Tầng 5: Phân loại bằng trí tuệ nhân tạo (LLM Fallback)",
+                    tierName = "Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)",
                     tierNum = 5,
-                    matched = t5Matched,
-                    details = if (t5Matched) "Đã gửi câu hỏi lên Groq LLM để phân loại ý định và trích xuất cấu trúc JSON." else "Bỏ qua gọi LLM nhờ khớp thô đạt điểm tin cậy cao."
+                    matched = isT5Matched,
+                    details = t5Details
                 )
             )
 
+            // Cập nhật State cho View
             _diagnosticInfo.value = DiagnosticInfo(
                 query = query,
                 tiers = simulatedTiers,
                 resolvedIntents = matchResult.intentMatches
                     .filter { it.second >= intentThreshold }
-                    .map { "${it.first.question} (điểm: ${String.format("%.2f", it.second)})" },
+                    .map { "${it.first.question} (${String.format("%.2f", it.second)})" },
                 resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer },
-                // ✅ Populate đầy đủ để TrainingScreen hiển thị chi tiết
                 intentMatches = matchResult.intentMatches,
                 aliasMatches = matchResult.aliasMatches,
                 bestAliasMatches = matchResult.bestAliasMatches,
