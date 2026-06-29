@@ -1,9 +1,10 @@
+
+
 package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 
-// Khai báo tập hợp các năng lực đặc hữu của Plugin
 data class PluginCapabilities(
     val dashboard: Boolean = false,
     val training: Boolean = false,
@@ -11,10 +12,9 @@ data class PluginCapabilities(
     val schedule: Boolean = false,
     val voice: Boolean = false,
     val vision: Boolean = false,
-    val background: Boolean = false // ✅ ĐÃ KHÔI PHỤC: Khai báo năng lực chạy nền
+    val background: Boolean = false // ✅ Đã khai báo năng lực chạy nền hợp lệ
 )
 
-// Khai báo Tuyên bố Siêu dữ liệu chuẩn hóa của Plugin
 data class PluginManifest(
     val id: String,
     val name: String,
@@ -120,3 +120,5 @@ data class PluginAction(
     val enabled: Boolean = true,
     val triggerPrefixes: List<String> = emptyList()
 )
+
+

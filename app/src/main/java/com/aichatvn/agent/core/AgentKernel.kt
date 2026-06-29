@@ -1,131 +1,3 @@
-
-package com.aichatvn.agent.core.plugin
-
-import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.ui.dashboard.DeviceNode
-
-// Khai báo tập hợp các năng lực đặc hữu của Plugin
-data class PluginCapabilities(
-    val dashboard: Boolean = false,
-    val training: Boolean = false,
-    val notification: Boolean = false,
-    val schedule: Boolean = false,
-    val voice: Boolean = false,
-    val vision: Boolean = false,
-    val background: Boolean = false // ✅ ĐÃ KHÔI PHỤC: Khai báo năng lực chạy nền
-)
-
-// Khai báo Tuyên bố Siêu dữ liệu chuẩn hóa của Plugin
-data class PluginManifest(
-    val id: String,
-    val name: String,
-    val capabilities: PluginCapabilities,
-    val actions: List<PluginAction>,
-    val pluginVersion: String = "1.0.0",
-    val metadataVersion: String = "1.0.0",
-    val schemaVersion: String = "1.0.0",
-    val routable: Boolean = true,
-    val visibleOnDashboard: Boolean = false,
-    val autoGenerateQA: Boolean = true
-)
-
-interface Plugin {
-    val manifest: PluginManifest
-
-    // Cầu nối tương thích ngược giúp tất cả các file cũ gọi không bị lỗi build
-    val id: String get() = manifest.id
-    val name: String get() = manifest.name
-    val pluginVersion: String get() = manifest.pluginVersion
-    val metadataVersion: String get() = manifest.metadataVersion
-    val schemaVersion: String get() = manifest.schemaVersion
-    val routable: Boolean get() = manifest.routable
-    val visibleOnDashboard: Boolean get() = manifest.visibleOnDashboard
-    val autoGenerateQA: Boolean get() = manifest.autoGenerateQA
-
-    val supportsVoice: Boolean get() = manifest.capabilities.voice
-    val supportsSchedule: Boolean get() = manifest.capabilities.schedule
-    val supportsNotification: Boolean get() = manifest.capabilities.notification
-    val supportsBackground: Boolean get() = manifest.capabilities.background
-    val supportsVision: Boolean get() = manifest.capabilities.vision
-
-    fun getActions(): List<PluginAction> = manifest.actions
-
-    suspend fun initialize()
-    suspend fun shutdown()
-    suspend fun onInstalled() {}
-    suspend fun onUpdated() {}
-    suspend fun onRemoved() {}
-
-    suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult
-    
-    fun getBootstrapQA(): List<PluginQABootstrap> = emptyList()
-
-    suspend fun getDashboardNodes(): List<DeviceNode> = emptyList()
-}
-
-data class PluginQABootstrap(
-    val question: String,
-    val answer: String,
-    val type: String,
-    val category: String = "auto_init"
-)
-
-data class PluginParameter(
-    val name: String,
-    val type: String,
-    val description: String,
-    val required: Boolean,
-    val semanticType: String = "string",
-    val placeholder: String = "",
-    val enumValues: List<String> = emptyList(),
-    val defaultValue: Any? = null,
-    val validationRegex: String = ""
-) {
-    fun normalize(value: Any?): Any? {
-        val strVal = value?.toString()?.trim() ?: ""
-        if (strVal.isBlank() || strVal == "null") {
-            return defaultValue
-        }
-        return when (type.lowercase()) {
-            "boolean" -> {
-                if (value is Boolean) return value
-                val lower = strVal.lowercase()
-                val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "enable")
-                val falseWords = setOf("false", "tắt", "no", "off", "0", "dừng", "vô hiệu", "disable")
-                when (lower) {
-                    in trueWords -> true
-                    in falseWords -> false
-                    else -> defaultValue ?: false
-                }
-            }
-            "number" -> {
-                strVal.toDoubleOrNull() ?: defaultValue ?: 0
-            }
-            else -> {
-                if (validationRegex.isNotBlank() && !Regex(validationRegex).matches(strVal)) {
-                    defaultValue ?: value
-                } else {
-                    value
-                }
-            }
-        }
-    }
-}
-
-data class PluginAction(
-    val name: String,
-    val description: String,
-    val examples: List<String> = emptyList(),
-    val parameters: List<PluginParameter> = emptyList(),
-    val tags: List<String> = emptyList(),
-    val enabled: Boolean = true,
-    val triggerPrefixes: List<String> = emptyList()
-)
-
-FILE 2: AgentKernel.kt (Đường dẫn: com/aichatvn/agent/core/AgentKernel.kt)
-
-(Khôi phục hàm proxy search vào cơ thể của lớp điều phối)
-
 package com.aichatvn.agent.core
 
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -135,6 +7,7 @@ import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
+import com.aichatvn.agent.skills.SearchMatch // ✅ ĐÃ SỬA: Import đúng vị trí ở đầu tệp tin [1]
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -287,16 +160,15 @@ class AgentKernel @Inject constructor(
 
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
 
-    // ✅ ĐÃ KHÔI PHỤC: Hàm trung gian proxy search() bị mất ở Giai đoạn 5
+    // ✅ ĐÃ SỬA: Thay đổi kiểu trả về thành SearchMatch trực tiếp sạch sẽ [1]
     suspend fun search(
         query: String,
         username: String,
         threshold: Float? = null
-    ): List<com.aichatvn.agent.skills.SearchMatch> {
+    ): List<SearchMatch> {
         return trainingSkill.fuzzyMatchQuestion(query, username, threshold)
     }
 
-    // HÀM ĐIỀU PHỐI CHAT TRUNG TÂM KHÔNG HARDCODE CHUỖI
     suspend fun chat(request: ChatRequest): ChatResponse {
         val message = request.message
         val username = request.username
@@ -304,7 +176,6 @@ class AgentKernel @Inject constructor(
         val imageBase64 = request.imageBase64
         val fileUrl = request.fileUrl
         
-        // 1. DUYỆT TIỀN TỐ KÍCH HOẠT ĐỘNG (Regex/Rule-based routing)
         for (plugin in plugins) {
             for (action in plugin.manifest.actions) {
                 if (!action.enabled) continue
@@ -330,7 +201,6 @@ class AgentKernel @Inject constructor(
             }
         }
         
-        // 2. DUYỆT NĂNG LỰC THỊ GIÁC ĐỘNG (Capability-based routing)
         if (!imageBase64.isNullOrEmpty() || !fileUrl.isNullOrEmpty()) {
             val visionPlugin = plugins.find { it.manifest.capabilities.vision }
             if (visionPlugin != null) {
@@ -360,7 +230,6 @@ class AgentKernel @Inject constructor(
             }
         }
         
-        // 3. Nhánh Điều khiển thiết bị (Local Device Command Router)
         val outcome = tryDeviceCommand(message, username)
         if (outcome is RouterOutcome.Matched) {
             val responseText = when (val result = outcome.result.result) {
@@ -374,7 +243,6 @@ class AgentKernel @Inject constructor(
             return ChatResponse(responseText, "device_control", outcome.result.pluginId)
         }
         
-        // 4. Nhánh Fallback tự nhiên (Combined / QA / Groq)
         val routerFailed = outcome is RouterOutcome.RouterFailed
         val usedMode = request.chatMode
         val usedPluginId = if (routerFailed) "router_error" else null

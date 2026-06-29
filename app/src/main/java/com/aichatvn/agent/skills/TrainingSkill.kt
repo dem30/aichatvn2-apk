@@ -29,7 +29,7 @@ import java.util.LinkedHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// ✅ ĐÃ SỬA: Khôi phục cấu trúc SearchMatch ở cấp package của TrainingSkill để build KSP/Kotlin thành công
+// ✅ ĐÃ SỬA: Đảm bảo định nghĩa SearchMatch ở cấp package của TrainingSkill để build KSP/Kotlin thành công
 data class SearchMatch(
     val qa: QAEntity,
     val similarity: Float
