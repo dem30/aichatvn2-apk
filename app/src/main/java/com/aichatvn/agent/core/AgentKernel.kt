@@ -315,7 +315,6 @@ class AgentKernel @Inject constructor(
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
         // ── TẦNG 1: Xử lý trạng thái dở dang đa lệnh song song (Pending Intents Queue) ──
-        // ✅ ĐÃ SỬA: Sửa đổi để chạy duyệt danh sách hàng đợi các câu lệnh đang thiếu tham số
         val pendings = chatHistoryManager.getActivePendingIntents()
         if (pendings.isNotEmpty()) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
@@ -480,93 +479,83 @@ class AgentKernel @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
+        // ✅ ĐÃ SỬA: VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper - schedule) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNorm = normalizeVietnamese(clause)
-            var matchedIntentQA: QAEntity? = null
             
-            for (qa in intentQAs) {
-                val qaNorm = normalizeVietnamese(qa.question)
-                if (clauseNorm.contains(qaNorm)) {
-                    matchedIntentQA = qa
-                    break
-                }
-            }
+            // Lọc và chỉ quét các QA có chứa câu lệnh cấu trúc schedule để tránh bị Leaf (gửi email) cướp quyền [1]
+            val wrapperQA = intentQAs
+                .filter { it.answer.contains("\"plugin\":\"schedule\"") }
+                .firstOrNull { clauseNorm.contains(normalizeVietnamese(it.question)) }
 
-            if (matchedIntentQA != null) {
-                val rootJson = try { JSONObject(matchedIntentQA.answer) } catch (e: Exception) { null }
+            if (wrapperQA != null) {
+                val rootJson = try { JSONObject(wrapperQA.answer) } catch (e: Exception) { null }
                 val rootPluginId = rootJson?.optString("plugin") ?: ""
                 val rootActionName = rootJson?.optString("action") ?: ""
                 
-                if (rootPluginId == "schedule") {
-                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
-                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+                val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
+                val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+                
+                if (targetPlugin != null && targetAction != null) {
+                    val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                     
-                    if (targetPlugin != null && targetAction != null) {
-                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-                        
-                        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
+                    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
 
-                        val resolvedParams = resolveParametersWithMeta(
-                            parameters = targetAction.parameters,
-                            inputParams = rootParams,
-                            matchResult = matchResult,
-                            userMessage = userMessage,
-                            devicePlugins = devicePlugins,
-                            excludeIntentId = matchedIntentQA.id,
-                            depth = 0
-                        )
+                    val resolvedParams = resolveParametersWithMeta(
+                        parameters = targetAction.parameters,
+                        inputParams = rootParams,
+                        matchResult = matchResult,
+                        userMessage = userMessage,
+                        devicePlugins = devicePlugins,
+                        excludeIntentId = wrapperQA.id,
+                        depth = 0
+                    )
 
-                        resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                    resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
 
-                        val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
-                        val nestedAction = resolvedParams["action"]?.toString() ?: ""
-                        if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
-                            absorbedActions.add("$nestedPluginId.$nestedAction")
-                        }
+                    val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
+                    val nestedAction = resolvedParams["action"]?.toString() ?: ""
+                    if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
+                        absorbedActions.add("$nestedPluginId.$nestedAction")
                     }
                 }
             }
         }
 
+        // ✅ ĐÃ SỬA: VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
         for (clause in clauses) {
             val clauseNorm = normalizeVietnamese(clause)
-            var matchedIntentQA: QAEntity? = null
             
-            for (qa in intentQAs) {
-                val qaNorm = normalizeVietnamese(qa.question)
-                if (clauseNorm.contains(qaNorm)) {
-                    matchedIntentQA = qa
-                    break
-                }
-            }
+            // Loại bỏ hoàn toàn plugin schedule ở vòng quét thứ hai [1]
+            val leafQA = intentQAs
+                .filter { !it.answer.contains("\"plugin\":\"schedule\"") }
+                .firstOrNull { clauseNorm.contains(normalizeVietnamese(it.question)) }
 
-            if (matchedIntentQA != null) {
-                val rootJson = try { JSONObject(matchedIntentQA.answer) } catch (e: Exception) { null }
+            if (leafQA != null) {
+                val rootJson = try { JSONObject(leafQA.answer) } catch (e: Exception) { null }
                 val rootPluginId = rootJson?.optString("plugin") ?: ""
                 val rootActionName = rootJson?.optString("action") ?: ""
                 
-                if (rootPluginId != "schedule") {
-                    if (absorbedActions.contains("$rootPluginId.$rootActionName")) continue
+                if (absorbedActions.contains("$rootPluginId.$rootActionName")) continue
 
-                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
-                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
-                    
-                    if (targetPlugin != null && targetAction != null) {
-                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-                        val matchResult = trainingSkill.fuzzyMatchCategorized(clause, username, aliasThreshold = 0.0f)
+                val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
+                val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+                
+                if (targetPlugin != null && targetAction != null) {
+                    val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                    val matchResult = trainingSkill.fuzzyMatchCategorized(clause, username, aliasThreshold = 0.0f)
 
-                        val resolvedParams = resolveParametersWithMeta(
-                            parameters = targetAction.parameters,
-                            inputParams = rootParams,
-                            matchResult = matchResult,
-                            userMessage = clause,
-                            devicePlugins = devicePlugins,
-                            excludeIntentId = matchedIntentQA.id,
-                            depth = 0
-                        )
+                    val resolvedParams = resolveParametersWithMeta(
+                        parameters = targetAction.parameters,
+                        inputParams = rootParams,
+                        matchResult = matchResult,
+                        userMessage = clause,
+                        devicePlugins = devicePlugins,
+                        excludeIntentId = leafQA.id,
+                        depth = 0
+                    )
 
-                        resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
-                    }
+                    resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
                 }
             }
         }
@@ -590,7 +579,12 @@ class AgentKernel @Inject constructor(
             .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toDoubleOrNull() ?: 0.3
 
-        val bestIntentPair = matchResult.intentMatches
+        // ✅ ĐÃ SỬA: Ưu tiên chọn wrapper (như schedule) nếu có nhiều khớp để đảm bảo nạp đúng khung lập lịch [1]
+        val wrapperIntentPair = matchResult.intentMatches
+            .filter { it.second >= dynamicMinScore }
+            .find { it.first.answer.contains("\"plugin\":\"schedule\"") }
+
+        val bestIntentPair = wrapperIntentPair ?: matchResult.intentMatches
             .filter { it.second >= dynamicMinScore }
             .firstOrNull() ?: return null
 
@@ -632,30 +626,22 @@ class AgentKernel @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
+        // ✅ ĐÃ SỬA: VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper - schedule) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
-            var bestMatch: NormalizedActionMetadata? = null
-            var bestMatchLen = 0
-
-            for (meta in normalizedActionMetadataList) {
-                if (!meta.plugin.manifest.routable || !meta.action.enabled) continue
-
-                val isMatched = meta.normalizedDescription.contains(clauseNormalized) ||
-                                clauseNormalized.contains(meta.normalizedDescription) ||
-                                meta.normalizedExamples.any { ex ->
-                                    ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized))
-                                }
-
-                if (isMatched) {
-                    val matchLen = meta.action.description.length
-                    if (matchLen > bestMatchLen) {
-                        bestMatchLen = matchLen
-                        bestMatch = meta
+            
+            // Lọc riêng Action metadata của plugin schedule ở vòng quét 1 để dứt điểm gán Wrapper [1]
+            val bestMatch = normalizedActionMetadataList
+                .filter { it.plugin.manifest.id == "schedule" && it.plugin.manifest.routable && it.action.enabled }
+                .find { meta ->
+                    meta.normalizedDescription.contains(clauseNormalized) ||
+                    clauseNormalized.contains(meta.normalizedDescription) ||
+                    meta.normalizedExamples.any { ex ->
+                        ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized))
                     }
                 }
-            }
 
-            if (bestMatch != null && bestMatch.plugin.manifest.id == "schedule") {
+            if (bestMatch != null) {
                 val plugin = bestMatch.plugin
                 val action = bestMatch.action
 
@@ -686,30 +672,22 @@ class AgentKernel @Inject constructor(
             }
         }
 
+        // ✅ ĐÃ SỬA: VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
-            var bestMatch: NormalizedActionMetadata? = null
-            var bestMatchLen = 0
-
-            for (meta in normalizedActionMetadataList) {
-                if (!meta.plugin.manifest.routable || !meta.action.enabled) continue
-
-                val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
-                                clauseNormalized.contains(meta.normalizedDescription) ||
-                                meta.normalizedExamples.any { ex -> 
-                                    ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
-                                }
-
-                if (isMatched) {
-                    val matchLen = meta.action.description.length
-                    if (matchLen > bestMatchLen) {
-                        bestMatchLen = matchLen
-                        bestMatch = meta
+            
+            // Bỏ qua plugin schedule ở vòng 2
+            val bestMatch = normalizedActionMetadataList
+                .filter { it.plugin.manifest.id != "schedule" && it.plugin.manifest.routable && it.action.enabled }
+                .find { meta ->
+                    meta.normalizedDescription.contains(clauseNormalized) || 
+                    clauseNormalized.contains(meta.normalizedDescription) ||
+                    meta.normalizedExamples.any { ex -> 
+                        ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
                     }
                 }
-            }
 
-            if (bestMatch != null && bestMatch.plugin.manifest.id != "schedule") {
+            if (bestMatch != null) {
                 val plugin = bestMatch.plugin
                 val action = bestMatch.action
 
@@ -787,8 +765,8 @@ class AgentKernel @Inject constructor(
         val union = tokens1.union(tokens2).size.toDouble()
         val jaccard = if (union > 0) intersectionSize / union else 0.0
 
-        val levDistance = levenshteinDistance(clean1, clean2)
-        val levSim = 1.0 - (levDistance.toDouble() / maxLen)
+        val lenDistance = levenshteinDistance(clean1, clean2)
+        val levSim = 1.0 - (lenDistance.toDouble() / maxLen)
 
         return (jaccard * 0.4) + (levSim * 0.6)
     }
