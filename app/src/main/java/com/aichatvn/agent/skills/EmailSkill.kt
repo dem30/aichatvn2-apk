@@ -6,6 +6,8 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
@@ -29,9 +31,37 @@ class EmailSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("email", "Gửi email", logger), Plugin {
 
-    override val routable: Boolean = true
-    override val visibleOnDashboard: Boolean = false
-    override val autoGenerateQA: Boolean = true
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(), // Năng lực cơ bản mặc định
+        routable = true,
+        visibleOnDashboard = false,
+        autoGenerateQA = true,
+        actions = listOf(
+            PluginAction(
+                name = "send",
+                description = "Soạn thảo và gửi email tới địa chỉ đích",
+                examples = listOf("gửi email", "soạn email"), 
+                tags = listOf("mail", "send", "report"),
+                parameters = listOf(
+                    PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
+                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"),
+                    PluginParameter("body", "string", "Nội dung email", true, "string")
+                )
+            ),
+            PluginAction(
+                name = "test",
+                description = "Gửi một bức email thử nghiệm kết nối hệ thống",
+                examples = listOf("gửi email test"),
+                tags = listOf("test", "diagnostic"),
+                parameters = listOf(
+                    PluginParameter("to", "string", "Địa chỉ email nhận", true, "email")
+                )
+            )
+        )
+    )
 
     companion object {
         private const val RESEND_API_URL = "https://api.resend.com/emails"
@@ -55,33 +85,6 @@ class EmailSkill @Inject constructor(
         } catch (e: Exception) {
             BuildConfig.RESEND_SENDER
         }
-    }
-
-    // ==================== PLUGIN IMPLEMENTATION ====================
-
-    override fun getActions(): List<PluginAction> {
-        return listOf(
-            PluginAction(
-                name = "send",
-                description = "Soạn thảo và gửi email tới địa chỉ đích",
-                examples = listOf("gửi email", "soạn email"), 
-                tags = listOf("mail", "send", "report"),
-                parameters = listOf(
-                    PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
-                    PluginParameter("subject", "string", "Tiêu đề email", true, "string"),
-                    PluginParameter("body", "string", "Nội dung email", true, "string")
-                )
-            ),
-            PluginAction(
-                name = "test",
-                description = "Gửi một bức email thử nghiệm kết nối hệ thống",
-                examples = listOf("gửi email test"),
-                tags = listOf("test", "diagnostic"),
-                parameters = listOf(
-                    PluginParameter("to", "string", "Địa chỉ email nhận", true, "email")
-                )
-            )
-        )
     }
 
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
@@ -146,7 +149,6 @@ class EmailSkill @Inject constructor(
                 readTimeout    = 15_000
             }
 
-            // SỬA LỖI: Sử dụng connection.outputStream chính xác thay vì openOutputStream()
             OutputStreamWriter(connection.outputStream).use { it.write(json) }
             val code = connection.responseCode
 

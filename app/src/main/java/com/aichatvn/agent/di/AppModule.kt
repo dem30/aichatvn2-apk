@@ -9,7 +9,7 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.ui.dashboard.DashboardProvider // Import mới
+import com.aichatvn.agent.utils.VoiceAssistantManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -42,7 +42,7 @@ object AppModule {
     @Singleton
     fun provideContext(@ApplicationContext context: Context): Context = context
 
-    // ===== SKILLS (CŨNG LÀ PLUGIN) =====
+    // ===== ĐĂNG KÝ BỘ PLUGIN CHUẨN HOÁ TRUNG TÂM (Set<Plugin>) =====
 
     @Provides
     @IntoSet
@@ -75,29 +75,37 @@ object AppModule {
     fun provideScheduleSkill(skill: ScheduleSkill): Plugin = skill
 
     @Provides
+    @IntoSet
+    @Singleton
+    fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideLearnPlugin(skill: LearnPlugin): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideVisionPlugin(skill: VisionPlugin): Plugin = skill
+
+    @Provides
     @Singleton
     fun provideAppConfigProvider(
         @ApplicationContext context: Context,
         logger: Logger
     ): AppConfigProvider = AppConfigProvider(context, logger)
 
+    // ===== ĐĂNG KÝ VOICE ASSISTANT MANAGER DẠNG SINGLETON =====
     @Provides
-    @IntoSet
     @Singleton
-    fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
-
-    // ===== ĐĂNG KÝ DASHBOARD PROVIDER (PHẦN 9) =====
-    // Nếu CameraSkill và LightSkill implement DashboardProvider, ta đưa chúng vào Set<DashboardProvider>
-    
-    @Provides
-    @IntoSet
-    @Singleton
-    fun provideCameraDashboardProvider(skill: CameraSkill): DashboardProvider = skill
-
-    @Provides
-    @IntoSet
-    @Singleton
-    fun provideLightDashboardProvider(skill: LightSkill): DashboardProvider = skill
+    fun provideVoiceAssistantManager(
+        @ApplicationContext context: Context,
+        agentKernel: AgentKernel,
+        logger: Logger
+    ): VoiceAssistantManager {
+        return VoiceAssistantManager(context, agentKernel, logger)
+    }
 
     // ===== AGENT KERNEL =====
     @Provides
@@ -108,6 +116,7 @@ object AppModule {
         trainingSkill: TrainingSkill,
         chatHistoryManager: ChatHistoryManager,
         configProvider: AppConfigProvider,
+        database: AppDatabase,
         logger: Logger
     ): AgentKernel {
         return AgentKernel(
@@ -116,6 +125,7 @@ object AppModule {
             trainingSkill,
             chatHistoryManager,
             configProvider,
+            database,
             logger
         )
     }

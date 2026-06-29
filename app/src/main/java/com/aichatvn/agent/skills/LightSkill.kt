@@ -5,10 +5,11 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction
@@ -24,14 +25,48 @@ import javax.inject.Singleton
 class LightSkill @Inject constructor(
     private val tuyaManager: TuyaManager,
     private val database: AppDatabase,
-    private val deviceRegistry: DeviceRegistry, // ✅ ĐÃ TIÊM: Để thực hiện đẩy sự kiện trạng thái thời gian thực
+    private val deviceRegistry: DeviceRegistry,
     logger: Logger
-) : BaseSkill("light", "Điều khiển đèn", logger), Plugin, DashboardProvider {
+) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
 
-    override val routable: Boolean = true
-    override val visibleOnDashboard: Boolean = true
-    override val autoGenerateQA: Boolean = true
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(dashboard = true), // Tuyên bố năng lực Dashboard
+        visibleOnDashboard = true,
+        autoGenerateQA = true,
+        actions = listOf(
+            PluginAction(
+                name = "set",
+                description = "Bật hoặc tắt đèn thông minh",
+                examples = listOf("bật đèn", "tắt đèn"),
+                tags = listOf("light", "switch", "relay", "device"),
+                parameters = listOf(
+                    PluginParameter("device", "string", "Tên thiết bị", true, "device"),
+                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
+                )
+            ),
+            PluginAction(
+                name = "status",
+                description = "Xem trạng thái hiện tại của đèn",
+                examples = listOf("trạng thái đèn", "kiểm tra đèn"),
+                tags = listOf("status", "query", "sensor"),
+                parameters = listOf(
+                    PluginParameter("device", "string", "Tên thiết bị", true, "device")
+                )
+            ),
+            PluginAction(
+                name = "scan",
+                description = "Quét các thiết bị đèn thông minh trong mạng",
+                examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới"),
+                tags = listOf("discovery", "scan", "network"),
+                parameters = emptyList()
+            )
+        )
+    )
 
+    // ✅ ĐÃ SỬA: Ghi đè trực tiếp hàm xuất Node giao diện của Plugin mà không cần DashboardProvider phụ thuộc ngoài
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
         
@@ -50,7 +85,7 @@ class LightSkill @Inject constructor(
                     id = dev.id,
                     name = dev.name,
                     type = DeviceType.LIGHT,
-                    pluginId = id,
+                    pluginId = manifest.id,
                     defaultAction = "status",
                     defaultParams = mapOf("device" to dev.name),
                     supportedActions = listOf(
@@ -77,9 +112,9 @@ class LightSkill @Inject constructor(
                     online = isDeviceOnline,
                     icon = "💡",
                     ip = "192.168.1.${50 + index}",
-                    battery = null, // Nguồn điện trực tiếp
+                    battery = null,
                     status = if (isDeviceOnline) "Đang hoạt động" else "Mất kết nối",
-                    room = "Phòng Khách" // Gán metadata Room cho Digital Twin
+                    room = "Phòng Khách"
                 )
             }
         }
@@ -97,35 +132,43 @@ class LightSkill @Inject constructor(
         }
     }
 
-    override fun getActions(): List<PluginAction> {
-        return listOf(
-            PluginAction(
-                name = "set",
-                description = "Bật hoặc tắt đèn thông minh",
-                examples = listOf("bật đèn","tắt đèn"),
-                                tags = listOf("light", "switch", "relay", "device"),
-                parameters = listOf(
-                    PluginParameter("device", "string", "Tên thiết bị", true, "device"),
-                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
-                )
-            ),
-            PluginAction(
-                name = "status",
-                description = "Xem trạng thái hiện tại của đèn",
-                examples = listOf("trạng thái đèn", "kiểm tra đèn"),
-                tags = listOf("status", "query", "sensor"),
-                parameters = listOf(
-                    PluginParameter("device", "string", "Tên thiết bị", true, "device")
-                )
-            ),
-            PluginAction(
-                name = "scan",
-                description = "Quét các thiết bị đèn thông minh trong mạng",
-                examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới"), // Action không tham số -> Cho phép ví dụ
-                                tags = listOf("discovery", "scan", "network"),
-                parameters = emptyList()
-            )
-        )
+    private suspend fun handleSet(params: Map<String, Any>): AgentKernel.PluginResult {
+        val deviceName = params["device"] as? String
+            ?: return failure("Thiếu tên thiết bị")
+        val state = params["state"] as? Boolean
+            ?: return failure("Thiếu trạng thái")
+
+        return try {
+            if (state) {
+                tuyaManager.turnOn(deviceName)
+            } else {
+                tuyaManager.turnOff(deviceName)
+            }
+            success("Đã ${if (state) "bật" else "tắt"} thiết bị $deviceName")
+        } catch (e: Exception) {
+            failure("Lỗi điều khiển thiết bị: ${e.message}")
+        }
+    }
+
+    private suspend fun handleStatus(params: Map<String, Any>): AgentKernel.PluginResult {
+        val deviceName = params["device"] as? String
+            ?: return failure("Thiếu tên thiết bị")
+
+        return try {
+            val status = tuyaManager.getStatus(deviceName)
+            success("Thiết bị $deviceName hiện đang ${if (status) "bật" else "tắt"}", mapOf("status" to status))
+        } catch (e: Exception) {
+            failure("Lỗi lấy trạng thái: ${e.message}")
+        }
+    }
+
+    private suspend fun handleScan(): AgentKernel.PluginResult {
+        return try {
+            val devices = tuyaManager.scanDevices()
+            success("Đã quét hoàn tất mạng. Tìm thấy ${devices.size} thiết bị.")
+        } catch (e: Exception) {
+            failure("Lỗi khi quét thiết bị: ${e.message}")
+        }
     }
 
     override suspend fun shutdown() {}

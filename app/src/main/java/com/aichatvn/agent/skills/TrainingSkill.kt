@@ -5,6 +5,8 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.base.BaseSkill
@@ -39,68 +41,15 @@ class TrainingSkill @Inject constructor(
         private const val MAX_QUERY_CACHE_SIZE = 500
     }
 
-    override val routable: Boolean = false
-    override val visibleOnDashboard: Boolean = false
-    override val autoGenerateQA: Boolean = false
-
-    private val database by lazy { AppDatabase.getDatabase(context) }
-    
-    private val _qaList = MutableStateFlow<List<QAEntity>>(emptyList())
-    val qaList: StateFlow<List<QAEntity>> = _qaList.asStateFlow()
-    
-    private val _stats = MutableStateFlow<Map<String, Any>>(emptyMap())
-    val stats: StateFlow<Map<String, Any>> = _stats.asStateFlow()
-
-    private val cacheMutex = Mutex()
-    
-    @Volatile
-    private var cachedQAList: List<QAEntity> = emptyList()
-    
-    private val queryCache = java.util.Collections.synchronizedMap(
-        object : LinkedHashMap<String, MatchResult>(MAX_QUERY_CACHE_SIZE, 0.75f, true) {
-            override fun removeEldestEntry(eldest: Map.Entry<String, MatchResult>?): Boolean {
-                return size > MAX_QUERY_CACHE_SIZE
-            }
-        }
-    )
-
-    init {
-        // Tải trước RAM Cache an toàn từ Dispatchers IO ngay sau khi khởi tạo Object
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                refreshQAList("default_user")
-            } catch (e: Exception) {
-                logger.e("TrainingSkill", "Không thể tải sớm cachedQAList lúc khởi chạy", e)
-            }
-        }
-    }
-
-    private fun invalidateCache() {
-        queryCache.clear()
-    }
-
-    data class MatchResult(
-        val intentMatches: List<Pair<QAEntity, Double>>,
-        val aliasMatches: List<Pair<QAEntity, Double>>,
-        val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap()
-    )
-
-    fun getRawCachedQAList(username: String): List<QAEntity> {
-        return cachedQAList.filter { it.createdBy == username }
-    }
-
-    suspend fun countQAByType(type: String): Int {
-        return cachedQAList.count { it.type == type }
-    }
-
-    fun isIntentQA(qa: QAEntity): Boolean {
-        return qa.type == "intent"
-    }
-
-    // ==================== PLUGIN IMPLEMENTATION ====================
-
-    override fun getActions(): List<PluginAction> {
-        return listOf(
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(training = true), // Tuyên bố năng lực quản lý huấn luyện
+        routable = false,
+        visibleOnDashboard = false,
+        autoGenerateQA = false,
+        actions = listOf(
             PluginAction(
                 name = "add",
                 description = "Thêm câu hỏi và câu trả lời",
@@ -165,6 +114,59 @@ class TrainingSkill @Inject constructor(
                 parameters = emptyList()
             )
         )
+    )
+
+    private val database by lazy { AppDatabase.getDatabase(context) }
+    
+    private val _qaList = MutableStateFlow<List<QAEntity>>(emptyList())
+    val qaList: StateFlow<List<QAEntity>> = _qaList.asStateFlow()
+    
+    private val _stats = MutableStateFlow<Map<String, Any>>(emptyMap())
+    val stats: StateFlow<Map<String, Any>> = _stats.asStateFlow()
+
+    private val cacheMutex = Mutex()
+    
+    @Volatile
+    private var cachedQAList: List<QAEntity> = emptyList()
+    
+    private val queryCache = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, MatchResult>(MAX_QUERY_CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, MatchResult>?): Boolean {
+                return size > MAX_QUERY_CACHE_SIZE
+            }
+        }
+    )
+
+    init {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                refreshQAList("default_user")
+            } catch (e: Exception) {
+                logger.e("TrainingSkill", "Không thể tải sớm cachedQAList lúc khởi chạy", e)
+            }
+        }
+    }
+
+    private fun invalidateCache() {
+        queryCache.clear()
+    }
+
+    data class MatchResult(
+        val intentMatches: List<Pair<QAEntity, Double>>,
+        val aliasMatches: List<Pair<QAEntity, Double>>,
+        val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap()
+    )
+
+    fun getRawCachedQAList(username: String): List<QAEntity> {
+        return cachedQAList.filter { it.createdBy == username }
+    }
+
+    suspend fun countQAByType(type: String): Int {
+        return cachedQAList.count { it.type == type }
+    }
+
+    fun isIntentQA(qa: QAEntity): Boolean {
+        return qa.type == "intent"
     }
 
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
@@ -360,8 +362,8 @@ class TrainingSkill @Inject constructor(
             var skipped = 0
             for (i in 0 until jsonArray.length()) {
                 val obj = jsonArray.getJSONObject(i)
-                val question = obj.getString("question").trim() // Thêm .trim() tránh khoảng trắng thừa đầu cuối
-                val answer = obj.getString("answer").trim()     // Thêm .trim() tránh khoảng trắng thừa đầu cuối
+                val question = obj.getString("question").trim()
+                val answer = obj.getString("answer").trim()
                 val type = obj.optString("type", "alias")
                 val category = obj.optString("category", "general")
 
@@ -437,8 +439,8 @@ class TrainingSkill @Inject constructor(
         return try {
             val qa = QAEntity(
                 id = UUID.randomUUID().toString(),
-                question = question.trim(), // Tự động trim khoảng trắng đầu cuối
-                answer = answer.trim(),     // Tự động trim khoảng trắng đầu cuối
+                question = question.trim(),
+                answer = answer.trim(),
                 category = category,
                 type = type,
                 createdBy = username,
@@ -473,8 +475,8 @@ class TrainingSkill @Inject constructor(
             val existing = database.qaDao().getQAById(id, username) ?: return PluginResult.Failure("QA not found")
             
             val updated = existing.copy(
-                question = question?.trim() ?: existing.question, // Thêm .trim() phòng thủ khoảng trắng
-                answer = answer?.trim() ?: existing.answer,       // Thêm .trim() phòng thủ khoảng trắng
+                question = question?.trim() ?: existing.question,
+                answer = answer?.trim() ?: existing.answer,
                 type = type ?: existing.type,
                 category = category ?: existing.category,
                 timestamp = System.currentTimeMillis()
@@ -541,20 +543,16 @@ class TrainingSkill @Inject constructor(
         query: String,
         username: String,
         threshold: Float? = null
-    ): PluginResult {
+    ): List<SearchMatch> {
         return try {
             val matches = fuzzyMatchCategorized(query, username, intentThreshold = threshold)
-            val combined = (matches.intentMatches + matches.aliasMatches)
+            (matches.intentMatches + matches.aliasMatches)
                 .map { (qa, similarity) ->
-                    mapOf(
-                        "qa" to qa,
-                        "similarity" to similarity.toFloat()
-                    )
+                    SearchMatch(qa, similarity.toFloat())
                 }
-            PluginResult.Success(combined)
         } catch (e: Exception) {
             logger.e("TrainingSkill", "Lỗi fuzzyMatchQuestion: ${e.message}", e)
-            PluginResult.Failure(e.message ?: "Fuzzy match failed")
+            emptyList()
         }
     }
 
@@ -600,9 +598,8 @@ class TrainingSkill @Inject constructor(
                 }
             }
 
-            // ĐỒNG BỘ: Chỉ đưa vào danh mục Best Mapped những thực thể thực sự vượt qua ngưỡng cấu hình thực tế trong DB
             val bestAliasMatches = aliases
-    .filter { it.second >= activeAliasThreshold } 
+                .filter { it.second >= activeAliasThreshold } 
                 .groupBy { it.first.category }
                 .mapValues { entry -> entry.value.maxByOrNull { it.second } }
                 .filterValues { it != null }
@@ -633,7 +630,6 @@ class TrainingSkill @Inject constructor(
             .replace(SPACE_REGEX, " ")
     }
 
-    // TÍNH ĐIỂM KHOA HỌC: Kết hợp Simpson Overlap Coefficient và Length Penalty Ratio cho Contains Match chân thực
     private fun calculateSimilarity(s1: String, s2: String): Float {
         val clean1 = normalizeVietnamese(s1)
         val clean2 = normalizeVietnamese(s2)
@@ -644,20 +640,17 @@ class TrainingSkill @Inject constructor(
         val tokens2 = clean2.split(SPACE_REGEX).toSet()
         val intersectionSize = tokens1.intersect(tokens2).size
         
-        // Nếu không có bất kỳ từ nào giao nhau, điểm tương đồng bằng 0
         if (intersectionSize == 0) return 0f
 
         val maxLen = maxOf(clean1.length, clean2.length)
         val minLen = minOf(clean1.length, clean2.length)
 
-        // Tính toán điểm số đàng hoàng khoa học khi có chứa chuỗi con (Substring Match)
         if (clean1.contains(clean2) || clean2.contains(clean1)) {
             val simpson = intersectionSize.toFloat() / minOf(tokens1.size, tokens2.size)
             val lengthRatio = minLen.toFloat() / maxLen.toFloat()
             return (simpson * 0.7f) + (lengthRatio * 0.3f)
         }
 
-        // Nếu không chứa nhau, tính điểm Jaccard + Levenshtein thông thường
         val lenDiff = if (clean1.length > clean2.length) clean1.length - clean2.length else clean2.length - clean1.length
         if (maxLen > 10 && lenDiff.toFloat() / maxLen > 0.7f) {
             return 0f

@@ -6,6 +6,8 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
@@ -20,12 +22,15 @@ class AppConfigSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("appconfig", "Cấu hình hệ thống", logger), Plugin {
 
-    override val routable: Boolean = false
-    override val visibleOnDashboard: Boolean = false
-    override val autoGenerateQA: Boolean = false
-
-    override fun getActions(): List<PluginAction> {
-        return listOf(
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(), // Năng lực cơ bản mặc định
+        routable = false,
+        visibleOnDashboard = false,
+        autoGenerateQA = false,
+        actions = listOf(
             PluginAction(
                 name = "add",
                 description = "Thiết lập cấu hình hệ thống",
@@ -60,7 +65,7 @@ class AppConfigSkill @Inject constructor(
                 )
             )
         )
-    }
+    )
 
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         return when (action) {

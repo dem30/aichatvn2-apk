@@ -1,30 +1,35 @@
 package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.ui.dashboard.DeviceNode // Thêm import trực tiếp để hợp nhất Dashboard
+
+// Khai báo tập hợp các năng lực đặc hữu của Plugin
+data class PluginCapabilities(
+    val dashboard: Boolean = false,
+    val training: Boolean = false,
+    val notification: Boolean = false,
+    val schedule: Boolean = false,
+    val voice: Boolean = false,
+    val vision: Boolean = false
+)
+
+// Khai báo Tuyên bố Siêu dữ liệu chuẩn hóa của Plugin
+data class PluginManifest(
+    val id: String,
+    val name: String,
+    val capabilities: PluginCapabilities,
+    val actions: List<PluginAction>,
+    val pluginVersion: String = "1.0.0",
+    val metadataVersion: String = "1.0.0",
+    val schemaVersion: String = "1.0.0",
+    val routable: Boolean = true,
+    val visibleOnDashboard: Boolean = false,
+    val autoGenerateQA: Boolean = true
+)
 
 interface Plugin {
-    val id: String
-    val name: String
-
-    // Phiên bản metadata của plugin (Phục vụ nâng cấp schema)
-    val pluginVersion: String get() = "1.0.0"
-    val metadataVersion: String get() = "1.0.0"
-    val schemaVersion: String get() = "1.0.0"
-
-    // Khai báo Capabilities của Plugin
-    val supportsVoice: Boolean get() = false
-    val supportsSchedule: Boolean get() = false
-    val supportsNotification: Boolean get() = false
-    val supportsBackground: Boolean get() = false
-
-    val routable: Boolean 
-        get() = true
-
-    val visibleOnDashboard: Boolean 
-        get() = false
-
-    val autoGenerateQA: Boolean 
-        get() = true
+    // Thuộc tính mô tả duy nhất nắm giữ toàn bộ cấu hình, loại bỏ các biến rời rạc cũ
+    val manifest: PluginManifest
 
     // Quản lý Lifecycle mở rộng
     suspend fun initialize()
@@ -35,9 +40,10 @@ interface Plugin {
 
     suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult
     
-    fun getActions(): List<PluginAction>
-    
     fun getBootstrapQA(): List<PluginQABootstrap> = emptyList()
+
+    // Thay thế hoàn toàn giao diện DashboardProvider cũ
+    suspend fun getDashboardNodes(): List<DeviceNode> = emptyList()
 }
 
 data class PluginQABootstrap(
@@ -58,7 +64,6 @@ data class PluginParameter(
     val defaultValue: Any? = null,
     val validationRegex: String = ""
 ) {
-    // Tự xử lý normalize dữ liệu theo đặc tả tham số (Rút ngắn code xử lý trong AgentKernel)
     fun normalize(value: Any?): Any? {
         val strVal = value?.toString()?.trim() ?: ""
         if (strVal.isBlank() || strVal == "null") {
@@ -96,5 +101,6 @@ data class PluginAction(
     val examples: List<String> = emptyList(),
     val parameters: List<PluginParameter> = emptyList(),
     val tags: List<String> = emptyList(),
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val triggerPrefixes: List<String> = emptyList()
 )

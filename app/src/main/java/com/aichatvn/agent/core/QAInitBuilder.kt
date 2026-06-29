@@ -17,7 +17,7 @@ import kotlin.jvm.JvmSuppressWildcards
 class QAInitBuilder @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
     private val trainingSkill: TrainingSkill,
-    private val database: AppDatabase, // ✅ ĐÃ TIÊM: Sử dụng để ghi đĩa trực tiếp không dọn cache giữa vòng lặp
+    private val database: AppDatabase,
     private val logger: Logger
 ) {
     suspend fun buildInitialQA(username: String = "default_user") {
@@ -27,28 +27,28 @@ class QAInitBuilder @Inject constructor(
         val existingQAs = trainingSkill.getRawCachedQAList(username)
         val existingByQuestion = existingQAs.associateBy { it.question.trim().lowercase() }
 
-        // ĐÃ SỬA: Lọc chặt chẽ chỉ tự động sinh câu hỏi cho các thiết bị điều khiển thực tế (routable == true)
-        // Loại bỏ hoàn toàn các kỹ năng hệ thống bổ trợ (routable == false) như appconfig ra khỏi phễu sinh Intent thô
-        val targetPlugins = plugins.filter { it.autoGenerateQA && it.routable }
+        // ✅ ĐÃ SỬA: Lọc động thông qua thuộc tính PluginManifest thống nhất
+        val targetPlugins = plugins.filter { it.manifest.autoGenerateQA && it.manifest.routable }
         val qaDao = database.qaDao()
 
         // 1. Đồng bộ hóa Intent QA động từ metadata của Plugin Action
         targetPlugins.forEach { plugin ->
-            plugin.getActions().filter { it.enabled }.forEach { action ->
+            // ✅ ĐÃ SỬA: Đọc danh mục actions từ manifest
+            plugin.manifest.actions.filter { it.enabled }.forEach { action ->
                 val schemaParams = JSONObject()
                 action.parameters.forEach { param ->
                     schemaParams.put(param.name, param.defaultValue ?: getDefaultPlaceholder(param))
                 }
 
+                // ✅ ĐÃ SỬA: Lấy toàn bộ siêu dữ liệu phiên bản từ manifest
                 val jsonSchema = JSONObject().apply {
-                    put("plugin", plugin.id)
-                    put("pluginVersion", plugin.pluginVersion)
-                    put("schemaVersion", plugin.schemaVersion)
+                    put("plugin", plugin.manifest.id)
+                    put("pluginVersion", plugin.manifest.pluginVersion)
+                    put("schemaVersion", plugin.manifest.schemaVersion)
                     put("action", action.name)
                     put("params", schemaParams)
                 }
 
-                // Chỉ dùng examples làm trigger intent QA
                 if (action.examples.isEmpty()) return@forEach
 
                 val finalTriggers = action.examples
@@ -60,7 +60,6 @@ class QAInitBuilder @Inject constructor(
                     val existing = existingByQuestion[question]
                     
                     if (existing == null) {
-                        // Tối ưu hóa: Ghi trực tiếp SQLite bằng cấu trúc DAO thuần để ngăn dọn cache RAM lặp lại
                         val qa = QAEntity(
                             id = UUID.randomUUID().toString(),
                             question = question,
@@ -85,8 +84,9 @@ class QAInitBuilder @Inject constructor(
             }
         }
 
-        // 2. Tự động thu thập bootstrap QA khai báo cục bộ từ bên trong các Plugin độc lập (chỉ áp dụng cho các Plugin routable)
-        plugins.filter { it.routable }.forEach { plugin ->
+        // 2. Tự động thu thập bootstrap QA khai báo cục bộ từ bên trong các Plugin độc lập
+        // ✅ ĐÃ SỬA: Đọc trạng thái routable của plugin từ manifest
+        plugins.filter { it.manifest.routable }.forEach { plugin ->
             plugin.getBootstrapQA()
                 .filter { it.type != "intent" }
                 .forEach { bootstrap ->
@@ -116,7 +116,7 @@ class QAInitBuilder @Inject constructor(
                     }
                 }
         }
-        // Tối ưu hóa lớn: Chỉ kích hoạt đồng bộ hóa nạp bộ nhớ RAM đúng 1 lần duy nhất khi kết thúc toàn bộ chu kỳ ghi lô
+
         if (intentCount > 0 || aliasCount > 0) {
             trainingSkill.refreshQAList(username)
             logger.i("QAInitBuilder", "✅ Đồng bộ Metadata hoàn tất: $intentCount Intents, $aliasCount Aliases được cập nhật hoặc thêm mới.")

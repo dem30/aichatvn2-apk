@@ -6,6 +6,8 @@ import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.base.BaseSkill
@@ -27,19 +29,15 @@ class ScheduleSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("schedule", "Lên lịch trình", logger), Plugin {
 
-    override val routable: Boolean = true
-    override val visibleOnDashboard: Boolean = false
-    override val autoGenerateQA: Boolean = true
-
-    private val database by lazy { AppDatabase.getDatabase(context) }
-    
-    private val _schedules = MutableStateFlow<List<ScheduleEntity>>(emptyList())
-    val schedules: StateFlow<List<ScheduleEntity>> = _schedules.asStateFlow()
-
-    // ==================== PLUGIN IMPLEMENTATION ====================
-
-    override fun getActions(): List<PluginAction> {
-        return listOf(
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(schedule = true), // Tuyên bố năng lực lập lịch
+        routable = true,
+        visibleOnDashboard = false,
+        autoGenerateQA = true,
+        actions = listOf(
             PluginAction(
                 name = "add",
                 description = "Thêm lịch trình mới để tự động gọi 1 action của plugin khác theo cron/interval. " +
@@ -47,8 +45,7 @@ class ScheduleSkill @Inject constructor(
                     "(pluginId.action), tra đúng theo schema action đó trong danh sách plugin — " +
                     "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
                     "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
-                // ĐÃ SỬA: Bổ sung ví dụ và bí danh tinh gọn không tham số để kích hoạt nhận diện dứt điểm ở Tầng 3 và Tầng 4
-                examples = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"), 
+                examples = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"),
                 parameters = listOf(
                     PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
                     PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
@@ -81,7 +78,12 @@ class ScheduleSkill @Inject constructor(
                 )
             )
         )
-    }
+    )
+
+    private val database by lazy { AppDatabase.getDatabase(context) }
+    
+    private val _schedules = MutableStateFlow<List<ScheduleEntity>>(emptyList())
+    val schedules: StateFlow<List<ScheduleEntity>> = _schedules.asStateFlow()
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {

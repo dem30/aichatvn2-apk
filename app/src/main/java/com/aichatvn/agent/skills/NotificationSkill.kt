@@ -10,6 +10,8 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -27,9 +29,27 @@ class NotificationSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("notification", "Gửi thông báo", logger), Plugin {
 
-    override val routable: Boolean = true
-    override val visibleOnDashboard: Boolean = false
-    override val autoGenerateQA: Boolean = true
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(notification = true), // Tuyên bố năng lực đẩy thông báo
+        routable = true,
+        visibleOnDashboard = false,
+        autoGenerateQA = true,
+        actions = listOf(
+            PluginAction(
+                name = "send",
+                description = "Gửi thông báo đẩy hiển thị trên màn hình thiết bị",
+                examples = listOf("gửi thông báo", "gửi cảnh báo"),
+                tags = listOf("notification", "alert", "message"),
+                parameters = listOf(
+                    PluginParameter("title", "string", "Tiêu đề thông báo", true, "string"),
+                    PluginParameter("message", "string", "Nội dung chi tiết thông báo", true, "string")
+                )
+            )
+        )
+    )
 
     private val notificationManager by lazy {
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -43,21 +63,6 @@ class NotificationSkill @Inject constructor(
 
     override suspend fun shutdown() {}
 
-    override fun getActions(): List<PluginAction> {
-        return listOf(
-            PluginAction(
-                name = "send",
-                description = "Gửi thông báo đẩy hiển thị trên màn hình thiết bị",
-                examples = listOf("gửi thông báo", "gửi cảnh báo"),
-                tags = listOf("notification", "alert", "message"),
-                parameters = listOf(
-                    PluginParameter("title", "string", "Tiêu đề thông báo", true, "string"),
-                    PluginParameter("message", "string", "Nội dung chi tiết thông báo", true, "string")
-                )
-            )
-        )
-    }
-
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
             "send" -> handleSend(params)
@@ -66,7 +71,6 @@ class NotificationSkill @Inject constructor(
     }
 
     private suspend fun handleSend(params: Map<String, Any>): AgentKernel.PluginResult {
-        // Cập nhật thông điệp lỗi tự nhiên phục vụ slot filling
         val title = params["title"] as? String 
             ?: return AgentKernel.PluginResult.Failure("Tiêu đề thông báo là gì vậy bạn?")
         val message = params["message"] as? String 
@@ -79,7 +83,6 @@ class NotificationSkill @Inject constructor(
         )
     }
 
-    // Di chuyển toàn bộ tiến trình phân tích PackageManager và dựng Builder sang Dispatchers.IO để giải phóng luồng chính
     suspend fun sendNotification(
         title: String,
         message: String,

@@ -7,7 +7,6 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry
-import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -40,7 +39,9 @@ class DashboardViewModel @Inject constructor(
                 val activePlugins = agentKernel.getAvailablePluginsForUI()
                 withContext(Dispatchers.IO) {
                     activePlugins.forEach { plugin ->
-                        if (plugin is DashboardProvider) {
+                        // ✅ ĐÃ SỬA: Ép kiểu thô "is DashboardProvider" chính thức bị xóa bỏ.
+                        // Giờ đây Core kiểm tra động năng lực của plugin đã khai báo trong Manifest
+                        if (plugin.manifest.capabilities.dashboard) {
                             val nodes = plugin.getDashboardNodes()
                             deviceRegistry.registerNodes(nodes)
                         }
@@ -56,13 +57,13 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    // ✅ FIX: Nhận DeviceAction thay vì actionId (String) để merge được action.defaultParams
+    // Nhận DeviceAction thay vì actionId (String) để merge được action.defaultParams
     fun sendDeviceAction(node: DeviceNode, action: DeviceAction, extraParams: Map<String, Any>) {
         viewModelScope.launch {
             _isProcessing.value = true
             _executionMessage.value = null
             try {
-                // ✅ FIX: Merge đủ 3 lớp params: node defaults + action defaults + caller extras
+                // Merge đủ 3 lớp params: node defaults + action defaults + caller extras
                 val finalParams = node.defaultParams + action.defaultParams + extraParams
                 val result = withContext(Dispatchers.IO) {
                     agentKernel.executePluginAction(node.pluginId, action.id, finalParams)

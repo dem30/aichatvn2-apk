@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.data.AppDatabase // Import thêm DB để lưu vết giọng nói
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.skills.ChatSkill
@@ -45,6 +46,8 @@ class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
     private val agentKernel: AgentKernel,
     private val groqClient: GroqClientTool,
+    private val database: AppDatabase, // Tiêm DB phục vụ ghi nhật ký voice tự động
+    val voiceManager: VoiceAssistantManager, // ✅ ĐÃ TIÊM: Sử dụng Singleton từ Hilt thay vì khởi tạo thủ công
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
@@ -70,37 +73,22 @@ class ChatViewModel @Inject constructor(
 
     private var consecutiveRouterFailures = 0
 
-    // Điểm tối ưu lớn nhất: Ngăn chặn gửi nhiều câu hỏi đồng thời lên AI nhờ cờ nguyên tử
+    // Ngăn chặn gửi nhiều câu hỏi đồng thời lên AI nhờ cờ nguyên tử
     private val isProcessingQuery = AtomicBoolean(false)
-
-    val voiceManager: VoiceAssistantManager = VoiceAssistantManager(
-        context = context,
-        onListeningStateChange = { listening -> _isListening.value = listening },
-        onTextRecognized = { text -> sendMessage(text) },
-        onMaxSTTFailuresReached = { errorMsg ->
-            logger.e("ChatViewModel", "Ngắt luồng voice do lỗi Mic liên tiếp: $errorMsg")
-            viewModelScope.launch(Dispatchers.Main) {
-                _voiceModeActive.value = false
-                _pausedDueToError.value = true
-                // ✅ SỬ DỤNG: voiceManager.speak thay vì trực tiếp ttsHelper
-                voiceManager.speak("Đã tạm dừng nhận diện giọng nói do thiết bị lỗi microphone liên tiếp. Vui lòng kiểm tra quyền truy cập hoặc micro.")
-            }
-        }
-    )
 
     // ── Quick commands ────────────────────────────────────────────────────────
 
-    val quickCommandGroups: List<QuickCommandGroup> =
-        agentKernel.getAvailablePluginsForUI().map { plugin ->
-            val commands = plugin.getActions().map { action ->
+    val quickCommandGroups: List<QuickCommandGroup> = agentKernel.getAvailablePluginsForUI().map { plugin ->
+        QuickCommandGroup(
+            tabLabel = plugin.name,
+            commands = plugin.getActions().map { action ->
                 val requiredParams = action.parameters.filter { it.required }
                 val text = if (requiredParams.isEmpty()) action.description
-                else action.description + " (" +
-                    requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
+                else action.description + " (" + requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
                 QuickCommand(label = action.name, text = text)
             }
-            QuickCommandGroup(tabLabel = plugin.name, commands = commands)
-        }
+        )
+    }
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
@@ -109,8 +97,53 @@ class ChatViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             chatSkill.initialize()
+            observeVoiceManagerFlows() // ✅ ĐÃ SỬA: Lắng nghe trạng thái và dữ liệu Reactive Flow của Mic
             observeAndSpeak()
             startVoiceSession()
+        }
+    }
+
+    // Lắng nghe dòng dữ liệu Reactive phát ra từ Singleton VoiceAssistantManager
+    private fun observeVoiceManagerFlows() {
+        // 1. Đồng bộ trạng thái bật/tắt Micro lên UI Chat
+        viewModelScope.launch {
+            voiceManager.isListening.collect { listening ->
+                _isListening.value = listening
+            }
+        }
+
+        // 2. Đồng bộ văn bản nhận diện được từ giọng nói vào DB để hiển thị lên khung Chat
+        viewModelScope.launch {
+            voiceManager.recognizedText.collect { text ->
+                saveMessageToHistory(text, "user")
+            }
+        }
+
+        // 3. Đồng bộ câu trả lời AI của cuộc thoại giọng nói vào DB để hiển thị lên khung Chat
+        viewModelScope.launch {
+            voiceManager.aiResponseText.collect { reply ->
+                saveMessageToHistory(reply, "assistant")
+            }
+        }
+    }
+
+    // Ghi nhật ký cuộc thoại giọng nói xuống SQLite và kích hoạt cập nhật lại UI Flow
+    private fun saveMessageToHistory(content: String, role: String) {
+        viewModelScope.launch {
+            val msg = ChatMessageEntity(
+                id = UUID.randomUUID().toString(),
+                sessionToken = "session_default_user",
+                username = "default_user",
+                content = content,
+                role = role,
+                type = "text",
+                timestamp = System.currentTimeMillis()
+            )
+            withContext(Dispatchers.IO) {
+                database.chatMessageDao().insertMessage(msg)
+            }
+            // Gọi nạp lại lịch sử hiển thị của ChatSkill
+            chatSkill.initialize()
         }
     }
 
@@ -128,7 +161,6 @@ class ChatViewModel @Inject constructor(
             if (!_voiceModeActive.value || !isInForeground) return@launch
 
             if (voiceManager.ttsHelper.isReady) {
-                // ✅ SỬ DỤNG: voiceManager.speak
                 voiceManager.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
                     if (_voiceModeActive.value && isInForeground) {
                         voiceManager.startListening()
@@ -146,6 +178,11 @@ class ChatViewModel @Inject constructor(
                 val last = msgs.lastOrNull() ?: return@collect
                 if (last.role != "assistant") return@collect
                 if (!_voiceModeActive.value) return@collect
+
+                // Nếu tin nhắn đến từ cuộc thoại giọng nói tự động thì bỏ qua, tránh đọc lặp lại hai lần
+                if (last.sourcePlugin == "vision" || last.sourcePlugin == "learn" || last.sourcePlugin == "device_control") {
+                    return@collect
+                }
 
                 if (!voiceManager.ttsHelper.isReady) {
                     logger.w("ChatViewModel", "TTS chưa sẵn sàng, kích hoạt nghe lại nhằm duy trì vòng lặp.")
@@ -165,7 +202,6 @@ class ChatViewModel @Inject constructor(
                     consecutiveRouterFailures = 0
                     _voiceModeActive.value = false
                     _pausedDueToError.value = true
-                    // ✅ SỬ DỤNG: voiceManager.speak dập mic tự động
                     voiceManager.speak(
                         "Tôi đang gặp lỗi kết nối mạng nhiều lần liên tiếp. " +
                             "Tôi sẽ tạm dừng nghe để tránh làm phiền bạn. " +
@@ -174,7 +210,6 @@ class ChatViewModel @Inject constructor(
                     return@collect
                 }
 
-                // ✅ SỬ DỤNG: voiceManager.speak thay vì tts.speak
                 voiceManager.speak(last.content) {
                     if (_voiceModeActive.value && isInForeground) {
                         Handler(Looper.getMainLooper()).postDelayed({
@@ -214,7 +249,6 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessageWithImage(message: String, imageUri: Uri?) {
-        // Tối ưu Agent: Khóa luồng yêu cầu ngay lập tức để tránh các yêu cầu trùng lặp
         if (!isProcessingQuery.compareAndSet(false, true)) {
             logger.w("ChatViewModel", "Đang xử lý yêu cầu cũ, bỏ qua yêu cầu trùng lặp.")
             return
@@ -262,9 +296,9 @@ class ChatViewModel @Inject constructor(
                 if (response is PluginResult.Failure) {
                     logger.e("ChatViewModel", "Error: ${response.error}")
                 }
-            } finally {
+            } {
                 _isLoading.value = false
-                isProcessingQuery.set(false) // Giải phóng khóa xử lý sau khi hoàn tất
+                isProcessingQuery.set(false)
             }
         }
     }

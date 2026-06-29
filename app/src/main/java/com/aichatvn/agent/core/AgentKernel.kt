@@ -5,6 +5,7 @@ import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
@@ -46,6 +47,22 @@ sealed class Layer3Result {
     object NoMatch : Layer3Result()
 }
 
+// Cấu trúc dữ liệu yêu cầu và phản hồi Chat trung tâm
+data class ChatRequest(
+    val message: String,
+    val username: String = "default_user",
+    val imageBase64: String? = null,
+    val fileUrl: String? = null,
+    val extraContext: String = "",
+    val chatMode: String = "COMBINED" // "GROQ" | "QA" | "COMBINED"
+)
+
+data class ChatResponse(
+    val responseText: String,
+    val usedMode: String,
+    val usedPluginId: String?
+)
+
 @Singleton
 class AgentKernel @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
@@ -53,6 +70,7 @@ class AgentKernel @Inject constructor(
     private val trainingSkill: TrainingSkill,
     private val chatHistoryManager: ChatHistoryManager,
     private val configProvider: AppConfigProvider,
+    private val database: AppDatabase, // Dùng để tải ngữ cảnh lịch sử cho LLM độc lập
     private val logger: Logger
 ) {
 
@@ -63,9 +81,10 @@ class AgentKernel @Inject constructor(
 
     private val actionCandidates: List<LocalCandidate> by lazy {
         plugins.flatMap { plugin ->
-            plugin.getActions().map { act ->
+            // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
+            plugin.manifest.actions.map { act ->
                 LocalCandidate(
-                    pluginId = plugin.id,
+                    pluginId = plugin.manifest.id, // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
                     action = act.name,
                     description = act.description,
                     parameters = act.parameters.map { if (it.required) it.name else "${it.name}?" }
@@ -76,7 +95,8 @@ class AgentKernel @Inject constructor(
 
     private val normalizedActionMetadataList: List<NormalizedActionMetadata> by lazy {
         plugins.flatMap { plugin ->
-            plugin.getActions().map { action ->
+            // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
+            plugin.manifest.actions.map { action ->
                 NormalizedActionMetadata(
                     plugin = plugin,
                     action = action,
@@ -139,7 +159,154 @@ class AgentKernel @Inject constructor(
         return strVal in defaultPlaceholders
     }
 
-    fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.routable }
+    // ✅ ĐÃ SỬA: Lọc danh sách plugin UI từ manifest
+    fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
+
+    // ─── [CẬP NHẬT GIAI ĐOẠN 5] HÀM ĐIỀU PHỐI CHAT KHÔNG HARDCODE CHUỖI ──────────────────────
+    suspend fun chat(request: ChatRequest): ChatResponse {
+        val message = request.message
+        val username = request.username
+        val extraContext = request.extraContext
+        val imageBase64 = request.imageBase64
+        val fileUrl = request.fileUrl
+        
+        // 1. DUYỆT TIỀN TỐ KÍCH HOẠT ĐỘNG (Regex/Rule-based routing)
+        // Quét tất cả các Action của mọi Plugin đang cài trong hệ thống để tìm tiền tố trùng khớp
+        for (plugin in plugins) {
+            // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
+            for (action in plugin.manifest.actions) {
+                if (!action.enabled) continue
+                val matchedPrefix = action.triggerPrefixes.find { prefix ->
+                    message.startsWith(prefix, ignoreCase = true)
+                }
+                if (matchedPrefix != null) {
+                    val result = executePluginAction(
+                        pluginId = plugin.manifest.id, // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                        action = action.name,
+                        params = mapOf("message" to message, "username" to username)
+                    )
+                    val responseText = when (result) {
+                        is PluginResult.Success -> {
+                            val data = result.data as? Map<*, *>
+                            data?.get("message") as? String ?: "✅ Đã thực hiện câu lệnh tự động."
+                        }
+                        is PluginResult.Failure -> result.error
+                        else -> "❌ Có lỗi phát sinh khi xử lý câu lệnh hệ thống."
+                    }
+                    return ChatResponse(responseText, action.name, plugin.manifest.id) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                }
+            }
+        }
+        
+        // 2. DUYỆT NĂNG LỰC THỊ GIÁC ĐỘNG (Capability-based routing)
+        // Khi có ảnh đính kèm, tìm plugin có thuộc tính supportsVision = true thay vì gọi cứng id = "vision"
+        if (!imageBase64.isNullOrEmpty() || !fileUrl.isNullOrEmpty()) {
+            // ✅ ĐÃ SỬA: Đọc năng lực động từ manifest capabilities
+            val visionPlugin = plugins.find { it.manifest.capabilities.vision }
+            if (visionPlugin != null) {
+                // ✅ ĐÃ SỬA: Lấy hành động đầu tiên từ manifest actions
+                val actionName = visionPlugin.manifest.actions.firstOrNull()?.name ?: "analyze"
+                val visionResult = executePluginAction(
+                    pluginId = visionPlugin.manifest.id, // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                    action = actionName,
+                    params = mapOf(
+                        "message" to message,
+                        "username" to username,
+                        "imageBase64" to (imageBase64 ?: ""),
+                        "fileUrl" to (fileUrl ?: ""),
+                        "extraContext" to extraContext
+                    )
+                )
+                val responseText = when (visionResult) {
+                    is PluginResult.Success -> {
+                        val data = visionResult.data as? Map<*, *>
+                        data?.get("response") as? String ?: "Không có phản hồi từ mô hình thị giác."
+                    }
+                    is PluginResult.Failure -> visionResult.error
+                    else -> "❌ Gặp lỗi trong quá trình phân tích hình ảnh."
+                }
+                return ChatResponse(responseText, actionName, visionPlugin.manifest.id) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+            } else {
+                return ChatResponse("⚠️ Thiết bị hiện không hỗ trợ phân tích hình ảnh (chưa cài đặt Vision Plugin).", "vision_error", null)
+            }
+        }
+        
+        // 3. Nhánh Điều khiển thiết bị (Local Device Command Router)
+        val outcome = tryDeviceCommand(message, username)
+        if (outcome is RouterOutcome.Matched) {
+            val responseText = when (val result = outcome.result.result) {
+                is PluginResult.Success -> {
+                    val data = result.data as? Map<*, *>
+                    data?.get("message") as? String ?: "✅ Đã thực hiện thành công."
+                }
+                is PluginResult.Failure -> result.error
+                is PluginResult.NeedMoreInfo -> result.question
+            }
+            return ChatResponse(responseText, "device_control", outcome.result.pluginId)
+        }
+        
+        // 4. Nhánh Fallback tự nhiên (Combined / QA / Groq)
+        val routerFailed = outcome is RouterOutcome.RouterFailed
+        val usedMode = request.chatMode
+        val usedPluginId = if (routerFailed) "router_error" else null
+        
+        val ANTI_HALLUCINATION_GUARD =
+            "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
+            "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
+            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được."
+
+        val qaContext = buildQAContextForAgent(message, username)
+        val guard = if (routerFailed) {
+            ANTI_HALLUCINATION_GUARD + "\n" +
+                "⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm."
+        } else {
+            ANTI_HALLUCINATION_GUARD
+        }
+        val fullContext = buildString {
+            append(guard)
+            if (qaContext.isNotEmpty()) append("\n\n$qaContext")
+            if (extraContext.isNotEmpty()) append("\n\n$extraContext")
+        }
+
+        val responseText = try {
+            withTimeout(30_000L) {
+                when (usedMode.lowercase()) {
+                    "qa" -> {
+                        val matches = search(message, username, 0.6f)
+                        val qa = matches.firstOrNull()?.qa
+                        qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
+                    }
+                    else -> { //combined hoặc groq
+                        val historySnapshot = try {
+                            database.chatMessageDao().getMessages(username, 6)
+                                .reversed()
+                                .map { mapOf("role" to it.role, "content" to it.content) }
+                        } catch (e: Exception) {
+                            emptyList()
+                        }
+                        groqClient.chat(
+                            message = message,
+                            extraContext = fullContext,
+                            history = historySnapshot,
+                            imageUrl = null
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
+        }
+        
+        return ChatResponse(responseText, usedMode, usedPluginId)
+    }
+
+    private suspend fun buildQAContextForAgent(message: String, username: String): String {
+        val matches = search(message, username, 0.7f)
+        if (matches.isEmpty()) return ""
+        return matches.joinToString("\n") { match ->
+            "📚 Q: ${match.qa.question}\n   A: ${match.qa.answer} (độ tương tự: ${String.format("%.2f", match.similarity)})"
+        }
+    }
 
     suspend fun tryDeviceCommand(
         userMessage: String,
@@ -148,10 +315,10 @@ class AgentKernel @Inject constructor(
         val traceId = generateTraceId()
         logger.d("AgentKernel", "[$traceId] 🚀 Bắt đầu tiếp nhận thông điệp: '$userMessage'")
 
-        val devicePlugins = plugins.filter { it.routable }
+        // ✅ ĐÃ SỬA: Lọc danh sách thiết bị từ manifest
+        val devicePlugins = plugins.filter { it.manifest.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
-        // ── TẦNG 1: Xử lý trạng thái dở dang (Pending Intent) ────────────────
         val pending = chatHistoryManager.getActivePendingIntent()
         if (pending != null) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện tiến trình dở dang Pending Intent")
@@ -159,7 +326,6 @@ class AgentKernel @Inject constructor(
             if (resolved != null) return RouterOutcome.Matched(resolved)
         }
 
-        // ── TẦNG 2: So khớp nguyên câu Intent QA (Exact/Fuzzy) ────────────────
         val dynamicMinScore = configProvider.allConfigs.value
             .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toFloatOrNull() ?: 0.3f
@@ -193,18 +359,17 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── TẦNG 3: Phân rã mệnh đề & So khớp động cụm từ (Intent + Alias từ DB) ──
         val layer3Result = processLayer3ClauseEntitySpotter(userMessage, username, devicePlugins, traceId)
         when (layer3Result) {
             is Layer3Result.Single -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Single] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
                 val result = executeIntent(layer3Result.plugin, layer3Result.intent, userMessage, traceId)
-                return RouterOutcome.Matched(DeviceCommandResult(layer3Result.plugin.id, result))
+                return RouterOutcome.Matched(DeviceCommandResult(layer3Result.plugin.manifest.id, result)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             }
             is Layer3Result.Nested -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Nested] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
                 val result = executeIntent(layer3Result.wrapper, layer3Result.intent, userMessage, traceId)
-                return RouterOutcome.Matched(DeviceCommandResult(layer3Result.wrapper.id, result))
+                return RouterOutcome.Matched(DeviceCommandResult(layer3Result.wrapper.manifest.id, result)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             }
             is Layer3Result.Multi -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Multi] ${layer3Result.intents.size} actions")
@@ -225,21 +390,20 @@ class AgentKernel @Inject constructor(
                 val combined = results.joinToString("\n")
                 return RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined))))
             }
-            is Layer3Result.NoMatch -> { /* tiếp tục Tầng 4 */ }
+            is Layer3Result.NoMatch -> { }
         }
 
-        // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin ─────────────
         val layer4Result = tryTier2_5ActionMetadataMatcher(userMessage, matchResult, devicePlugins)
         when (layer4Result) {
             is Layer3Result.Single -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Single] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
                 val result = executeIntent(layer4Result.plugin, layer4Result.intent, userMessage, traceId)
-                return RouterOutcome.Matched(DeviceCommandResult(layer4Result.plugin.id, result))
+                return RouterOutcome.Matched(DeviceCommandResult(layer4Result.plugin.manifest.id, result)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             }
             is Layer3Result.Nested -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Nested] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
                 val result = executeIntent(layer4Result.wrapper, layer4Result.intent, userMessage, traceId)
-                return RouterOutcome.Matched(DeviceCommandResult(layer4Result.wrapper.id, result))
+                return RouterOutcome.Matched(DeviceCommandResult(layer4Result.wrapper.manifest.id, result)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             }
             is Layer3Result.Multi -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Multi] ${layer4Result.intents.size} actions")
@@ -260,15 +424,13 @@ class AgentKernel @Inject constructor(
                 val combined = results.joinToString("\n")
                 return RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined))))
             }
-            is Layer3Result.NoMatch -> { /* tiếp tục Tầng 5 (LLM) */ }
+            is Layer3Result.NoMatch -> { }
         }
 
-        // ── TẦNG 5: Phân loại ý định bằng mô hình ngôn ngữ lớn LLM ─────────────
         logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
         return executeTier3LlmRouting(userMessage, matchResult, devicePlugins, traceId)
     }
 
-    // ── TẦNG 3: Phân rã mệnh đề & So khớp động cụm từ (Intent + Alias từ DB) (ĐÃ ĐỒNG BỘ HẤP THỤ ĐA NHIỆM) ──
     private suspend fun processLayer3ClauseEntitySpotter(
         userMessage: String,
         username: String,
@@ -283,9 +445,8 @@ class AgentKernel @Inject constructor(
             .sortedByDescending { it.question.length }
 
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
-        val absorbedActions = mutableSetOf<String>() // Đăng ký lưu các hành động đích đã bị hấp thụ lồng ghép
+        val absorbedActions = mutableSetOf<String>()
 
-        // VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNorm = normalizeVietnamese(clause)
             var matchedIntentQA: QAEntity? = null
@@ -303,21 +464,20 @@ class AgentKernel @Inject constructor(
                 val rootPluginId = rootJson?.optString("plugin") ?: ""
                 val rootActionName = rootJson?.optString("action") ?: ""
                 
-                if (rootPluginId == "schedule") { // Nếu là Wrapper
-                    val targetPlugin = devicePlugins.find { it.id == rootPluginId }
-                    val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
+                if (rootPluginId == "schedule") {
+                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName } // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
                     
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                         
-                        // Sử dụng toàn bộ câu nói gốc để đệ quy bóc tách đầy đủ hành động lồng phía sau
                         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
 
                         val resolvedParams = resolveParametersWithMeta(
                             parameters = targetAction.parameters,
                             inputParams = rootParams,
                             matchResult = matchResult,
-                            userMessage = userMessage, // Truyền câu lệnh đầy đủ
+                            userMessage = userMessage,
                             devicePlugins = devicePlugins,
                             excludeIntentId = matchedIntentQA.id,
                             depth = 0
@@ -325,7 +485,6 @@ class AgentKernel @Inject constructor(
 
                         resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
 
-                        // Ghi nhận hành động đã bị hấp thụ thành công vào lịch trình
                         val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
                         val nestedAction = resolvedParams["action"]?.toString() ?: ""
                         if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
@@ -336,7 +495,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
         for (clause in clauses) {
             val clauseNorm = normalizeVietnamese(clause)
             var matchedIntentQA: QAEntity? = null
@@ -354,12 +512,11 @@ class AgentKernel @Inject constructor(
                 val rootPluginId = rootJson?.optString("plugin") ?: ""
                 val rootActionName = rootJson?.optString("action") ?: ""
                 
-                if (rootPluginId != "schedule") { // Bỏ qua Wrapper, chỉ xử lý Leaf
-                    // Nếu hành động này đã bị hấp thụ lồng ghép ở vòng lặp 1 thì bỏ qua không thực hiện riêng lẻ trùng lặp
+                if (rootPluginId != "schedule") {
                     if (absorbedActions.contains("$rootPluginId.$rootActionName")) continue
 
-                    val targetPlugin = devicePlugins.find { it.id == rootPluginId }
-                    val targetAction = targetPlugin?.getActions()?.find { it.name == rootActionName }
+                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName } // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
                     
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
@@ -413,8 +570,8 @@ class AgentKernel @Inject constructor(
         
         if (rootPluginId.isBlank() || rootActionName.isBlank()) return null
         
-        val rootPlugin = devicePlugins.find { it.id == rootPluginId } ?: return null
-        val rootAction = rootPlugin.getActions().find { it.name == rootActionName } ?: return null
+        val rootPlugin = devicePlugins.find { it.manifest.id == rootPluginId } ?: return null // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+        val rootAction = rootPlugin.manifest.actions.find { it.name == rootActionName } ?: return null // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
 
         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
 
@@ -431,7 +588,6 @@ class AgentKernel @Inject constructor(
         return Layer2Result(rootPlugin, Intent(rootPluginId, rootActionName, resolvedParams), confidence)
     }
 
-    // ── TẦNG 4: So khớp quy tắc từ khóa Metadata của Plugin (ĐÃ ĐỒNG BỘ HẤP THỤ ĐA NHIỆM) ──
     private suspend fun tryTier2_5ActionMetadataMatcher(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
@@ -443,14 +599,14 @@ class AgentKernel @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
-        // VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
             var bestMatch: NormalizedActionMetadata? = null
             var bestMatchLen = 0
 
             for (meta in normalizedActionMetadataList) {
-                if (!meta.plugin.routable || !meta.action.enabled) continue
+                // ✅ ĐÃ SỬA: Đọc routable của plugin từ manifest
+                if (!meta.plugin.manifest.routable || !meta.action.enabled) continue
 
                 val isMatched = meta.normalizedDescription.contains(clauseNormalized) ||
                                 clauseNormalized.contains(meta.normalizedDescription) ||
@@ -467,7 +623,8 @@ class AgentKernel @Inject constructor(
                 }
             }
 
-            if (bestMatch != null && bestMatch.plugin.id == "schedule") {
+            // ✅ ĐÃ SỬA: Đọc pluginId từ manifest
+            if (bestMatch != null && bestMatch.plugin.manifest.id == "schedule") {
                 val plugin = bestMatch.plugin
                 val action = bestMatch.action
 
@@ -476,22 +633,20 @@ class AgentKernel @Inject constructor(
                     schemaParams[param.name] = param.defaultValue ?: ""
                 }
 
-                // Sử dụng toàn bộ câu nói gốc để đệ quy bóc tách đầy đủ hành động lồng phía sau
                 val fullMatchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = 0.0f)
 
                 val resolvedParams = resolveParametersWithMeta(
                     parameters = action.parameters,
                     inputParams = schemaParams,
                     matchResult = fullMatchResult,
-                    userMessage = userMessage, // Truyền câu lệnh đầy đủ
+                    userMessage = userMessage,
                     devicePlugins = devicePlugins,
                     excludeIntentId = null,
                     depth = 0
                 )
 
-                resolvedIntents.add(plugin to Intent(plugin.id, action.name, resolvedParams))
+                resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
 
-                // Ghi nhận hành động đã bị hấp thụ thành công vào lịch trình
                 val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
                 val nestedAction = resolvedParams["action"]?.toString() ?: ""
                 if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
@@ -500,14 +655,14 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
             var bestMatch: NormalizedActionMetadata? = null
             var bestMatchLen = 0
 
             for (meta in normalizedActionMetadataList) {
-                if (!meta.plugin.routable || !meta.action.enabled) continue
+                // ✅ ĐÃ SỬA: Đọc cấu hình từ manifest
+                if (!meta.plugin.manifest.routable || !meta.action.enabled) continue
 
                 val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
                                 clauseNormalized.contains(meta.normalizedDescription) ||
@@ -524,12 +679,12 @@ class AgentKernel @Inject constructor(
                 }
             }
 
-            if (bestMatch != null && bestMatch.plugin.id != "schedule") {
+            // ✅ ĐÃ SỬA: Đọc pluginId từ manifest
+            if (bestMatch != null && bestMatch.plugin.manifest.id != "schedule") {
                 val plugin = bestMatch.plugin
                 val action = bestMatch.action
 
-                // Nếu hành động này đã bị hấp thụ lồng ghép ở vòng lặp 1 thì bỏ qua không thực hiện riêng lẻ trùng lặp
-                if (absorbedActions.contains("${plugin.id}.${action.name}")) continue
+                if (absorbedActions.contains("${plugin.manifest.id}.${action.name}")) continue // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
 
                 val schemaParams = mutableMapOf<String, Any>()
                 action.parameters.forEach { param ->
@@ -548,7 +703,7 @@ class AgentKernel @Inject constructor(
                     depth = 0
                 )
 
-                resolvedIntents.add(plugin to Intent(plugin.id, action.name, resolvedParams))
+                resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             }
         }
 
@@ -705,8 +860,8 @@ class AgentKernel @Inject constructor(
             val secActionName = secJson.optString("action", "")
             val secParams = secJson.optJSONObject("params")?.toMap() ?: emptyMap()
 
-            val secPlugin = devicePlugins.find { it.id == secPluginId }
-            val secAction = secPlugin?.getActions()?.find { it.name == secActionName }
+            val secPlugin = devicePlugins.find { it.manifest.id == secPluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+            val secAction = secPlugin?.manifest?.actions?.find { it.name == secActionName } // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
 
             if (secAction != null) {
                 resolveParametersWithMeta(
@@ -736,7 +891,6 @@ class AgentKernel @Inject constructor(
     ): Any {
         var finalIsPlh = isPlh
         
-        // FIX 1C: Nếu giá trị hiện hành là chữ thô khớp với một từ khóa Alias có trong câu lệnh người dùng, tự động coi là Placeholder để dịch
         if (!finalIsPlh && currentValue != null) {
             val isAliasVal = matchResult.aliasMatches.any { 
                 it.first.category == param.semanticType && 
@@ -817,9 +971,8 @@ class AgentKernel @Inject constructor(
 
     private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
         val missing = mutableListOf<String>()
-        val action = plugin.getActions().find { it.name == actionName } ?: return missing
+        val action = plugin.manifest.actions.find { it.name == actionName } ?: return missing // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
 
-        // 1. Quét các tham số bắt buộc của bản thân Action hiện hành (như pluginId, action)
         action.parameters.filter { it.required }.forEach { param ->
             val value = params[param.name]
             if (isPlaceholder(value, param)) {
@@ -827,7 +980,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // 2. ĐÃ SỬA: Quét độc lập các tham số lồng bên trong "params" (không phụ thuộc vào việc params có required hay không)
         val paramsMeta = action.parameters.find { it.semanticType == "params" || it.name == "params" }
         if (paramsMeta != null) {
             val value = params[paramsMeta.name]
@@ -840,8 +992,8 @@ class AgentKernel @Inject constructor(
                 ?: params["actionId"]?.toString() ?: ""
             
             if (targetPluginId.isNotBlank() && targetAction.isNotBlank()) {
-                val tPlugin = plugins.find { it.id == targetPluginId }
-                val tAction = tPlugin?.getActions()?.find { it.name == targetAction }
+                val tPlugin = plugins.find { it.manifest.id == targetPluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                val tAction = tPlugin?.manifest?.actions?.find { it.name == targetAction } // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
                 
                 if (tAction != null) {
                     if (nestedParams == null) {
@@ -869,8 +1021,7 @@ class AgentKernel @Inject constructor(
         actionName: String? = null
     ): String {
         val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
-        // ĐÃ SỬA LỖI 1: Tìm Action đích dựa trên actionName thực tế thay vì actualKey (tên của param thô)
-        val targetAction = plugin?.getActions().orEmpty().find { it.name == actionName }
+        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName } // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
         val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
@@ -909,7 +1060,7 @@ class AgentKernel @Inject constructor(
             PluginResult.NeedMoreInfo(missing, question)
         } else {
             try {
-                logger.d("AgentKernel", "[$traceId] Execute Action Trực Tiếp: ${plugin.id}.${normalizedIntent.action}")
+                logger.d("AgentKernel", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}") // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
                 plugin.execute(normalizedIntent.action, normalizedIntent.params)
             } catch (e: Exception) {
                 logger.e("AgentKernel", "[$traceId] Execute error: ${e.message}", e)
@@ -920,7 +1071,7 @@ class AgentKernel @Inject constructor(
         when (executionResult) {
             is PluginResult.NeedMoreInfo -> chatHistoryManager.setPendingIntent(
                 PendingIntent(
-                    pluginId = plugin.id,
+                    pluginId = plugin.manifest.id, // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
                     action = normalizedIntent.action,
                     knownParams = normalizedIntent.params + mapOf("_noProgressCount" to 0),
                     missingParams = executionResult.missingParams,
@@ -942,18 +1093,17 @@ class AgentKernel @Inject constructor(
         return executionResult
     }
 
-    // ── TẦNG 1: Pending Intent State ──────────────────────────────────────────
     private suspend fun tryResolvePendingIntent(
         pending: PendingIntent,
         userMessage: String,
         devicePlugins: List<Plugin>,
         traceId: String
     ): DeviceCommandResult? {
-        val targetPlugin = devicePlugins.find { it.id == pending.pluginId } ?: run {
+        val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run { // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             chatHistoryManager.clearPendingIntent()
             return null
         }
-        val targetAction = targetPlugin.getActions().find { it.name == pending.action } ?: run {
+        val targetAction = targetPlugin.manifest.actions.find { it.name == pending.action } ?: run { // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
             chatHistoryManager.clearPendingIntent()
             return null
         }
@@ -996,8 +1146,8 @@ class AgentKernel @Inject constructor(
                 val targetActionName = pending.knownParams["action_id"]?.toString()
                     ?: pending.knownParams["action"]?.toString()
                     ?: pending.knownParams["actionId"]?.toString() ?: ""
-                val tPlugin = devicePlugins.find { it.id == targetPluginId }
-                tPlugin?.getActions()?.find { it.name == targetActionName }?.parameters?.find { it.name == actualKey }
+                val tPlugin = devicePlugins.find { it.manifest.id == targetPluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+                tPlugin?.manifest?.actions?.find { it.name == targetActionName }?.parameters?.find { it.name == actualKey } // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
             } else {
                 targetAction.parameters.find { it.name == actualKey }
             }
@@ -1102,7 +1252,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ĐỒNG BỘ: Local SQLite Heuristic luôn đè lên LLM thô để giữ nguyên ID chính xác (cam1, may01...)
         val finalFilled = filled + heuristicFilled
 
         val flatFilled = finalFilled.filterKeys { !it.startsWith("params.") && it != "params" }
@@ -1146,7 +1295,7 @@ class AgentKernel @Inject constructor(
             )
             chatHistoryManager.addTurn(userMessage, question)
             return DeviceCommandResult(
-                pluginId = targetPlugin.id,
+                pluginId = targetPlugin.manifest.id, // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
                 result = PluginResult.NeedMoreInfo(stillMissing, question)
             )
         }
@@ -1165,10 +1314,9 @@ class AgentKernel @Inject constructor(
         }
         chatHistoryManager.addTurn(userMessage, replyForHistory)
 
-        return DeviceCommandResult(pluginId = targetPlugin.id, result = executionResult)
+        return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
     }
 
-    // ── TẦNG 5: Phân loại ý định bằng mô hình ngôn ngữ lớn LLM ─────────────────
     private suspend fun executeTier3LlmRouting(
         userMessage: String,
         matchResult: TrainingSkill.MatchResult,
@@ -1182,9 +1330,8 @@ class AgentKernel @Inject constructor(
             .filter { it.second >= configAliasThreshold }
             .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
 
-        // ĐÃ TỐI ƯU: Thêm điều kiện giới hạn độ dài ký tự tối thiểu để tránh bị gán bừa (False Positive) bởi các từ khóa quá ngắn
         val matchedActions = normalizedActionMetadataList.filter { meta ->
-            meta.plugin.routable && meta.action.enabled && (
+            meta.plugin.manifest.routable && meta.action.enabled && ( // ✅ ĐÃ SỬA: Lọc trạng thái từ manifest
                 meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
                 meta.normalizedExamples.any { ex -> 
                     ex.length >= 5 && (queryNormalized.contains(ex) || ex.contains(queryNormalized)) 
@@ -1197,12 +1344,11 @@ class AgentKernel @Inject constructor(
                 val paramsInfo = meta.action.parameters.joinToString(", ") { p ->
                     "${p.name} (kiểu: ${p.type}, yêu cầu: ${p.required}, vai trò: ${p.semanticType})"
                 }
-                "  - ${meta.plugin.id}.${meta.action.name}: ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
+                "  - ${meta.plugin.manifest.id}.${meta.action.name}: ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]" // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             }
         } else {
-            // ĐÃ TỐI ƯU: Lọc bỏ các hành động quản trị hệ thống không thuộc devicePlugins (như TrainingSkill) tránh làm loãng LLM
             actionCandidates
-                .filter { c -> devicePlugins.any { it.id == c.pluginId } }
+                .filter { c -> devicePlugins.any { it.manifest.id == c.pluginId } } // ✅ ĐÃ SỬA: Lọc thiết bị từ manifest
                 .joinToString("\n") { c ->
                     "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
                 }
@@ -1234,8 +1380,8 @@ class AgentKernel @Inject constructor(
         val rawIntent = parseIntentResponse(routerResultJson) ?: return RouterOutcome.RouterFailed("Tầng 5 LLM parse error")
         if (rawIntent.pluginId == "chat") return RouterOutcome.NotACommand
 
-        val targetPlugin = devicePlugins.find { it.id == rawIntent.pluginId } ?: return RouterOutcome.RouterFailed("Không tìm thấy Plugin")
-        val targetAction = targetPlugin.getActions().find { it.name == rawIntent.action } ?: return RouterOutcome.RouterFailed("Không tìm thấy Action")
+        val targetPlugin = devicePlugins.find { it.manifest.id == rawIntent.pluginId } ?: return RouterOutcome.RouterFailed("Không tìm thấy Plugin") // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
+        val targetAction = targetPlugin.manifest.actions.find { it.name == rawIntent.action } ?: return RouterOutcome.RouterFailed("Không tìm thấy Action") // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
         
         val finalParams = resolveParametersWithMeta(
             parameters = targetAction.parameters,
@@ -1250,7 +1396,7 @@ class AgentKernel @Inject constructor(
         val intent = rawIntent.copy(params = finalParams)
         val result = executeIntent(targetPlugin, intent, userMessage, traceId)
 
-        return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.id, result = result))
+        return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = result)) // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
     }
 
     private fun normalizeParams(
@@ -1259,7 +1405,7 @@ class AgentKernel @Inject constructor(
         actionName: String, 
         userMessage: String? = null
     ): Map<String, Any> {
-        val action = plugin.getActions().find { it.name == actionName } ?: return params
+        val action = plugin.manifest.actions.find { it.name == actionName } ?: return params // ✅ ĐÃ SỬA: Đọc danh sách hành động từ manifest
         return params.mapValues { (key, value) ->
             if (key == "params" && value is Map<*, *>) {
                 @Suppress("UNCHECKED_CAST")
@@ -1270,7 +1416,7 @@ class AgentKernel @Inject constructor(
                 val targetAction = params["action_id"]?.toString()
                     ?: params["action"]?.toString()
                     ?: params["actionId"]?.toString() ?: ""
-                val targetPlugin = plugins.find { it.id == targetPluginId }
+                val targetPlugin = plugins.find { it.manifest.id == targetPluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
                 return@mapValues if (targetPlugin != null && targetAction.isNotEmpty()) {
                     normalizeParams(nested, targetPlugin, targetAction, userMessage)
                 } else nested
@@ -1345,7 +1491,7 @@ class AgentKernel @Inject constructor(
         action: String,
         params: Map<String, Any>
     ): PluginResult {
-        val plugin = plugins.find { it.id == pluginId }
+        val plugin = plugins.find { it.manifest.id == pluginId } // ✅ ĐÃ SỬA: Lấy pluginId từ manifest
             ?: return PluginResult.Failure("Không tìm thấy plugin: $pluginId")
 
         val normalizedParams = normalizeParams(params, plugin, action, null)

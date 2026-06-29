@@ -100,7 +100,6 @@ class TaskScheduler @AssistedInject constructor(
         
         if (schedule.intervalMinutes > 0) {
             val lastRun = schedule.lastRunAt
-            // Thêm dung sai trễ 10 giây để đảm bảo không bỏ sót tác vụ do trễ dịch vụ WorkManager
             return (now - lastRun) >= (schedule.intervalMinutes * 60_000L - 10_000L)
         }
         
@@ -109,7 +108,8 @@ class TaskScheduler @AssistedInject constructor(
 
     private suspend fun runSchedule(schedule: ScheduleEntity) {
         try {
-            val plugin = plugins.find { it.id == schedule.pluginId }
+            // ✅ ĐÃ SỬA: Sửa đổi cách quét tìm kiếm ID của Plugin từ manifest động [1]
+            val plugin = plugins.find { it.manifest.id == schedule.pluginId }
             if (plugin == null) {
                 logger.w("TaskScheduler", "Plugin not found: ${schedule.pluginId}")
                 return
@@ -159,17 +159,14 @@ object CronParser {
         val lastDayOfYear = lastCalendar.get(java.util.Calendar.DAY_OF_YEAR)
         val lastYear = lastCalendar.get(java.util.Calendar.YEAR)
 
-        // Kiểm tra xem lịch trình đã chạy trong ngày hôm nay chưa
         val isDifferentDay = nowYear != lastYear || nowDayOfYear != lastDayOfYear
 
-        // "*/N * * * *" — chạy mỗi N phút
         intervalPattern.matchEntire(cron.trim())?.let { m ->
             val interval = m.groupValues[1].toLongOrNull() ?: return false
             val elapsedMinutes = (timestamp - lastRunAt) / 60_000L
-            return elapsedMinutes >= (interval - 1) // Cho phép lệch tối đa 1 phút
+            return elapsedMinutes >= (interval - 1)
         }
 
-        // "MINUTE HOUR * * *" — chạy đúng giờ:phút mỗi ngày (hỗ trợ lệch giờ của HĐH)
         dailyPattern.matchEntire(cron.trim())?.let { m ->
             val cronMinute = m.groupValues[1].toIntOrNull() ?: return false
             val cronHour   = m.groupValues[2].toIntOrNull() ?: return false
@@ -177,7 +174,6 @@ object CronParser {
             val currentTotalMinutes = nowHour * 60 + nowMinute
             val targetTotalMinutes = cronHour * 60 + cronMinute
             
-            // Nếu đã vượt qua thời gian hẹn trong ngày và chưa từng chạy trong ngày hôm nay
             return currentTotalMinutes >= targetTotalMinutes && isDifferentDay
         }
 
@@ -189,7 +185,6 @@ private fun JSONObject.toMap(): Map<String, Any> {
     val map = mutableMapOf<String, Any>()
     keys().forEach { key ->
         val value = get(key)
-        // Chặn sớm rủi ro kiểu dữ liệu rác JSONObject.NULL khi chuyển sang Map của Kotlin
         if (value != org.json.JSONObject.NULL) {
             map[key] = when (value) {
                 is JSONObject -> value.toMap()

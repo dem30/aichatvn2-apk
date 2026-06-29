@@ -5,6 +5,8 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.core.plugin.PluginCapabilities
+import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
@@ -16,7 +18,6 @@ import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
-import com.aichatvn.agent.ui.dashboard.DashboardProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction as DashboardDeviceAction
@@ -57,52 +58,16 @@ class CameraSkill @Inject constructor(
     private val configProvider: AppConfigProvider,
     private val deviceRegistry: DeviceRegistry,
     logger: Logger,
-) : BaseSkill("camera", "Quản lý camera", logger), Plugin, DashboardProvider {
-    
-    override val routable: Boolean = true
-    override val visibleOnDashboard: Boolean = true
-    override val autoGenerateQA: Boolean = true
+) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
-    override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
-        val cameras = database.cameraDao().getAllCameras()
-        cameras.mapIndexed { index, cam ->
-            val xCoord = 40f + (index % 2) * 160f
-            val yCoord = 40f + (index / 2) * 160f
-
-            val isOnline = cam.isOnline == 1
-
-            DeviceNode(
-                id = cam.id,
-                name = cam.customername,
-                type = DeviceType.CAMERA,
-                pluginId = id,
-                
-                defaultAction = "scan",
-                defaultParams = mapOf("cameraId" to cam.id),
-                supportedActions = listOf(
-                    DashboardDeviceAction(id = "scan", title = "Quét camera", icon = "📸"),
-                    DashboardDeviceAction(id = "status", title = "Trạng thái", icon = "ℹ️"),
-                    DashboardDeviceAction(id = "set_active", title = "Bật giám sát", icon = "🔔", defaultParams = mapOf("active" to true)),
-                    DashboardDeviceAction(id = "set_active", title = "Tắt giám sát", icon = "🔕", defaultParams = mapOf("active" to false)),
-                    DashboardDeviceAction(id = "set_smart_mode", title = "Bật AI", icon = "🧠", defaultParams = mapOf("enabled" to true))
-                ),
-                
-                x = xCoord,
-                y = yCoord,
-                online = isOnline,
-                icon = "📷",
-                ip = "192.168.1.${10 + index}",
-                battery = null,
-                status = if (isOnline) "Đang hoạt động" else "Mất kết nối",
-                room = "Thửa Đất"
-            )
-        }
-    }
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    
-    override fun getActions(): List<PluginAction> {
-        return listOf(
+    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    override val manifest = PluginManifest(
+        id = id,
+        name = name,
+        capabilities = PluginCapabilities(dashboard = true), // Tuyên bố năng lực Dashboard
+        visibleOnDashboard = true,
+        autoGenerateQA = true,
+        actions = listOf(
             PluginAction(
                 name = "scan",
                 description = "Quét camera để phát hiện thay đổi và phân tích AI",
@@ -158,9 +123,46 @@ class CameraSkill @Inject constructor(
                 parameters = emptyList()
             )
         )
+    )
+
+    // ✅ ĐÃ SỬA: Ghi đè trực tiếp hàm xuất Node giao diện của Plugin mà không cần DashboardProvider phụ thuộc ngoài
+    override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
+        val cameras = database.cameraDao().getAllCameras()
+        cameras.mapIndexed { index, cam ->
+            val xCoord = 40f + (index % 2) * 160f
+            val yCoord = 40f + (index / 2) * 160f
+
+            val isOnline = cam.isOnline == 1
+
+            DeviceNode(
+                id = cam.id,
+                name = cam.customername,
+                type = DeviceType.CAMERA,
+                pluginId = manifest.id,
+                
+                defaultAction = "scan",
+                defaultParams = mapOf("cameraId" to cam.id),
+                supportedActions = listOf(
+                    DashboardDeviceAction(id = "scan", title = "Quét camera", icon = "📸"),
+                    DashboardDeviceAction(id = "status", title = "Trạng thái", icon = "ℹ️"),
+                    DashboardDeviceAction(id = "set_active", title = "Bật giám sát", icon = "🔔", defaultParams = mapOf("active" to true)),
+                    DashboardDeviceAction(id = "set_active", title = "Tắt giám sát", icon = "🔕", defaultParams = mapOf("active" to false)),
+                    DashboardDeviceAction(id = "set_smart_mode", title = "Bật AI", icon = "🧠", defaultParams = mapOf("enabled" to true))
+                ),
+                
+                x = xCoord,
+                y = yCoord,
+                online = isOnline,
+                icon = "📷",
+                ip = "192.168.1.${10 + index}",
+                battery = null,
+                status = if (isOnline) "Đang hoạt động" else "Mất kết nối",
+                room = "Thửa Đất"
+            )
+        }
     }
 
-    
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()
     private fun getMutexForCamera(cameraId: String): Mutex =
@@ -178,6 +180,12 @@ class CameraSkill @Inject constructor(
         var cooldownUntil: Long = 0L
     )
     
+    private data class DailyEvent(
+        val timestamp: Long,
+        val comment: String,
+        val imageBytes: ByteArray?
+    )
+    
     private data class CircuitBreakerState(
         var offlineCount: Int = 0,
         var offlineSince: Long = 0L,
@@ -189,23 +197,6 @@ class CameraSkill @Inject constructor(
         var diff: Int = 0,
         var timestamp: Long = 0L
     )
-    
-    private data class DailyEvent(
-        val timestamp: Long,
-        val comment: String,
-        val imageBytes: ByteArray?
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-            return timestamp == (other as DailyEvent).timestamp && comment == other.comment
-        }
-        override fun hashCode(): Int {
-            var result = timestamp.hashCode()
-            result = 31 * result + comment.hashCode()
-            return result
-        }
-    }
     
     private val learningStates = ConcurrentHashMap<String, CameraLearningState>()
     private val circuitBreakers = ConcurrentHashMap<String, CircuitBreakerState>()
@@ -221,7 +212,7 @@ class CameraSkill @Inject constructor(
     private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, 3 * 60 * 60 * 1000L)
     private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
     private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
-    private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
+    private suspend fun circuitBreakerResetMs() = configProvider.getRawConfigsFlow().first().find { it.key == AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS }?.value?.toLongOrNull() ?: CIRCUIT_BREAKER_RESET_MS_DEFAULT
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
     
     companion object {
@@ -266,7 +257,6 @@ class CameraSkill @Inject constructor(
         )
         database.cameraDao().updateCamera(updated)
 
-        // SỬA LỖI BIÊN DỊCH: Sử dụng khai báo tường minh kiểu dữ liệu String cho buildList
         val changed = buildList<String> {
             if (updated.aiPrompt != cam.aiPrompt) add("prompt AI")
             if (updated.aiPositiveKeywords != cam.aiPositiveKeywords) add("từ khoá cảnh báo")
@@ -452,11 +442,10 @@ class CameraSkill @Inject constructor(
         val result = setSmartMode(resolvedCustomerId, enabled)
         if (result is PluginResult.Success) {
             val cameras = database.cameraDao().getCamerasByCustomer(resolvedCustomerId)
-            cameras.forEach { cam ->
-                deviceRegistry.updateNode(cam.id) { current ->
+            cameras.forEach { camera ->
+                deviceRegistry.updateNode(camera.id) { current ->
                     current.copy(
-                        status = if (enabled) "AI Đang bật" else "Chỉ so sánh ảnh",
-                        lastSeen = System.currentTimeMillis()
+                        status = if (enabled) "AI Đang bật" else "AI Đang tắt"
                     )
                 }
             }
@@ -1133,20 +1122,19 @@ class CameraSkill @Inject constructor(
                 database.cameraDao().insertCamera(camera)
             }
             
-            val existingSetting = withContext(Dispatchers.IO) {
+            val setting = withContext(Dispatchers.IO) {
                 database.cameraDao().getCustomerSetting(camera.customerId)
             }
-            if (existingSetting == null && camera.customerId.isNotEmpty()) {
-                val setting = CustomerSettingEntity(
-                    customerId = camera.customerId,
-                    smartMode = 0,
-                    isActive = 1,
-                    updatedAt = System.currentTimeMillis(),
-                    timestamp = System.currentTimeMillis()
+            if (setting == null) {
+                database.cameraDao().insertCustomerSetting(
+                    CustomerSettingEntity(
+                        customerId = camera.customerId,
+                        smartMode = 0,
+                        isActive = 1,
+                        updatedAt = System.currentTimeMillis(),
+                        timestamp = System.currentTimeMillis()
+                    )
                 )
-                withContext(Dispatchers.IO) {
-                    database.cameraDao().insertCustomerSetting(setting)
-                }
             }
             
             if (!learningStates.containsKey(camera.id)) {

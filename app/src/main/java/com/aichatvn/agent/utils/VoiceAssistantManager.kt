@@ -10,16 +10,30 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.SpeechRecognizer
 import android.util.Log
+import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.ChatRequest
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+import javax.inject.Singleton
 
-class VoiceAssistantManager(
-    private val context: Context,
-    private val onListeningStateChange: (Boolean) -> Unit,
-    private val onTextRecognized: (String) -> Unit,
-    private val onSilence: () -> Unit = {},
-    private val onMaxSTTFailuresReached: (String) -> Unit = {}
+@Singleton
+class VoiceAssistantManager @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val agentKernel: AgentKernel, // Tiêm trực tiếp cổng điều phối trung tâm
+    private val logger: Logger
 ) {
+    private val ttsHelper = TextToSpeechHelper(context)
     private val sttHelper = SpeechRecognizerHelper(context)
-    val ttsHelper = TextToSpeechHelper(context)
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private var listeningTimer: CountDownTimer? = null
     private val restartHandler = Handler(Looper.getMainLooper())
@@ -27,6 +41,16 @@ class VoiceAssistantManager(
 
     @Volatile private var destroyed = false
     @Volatile private var isListeningActive = false
+
+    // Flows phát tín hiệu Reactive cho Jetpack Compose UI
+    private val _isListening = MutableStateFlow(false)
+    val isListening = _isListening.asStateFlow()
+
+    private val _recognizedText = MutableSharedFlow<String>(replay = 0)
+    val recognizedText = _recognizedText.asSharedFlow()
+
+    private val _aiResponseText = MutableSharedFlow<String>(replay = 0)
+    val aiResponseText = _aiResponseText.asSharedFlow()
 
     // Quản lý Audio Focus
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -90,38 +114,57 @@ class VoiceAssistantManager(
 
         cancelPendingRestart()
         requestAudioFocus()
-        onListeningStateChange(true)
+        _isListening.value = true
 
         sttHelper.startListening(
             onResult = { text ->
                 isListeningActive = false
                 consecutiveSttFailures = 0
                 stopTimer()
-                onListeningStateChange(false)
+                _isListening.value = false
                 abandonAudioFocus()
-                onTextRecognized(text)
+
+                // Phát văn bản nhận diện được ra ngoài Flow
+                scope.launch { _recognizedText.emit(text) }
+
+                // TỰ ĐỘNG KHÉP KÍN LUỒNG: Đẩy thẳng lên AgentKernel xử lý không qua trung gian UI
+                scope.launch {
+                    try {
+                        val result = agentKernel.chat(
+                            AgentKernel.ChatRequest(
+                                message = text,
+                                chatMode = "COMBINED"
+                            )
+                        )
+                        _aiResponseText.emit(result.responseText)
+
+                        // TTS đọc to câu trả lời của AI
+                        speak(result.responseText)
+                    } catch (e: Exception) {
+                        logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)
+                        speak("Xin lỗi, hệ thống gặp sự cố khi xử lý câu lệnh.")
+                    }
+                }
             },
             onError = { errorCode, errorMsg ->
                 isListeningActive = false
                 stopTimer()
-                onListeningStateChange(false)
+                _isListening.value = false
                 abandonAudioFocus()
 
                 consecutiveSttFailures++
                 if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
                     consecutiveSttFailures = 0
-                    onMaxSTTFailuresReached(errorMsg)
+                    Log.e("VoiceAssistantManager", "Lỗi Mic liên tiếp: $errorMsg")
                 } else {
                     val delay = if (errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 300L else 2000L
                     scheduleRestart(delayMs = delay)
                 }
             },
-            // ✅ FIX: User bắt đầu nói → reset timeout từ đầu, tránh bị cắt giữa chừng
             onSpeechStarted = {
                 Log.d("VoiceAssistantManager", "User bắt đầu nói, reset timeout timer.")
                 resetTimeoutTimer()
             },
-            // ✅ FIX: User ngừng nói → hủy timer ngay, chờ kết quả STT (không đợi hết 12s)
             onEndOfSpeech = {
                 Log.d("VoiceAssistantManager", "User ngừng nói, hủy timer chờ kết quả STT.")
                 stopTimer()
@@ -136,7 +179,7 @@ class VoiceAssistantManager(
         cancelPendingRestart()
         stopTimer()
         sttHelper.destroy()
-        onListeningStateChange(false)
+        _isListening.value = false
         abandonAudioFocus()
     }
 
@@ -156,18 +199,15 @@ class VoiceAssistantManager(
         listeningTimer = object : CountDownTimer(LISTEN_TIMEOUT_MS, LISTEN_TIMEOUT_MS) {
             override fun onTick(ms: Long) {}
             override fun onFinish() {
-                // Chỉ chạy vào đây nếu user im lặng hoàn toàn suốt LISTEN_TIMEOUT_MS
                 isListeningActive = false
-                onListeningStateChange(false)
+                _isListening.value = false
                 abandonAudioFocus()
-                onSilence()
                 sttHelper.destroy()
                 scheduleRestart(delayMs = 300L)
             }
         }.start()
     }
 
-    // ✅ FIX: Reset timer từ đầu khi user bắt đầu nói
     private fun resetTimeoutTimer() {
         listeningTimer?.cancel()
         startTimeoutTimer()
@@ -195,8 +235,6 @@ class VoiceAssistantManager(
     }
 
     companion object {
-        // Timeout im lặng: 12s — chỉ kích hoạt khi user KHÔNG nói gì
-        // Nếu user đang nói thì timer sẽ được reset liên tục qua onSpeechStarted
         private const val LISTEN_TIMEOUT_MS = 12_000L
     }
 }
