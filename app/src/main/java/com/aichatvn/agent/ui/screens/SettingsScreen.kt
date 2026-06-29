@@ -27,9 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import androidx.work.WorkManager
 import com.aichatvn.agent.data.model.AppConfigEntity
-import com.aichatvn.agent.scheduler.TaskScheduler // ✅ ĐÃ IMPORT: Sử dụng để lấy hằng số WORK_NAME chính xác của TaskScheduler
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -68,7 +66,6 @@ fun SettingsScreen(
     var errorMessage      by remember { mutableStateOf<String?>(null) }
     var testEmailResult   by remember { mutableStateOf<String?>(null) }
     var tuyaTestResult    by remember { mutableStateOf<String?>(null) }
-    var workerStatus      by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -83,25 +80,6 @@ fun SettingsScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
-        val wm = WorkManager.getInstance(context)
-        try {
-            // SỬA LỖI TRA CỨU: Đồng bộ hóa mã khóa sử dụng hằng số chuẩn của lõi TaskScheduler.WORK_NAME
-            val info = wm.getWorkInfosForUniqueWork(TaskScheduler.WORK_NAME).get()
-            workerStatus = mapOf(
-                "Smart Scan (15 phút)" to when (info.firstOrNull()?.state?.name) {
-                    "ENQUEUED"  -> "⏳ Đang chờ"
-                    "RUNNING"   -> "🔄 Đang chạy"
-                    "SUCCEEDED" -> "✅ Thành công"
-                    "FAILED"    -> "❌ Thất bại"
-                    else        -> "⏸ Chưa kích hoạt"
-                }
-            )
-        } catch (e: Exception) {
-            workerStatus = mapOf("Lỗi" to "Không thể lấy trạng thái: ${e.message}")
-        }
-    }
-
     Scaffold(topBar = { TopAppBar(title = { Text("Cài đặt") }) }) { padding ->
         Column(
             modifier = Modifier
@@ -110,24 +88,7 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("⏰ Lịch quét tự động", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(4.dp))
-                    workerStatus.forEach { (name, status) ->
-                        Text("• $name: $status", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Text(
-                        "Camera sẽ được quét theo lịch trình này khi app chạy ngầm",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                    )
-                }
-            }
+        ) { // ✅ ĐÃ KHÔI PHỤC: Dấu ngoặc nhọn mở khối Column chính xác
 
             Text("🤖 Groq API", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(
