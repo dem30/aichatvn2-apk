@@ -65,7 +65,6 @@ class EmailSkill @Inject constructor(
                 name = "send",
                 description = "Soạn thảo và gửi email tới địa chỉ đích",
                 examples = listOf("gửi email", "soạn email"), 
-                aliases = listOf("gửi mail", "soạn thư"),
                 tags = listOf("mail", "send", "report"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email"),
@@ -77,7 +76,6 @@ class EmailSkill @Inject constructor(
                 name = "test",
                 description = "Gửi một bức email thử nghiệm kết nối hệ thống",
                 examples = listOf("gửi email test"),
-                aliases = listOf("gửi test"),
                 tags = listOf("test", "diagnostic"),
                 parameters = listOf(
                     PluginParameter("to", "string", "Địa chỉ email nhận", true, "email")
@@ -86,12 +84,6 @@ class EmailSkill @Inject constructor(
         )
     }
 
-    // RÚT GỌN TỐI ƯU: Chỉ giữ lại 1 đến 2 từ khóa kích hoạt nguyên bản, không chứa thực thể tĩnh
-    override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "send" to listOf("gửi email", "soạn email"),
-        "test" to listOf("gửi email test")
-    )
-    
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         return when (action) {
             "send" -> handleSend(params)

@@ -11,6 +11,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import org.json.JSONObject
 import java.util.UUID
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
@@ -35,7 +36,6 @@ data class NormalizedActionMetadata(
     val action: PluginAction,
     val normalizedDescription: String,
     val normalizedExamples: List<String>,
-    val normalizedAliases: List<String>,
     val normalizedTags: List<String>
 )
 
@@ -82,7 +82,6 @@ class AgentKernel @Inject constructor(
                     action = action,
                     normalizedDescription = normalizeVietnamese(action.description),
                     normalizedExamples = action.examples.map { normalizeVietnamese(it) },
-                    normalizedAliases = action.aliases.map { normalizeVietnamese(it) },
                     normalizedTags = action.tags.map { normalizeVietnamese(it) }
                 )
             }
@@ -453,13 +452,10 @@ class AgentKernel @Inject constructor(
             for (meta in normalizedActionMetadataList) {
                 if (!meta.plugin.routable || !meta.action.enabled) continue
 
-                val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
+                val isMatched = meta.normalizedDescription.contains(clauseNormalized) ||
                                 clauseNormalized.contains(meta.normalizedDescription) ||
-                                meta.normalizedAliases.any { alias -> 
-                                    alias.length >= 3 && (clauseNormalized.contains(alias) || alias.contains(clauseNormalized)) 
-                                } ||
-                                meta.normalizedExamples.any { ex -> 
-                                    ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
+                                meta.normalizedExamples.any { ex ->
+                                    ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized))
                                 }
 
                 if (isMatched) {
@@ -515,9 +511,6 @@ class AgentKernel @Inject constructor(
 
                 val isMatched = meta.normalizedDescription.contains(clauseNormalized) || 
                                 clauseNormalized.contains(meta.normalizedDescription) ||
-                                meta.normalizedAliases.any { alias -> 
-                                    alias.length >= 3 && (clauseNormalized.contains(alias) || alias.contains(clauseNormalized)) 
-                                } ||
                                 meta.normalizedExamples.any { ex -> 
                                     ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
                                 }
@@ -1193,9 +1186,6 @@ class AgentKernel @Inject constructor(
         val matchedActions = normalizedActionMetadataList.filter { meta ->
             meta.plugin.routable && meta.action.enabled && (
                 meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
-                meta.normalizedAliases.any { alias -> 
-                    alias.length >= 3 && (queryNormalized.contains(alias) || alias.contains(queryNormalized)) 
-                } ||
                 meta.normalizedExamples.any { ex -> 
                     ex.length >= 5 && (queryNormalized.contains(ex) || ex.contains(queryNormalized)) 
                 }

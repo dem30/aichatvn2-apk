@@ -48,8 +48,7 @@ class NotificationSkill @Inject constructor(
             PluginAction(
                 name = "send",
                 description = "Gửi thông báo đẩy hiển thị trên màn hình thiết bị",
-                examples = listOf("gửi thông báo"),
-                aliases = listOf("gửi thông báo", "cảnh báo", "báo tin"),
+                examples = listOf("gửi thông báo", "gửi cảnh báo"),
                 tags = listOf("notification", "alert", "message"),
                 parameters = listOf(
                     PluginParameter("title", "string", "Tiêu đề thông báo", true, "string"),
@@ -59,11 +58,6 @@ class NotificationSkill @Inject constructor(
         )
     }
 
-    // RÚT GỌN TỐI ƯU: Chỉ giữ lại 2 từ khóa kích hoạt nguyên bản và khái quát nhất
-    override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "send" to listOf("gửi thông báo", "gửi cảnh báo")
-    )
-    
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
             "send" -> handleSend(params)

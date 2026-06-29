@@ -114,7 +114,7 @@ class CameraSkill @Inject constructor(
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái kết nối của camera",
-                examples = emptyList(),
+                examples = listOf("trạng thái camera", "kiểm tra camera"),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera")
                 )
@@ -122,7 +122,7 @@ class CameraSkill @Inject constructor(
             PluginAction(
                 name = "set_active",
                 description = "Bật hoặc tắt theo dõi của camera cụ thể",
-                examples = emptyList(),
+                examples = listOf("bật camera", "tắt camera"),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
                     PluginParameter("active", "boolean", "Trạng thái bật/tắt", true, "boolean")
@@ -131,7 +131,7 @@ class CameraSkill @Inject constructor(
             PluginAction(
                 name = "set_smart_mode",
                 description = "Bật hoặc tắt chế độ phân tích AI cho camera",
-                examples = emptyList(),
+                examples = listOf("bật ai camera", "tắt ai camera"),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
                     PluginParameter("customerId", "string", "Mã khách hàng", false, "string"),
@@ -141,7 +141,7 @@ class CameraSkill @Inject constructor(
             PluginAction(
                 name = "configure",
                 description = "Cập nhật cấu hình kỹ thuật cho thiết bị camera",
-                examples = emptyList(),
+                examples = listOf("cấu hình camera", "cập nhật camera"),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
                     PluginParameter("aiPrompt", "string", "Prompt AI mới", false, "string"),
@@ -160,14 +160,6 @@ class CameraSkill @Inject constructor(
         )
     }
 
-    override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "scan"           to listOf("quét camera", "chụp ảnh camera"),
-        "list_cameras"   to listOf("danh sách camera", "xem camera"),
-        "set_active"     to listOf("bật camera", "tắt camera"),
-        "set_smart_mode" to listOf("bật ai camera", "tắt ai camera"),
-        "status"         to listOf("trạng thái camera", "kiểm tra camera"),
-        "configure"      to listOf("cấu hình camera", "cập nhật camera")
-    )
     
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()

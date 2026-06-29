@@ -87,29 +87,38 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    fun addQA(question: String, answer: String, category: String) {
-        addQA(question, answer, "alias", category)
-    }
-
-    fun addQA(question: String, answer: String, type: String, category: String) {
+    // Reset lại trạng thái phân trang và nạp lại dữ liệu trang đầu tiên
+    private fun resetAndReload() {
+        _currentPage.value = 1
+        _hasMore.value = true
         viewModelScope.launch {
-            trainingSkill.addQA(question, answer, type, category, "default_user")
+            loadMoreQAs()
         }
     }
 
-    fun updateQA(id: String, question: String?, answer: String?, category: String?) {
-        updateQA(id, question, answer, "alias", category)
+    // Loại bỏ overload 3 tham số để tránh mặc định hóa sai lệch kiểu dữ liệu
+    fun addQA(question: String, answer: String, type: String, category: String) {
+        viewModelScope.launch {
+            trainingSkill.addQA(question, answer, type, category, "default_user")
+            resetAndReload()
+        }
     }
 
+    // Loại bỏ overload cũ để tránh ghi đè làm mất kiểu dữ liệu gốc "intent" thành "alias"
     fun updateQA(id: String, question: String?, answer: String?, type: String?, category: String?) {
         viewModelScope.launch {
             trainingSkill.updateQA(id, question, answer, type, category, "default_user")
+            resetAndReload()
+            if (activeSearchQuery.isNotBlank()) {
+                refreshSearchResults()
+            }
         }
     }
 
     fun deleteQA(id: String) {
         viewModelScope.launch {
             trainingSkill.deleteQA(id, "default_user")
+            resetAndReload()
             if (activeSearchQuery.isNotBlank()) {
                 refreshSearchResults()
             }
@@ -122,6 +131,7 @@ class TrainingViewModel @Inject constructor(
             for (id in ids) {
                 trainingSkill.deleteQA(id, "default_user")
             }
+            resetAndReload()
             if (activeSearchQuery.isNotBlank()) {
                 refreshSearchResults()
             }
@@ -136,6 +146,8 @@ class TrainingViewModel @Inject constructor(
     fun deleteAllQAs() {
         viewModelScope.launch {
             trainingSkill.deleteAllQAs("default_user")
+            resetAndReload()
+            clearSearch()
         }
     }
 

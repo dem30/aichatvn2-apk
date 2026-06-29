@@ -36,9 +36,7 @@ interface Plugin {
     suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult
     
     fun getActions(): List<PluginAction>
-    fun getQATriggers(): Map<String, List<String>> = emptyMap()
-
-    // Khai báo bootstrap QA tự động (Decouple hoàn toàn QA Init Builder khỏi logic lõi của Agent)
+    
     fun getBootstrapQA(): List<PluginQABootstrap> = emptyList()
 }
 
@@ -56,8 +54,6 @@ data class PluginParameter(
     val required: Boolean,
     val semanticType: String = "string", // "email", "camera", "device", "time", "interval", "plugin_id", "action_id", "params"
     val placeholder: String = "",
-    val examples: List<String> = emptyList(),
-    val aliases: List<String> = emptyList(),
     val enumValues: List<String> = emptyList(),
     val defaultValue: Any? = null,
     val validationRegex: String = ""
@@ -99,7 +95,6 @@ data class PluginAction(
     val description: String,
     val examples: List<String> = emptyList(),
     val parameters: List<PluginParameter> = emptyList(),
-    val aliases: List<String> = emptyList(),
     val tags: List<String> = emptyList(),
     val enabled: Boolean = true
 )

@@ -103,8 +103,7 @@ class LightSkill @Inject constructor(
                 name = "set",
                 description = "Bật hoặc tắt đèn thông minh",
                 examples = listOf("bật đèn","tắt đèn"),
-                aliases = listOf("bật", "mở", "tắt", "đóng", "ngắt"),
-                tags = listOf("light", "switch", "relay", "device"),
+                                tags = listOf("light", "switch", "relay", "device"),
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device"),
                     PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
@@ -113,8 +112,7 @@ class LightSkill @Inject constructor(
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái hiện tại của đèn",
-                examples = emptyList(),
-                aliases = listOf("kiểm tra", "trạng thái", "status"),
+                examples = listOf("trạng thái đèn", "kiểm tra đèn"),
                 tags = listOf("status", "query", "sensor"),
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device")
@@ -124,101 +122,11 @@ class LightSkill @Inject constructor(
                 name = "scan",
                 description = "Quét các thiết bị đèn thông minh trong mạng",
                 examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới"), // Action không tham số -> Cho phép ví dụ
-                aliases = listOf("quét", "tìm", "scan"),
-                tags = listOf("discovery", "scan", "network"),
+                                tags = listOf("discovery", "scan", "network"),
                 parameters = emptyList()
             )
         )
     }
 
-    // RÚT GỌN TỐI ƯU: Loại bỏ các thực thể phụ tĩnh và các từ lặp nghĩa, chỉ giữ lại cụm cốt lõi hành động
-    override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "set"    to listOf("bật đèn", "tắt đèn"),
-        "status" to listOf("trạng thái đèn", "kiểm tra đèn"),
-        "scan"   to listOf("quét thiết bị", "tìm đèn")
-    )
-
-    private suspend fun handleScan(): AgentKernel.PluginResult = withContext(Dispatchers.IO) {
-        try {
-            val devices = tuyaManager.scanDevices()
-            success("✅ Đã tìm thấy ${devices.size} thiết bị")
-        } catch (e: Exception) {
-            failure("Lỗi quét: ${e.message}")
-        }
-    }
-
-    private suspend fun handleSet(params: Map<String, Any>): AgentKernel.PluginResult = withContext(Dispatchers.IO) {
-        val device = params["device"] as? String
-            ?: return@withContext needMoreInfo(listOf("device"), "Thiết bị nào?")
-
-        val state = params["state"] as? Boolean
-            ?: return@withContext needMoreInfo(listOf("state"), "Bật hay tắt?")
-        
-        try {
-            if (state) {
-                tuyaManager.turnOn(device)
-            } else {
-                tuyaManager.turnOff(device)
-            }
-
-            // ✅ ĐẨY ĐỒNG BỘ DIGITAL TWIN: Ngay khi tuyaManager thực thi thành công, đẩy trực tiếp trạng thái mới ra Registry thời gian thực
-            val dbDevice = database.tuyaDeviceDao().getDeviceByName(device)
-            if (dbDevice != null) {
-                deviceRegistry.updateNode(dbDevice.id) { current ->
-                    current.copy(
-                        online = true,
-                        status = if (state) "Đang bật" else "Đang tắt",
-                        lastSeen = System.currentTimeMillis()
-                    )
-                }
-            }
-
-            success(
-                message = "✅ Đã ${if(state) "bật" else "tắt"} $device",
-                data = mapOf("device" to device, "state" to state)
-            )
-        } catch (e: Exception) {
-            failure("Lỗi: ${e.message}")
-        }
-    }
-
-    private suspend fun handleStatus(params: Map<String, Any>): AgentKernel.PluginResult = withContext(Dispatchers.IO) {
-        val device = params["device"] as? String
-            ?: return@withContext needMoreInfo(listOf("device"), "Thiết bị nào?")
-        
-        try {
-            val status = tuyaManager.getStatus(device)
-            
-            // ✅ ĐỒNG BỘ ĐỘC LẬP: Cập nhật trạng thái đọc được thực tế ra bản sao số
-            val dbDevice = database.tuyaDeviceDao().getDeviceByName(device)
-            if (dbDevice != null) {
-                deviceRegistry.updateNode(dbDevice.id) { current ->
-                    current.copy(
-                        online = true,
-                        status = if (status) "Đang bật" else "Đang tắt",
-                        lastSeen = System.currentTimeMillis()
-                    )
-                }
-            }
-
-            success(
-                message = "$device đang ${if(status) "bật" else "tắt"}",
-                data = mapOf("device" to device, "state" to status)
-            )
-        } catch (e: Exception) {
-            failure("Lỗi: ${e.message}")
-        }
-    }
-
-    override suspend fun initialize() {
-        // Tự động quét trạng thái thiết bị và đăng ký sơ đồ nhà ngay khi khởi động ứng dụng
-        try {
-            val initialNodes = getDashboardNodes()
-            deviceRegistry.registerNodes(initialNodes)
-        } catch (e: Exception) {
-            logger.e("LightSkill", "Không thể khởi tạo sơ đồ thiết bị", e)
-        }
-    }
-    
     override suspend fun shutdown() {}
 }

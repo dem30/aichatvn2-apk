@@ -87,34 +87,35 @@ class QAInitBuilder @Inject constructor(
 
         // 2. Tự động thu thập bootstrap QA khai báo cục bộ từ bên trong các Plugin độc lập (chỉ áp dụng cho các Plugin routable)
         plugins.filter { it.routable }.forEach { plugin ->
-            plugin.getBootstrapQA().forEach { bootstrap ->
-                val questionKey = bootstrap.question.trim().lowercase()
-                val existing = existingByQuestion[questionKey]
-                if (existing == null) {
-                    val qa = QAEntity(
-                        id = UUID.randomUUID().toString(),
-                        question = bootstrap.question,
-                        answer = bootstrap.answer,
-                        type = bootstrap.type,
-                        category = bootstrap.category,
-                        createdBy = username,
-                        createdAt = System.currentTimeMillis(),
-                        timestamp = System.currentTimeMillis()
-                    )
-                    qaDao.insertQA(qa)
-                    if (bootstrap.type == "intent") intentCount++ else aliasCount++
-                } else if (existing.answer != bootstrap.answer || existing.type != bootstrap.type) {
-                    val updated = existing.copy(
-                        answer = bootstrap.answer,
-                        type = bootstrap.type,
-                        timestamp = System.currentTimeMillis()
-                    )
-                    qaDao.updateQA(updated)
-                    if (bootstrap.type == "intent") intentCount++ else aliasCount++
+            plugin.getBootstrapQA()
+                .filter { it.type != "intent" }
+                .forEach { bootstrap ->
+                    val questionKey = bootstrap.question.trim().lowercase()
+                    val existing = existingByQuestion[questionKey]
+                    if (existing == null) {
+                        val qa = QAEntity(
+                            id = UUID.randomUUID().toString(),
+                            question = bootstrap.question,
+                            answer = bootstrap.answer,
+                            type = bootstrap.type,
+                            category = bootstrap.category,
+                            createdBy = username,
+                            createdAt = System.currentTimeMillis(),
+                            timestamp = System.currentTimeMillis()
+                        )
+                        qaDao.insertQA(qa)
+                        aliasCount++
+                    } else if (existing.answer != bootstrap.answer || existing.type != bootstrap.type) {
+                        val updated = existing.copy(
+                            answer = bootstrap.answer,
+                            type = bootstrap.type,
+                            timestamp = System.currentTimeMillis()
+                        )
+                        qaDao.updateQA(updated)
+                        aliasCount++
+                    }
                 }
-            }
         }
-
         // Tối ưu hóa lớn: Chỉ kích hoạt đồng bộ hóa nạp bộ nhớ RAM đúng 1 lần duy nhất khi kết thúc toàn bộ chu kỳ ghi lô
         if (intentCount > 0 || aliasCount > 0) {
             trainingSkill.refreshQAList(username)

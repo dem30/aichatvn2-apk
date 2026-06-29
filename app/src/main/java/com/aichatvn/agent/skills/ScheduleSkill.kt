@@ -49,7 +49,6 @@ class ScheduleSkill @Inject constructor(
                     "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
                 // ĐÃ SỬA: Bổ sung ví dụ và bí danh tinh gọn không tham số để kích hoạt nhận diện dứt điểm ở Tầng 3 và Tầng 4
                 examples = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"), 
-                aliases = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"), 
                 parameters = listOf(
                     PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
                     PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
@@ -62,13 +61,12 @@ class ScheduleSkill @Inject constructor(
                 name = "list",
                 description = "Liệt kê danh sách tất cả các lịch trình đang hoạt động",
                 examples = listOf("danh sách lịch trình", "xem lịch trình"),
-                aliases = listOf("danh sách lịch trình", "xem lịch trình"),
                 parameters = emptyList()
             ),
             PluginAction(
                 name = "delete",
                 description = "Xóa hoàn toàn một lịch trình tự động theo ID",
-                examples = emptyList(),
+                examples = listOf("xóa lịch trình"),
                 parameters = listOf(
                     PluginParameter("id", "string", "ID lịch trình", true, "string")
                 )
@@ -76,7 +74,7 @@ class ScheduleSkill @Inject constructor(
             PluginAction(
                 name = "toggle",
                 description = "Bật hoặc tắt trạng thái kích hoạt của một lịch trình",
-                examples = emptyList(),
+                examples = listOf("bật lịch trình", "tắt lịch trình"),
                 parameters = listOf(
                     PluginParameter("id", "string", "ID lịch trình", true, "string"),
                     PluginParameter("enabled", "boolean", "true: bật, false: tắt", true, "boolean")
@@ -84,13 +82,6 @@ class ScheduleSkill @Inject constructor(
             )
         )
     }
-
-    override fun getQATriggers(): Map<String, List<String>> = mapOf(
-        "add"    to listOf("đặt lịch trình", "thêm lịch trình"),
-        "list"   to listOf("danh sách lịch trình", "xem lịch trình"),
-        "delete" to listOf("xóa lịch trình"),
-        "toggle" to listOf("bật lịch trình", "tắt lịch trình")
-    )
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {

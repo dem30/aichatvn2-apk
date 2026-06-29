@@ -22,7 +22,7 @@ class AppConfigSkill @Inject constructor(
 
     override val routable: Boolean = false
     override val visibleOnDashboard: Boolean = false
-    override val autoGenerateQA: Boolean = true
+    override val autoGenerateQA: Boolean = false
 
     override fun getActions(): List<PluginAction> {
         return listOf(
@@ -30,7 +30,6 @@ class AppConfigSkill @Inject constructor(
                 name = "add",
                 description = "Thiết lập cấu hình hệ thống",
                 examples = listOf("cài đặt cấu hình", "thiết lập thông số", "gán tham số"),
-                aliases = listOf("cài đặt", "thiết lập", "cấu hình"),
                 parameters = listOf(
                     PluginParameter("key", "string", "Mã khóa cấu hình", true),
                     PluginParameter("value", "string", "Giá trị cấu hình mới", true)
@@ -40,7 +39,6 @@ class AppConfigSkill @Inject constructor(
                 name = "get",
                 description = "Đọc giá trị 1 biến cấu hình theo key. Ví dụ: key = camera.cooldown_ms",
                 examples = listOf("xem cấu hình cooldown", "đọc biến hệ thống"),
-                aliases = listOf("đọc", "lấy", "xem"),
                 parameters = listOf(
                     PluginParameter("key", "string", "Tên biến cấu hình (vd: camera.cooldown_ms)", true)
                 )
@@ -49,7 +47,6 @@ class AppConfigSkill @Inject constructor(
                 name = "list",
                 description = "Liệt kê tất cả biến cấu hình. Có thể lọc theo plugin (camera, groq, email, schedule…).",
                 examples = listOf("danh sách biến hệ thống", "liệt kê tham số cấu hình"),
-                aliases = listOf("danh sách", "liệt kê"),
                 parameters = listOf(
                     PluginParameter("pluginId", "string", "Lọc theo plugin (để trống = liệt kê tất cả)", false)
                 )
@@ -58,7 +55,6 @@ class AppConfigSkill @Inject constructor(
                 name = "reset",
                 description = "Đặt lại 1 biến cấu hình về giá trị mặc định ban đầu.",
                 examples = listOf("khôi phục cấu hình mặc định", "reset thông số hệ thống"),
-                aliases = listOf("khôi phục", "reset", "đặt lại"),
                 parameters = listOf(
                     PluginParameter("key", "string", "Tên biến cần reset", true)
                 )
@@ -70,6 +66,7 @@ class AppConfigSkill @Inject constructor(
         return when (action) {
             "get"   -> handleGet(params)
             "set"   -> handleSet(params)
+            "add"   -> handleSet(params)
             "list"  -> handleList(params)
             "reset" -> handleReset(params)
             else    -> failure("Action không xác định: $action")
@@ -143,33 +140,6 @@ class AppConfigSkill @Inject constructor(
         )
     }
 
-    private suspend fun handleReset(key: String): PluginResult = withContext(Dispatchers.IO) {
-        val default = AppConfigDefaults.all().firstOrNull { it.key == key }
-            ?: return@withContext failure("Không có giá trị mặc định cho '$key'.")
-
-        configProvider.upsert(default)
-        logger.i("AppConfigSkill", "reset $key -> ${default.value}")
-
-        success(
-            "🔄 Đã reset ${default.label.ifBlank { key }} về mặc định: ${default.value}",
-            mapOf("key" to key, "value" to default.value)
-        )
-    }
-
-    private suspend fun handleReset(params: Map<String, Any>, key: String): PluginResult = withContext(Dispatchers.IO) {
-        val default = AppConfigDefaults.all().firstOrNull { it.key == key }
-            ?: return@withContext failure("Không có giá trị mặc định cho '$key'.")
-
-        configProvider.upsert(default)
-        logger.i("AppConfigSkill", "reset $key -> ${default.value}")
-
-        success(
-            "🔄 Đã reset ${default.label.ifBlank { key }} về mặc định: ${default.value}",
-            mapOf("key" to key, "value" to default.value)
-        )
-    }
-
-    // Sửa lỗi biên dịch cho interface Plugin gốc
     override suspend fun initialize() {}
     override suspend fun shutdown() {}
 }
