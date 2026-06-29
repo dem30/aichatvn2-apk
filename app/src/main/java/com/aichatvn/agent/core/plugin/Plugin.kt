@@ -3,15 +3,18 @@ package com.aichatvn.agent.core.plugin
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 
+// Khai báo tập hợp các năng lực đặc hữu của Plugin
 data class PluginCapabilities(
     val dashboard: Boolean = false,
     val training: Boolean = false,
     val notification: Boolean = false,
     val schedule: Boolean = false,
     val voice: Boolean = false,
-    val vision: Boolean = false
+    val vision: Boolean = false,
+    val background: Boolean = false // ✅ ĐÃ KHÔI PHỤC: Khai báo năng lực chạy nền
 )
 
+// Khai báo Tuyên bố Siêu dữ liệu chuẩn hóa của Plugin
 data class PluginManifest(
     val id: String,
     val name: String,
@@ -28,8 +31,7 @@ data class PluginManifest(
 interface Plugin {
     val manifest: PluginManifest
 
-    // ─── [CẦU NỐI TƯƠNG THÍCH NGƯỢC] ──────────────────────────────────────────
-    // Giúp tất cả các file cũ gọi plugin.id, plugin.name, plugin.getActions() không bị lỗi build
+    // Cầu nối tương thích ngược giúp tất cả các file cũ gọi không bị lỗi build
     val id: String get() = manifest.id
     val name: String get() = manifest.name
     val pluginVersion: String get() = manifest.pluginVersion
@@ -46,7 +48,6 @@ interface Plugin {
     val supportsVision: Boolean get() = manifest.capabilities.vision
 
     fun getActions(): List<PluginAction> = manifest.actions
-    // ──────────────────────────────────────────────────────────────────────────
 
     suspend fun initialize()
     suspend fun shutdown()

@@ -29,6 +29,12 @@ import java.util.LinkedHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// ✅ ĐÃ SỬA: Khôi phục cấu trúc SearchMatch ở cấp package của TrainingSkill để build KSP/Kotlin thành công
+data class SearchMatch(
+    val qa: QAEntity,
+    val similarity: Float
+)
+
 @Singleton
 class TrainingSkill @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -41,11 +47,10 @@ class TrainingSkill @Inject constructor(
         private const val MAX_QUERY_CACHE_SIZE = 500
     }
 
-    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(training = true), // Tuyên bố năng lực quản lý huấn luyện
+        capabilities = PluginCapabilities(training = true),
         routable = false,
         visibleOnDashboard = false,
         autoGenerateQA = false,
