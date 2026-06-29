@@ -7,13 +7,10 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.utils.Logger
 
 abstract class BaseSkill(
-    override val id: String,
+    override val id: String, // Giữ ghi đè để cầu nối tương thích ngược trong Plugin hoạt động chính xác
     override val name: String,
     protected val logger: Logger
 ) : Plugin {
-    
-    // ✅ Mỗi skill override để khai báo action
-    abstract override fun getActions(): List<PluginAction>
     
     override suspend fun initialize() {}
     override suspend fun shutdown() {}

@@ -27,11 +27,13 @@ import javax.inject.Singleton
 @Singleton
 class VoiceAssistantManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val agentKernel: AgentKernel, // Tiêm trực tiếp cổng điều phối trung tâm
+    private val agentKernel: AgentKernel,
     private val logger: Logger
 ) {
-    private val ttsHelper = TextToSpeechHelper(context)
     private val sttHelper = SpeechRecognizerHelper(context)
+    
+    // ✅ ĐÃ SỬA: Đảm bảo khai báo 'public val' để ChatViewModel có thể truy cập hợp lệ
+    val ttsHelper = TextToSpeechHelper(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -42,7 +44,6 @@ class VoiceAssistantManager @Inject constructor(
     @Volatile private var destroyed = false
     @Volatile private var isListeningActive = false
 
-    // Flows phát tín hiệu Reactive cho Jetpack Compose UI
     private val _isListening = MutableStateFlow(false)
     val isListening = _isListening.asStateFlow()
 
@@ -52,12 +53,10 @@ class VoiceAssistantManager @Inject constructor(
     private val _aiResponseText = MutableSharedFlow<String>(replay = 0)
     val aiResponseText = _aiResponseText.asSharedFlow()
 
-    // Quản lý Audio Focus
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var focusRequest: AudioFocusRequest? = null
     private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { }
 
-    // Quản lý số lần lỗi Mic liên tiếp
     private var consecutiveSttFailures = 0
     private val MAX_CONSECUTIVE_STT_FAILURES = 5
 
@@ -96,14 +95,13 @@ class VoiceAssistantManager @Inject constructor(
                 audioManager.abandonAudioFocus(focusChangeListener)
             }
         } catch (e: Exception) {
-            // Bỏ qua lỗi phát sinh
+            // Bỏ qua
         }
     }
 
     fun startListening() {
         if (destroyed) return
 
-        // CHỐNG ECHO: Tuyệt đối không bật microphone nếu TTS đang phát âm thanh
         if (ttsHelper.isSpeaking) {
             Log.d("VoiceAssistantManager", "Bỏ qua startListening() vì thiết bị đang trong tiến trình TTS đọc.")
             return
@@ -124,21 +122,19 @@ class VoiceAssistantManager @Inject constructor(
                 _isListening.value = false
                 abandonAudioFocus()
 
-                // Phát văn bản nhận diện được ra ngoài Flow
                 scope.launch { _recognizedText.emit(text) }
 
-                // TỰ ĐỘNG KHÉP KÍN LUỒNG: Đẩy thẳng lên AgentKernel xử lý không qua trung gian UI
                 scope.launch {
                     try {
+                        // ✅ ĐÃ SỬA: Trỏ chính xác đến gói com.aichatvn.agent.core.ChatRequest
                         val result = agentKernel.chat(
-                            AgentKernel.ChatRequest(
+                            com.aichatvn.agent.core.ChatRequest(
                                 message = text,
                                 chatMode = "COMBINED"
                             )
                         )
                         _aiResponseText.emit(result.responseText)
 
-                        // TTS đọc to câu trả lời của AI
                         speak(result.responseText)
                     } catch (e: Exception) {
                         logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)

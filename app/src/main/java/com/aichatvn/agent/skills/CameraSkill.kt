@@ -60,11 +60,10 @@ class CameraSkill @Inject constructor(
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
-    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(dashboard = true), // Tuyên bố năng lực Dashboard
+        capabilities = PluginCapabilities(dashboard = true),
         visibleOnDashboard = true,
         autoGenerateQA = true,
         actions = listOf(
@@ -125,7 +124,85 @@ class CameraSkill @Inject constructor(
         )
     )
 
-    // ✅ ĐÃ SỬA: Ghi đè trực tiếp hàm xuất Node giao diện của Plugin mà không cần DashboardProvider phụ thuộc ngoài
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val database by lazy { AppDatabase.getDatabase(context) }
+    private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()
+    private fun getMutexForCamera(cameraId: String): Mutex =
+        cameraMutexMap.getOrPut(cameraId) { Mutex() }
+    
+    private data class CameraLearningState(
+        var lastPhash: String = "",
+        var lastDiff: Int = 0,
+        val falseDeltas: MutableList<Int> = mutableListOf(),
+        val falseDiffs: MutableList<Int> = mutableListOf(),
+        val baselineWindow: MutableList<Int> = mutableListOf(),
+        var realEvents: Int = 0,
+        var deltaTrigger: Int = 10,
+        var absDiffTrigger: Int = 18,
+        var cooldownUntil: Long = 0L
+    )
+    
+    private data class CircuitBreakerState(
+        var offlineCount: Int = 0,
+        var offlineSince: Long = 0L,
+        var isOpen: Boolean = false,
+        var halfOpenAttempted: Boolean = false
+    )
+    
+    private data class PendingResetState(
+        var diff: Int = 0,
+        var timestamp: Long = 0L
+    )
+    
+    private data class DailyEvent(
+        val timestamp: Long,
+        val comment: String,
+        val imageBytes: ByteArray?
+    ) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            return timestamp == (other as DailyEvent).timestamp && comment == other.comment
+        }
+        override fun hashCode(): Int {
+            var result = timestamp.hashCode()
+            result = 31 * result + comment.hashCode()
+            return result
+        }
+    }
+    
+    private val learningStates = ConcurrentHashMap<String, CameraLearningState>()
+    private val circuitBreakers = ConcurrentHashMap<String, CircuitBreakerState>()
+    private val pendingResets = ConcurrentHashMap<String, PendingResetState>()
+    private val dailyEvents = ConcurrentHashMap<String, MutableList<DailyEvent>>()
+    
+    private val _diagnostics = MutableStateFlow<Map<String, Any>>(emptyMap())
+    val diagnostics: StateFlow<Map<String, Any>> = _diagnostics.asStateFlow()
+
+    private suspend fun defaultAiPrompt()       = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT, "Camera giám sát. Mô tả những gì bạn thấy, ghi cảnh báo nếu phát hiện bất thường.")
+    private suspend fun defaultPositiveKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW, "cảnh báo").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    private suspend fun defaultNegativeKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW, "bình thường").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, 3 * 60 * 60 * 1000L)
+    private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
+    private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
+    
+    // ✅ ĐÃ SỬA: Gọi thông qua hàm getLong() gọn gàng, an toàn của configProvider
+    private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
+    private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
+    
+    companion object {
+        private const val CIRCUIT_BREAKER_THRESHOLD_DEFAULT = 3
+        private const val CIRCUIT_BREAKER_RESET_MS_DEFAULT = 30 * 60 * 1000L
+        private const val DAILY_REPORT_HOUR_DEFAULT = 20
+
+        private val TIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        private val DATE_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        private val DATETIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
+    }
+
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
         cameras.mapIndexed { index, cam ->
@@ -160,72 +237,6 @@ class CameraSkill @Inject constructor(
                 room = "Thửa Đất"
             )
         }
-    }
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val database by lazy { AppDatabase.getDatabase(context) }
-    private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()
-    private fun getMutexForCamera(cameraId: String): Mutex =
-        cameraMutexMap.getOrPut(cameraId) { Mutex() }
-    
-    private data class CameraLearningState(
-        var lastPhash: String = "",
-        var lastDiff: Int = 0,
-        val falseDeltas: MutableList<Int> = mutableListOf(),
-        val falseDiffs: MutableList<Int> = mutableListOf(),
-        val baselineWindow: MutableList<Int> = mutableListOf(),
-        var realEvents: Int = 0,
-        var deltaTrigger: Int = 10,
-        var absDiffTrigger: Int = 18,
-        var cooldownUntil: Long = 0L
-    )
-    
-    private data class DailyEvent(
-        val timestamp: Long,
-        val comment: String,
-        val imageBytes: ByteArray?
-    )
-    
-    private data class CircuitBreakerState(
-        var offlineCount: Int = 0,
-        var offlineSince: Long = 0L,
-        var isOpen: Boolean = false,
-        var halfOpenAttempted: Boolean = false
-    )
-    
-    private data class PendingResetState(
-        var diff: Int = 0,
-        var timestamp: Long = 0L
-    )
-    
-    private val learningStates = ConcurrentHashMap<String, CameraLearningState>()
-    private val circuitBreakers = ConcurrentHashMap<String, CircuitBreakerState>()
-    private val pendingResets = ConcurrentHashMap<String, PendingResetState>()
-    private val dailyEvents = ConcurrentHashMap<String, MutableList<DailyEvent>>()
-    
-    private val _diagnostics = MutableStateFlow<Map<String, Any>>(emptyMap())
-    val diagnostics: StateFlow<Map<String, Any>> = _diagnostics.asStateFlow()
-
-    private suspend fun defaultAiPrompt()       = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT, "Camera giám sát. Mô tả những gì bạn thấy, ghi cảnh báo nếu phát hiện bất thường.")
-    private suspend fun defaultPositiveKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW, "cảnh báo").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-    private suspend fun defaultNegativeKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW, "bình thường").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-    private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, 3 * 60 * 60 * 1000L)
-    private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
-    private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
-    private suspend fun circuitBreakerResetMs() = configProvider.getRawConfigsFlow().first().find { it.key == AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS }?.value?.toLongOrNull() ?: CIRCUIT_BREAKER_RESET_MS_DEFAULT
-    private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
-    
-    companion object {
-        private const val CIRCUIT_BREAKER_THRESHOLD_DEFAULT = 3
-        private const val CIRCUIT_BREAKER_RESET_MS_DEFAULT = 30 * 60 * 1000L
-        private const val DAILY_REPORT_HOUR_DEFAULT = 20
-
-        private val TIME_FORMATTER: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault())
-        private val DATE_FORMATTER: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
-        private val DATETIME_FORMATTER: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
     
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {

@@ -24,18 +24,24 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// ✅ ĐÃ KHÔI PHỤC: Enum ChatMode bị thiếu
+enum class ChatMode {
+    GROQ,
+    QA,
+    COMBINED
+}
+
 @Singleton
 class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val agentKernel: AgentKernel, // Độc tôn điều phối trung tâm
+    private val agentKernel: AgentKernel,
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
-    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(), // Năng lực cơ bản mặc định
+        capabilities = PluginCapabilities(),
         routable = false,
         visibleOnDashboard = false,
         autoGenerateQA = false,
@@ -169,7 +175,6 @@ class ChatSkill @Inject constructor(
                 }
             }
 
-            // 1. Ghi nhận và hiển thị tức thời tin nhắn người dùng lên UI
             val userMessageId = UUID.randomUUID().toString()
             val userMessage = ChatMessageEntity(
                 id = userMessageId,
@@ -189,9 +194,9 @@ class ChatSkill @Inject constructor(
                 _messages.value = _messages.value + userMessage
             }
 
-            // 2. Chuyển giao toàn bộ việc điều phối quyết định cho AgentKernel duy nhất
+            // ✅ ĐÃ SỬA: Sửa tham chiếu ChatRequest thành đường dẫn đầy đủ
             val response = agentKernel.chat(
-                AgentKernel.ChatRequest(
+                com.aichatvn.agent.core.ChatRequest(
                     message = message,
                     username = username,
                     imageBase64 = imageBase64,
@@ -201,7 +206,6 @@ class ChatSkill @Inject constructor(
                 )
             )
 
-            // 3. Ghi nhận phản hồi và hiển thị tức thời lên UI
             val assistantMessageId = UUID.randomUUID().toString()
             val assistantMessage = ChatMessageEntity(
                 id = assistantMessageId,

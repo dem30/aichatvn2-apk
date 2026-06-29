@@ -1,9 +1,8 @@
 package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.ui.dashboard.DeviceNode // Thêm import trực tiếp để hợp nhất Dashboard
+import com.aichatvn.agent.ui.dashboard.DeviceNode
 
-// Khai báo tập hợp các năng lực đặc hữu của Plugin
 data class PluginCapabilities(
     val dashboard: Boolean = false,
     val training: Boolean = false,
@@ -13,7 +12,6 @@ data class PluginCapabilities(
     val vision: Boolean = false
 )
 
-// Khai báo Tuyên bố Siêu dữ liệu chuẩn hóa của Plugin
 data class PluginManifest(
     val id: String,
     val name: String,
@@ -28,10 +26,28 @@ data class PluginManifest(
 )
 
 interface Plugin {
-    // Thuộc tính mô tả duy nhất nắm giữ toàn bộ cấu hình, loại bỏ các biến rời rạc cũ
     val manifest: PluginManifest
 
-    // Quản lý Lifecycle mở rộng
+    // ─── [CẦU NỐI TƯƠNG THÍCH NGƯỢC] ──────────────────────────────────────────
+    // Giúp tất cả các file cũ gọi plugin.id, plugin.name, plugin.getActions() không bị lỗi build
+    val id: String get() = manifest.id
+    val name: String get() = manifest.name
+    val pluginVersion: String get() = manifest.pluginVersion
+    val metadataVersion: String get() = manifest.metadataVersion
+    val schemaVersion: String get() = manifest.schemaVersion
+    val routable: Boolean get() = manifest.routable
+    val visibleOnDashboard: Boolean get() = manifest.visibleOnDashboard
+    val autoGenerateQA: Boolean get() = manifest.autoGenerateQA
+
+    val supportsVoice: Boolean get() = manifest.capabilities.voice
+    val supportsSchedule: Boolean get() = manifest.capabilities.schedule
+    val supportsNotification: Boolean get() = manifest.capabilities.notification
+    val supportsBackground: Boolean get() = manifest.capabilities.background
+    val supportsVision: Boolean get() = manifest.capabilities.vision
+
+    fun getActions(): List<PluginAction> = manifest.actions
+    // ──────────────────────────────────────────────────────────────────────────
+
     suspend fun initialize()
     suspend fun shutdown()
     suspend fun onInstalled() {}
@@ -42,23 +58,22 @@ interface Plugin {
     
     fun getBootstrapQA(): List<PluginQABootstrap> = emptyList()
 
-    // Thay thế hoàn toàn giao diện DashboardProvider cũ
     suspend fun getDashboardNodes(): List<DeviceNode> = emptyList()
 }
 
 data class PluginQABootstrap(
     val question: String,
     val answer: String,
-    val type: String, // "intent" hoặc tên loại alias "camera"/"device"/"email"
+    val type: String,
     val category: String = "auto_init"
 )
 
 data class PluginParameter(
     val name: String,
-    val type: String, // "string" | "boolean" | "number" | "object"
+    val type: String,
     val description: String,
     val required: Boolean,
-    val semanticType: String = "string", // "email", "camera", "device", "time", "interval", "plugin_id", "action_id", "params"
+    val semanticType: String = "string",
     val placeholder: String = "",
     val enumValues: List<String> = emptyList(),
     val defaultValue: Any? = null,
