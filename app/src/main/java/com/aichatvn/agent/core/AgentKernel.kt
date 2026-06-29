@@ -935,28 +935,47 @@ class AgentKernel @Inject constructor(
         return matchResult.bestAliasMatches[semanticType]?.first?.answer
     }
 
+
     private fun parseVietnameseTime(message: String): String? {
     val lower = message.lowercase().trim()
     
-    // 1. Trích xuất giờ trước (nếu có trong câu)
-    val hourRegex = Regex("\\b(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?\\b")
-    val hourMatch = hourRegex.find(lower)
+    // 1. Trích xuất giờ và phút (hỗ trợ cả dạng 7h và dạng điện tử 2:00)
     var extractedHour: Int? = null
+    var extractedMinute: Int = 0
     
-    if (hourMatch != null) {
-        var hour = hourMatch.groupValues[1].toIntOrNull() ?: 0
-        val period = hourMatch.groupValues[3]
+    // Thử khớp định dạng điện tử (VD: 2:00 hoặc 14:30)
+    val digitalRegex = Regex("\\b(\\d{1,2}):(\\d{2})\\s*(sáng|chiều|tối|đêm)?\\b")
+    val digitalMatch = digitalRegex.find(lower)
+    
+    if (digitalMatch != null) {
+        var hour = digitalMatch.groupValues[1].toIntOrNull() ?: 0
+        extractedMinute = digitalMatch.groupValues[2].toIntOrNull() ?: 0
+        val period = digitalMatch.groupValues[3]
+        
         if ((period == "chiều" || period == "tối") && hour < 12) {
             hour += 12
         } else if (period == "đêm" && hour == 12) {
             hour = 0
         }
         extractedHour = hour
+    } else {
+        // Thử khớp định dạng chữ thông thường (VD: 7 giờ sáng, 7h sáng)
+        val hourRegex = Regex("\\b(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?\\b")
+        val hourMatch = hourRegex.find(lower)
+        if (hourMatch != null) {
+            var hour = hourMatch.groupValues[1].toIntOrNull() ?: 0
+            val period = hourMatch.groupValues[3]
+            if ((period == "chiều" || period == "tối") && hour < 12) {
+                hour += 12
+            } else if (period == "đêm" && hour == 12) {
+                hour = 0
+            }
+            extractedHour = hour
+        }
     }
 
-    // 2. Trích xuất thứ trong tuần
-    var dayOfWeek = "*"
-    var dayOfWeekFound = false
+    // 2. Trích xuất nhiều thứ trong tuần (gom tất cả các thứ tìm thấy thành danh sách ngăn cách bởi dấu phẩy)
+    val days = mutableListOf<String>()
     
     val mondayRegex = Regex("\\b(thứ hai|thứ 2)\\b")
     val tuesdayRegex = Regex("\\b(thứ ba|thứ 3)\\b")
@@ -966,42 +985,43 @@ class AgentKernel @Inject constructor(
     val saturdayRegex = Regex("\\b(thứ bảy|thứ 7)\\b")
     val sundayRegex = Regex("\\b(chủ nhật|cn)\\b")
 
-    if (mondayRegex.containsMatchIn(lower)) { dayOfWeek = "1"; dayOfWeekFound = true }
-    else if (tuesdayRegex.containsMatchIn(lower)) { dayOfWeek = "2"; dayOfWeekFound = true }
-    else if (wednesdayRegex.containsMatchIn(lower)) { dayOfWeek = "3"; dayOfWeekFound = true }
-    else if (thursdayRegex.containsMatchIn(lower)) { dayOfWeek = "4"; dayOfWeekFound = true }
-    else if (fridayRegex.containsMatchIn(lower)) { dayOfWeek = "5"; dayOfWeekFound = true }
-    else if (saturdayRegex.containsMatchIn(lower)) { dayOfWeek = "6"; dayOfWeekFound = true }
-    else if (sundayRegex.containsMatchIn(lower)) { dayOfWeek = "0"; dayOfWeekFound = true }
+    if (mondayRegex.containsMatchIn(lower)) days.add("1")
+    if (tuesdayRegex.containsMatchIn(lower)) days.add("2")
+    if (wednesdayRegex.containsMatchIn(lower)) days.add("3")
+    if (thursdayRegex.containsMatchIn(lower)) days.add("4")
+    if (fridayRegex.containsMatchIn(lower)) days.add("5")
+    if (saturdayRegex.containsMatchIn(lower)) days.add("6")
+    if (sundayRegex.containsMatchIn(lower)) days.add("0")
 
-    // Nếu tìm thấy thứ, kết hợp với giờ đã trích xuất (mặc định là 0h nếu không nói giờ)
-    if (dayOfWeekFound) {
+    // Nếu tìm thấy thứ, kết hợp với giờ và phút (mặc định giờ là 0 nếu không nói)
+    if (days.isNotEmpty()) {
         val hour = extractedHour ?: 0
-        return "0 $hour * * $dayOfWeek"
+        val dayOfWeek = days.joinToString(",")
+        return "$extractedMinute $hour * * $dayOfWeek"
     }
 
     // 3. Trích xuất các trường hợp lặp ngày/tuần hoặc "ngày mai"
     val dailyRegex = Regex("\\b(mỗi ngày|hằng ngày|hàng ngày)\\b")
     if (dailyRegex.containsMatchIn(lower)) {
         val hour = extractedHour ?: 0
-        return "0 $hour * * *"
+        return "$extractedMinute $hour * * *"
     }
     
     val weeklyRegex = Regex("\\b(hằng tuần|hàng tuần)\\b")
     if (weeklyRegex.containsMatchIn(lower)) {
         val hour = extractedHour ?: 0
-        return "0 $hour * * 0" // Mặc định Chủ Nhật
+        return "$extractedMinute $hour * * 0" // Mặc định Chủ Nhật
     }
     
     val tomorrowRegex = Regex("\\b(ngày mai|mai)\\b")
     if (tomorrowRegex.containsMatchIn(lower)) {
         val hour = extractedHour ?: 8 // Mặc định 8h sáng nếu không nói giờ cụ thể
-        return "0 $hour * * *"
+        return "$extractedMinute $hour * * *"
     }
 
     // 4. Nếu chỉ có giờ độc lập (mỗi ngày vào giờ đó)
     if (extractedHour != null) {
-        return "0 $extractedHour * * *"
+        return "$extractedMinute $extractedHour * * *"
     }
 
     return null
