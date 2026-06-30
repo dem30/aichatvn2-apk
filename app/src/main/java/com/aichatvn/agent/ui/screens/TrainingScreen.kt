@@ -58,16 +58,18 @@ fun TrainingScreen(
     val listState = rememberLazyListState()
     val displayList = if (searchQuery.isNotBlank()) searchResults else qaList
 
+    // ĐÃ SỬA: Thêm uri?.let { ... } để đảm bảo an toàn null-safety khi truyền vào ViewModel
     val jsonPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        viewModel.importQAFromUri(context, uri)
+        uri?.let { viewModel.importQAFromUri(context, it) }
     }
 
+    // ĐÃ SỬA: Thêm uri?.let { ... } để đảm bảo an toàn null-safety khi truyền vào ViewModel
     val csvPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        viewModel.importQAFromCsvUri(context, uri)
+        uri?.let { viewModel.importQAFromCsvUri(context, it) }
     }
 
     LaunchedEffect(exportResult) {
@@ -769,7 +771,7 @@ fun QADialog(
                 OutlinedTextField(
                     value = answer,
                     onValueChange = { answer = it },
-                    label = { Text("Câu lời") }, // Đã sửa lỗi hiển thị chữ
+                    label = { Text("Câu trả lời") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3
                 )
