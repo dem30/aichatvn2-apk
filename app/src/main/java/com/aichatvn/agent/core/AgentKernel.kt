@@ -396,7 +396,8 @@ class AgentKernel @Inject constructor(
                 var allSucceeded = true
 
                 for (pending in pendings) {
-                    val resolvedResult = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId)
+                    // Đã tối ưu truyền biến 'mode' xuống bộ Pending Resolver thực tế
+                    val resolvedResult = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId, mode)
                     if (resolvedResult != null) {
                         val r = resolvedResult.result
                         val msg = when (r) {
@@ -432,7 +433,8 @@ class AgentKernel @Inject constructor(
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
-                val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, traceId)
+                // Đã tối ưu truyền biến 'mode' ở dạng DIAGNOSTIC xuống bộ Pending Resolver kiểm thử
+                val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, traceId, mode)
                 finalOutcome = if (pendingResult != null) {
                     when (val r = pendingResult.result) {
                         is PluginResult.Success -> "✅ [Tầng 1 Chạy Thật Thành Công] ${(r.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
@@ -528,344 +530,344 @@ class AgentKernel @Inject constructor(
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
 
-                if (mode == PipelineMode.EXECUTE) {
-                    if (layer2Result != null) {
-                        if (isT2Matched) {
-                            val plugin = layer2Result.plugin
-                            val intent = layer2Result.intent
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 2 Hit - Confidence: ${layer2Result.confidence}] ${intent.pluginId}.${intent.action}")
-                            return try {
-                                val result = executeIntent(plugin, intent, context, traceId)
-                                PipelineResult(
-                                    routerOutcome = RouterOutcome.Matched(DeviceCommandResult(pluginId = intent.pluginId, result = result)),
-                                    matchResult = matchResult
-                                )
-                            } catch (e: Exception) {
-                                logger.e("AgentKernel", "[$traceId] Tầng 2 execute error: ${e.message}", e)
-                                PipelineResult(
-                                    routerOutcome = RouterOutcome.RouterFailed("Tầng 2 execute failed: ${e.message}"),
-                                    matchResult = matchResult
-                                )
-                            }
-                        } else {
-                            logger.d("AgentKernel", "[$traceId] ⚠️ [Tầng 2 Low Confidence: ${layer2Result.confidence}] -> Chuyển sang Tầng 3")
-                        }
-                    }
-                } else {
-                    if (isT2Matched && finalOutcome == null) {
-                        val executionResult = executeIntent(layer2Result!!.plugin, layer2Result.intent, context, traceId)
-                        finalOutcome = when (executionResult) {
-                            is PluginResult.Success -> "✅ [Tầng 2 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
-                            is PluginResult.Failure -> "❌ [Tầng 2 Chạy Thật Thất Bại] ${executionResult.error}"
-                            is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 2 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
-                        }
-                    }
-                    val t2Details = when {
-                        layer2Result == null -> "• Không tìm thấy ý định mẫu nào khớp với nội dung đã nhập."
-                        isT2Matched -> "• Khớp ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' với điểm số cao (${String.format("%.2f", layer2Result.confidence)} >= $tier2HighConf). Lệnh được bypass thực thi trực tiếp."
-                        else -> "• Ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' chưa đạt điểm tin cậy thực thi nhanh (${String.format("%.2f", layer2Result.confidence)} < $tier2HighConf). Chuyển xuống Tầng 3."
-                    }
-                    simulatedTiers.add(
-                        DiagnosticTier(
-                            tierName = "Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)",
-                            tierNum = 2,
-                            matched = isT2Matched,
-                            score = layer2Result?.confidence ?: 0.0,
-                            details = t2Details
+        if (mode == PipelineMode.EXECUTE) {
+            if (layer2Result != null) {
+                if (isT2Matched) {
+                    val plugin = layer2Result.plugin
+                    val intent = layer2Result.intent
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 2 Hit - Confidence: ${layer2Result.confidence}] ${intent.pluginId}.${intent.action}")
+                    return try {
+                        val result = executeIntent(plugin, intent, context, traceId)
+                        PipelineResult(
+                            routerOutcome = RouterOutcome.Matched(DeviceCommandResult(pluginId = intent.pluginId, result = result)),
+                            matchResult = matchResult
                         )
-                    )
-                }
-
-                // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING ──
-                val layer3Result = if (mode == PipelineMode.EXECUTE || !isT2Matched) {
-                    processLayer3ClauseEntitySpotter(context, devicePlugins, traceId)
-                } else {
-                    Layer3Result.NoMatch
-                }
-
-                if (mode == PipelineMode.EXECUTE) {
-                    when (layer3Result) {
-                        is Layer3Result.Single -> {
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Single] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
-                            val result = executeIntent(layer3Result.plugin, layer3Result.intent, context, traceId)
-                            return PipelineResult(
-                                routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer3Result.plugin.manifest.id, result)),
-                                matchResult = matchResult
-                            )
-                        }
-                        is Layer3Result.Nested -> {
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Nested] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
-                            val result = executeIntent(layer3Result.wrapper, layer3Result.intent, context, traceId)
-                            return PipelineResult(
-                                routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer3Result.wrapper.manifest.id, result)),
-                                matchResult = matchResult
-                            )
-                        }
-                        is Layer3Result.Multi -> {
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Multi] ${layer3Result.intents.size} actions")
-                            val results = mutableListOf<String>()
-                            layer3Result.intents.forEach { (plugin, intent) ->
-                                try {
-                                    val r = executeIntent(plugin, intent, context, traceId)
-                                    val msg = when (r) {
-                                        is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
-                                        is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
-                                        is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action}: ${r.question}"
-                                    }
-                                    results.add(msg)
-                                } catch (e: Exception) {
-                                    results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
-                                }
-                            }
-                            val combined = results.joinToString("\n")
-                            return PipelineResult(
-                                routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined)))),
-                                matchResult = matchResult
-                            )
-                        }
-                        is Layer3Result.NoMatch -> { }
-                    }
-                } else {
-                    if (layer3Result !is Layer3Result.NoMatch && finalOutcome == null) {
-                        finalOutcome = when (layer3Result) {
-                            is Layer3Result.Single -> {
-                                val executionResult = executeIntent(layer3Result.plugin, layer3Result.intent, context, traceId)
-                                when (executionResult) {
-                                    is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
-                                    is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
-                                    is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 3 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
-                                }
-                            }
-                            is Layer3Result.Nested -> {
-                                val executionResult = executeIntent(layer3Result.wrapper, layer3Result.intent, context, traceId)
-                                when (executionResult) {
-                                    is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
-                                    is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
-                                    is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 3 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
-                                }
-                            }
-                            is Layer3Result.Multi -> {
-                                val results = mutableListOf<String>()
-                                layer3Result.intents.forEach { (plugin, intent) ->
-                                    val executionResult = executeIntent(plugin, intent, context, traceId)
-                                    val msg = when (executionResult) {
-                                        is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
-                                        is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
-                                        is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${executionResult.question}"
-                                    }
-                                    results.add(msg)
-                                }
-                                "✅ [Tầng 3 Chạy Thật Đa Lệnh]:\n" + results.joinToString("\n")
-                            }
-                            else -> null
-                        }
-                    }
-                    val t3Details = when (layer3Result) {
-                        is Layer3Result.Single -> {
-                            val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
-                            if (missing.isNotEmpty()) {
-                                "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParam(it, layer3Result.plugin, layer3Result.intent.action) }}]"
-                            } else {
-                                "• Tách thành công câu lệnh đơn và điền đủ tham số: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
-                            }
-                        }
-                        is Layer3Result.Nested -> "• Khớp bộ khung lập lịch (schedule) lồng hành động: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
-                        is Layer3Result.Multi -> "• Phân tích cú pháp đa hành động (song song/tuần tự): ${layer3Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-                        else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn hoặc độ bao phủ mệnh đề chưa đạt 80%."
-                    }
-                    simulatedTiers.add(
-                        DiagnosticTier(
-                            tierName = "Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)",
-                            tierNum = 3,
-                            matched = layer3Result !is Layer3Result.NoMatch,
-                            details = t3Details
+                    } catch (e: Exception) {
+                        logger.e("AgentKernel", "[$traceId] Tầng 2 execute error: ${e.message}", e)
+                        PipelineResult(
+                            routerOutcome = RouterOutcome.RouterFailed("Tầng 2 execute failed: ${e.message}"),
+                            matchResult = matchResult
                         )
-                    )
-                }
-
-                // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN ──
-                val layer4Result = if (mode == PipelineMode.EXECUTE || (!isT2Matched && layer3Result is Layer3Result.NoMatch)) {
-                    tryTier2_5ActionMetadataMatcher(context, devicePlugins)
-                } else {
-                    Layer3Result.NoMatch
-                }
-
-                if (mode == PipelineMode.EXECUTE) {
-                    when (layer4Result) {
-                        is Layer3Result.Single -> {
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Single] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
-                            val result = executeIntent(layer4Result.plugin, layer4Result.intent, context, traceId)
-                            return PipelineResult(
-                                routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer4Result.plugin.manifest.id, result)),
-                                matchResult = matchResult
-                            )
-                        }
-                        is Layer3Result.Nested -> {
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Nested] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
-                            val result = executeIntent(layer4Result.wrapper, layer4Result.intent, context, traceId)
-                            return PipelineResult(
-                                routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer4Result.wrapper.manifest.id, result)),
-                                matchResult = matchResult
-                            )
-                        }
-                        is Layer3Result.Multi -> {
-                            logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Multi] ${layer4Result.intents.size} actions")
-                            val results = mutableListOf<String>()
-                            layer4Result.intents.forEach { (plugin, intent) ->
-                                try {
-                                    val r = executeIntent(plugin, intent, context, traceId)
-                                    val msg = when (r) {
-                                        is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
-                                        is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${r.error}"
-                                        is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${r.question}"
-                                    }
-                                    results.add(msg)
-                                } catch (e: Exception) {
-                                    results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
-                                }
-                            }
-                            val combined = results.joinToString("\n")
-                            return PipelineResult(
-                                routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined)))),
-                                matchResult = matchResult
-                            )
-                        }
-                        is Layer3Result.NoMatch -> { }
                     }
+                } else {
+                    logger.d("AgentKernel", "[$traceId] ⚠️ [Tầng 2 Low Confidence: ${layer2Result.confidence}] -> Chuyển sang Tầng 3")
+                }
+            }
+        } else {
+            if (isT2Matched && finalOutcome == null) {
+                val executionResult = executeIntent(layer2Result!!.plugin, layer2Result.intent, context, traceId)
+                finalOutcome = when (executionResult) {
+                    is PluginResult.Success -> "✅ [Tầng 2 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                    is PluginResult.Failure -> "❌ [Tầng 2 Chạy Thật Thất Bại] ${executionResult.error}"
+                    is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 2 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                }
+            }
+            val t2Details = when {
+                layer2Result == null -> "• Không tìm thấy ý định mẫu nào khớp với nội dung đã nhập."
+                isT2Matched -> "• Khớp ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' với điểm số cao (${String.format("%.2f", layer2Result.confidence)} >= $tier2HighConf). Lệnh được bypass thực thi trực tiếp."
+                else -> "• Ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' chưa đạt điểm tin cậy thực thi nhanh (${String.format("%.2f", layer2Result.confidence)} < $tier2HighConf). Chuyển xuống Tầng 3."
+            }
+            simulatedTiers.add(
+                DiagnosticTier(
+                    tierName = "Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)",
+                    tierNum = 2,
+                    matched = isT2Matched,
+                    score = layer2Result?.confidence ?: 0.0,
+                    details = t2Details
+                )
+            )
+        }
 
-                    logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
+        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING ──
+        val layer3Result = if (mode == PipelineMode.EXECUTE || !isT2Matched) {
+            processLayer3ClauseEntitySpotter(context, devicePlugins, traceId)
+        } else {
+            Layer3Result.NoMatch
+        }
+
+        if (mode == PipelineMode.EXECUTE) {
+            when (layer3Result) {
+                is Layer3Result.Single -> {
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Single] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
+                    val result = executeIntent(layer3Result.plugin, layer3Result.intent, context, traceId)
                     return PipelineResult(
-                        routerOutcome = executeTier3LlmRouting(context, devicePlugins, traceId),
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer3Result.plugin.manifest.id, result)),
                         matchResult = matchResult
                     )
-                } else {
-                    if (layer4Result !is Layer3Result.NoMatch && finalOutcome == null) {
-                        finalOutcome = when (layer4Result) {
-                            is Layer3Result.Single -> {
-                                val executionResult = executeIntent(layer4Result.plugin, layer4Result.intent, context, traceId)
-                                when (executionResult) {
-                                    is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
-                                    is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
-                                    is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 4 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
-                                }
+                }
+                is Layer3Result.Nested -> {
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Nested] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
+                    val result = executeIntent(layer3Result.wrapper, layer3Result.intent, context, traceId)
+                    return PipelineResult(
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer3Result.wrapper.manifest.id, result)),
+                        matchResult = matchResult
+                    )
+                }
+                is Layer3Result.Multi -> {
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Multi] ${layer3Result.intents.size} actions")
+                    val results = mutableListOf<String>()
+                    layer3Result.intents.forEach { (plugin, intent) ->
+                        try {
+                            val r = executeIntent(plugin, intent, context, traceId)
+                            val msg = when (r) {
+                                is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
+                                is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
+                                is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action}: ${r.question}"
                             }
-                            is Layer3Result.Nested -> {
-                                val executionResult = executeIntent(layer4Result.wrapper, layer4Result.intent, context, traceId)
-                                when (executionResult) {
-                                    is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
-                                    is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
-                                    is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 4 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
-                                }
-                            }
-                            is Layer3Result.Multi -> {
-                                val results = mutableListOf<String>()
-                                layer4Result.intents.forEach { (plugin, intent) ->
-                                    val executionResult = executeIntent(plugin, intent, context, traceId)
-                                    val msg = when (executionResult) {
-                                        is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
-                                        is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
-                                        is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${executionResult.question}"
-                                    }
-                                    results.add(msg)
-                                }
-                                "✅ [Tầng 4 Chạy Thật Đa Lệnh]:\n" + results.joinToString("\n")
-                            }
-                            else -> null
+                            results.add(msg)
+                        } catch (e: Exception) {
+                            results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
                         }
                     }
-                    val t4Details = when (layer4Result) {
-                        is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
-                        is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
-                        is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-                        else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
-                    }
-                    simulatedTiers.add(
-                        DiagnosticTier(
-                            tierName = "Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)",
-                            tierNum = 4,
-                            matched = layer4Result !is Layer3Result.NoMatch,
-                            details = t4Details
-                        )
+                    val combined = results.joinToString("\n")
+                    return PipelineResult(
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined)))),
+                        matchResult = matchResult
                     )
-
-                    // ── TẦNG 5: KHÔNG GỌI THẬT TRONG DIAGNOSTIC ──
-                    val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
-                    if (isT5Matched && finalOutcome == null) {
-                        finalOutcome = "🔵 [Bypass Tầng 5] Đã chuyển xuống Tầng 5 để LLM phân giải tự do. Hệ thống không tự động chạy thật ở tầng này nhằm tiết kiệm token API Groq."
+                }
+                is Layer3Result.NoMatch -> { }
+            }
+        } else {
+            if (layer3Result !is Layer3Result.NoMatch && finalOutcome == null) {
+                finalOutcome = when (layer3Result) {
+                    is Layer3Result.Single -> {
+                        val executionResult = executeIntent(layer3Result.plugin, layer3Result.intent, context, traceId)
+                        when (executionResult) {
+                            is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                            is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 3 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                        }
                     }
-                    val t5Details = if (isT5Matched) {
-                        "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
+                    is Layer3Result.Nested -> {
+                        val executionResult = executeIntent(layer3Result.wrapper, layer3Result.intent, context, traceId)
+                        when (executionResult) {
+                            is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                            is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 3 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                        }
+                    }
+                    is Layer3Result.Multi -> {
+                        val results = mutableListOf<String>()
+                        layer3Result.intents.forEach { (plugin, intent) ->
+                            val executionResult = executeIntent(plugin, intent, context, traceId)
+                            val msg = when (executionResult) {
+                                is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
+                                is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
+                                is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${executionResult.question}"
+                            }
+                            results.add(msg)
+                        }
+                        "✅ [Tầng 3 Chạy Thật Đa Lệnh]:\n" + results.joinToString("\n")
+                    }
+                    else -> null
+                }
+            }
+            val t3Details = when (layer3Result) {
+                is Layer3Result.Single -> {
+                    val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
+                    if (missing.isNotEmpty()) {
+                        "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParam(it, layer3Result.plugin, layer3Result.intent.action) }}]"
                     } else {
-                        "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải xong."
+                        "• Tách thành công câu lệnh đơn và điền đủ tham số: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
                     }
-                    simulatedTiers.add(
-                        DiagnosticTier(
-                            tierName = "Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)",
-                            tierNum = 5,
-                            matched = isT5Matched,
-                            details = t5Details
-                        )
-                    )
+                }
+                is Layer3Result.Nested -> "• Khớp bộ khung lập lịch (schedule) lồng hành động: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
+                is Layer3Result.Multi -> "• Phân tích cú pháp đa hành động (song song/tuần tự): ${layer3Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
+                else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn hoặc độ bao phủ mệnh đề chưa đạt 80%."
+            }
+            simulatedTiers.add(
+                DiagnosticTier(
+                    tierName = "Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)",
+                    tierNum = 3,
+                    matched = layer3Result !is Layer3Result.NoMatch,
+                    details = t3Details
+                )
+            )
+        }
 
+        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN ──
+        val layer4Result = if (mode == PipelineMode.EXECUTE || (!isT2Matched && layer3Result is Layer3Result.NoMatch)) {
+            tryTier2_5ActionMetadataMatcher(context, devicePlugins)
+        } else {
+            Layer3Result.NoMatch
+        }
+
+        if (mode == PipelineMode.EXECUTE) {
+            when (layer4Result) {
+                is Layer3Result.Single -> {
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Single] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
+                    val result = executeIntent(layer4Result.plugin, layer4Result.intent, context, traceId)
                     return PipelineResult(
-                        routerOutcome = null,
-                        tiers = simulatedTiers,
-                        finalOutcome = finalOutcome,
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer4Result.plugin.manifest.id, result)),
                         matchResult = matchResult
                     )
+                }
+                is Layer3Result.Nested -> {
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Nested] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
+                    val result = executeIntent(layer4Result.wrapper, layer4Result.intent, context, traceId)
+                    return PipelineResult(
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult(layer4Result.wrapper.manifest.id, result)),
+                        matchResult = matchResult
+                    )
+                }
+                is Layer3Result.Multi -> {
+                    logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Multi] ${layer4Result.intents.size} actions")
+                    val results = mutableListOf<String>()
+                    layer4Result.intents.forEach { (plugin, intent) ->
+                        try {
+                            val r = executeIntent(plugin, intent, context, traceId)
+                            val msg = when (r) {
+                                is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
+                                is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${r.error}"
+                                is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${r.question}"
+                            }
+                            results.add(msg)
+                        } catch (e: Exception) {
+                            results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
+                        }
+                    }
+                    val combined = results.joinToString("\n")
+                    return PipelineResult(
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined)))),
+                        matchResult = matchResult
+                    )
+                }
+                is Layer3Result.NoMatch -> { }
+            }
+
+            logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
+            return PipelineResult(
+                routerOutcome = executeTier3LlmRouting(context, devicePlugins, traceId),
+                matchResult = matchResult
+            )
+        } else {
+            if (layer4Result !is Layer3Result.NoMatch && finalOutcome == null) {
+                finalOutcome = when (layer4Result) {
+                    is Layer3Result.Single -> {
+                        val executionResult = executeIntent(layer4Result.plugin, layer4Result.intent, context, traceId)
+                        when (executionResult) {
+                            is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                            is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 4 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                        }
+                    }
+                    is Layer3Result.Nested -> {
+                        val executionResult = executeIntent(layer4Result.wrapper, layer4Result.intent, context, traceId)
+                        when (executionResult) {
+                            is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                            is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 4 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                        }
+                    }
+                    is Layer3Result.Multi -> {
+                        val results = mutableListOf<String>()
+                        layer4Result.intents.forEach { (plugin, intent) ->
+                            val executionResult = executeIntent(plugin, intent, context, traceId)
+                            val msg = when (executionResult) {
+                                is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
+                                is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
+                                is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${executionResult.question}"
+                            }
+                            results.add(msg)
+                        }
+                        "✅ [Tầng 4 Chạy Thật Đa Lệnh]:\n" + results.joinToString("\n")
+                    }
+                    else -> null
+                }
+            }
+            val t4Details = when (layer4Result) {
+                is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
+                is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
+                is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
+                else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
+            }
+            simulatedTiers.add(
+                DiagnosticTier(
+                    tierName = "Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)",
+                    tierNum = 4,
+                    matched = layer4Result !is Layer3Result.NoMatch,
+                    details = t4Details
+                )
+            )
+
+            // ── TẦNG 5: KHÔNG GỌI THẬT TRONG DIAGNOSTIC ──
+            val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
+            if (isT5Matched && finalOutcome == null) {
+                finalOutcome = "🔵 [Bypass Tầng 5] Đã chuyển xuống Tầng 5 để LLM phân giải tự do. Hệ thống không tự động chạy thật ở tầng này nhằm tiết kiệm token API Groq."
+            }
+            val t5Details = if (isT5Matched) {
+                "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
+            } else {
+                "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải xong."
+            }
+            simulatedTiers.add(
+                DiagnosticTier(
+                    tierName = "Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)",
+                    tierNum = 5,
+                    matched = isT5Matched,
+                    details = t5Details
+                )
+            )
+
+            return PipelineResult(
+                routerOutcome = null,
+                tiers = simulatedTiers,
+                finalOutcome = finalOutcome,
+                matchResult = matchResult
+            )
+        }
+    }
+
+    private suspend fun processLayer3ClauseEntitySpotter(
+        context: RoutingContext,
+        devicePlugins: List<Plugin>,
+        traceId: String
+    ): Layer3Result {
+        val intentQAs = trainingSkill.getRawCachedQAList(context.username)
+            .filter { it.type == "intent" }
+            .sortedByDescending { it.question.length }
+
+        val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
+        
+        for (clause in context.clauses) {
+            val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
+            
+            // 1. Trích xuất tất cả Alias xuất hiện trong mệnh đề này
+            val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
+                val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
+                clauseNorm.contains(aliasNorm) 
+            }
+            
+            // 2. Trích xuất tất cả Intent không gối lên nhau trong mệnh đề này
+            val matchedIntents = mutableListOf<QAEntity>()
+            var tempClause = clauseNorm
+            val sortedIntents = intentQAs.sortedByDescending { it.question.length }
+            for (qa in sortedIntents) {
+                val qNorm = StringSimilarityUtil.normalizeVietnamese(qa.question)
+                if (qNorm.isBlank()) continue
+                if (tempClause.contains(qNorm)) {
+                    matchedIntents.add(qa)
+                    tempClause = tempClause.replace(qNorm, " ".repeat(qNorm.length))
                 }
             }
 
-            private suspend fun processLayer3ClauseEntitySpotter(
-                context: RoutingContext,
-                devicePlugins: List<Plugin>,
-                traceId: String
-            ): Layer3Result {
-                val intentQAs = trainingSkill.getRawCachedQAList(context.username)
-                    .filter { it.type == "intent" }
-                    .sortedByDescending { it.question.length }
+            // 3. Tính toán tỷ lệ bao phủ của Heuristic tĩnh
+            val totalMatchedLength = matchedIntents.sumOf { it.question.length } + 
+                                     matchedAliases.sumOf { it.first.question.length }
+            
+            if (clause.isEmpty()) continue
+            val coverageRatio = totalMatchedLength.toDouble() / clause.length
 
-                val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
-                
-                for (clause in context.clauses) {
-                    val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
-                    
-                    // 1. Trích xuất tất cả Alias xuất hiện trong mệnh đề này
-                    val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
-                        val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
-                        clauseNorm.contains(aliasNorm) 
-                    }
-                    
-                    // 2. Trích xuất tất cả Intent không gối lên nhau trong mệnh đề này
-                    val matchedIntents = mutableListOf<QAEntity>()
-                    var tempClause = clauseNorm
-                    val sortedIntents = intentQAs.sortedByDescending { it.question.length }
-                    for (qa in sortedIntents) {
-                        val qNorm = StringSimilarityUtil.normalizeVietnamese(qa.question)
-                        if (qNorm.isBlank()) continue
-                        if (tempClause.contains(qNorm)) {
-                            matchedIntents.add(qa)
-                            tempClause = tempClause.replace(qNorm, " ".repeat(qNorm.length))
-                        }
-                    }
+            if (coverageRatio < 0.80) {
+                logger.d("AgentKernel", "[$traceId] ⚠️ Tỷ lệ bao phủ mệnh đề '$clause' quá thấp (${String.format("%.2f", coverageRatio)} < 0.80). Bỏ qua Tầng 3.")
+                continue
+            }
 
-                    // 3. Tính toán tỷ lệ bao phủ của Heuristic tĩnh
-                    val totalMatchedLength = matchedIntents.sumOf { it.question.length } + 
-                                             matchedAliases.sumOf { it.first.question.length }
-                    
-                    if (clause.isEmpty()) continue
-                    val coverageRatio = totalMatchedLength.toDouble() / clause.length
+            val uniqueTypes = matchedAliases.map { it.first.category }.distinct()
+            val hasDuplicateTypes = matchedAliases.size != uniqueTypes.size
 
-                    if (coverageRatio < 0.80) {
-                        logger.d("AgentKernel", "[$traceId] ⚠️ Tỷ lệ bao phủ mệnh đề '$clause' quá thấp (${String.format("%.2f", coverageRatio)} < 0.80). Bỏ qua Tầng 3.")
-                        continue
-                    }
-
-                    val uniqueTypes = matchedAliases.map { it.first.category }.distinct()
-                    val hasDuplicateTypes = matchedAliases.size != uniqueTypes.size
-
-                    val isIntentDouble = matchedIntents.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
-                    val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes
+            val isIntentDouble = matchedIntents.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
+            val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes
 
                     when {
                         isIntentDouble -> {
@@ -1344,11 +1346,13 @@ class AgentKernel @Inject constructor(
                 return executionResult
             }
 
+            // Đug c chế 'mode: PipelineMode' để biết khi nào đang chạy chẩn đoán, tránh gọi Groq
             private suspend fun tryResolvePendingIntent(
                 pending: PendingIntent,
                 userMessage: String,
                 devicePlugins: List<Plugin>,
-                traceId: String
+                traceId: String,
+                mode: PipelineMode = PipelineMode.EXECUTE // Đã đồng bộ thêm biến mode
             ): DeviceCommandResult? {
                 val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
                     chatHistoryManager.clearPendingIntent()
@@ -1466,6 +1470,15 @@ class AgentKernel @Inject constructor(
                     logger.d("AgentKernel", "[$traceId] Heuristic tự xử lý thành công tham số '$currentAskedParam'. Bypass LLM.")
                     heuristicFilled
                 } else {
+                    // SỬA: Chặn đứng gọi API Groq khi hệ thống đang ở chế độ CHẨN ĐOÁN (DIAGNOSTIC)
+                    if (mode == PipelineMode.DIAGNOSTIC) {
+                        logger.d("AgentKernel", "[$traceId] 🔵 [DIAGNOSTIC] Chặn gọi Groq thực tế cho Tầng 1 dở dang.")
+                        return DeviceCommandResult(
+                            pluginId = pending.pluginId,
+                            result = PluginResult.NeedMoreInfo(pending.missingParams, "[Simulated] Đang chờ nhập thêm thông tin.")
+                        )
+                    }
+
                     logger.d("AgentKernel", "[$traceId] Heuristic không khớp tự động được '$currentAskedParam'. Gọi LLM.")
                     val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
                     val foundAliasesContext = matchResult.aliasMatches
@@ -1759,7 +1772,14 @@ class AgentKernel @Inject constructor(
                 
                 if (isT1Matched && finalOutcome == null) {
                     val devicePlugins = plugins.filter { it.manifest.routable }
-                    val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, "DIAGNOSTIC-TRACE")
+                    // SỬA: Truyền PipelineMode.DIAGNOSTIC để Tầng 1 biết và chặn đứng gọi Groq API thật
+                    val pendingResult = tryResolvePendingIntent(
+                        pending = pendings.first(), 
+                        userMessage = userMessage, 
+                        devicePlugins = devicePlugins, 
+                        traceId = "DIAGNOSTIC-TRACE",
+                        mode = PipelineMode.DIAGNOSTIC
+                    )
                     finalOutcome = if (pendingResult != null) {
                         when (val r = pendingResult.result) {
                             is PluginResult.Success -> "✅ [Tầng 1 Chạy Thật Thành Công] ${(r.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
@@ -1832,7 +1852,7 @@ class AgentKernel @Inject constructor(
                     simulatedTiers.add(DiagnosticTier("Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)", 4, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
                     simulatedTiers.add(DiagnosticTier("Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)", 5, true, "• [KÍCH HOẠT] Đã chuyển xuống LLM xử lý."))
                     
-                    return@explainDeviceCommand DiagnosticInfo(
+                    return DiagnosticInfo(
                         query = userMessage,
                         tiers = simulatedTiers,
                         resolvedIntents = emptyList(),

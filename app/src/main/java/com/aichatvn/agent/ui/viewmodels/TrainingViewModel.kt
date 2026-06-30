@@ -1,3 +1,4 @@
+
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
@@ -14,6 +15,8 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job // ĐÃ THÊM: Import sửa lỗi
+import kotlinx.coroutines.delay // ĐÃ THÊM: Import sửa lỗi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +53,7 @@ class TrainingViewModel @Inject constructor(
     val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
     private var activeSearchQuery: String = ""
+    private var searchJob: Job? = null // ĐÃ THÊM: Job kiểm soát debounce gõ chữ
 
     init {
         reloadQAs()
@@ -114,9 +118,13 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
+    // Đug c chế DEBOUNCE (Trì hoãn 500ms): Chỉ gọi Groq kiểm thử khi người dùng đã dừng gõ
     fun searchQAs(query: String) {
         activeSearchQuery = query
-        viewModelScope.launch {
+        searchJob?.cancel() // Huỷ ngay yêu cầu tìm kiếm cũ nếu người dùng vẫn đang gõ tiếp
+        
+        searchJob = viewModelScope.launch {
+            delay(500) // Đợi 500 mili-giây để người dùng hoàn tất câu gõ
             _isLoading.value = true
 
             // Gọi hàm giải thích thực tế từ nhân AgentKernel đã cập nhật
@@ -134,6 +142,7 @@ class TrainingViewModel @Inject constructor(
     }
 
     fun clearSearch() {
+        searchJob?.cancel()
         activeSearchQuery = ""
         _searchResults.value = emptyList()
         _diagnosticInfo.value = null
