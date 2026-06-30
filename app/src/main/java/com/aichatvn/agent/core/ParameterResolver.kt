@@ -8,7 +8,8 @@ object ParameterResolver {
 
     fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
         val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
-        if (strVal.isBlank()) return true
+        // RÀNG BUỘC: Đánh dấu các giá trị mặc định số học không hợp lệ (0, 0.0) là placeholder
+        if (strVal.isBlank() || strVal == "null" || strVal == "0" || strVal == "0.0") return true
         
         if (parameter != null && parameter.placeholder.isNotBlank()) {
             val paramPlh = parameter.placeholder.trim().replace(SPACE_REGEX, " ")
@@ -35,6 +36,7 @@ object ParameterResolver {
         val missing = mutableListOf<String>()
         val action = plugin.manifest.actions.find { it.name == actionName } ?: return missing
 
+        // 1. Kiểm tra các tham số bắt buộc cứng (required = true)
         action.parameters.filter { it.required }.forEach { param ->
             val value = params[param.name]
             if (isPlaceholder(value, param)) {
@@ -42,6 +44,32 @@ object ParameterResolver {
             }
         }
 
+        // 2. ── RÀNG BUỘC TINH HOA: Kiểm tra điều kiện phụ thuộc của Plugin Lập lịch (schedule) ──
+        if (plugin.manifest.id == "schedule" && (actionName == "add" || actionName == "create")) {
+            val cronParam = action.parameters.find { 
+                it.name.contains("cron", ignoreCase = true) || 
+                it.name.contains("time", ignoreCase = true) || 
+                it.semanticType.equals("time", ignoreCase = true) 
+            }
+            val intervalParam = action.parameters.find { 
+                it.name.contains("interval", ignoreCase = true) || 
+                it.semanticType.equals("interval", ignoreCase = true) 
+            }
+            
+            val cronVal = cronParam?.let { params[it.name] }
+            val intervalVal = intervalParam?.let { params[it.name] }
+            
+            val isCronPlh = cronParam?.let { isPlaceholder(cronVal, it) } ?: true
+            val isIntervalPlh = intervalParam?.let { 
+                isPlaceholder(intervalVal, it) || intervalVal == 0 || intervalVal == "0" || intervalVal == 0.0 
+            } ?: true
+            
+            if (isCronPlh && isIntervalPlh) {
+                cronParam?.let { missing.add(it.name) }
+            }
+        }
+
+        // 3. Kiểm tra các tham số lồng nhau
         val paramsMeta = action.parameters.find { it.semanticType == "params" || it.name == "params" }
         if (paramsMeta != null) {
             val value = params[paramsMeta.name]
@@ -127,3 +155,4 @@ object ParameterResolver {
         }
     }
 }
+

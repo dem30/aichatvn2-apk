@@ -7,10 +7,14 @@ import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
-import com.aichatvn.agent.skills.SearchMatch
-import com.aichatvn.agent.skills.TrainingSkill
-import com.aichatvn.agent.tools.ai.GroqClientTool
-import com.aichatvn.agent.utils.Logger
+import com.skills.SearchMatch
+import com.skills.TrainingSkill
+import com.tools.ai.GroqClientTool
+import com.utils.Logger
+import com.aichatvn.agent.core.DialogManager
+import com.aichatvn.agent.core.PendingState
+import com.aichatvn.agent.core.CancelDecision
+import com.aichatvn.agent.core.ConversationFocus
 import com.aichatvn.agent.utils.StringSimilarityUtil
 import com.aichatvn.agent.utils.DateTimeParser
 import org.json.JSONObject
@@ -39,7 +43,7 @@ data class DiagnosticInfo(
     val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap(),
     val intentThreshold: Float = 0.3f,
     val aliasThreshold: Float = 0.2f,
-    val executionOutcome: String? = null // Bổ sung trường kết quả chạy thực tế
+    val executionOutcome: String? = null // Báo cáo kết quả chạy thực tế của chẩn đoán
 )
 
 data class LocalCandidate(
@@ -70,13 +74,14 @@ sealed class Layer3Result {
     object NoMatch : Layer3Result()
 }
 
+// Cấu trúc dữ liệu yêu cầu và phản hồi Chat trung tâm
 data class ChatRequest(
     val message: String,
     val username: String = "default_user",
     val imageBase64: String? = null,
     val fileUrl: String? = null,
     val extraContext: String = "",
-    val chatMode: String = "COMBINED"
+    val chatMode: String = "COMBINED" // "GROQ" | "QA" | "COMBINED"
 )
 
 data class ChatResponse(
@@ -92,13 +97,12 @@ class AgentKernel @Inject constructor(
     private val trainingSkill: TrainingSkill,
     private val chatHistoryManager: ChatHistoryManager,
     private val configProvider: AppConfigProvider,
-    private val database: AppDatabase,
+    private val database: AppDatabase, // Dùng để tải ngữ cảnh lịch sử cho LLM độc lập
     private val logger: Logger,
-    private val dialogManager: DialogManager
+    private val dialogManager: DialogManager // Tích hợp Tầng 0
 ) {
 
     companion object {
-        private val SPACE_REGEX = Regex("\\s+")
         private const val MAX_DEPTH = 3
     }
 
@@ -282,7 +286,7 @@ class AgentKernel @Inject constructor(
                         val qa = matches.firstOrNull()?.qa
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
                     }
-                    else -> {
+                    else -> { //combined hoặc groq
                         val historySnapshot = try {
                             database.chatMessageDao().getMessages(username, 6)
                                 .reversed()
@@ -324,6 +328,7 @@ class AgentKernel @Inject constructor(
         val devicePlugins = plugins.filter { it.manifest.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
+        // ── TẦNG 0a: CANCEL RESOLVER ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -343,12 +348,14 @@ class AgentKernel @Inject constructor(
             )
         }
 
+        // ── TẦNG 0b: PRONOUN RESOLVER ──
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
         if (pronounResult.wasResolved) {
             logger.d("AgentKernel", "[$traceId] [Tầng 0] Pronoun Resolver: \"${pronounResult.resolvedFrom}\" -> \"${pronounResult.resolvedTo}\". Câu sau khi viết lại: \"$resolvedMessage\"")
         }
 
+        // ── TẦNG 1: Xử lý trạng thái dở dang đa lệnh song song (Pending Intents Queue) ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         if (pendings.isNotEmpty()) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
@@ -393,6 +400,8 @@ class AgentKernel @Inject constructor(
         }
 
         val dynamicMinScore = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
+
+        // ── KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT VỚI ALIAS THRESHOLD 0.0) ──
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage, 
             username, 
@@ -413,11 +422,23 @@ class AgentKernel @Inject constructor(
             resolvedQuery = resolvedMessage,
             username = username,
             clauses = clauses,
-            matchResult = matchResult,
+            globalMatchResult = matchResult,
             localEntities = localEntities
         )
 
+        // ── TẦNG 2A: MÀNG LỌC PHỦ ĐỊNH CỤC BỘ (BYPASS THẲNG XUỐNG TẦNG 5) ──
+        val lowerMsg = resolvedMessage.lowercase().trim()
+        val negationWords = setOf("không", "chưa", "đừng", "hủy", "huỷ", "không muốn", "đừng có")
+        val hasNegation = negationWords.any { word -> 
+            Regex("\\b$word\\b").containsMatchIn(lowerMsg) 
+        }
+        if (hasNegation) {
+            logger.d("AgentKernel", "[$traceId] ⚠️ Phát hiện từ khóa phủ định -> Bypass thẳng xuống Tầng 5 (LLM) để hiểu đúng ngữ nghĩa.")
+            return executeTier3LlmRouting(context, devicePlugins, traceId)
+        }
+
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
+
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         if (layer2Result != null) {
             if (layer2Result.confidence >= tier2HighConf) {
@@ -436,7 +457,7 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        val layer3Result = processLayer3ClauseEntitySpotter(context, devicePlugins)
+        val layer3Result = processLayer3ClauseEntitySpotter(context, devicePlugins, traceId)
         when (layer3Result) {
             is Layer3Result.Single -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Single] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
@@ -510,81 +531,128 @@ class AgentKernel @Inject constructor(
 
     private suspend fun processLayer3ClauseEntitySpotter(
         context: RoutingContext,
-        devicePlugins: List<Plugin>
+        devicePlugins: List<Plugin>,
+        traceId: String
     ): Layer3Result {
         val intentQAs = trainingSkill.getRawCachedQAList(context.username)
             .filter { it.type == "intent" }
             .sortedByDescending { it.question.length }
 
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
-        val absorbedActions = mutableSetOf<String>()
-
+        
         for (clause in context.clauses) {
             val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
             
-            val wrapperQA = intentQAs
-                .filter { it.answer.contains("\"plugin\":\"schedule\"") }
-                .firstOrNull { clauseNorm.contains(StringSimilarityUtil.normalizeVietnamese(it.question)) }
-
-            if (wrapperQA != null) {
-                val rootJson = try { JSONObject(wrapperQA.answer) } catch (e: Exception) { null }
-                val rootPluginId = rootJson?.optString("plugin") ?: ""
-                val rootActionName = rootJson?.optString("action") ?: ""
-                
-                val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
-                val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
-                
-                if (targetPlugin != null && targetAction != null) {
-                    val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-
-                    val resolvedParams = resolveParametersWithMeta(
-                        parameters = targetAction.parameters,
-                        inputParams = rootParams,
-                        context = context,
-                        excludeIntentId = wrapperQA.id,
-                        depth = 0
-                    )
-
-                    resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
-
-                    val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
-                    val nestedAction = resolvedParams["action"]?.toString() ?: ""
-                    if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
-                        absorbedActions.add("$nestedPluginId.$nestedAction")
-                    }
+            // 1. Trích xuất tất cả Alias xuất hiện trong mệnh đề này
+            val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
+                val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
+                clauseNorm.contains(aliasNorm) 
+            }
+            
+            // 2. Trích xuất tất cả Intent không gối lên nhau trong mệnh đề này
+            val matchedIntents = mutableListOf<QAEntity>()
+            var tempClause = clauseNorm
+            val sortedIntents = intentQAs.sortedByDescending { it.question.length }
+            for (qa in sortedIntents) {
+                val qNorm = StringSimilarityUtil.normalizeVietnamese(qa.question)
+                if (qNorm.isBlank()) continue
+                if (tempClause.contains(qNorm)) {
+                    matchedIntents.add(qa)
+                    tempClause = tempClause.replace(qNorm, " ".repeat(qNorm.length))
                 }
             }
-        }
 
-        for (clause in context.clauses) {
-            val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
+            // 3. Tính toán tỷ lệ bao phủ của Heuristic tĩnh
+            val totalMatchedLength = matchedIntents.sumOf { it.question.length } + 
+                                     matchedAliases.sumOf { it.first.question.length }
             
-            val leafQA = intentQAs
-                .filter { !it.answer.contains("\"plugin\":\"schedule\"") }
-                .firstOrNull { clauseNorm.contains(StringSimilarityUtil.normalizeVietnamese(it.question)) }
+            // Tránh chia cho 0 nếu mệnh đề rỗng
+            if (clause.isEmpty()) continue
+            val coverageRatio = totalMatchedLength.toDouble() / clause.length
 
-            if (leafQA != null) {
-                val rootJson = try { JSONObject(leafQA.answer) } catch (e: Exception) { null }
-                val rootPluginId = rootJson?.optString("plugin") ?: ""
-                val rootActionName = rootJson?.optString("action") ?: ""
+            // Chặn cứng 80%: Chỉ xử lý tĩnh ở Tầng 3 nếu tổng chiều dài từ khóa khớp chiếm tối thiểu 80% câu nói
+            if (coverageRatio < 0.80) {
+                logger.d("AgentKernel", "[$traceId] ⚠️ Tỷ lệ bao phủ mệnh đề '$clause' quá thấp (${String.format("%.2f", coverageRatio)} < 0.80). Bỏ qua Tầng 3.")
+                continue
+            }
+
+            // Phân loại Câu (Double Intent vs Đa nhiệm)
+            val uniqueTypes = matchedAliases.map { it.first.category }.distinct()
+            val hasDuplicateTypes = matchedAliases.size != uniqueTypes.size
+
+            val isIntentDouble = matchedIntents.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
+            val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes
+
+            when {
+                // TRƯỜNG HỢP A: Intent double (Nhân bản 1 Intent cho nhiều Alias cùng nhóm semanticType)
+                isIntentDouble -> {
+                    val singleIntentQA = matchedIntents.first()
+                    val rootJson = try { JSONObject(singleIntentQA.answer) } catch (e: Exception) { null }
+                    val rootPluginId = rootJson?.optString("plugin") ?: ""
+                    val rootActionName = rootJson?.optString("action") ?: ""
+                    
+                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
+                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+                    
+                    if (targetPlugin != null && targetAction != null) {
+                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                        
+                        for (alias in matchedAliases) {
+                            val resolvedParams = resolveParametersWithMeta(
+                                parameters = targetAction.parameters,
+                                inputParams = rootParams,
+                                context = context.copy(globalMatchResult = matchResultCopyForSingleAlias(context.globalMatchResult, alias.first)),
+                                excludeIntentId = singleIntentQA.id,
+                                depth = 0
+                            )
+                            resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                        }
+                    }
+                }
                 
-                if (absorbedActions.contains("$rootPluginId.$rootActionName")) continue
+                // TRƯỜNG HỢP B: Câu đa nhiệm (Nhiều Intent khác nhau, các Alias khác nhóm)
+                isMultiIntent -> {
+                    for (qa in matchedIntents) {
+                        val rootJson = try { JSONObject(qa.answer) } catch (e: Exception) { null }
+                        val rootPluginId = rootJson?.optString("plugin") ?: ""
+                        val rootActionName = rootJson?.optString("action") ?: ""
+                        val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
+                        val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+                        
+                        if (targetPlugin != null && targetAction != null) {
+                            val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                            val resolvedParams = resolveParametersWithMeta(
+                                parameters = targetAction.parameters,
+                                inputParams = rootParams,
+                                context = context,
+                                excludeIntentId = qa.id,
+                                depth = 0
+                            )
+                            resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                        }
+                    }
+                }
 
-                val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
-                val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
-                
-                if (targetPlugin != null && targetAction != null) {
-                    val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-
-                    val resolvedParams = resolveParametersWithMeta(
-                        parameters = targetAction.parameters,
-                        inputParams = rootParams,
-                        context = context,
-                        excludeIntentId = leafQA.id,
-                        depth = 0
-                    )
-
-                    resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                // TRƯỜNG HỢP C: Câu đơn lẻ thông thường
+                matchedIntents.size == 1 && matchedAliases.size <= 1 -> {
+                    val qa = matchedIntents.first()
+                    val rootJson = try { JSONObject(qa.answer) } catch (e: Exception) { null }
+                    val rootPluginId = rootJson?.optString("plugin") ?: ""
+                    val rootActionName = rootJson?.optString("action") ?: ""
+                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
+                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+                    
+                    if (targetPlugin != null && targetAction != null) {
+                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                        val resolvedParams = resolveParametersWithMeta(
+                            parameters = targetAction.parameters,
+                            inputParams = rootParams,
+                            context = context,
+                            excludeIntentId = qa.id,
+                            depth = 0
+                        )
+                        resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                    }
                 }
             }
         }
@@ -599,17 +667,27 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    private fun matchResultCopyForSingleAlias(
+        original: TrainingSkill.MatchResult, 
+        forcedAlias: QAEntity
+    ): TrainingSkill.MatchResult {
+        val updatedBest = original.bestAliasMatches.toMutableMap()
+        updatedBest[forcedAlias.category] = forcedAlias to 1.0
+        return original.copy(bestAliasMatches = updatedBest)
+    }
+
     private suspend fun tryTier2SemanticSlotResolver(
         context: RoutingContext,
         devicePlugins: List<Plugin>
     ): Layer2Result? {
         val dynamicMinScore = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
 
-        val wrapperIntentPair = context.matchResult.intentMatches
+        // ✅ ĐÃ SỬA: Ưu tiên chọn wrapper (như schedule) nếu có nhiều khớp để đảm bảo nạp đúng khung lập lịch [1]
+        val wrapperIntentPair = context.globalMatchResult.intentMatches
             .filter { it.second >= dynamicMinScore }
             .find { it.first.answer.contains("\"plugin\":\"schedule\"") }
 
-        val bestIntentPair = wrapperIntentPair ?: context.matchResult.intentMatches
+        val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
             .filter { it.second >= dynamicMinScore }
             .firstOrNull() ?: return null
 
@@ -643,81 +721,116 @@ class AgentKernel @Inject constructor(
         devicePlugins: List<Plugin>
     ): Layer3Result {
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
-        val absorbedActions = mutableSetOf<String>()
 
         for (clause in context.clauses) {
             val clauseNormalized = StringSimilarityUtil.normalizeVietnamese(clause)
-            
-            val bestMatch = normalizedActionMetadataList
-                .filter { it.plugin.manifest.id == "schedule" && it.plugin.manifest.routable && it.action.enabled }
-                .find { meta ->
-                    meta.normalizedDescription.contains(clauseNormalized) ||
-                    clauseNormalized.contains(meta.normalizedDescription) ||
-                    meta.normalizedExamples.any { ex ->
-                        ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized))
+
+            // 1. Trích xuất Alias trong mệnh đề
+            val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
+                val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
+                clauseNormalized.contains(aliasNorm) 
+            }
+
+            // 2. Tìm tất cả Metadata Actions khớp trong câu
+            val matchedMetadata = mutableListOf<NormalizedActionMetadata>()
+            var tempClause = clauseNormalized
+            val sortedMetadata = normalizedActionMetadataList
+                .filter { it.plugin.manifest.routable && it.action.enabled }
+                .sortedByDescending { it.action.description.length }
+
+            for (meta in sortedMetadata) {
+                val descNorm = meta.normalizedDescription
+                if (descNorm.isBlank()) continue
+                if (tempClause.contains(descNorm)) {
+                    matchedMetadata.add(meta)
+                    tempClause = tempClause.replace(descNorm, " ".repeat(descNorm.length))
+                } else {
+                    // Thử khớp ví dụ mẫu
+                    val matchedEx = meta.normalizedExamples.find { ex -> ex.isNotBlank() && tempClause.contains(ex) }
+                    if (matchedEx != null) {
+                        matchedMetadata.add(meta)
+                        tempClause = tempClause.replace(matchedEx, " ".repeat(matchedEx.length))
                     }
-                }
-
-            if (bestMatch != null) {
-                val plugin = bestMatch.plugin
-                val action = bestMatch.action
-
-                val schemaParams = mutableMapOf<String, Any>()
-                action.parameters.forEach { param ->
-                    schemaParams[param.name] = param.defaultValue ?: ""
-                }
-
-                val resolvedParams = resolveParametersWithMeta(
-                    parameters = action.parameters,
-                    inputParams = schemaParams,
-                    context = context,
-                    excludeIntentId = null,
-                    depth = 0
-                )
-
-                resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams))
-
-                val nestedPluginId = resolvedParams["pluginId"]?.toString() ?: ""
-                val nestedAction = resolvedParams["action"]?.toString() ?: ""
-                if (nestedPluginId.isNotBlank() && nestedAction.isNotBlank()) {
-                    absorbedActions.add("$nestedPluginId.$nestedAction")
                 }
             }
-        }
 
-        for (clause in context.clauses) {
-            val clauseNormalized = StringSimilarityUtil.normalizeVietnamese(clause)
+            // 3. Tính toán độ bao phủ 80% cho Tầng 4
+            val totalMatchedLength = matchedMetadata.sumOf { it.normalizedDescription.length } + 
+                                     matchedAliases.sumOf { it.first.question.length }
             
-            val bestMatch = normalizedActionMetadataList
-                .filter { it.plugin.manifest.id != "schedule" && it.plugin.manifest.routable && it.action.enabled }
-                .find { meta ->
-                    meta.normalizedDescription.contains(clauseNormalized) || 
-                    clauseNormalized.contains(meta.normalizedDescription) ||
-                    meta.normalizedExamples.any { ex -> 
-                        ex.length >= 5 && (clauseNormalized.contains(ex) || ex.contains(clauseNormalized)) 
+            if (clause.isEmpty()) continue
+            val coverageRatio = totalMatchedLength.toDouble() / clause.length
+
+            if (coverageRatio < 0.80) {
+                continue
+            }
+
+            val uniqueTypes = matchedAliases.map { it.first.category }.distinct()
+            val hasDuplicateTypes = matchedAliases.size != uniqueTypes.size
+
+            val isIntentDouble = matchedMetadata.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
+            val isMultiIntent = matchedMetadata.size > 1 && !hasDuplicateTypes
+
+            when {
+                // TRƯỜNG HỢP A: Intent double (Nhân bản 1 Intent cho nhiều Alias cùng nhóm semanticType)
+                isIntentDouble -> {
+                    val meta = matchedMetadata.first()
+                    val plugin = meta.plugin
+                    val action = meta.action
+                    val schemaParams = mutableMapOf<String, Any>()
+                    action.parameters.forEach { param ->
+                        schemaParams[param.name] = param.defaultValue ?: ""
+                    }
+                    for (alias in matchedAliases) {
+                        val resolvedParams = resolveParametersWithMeta(
+                            parameters = action.parameters,
+                            inputParams = schemaParams,
+                            context = context.copy(globalMatchResult = matchResultCopyForSingleAlias(context.globalMatchResult, alias.first)),
+                            excludeIntentId = null,
+                            depth = 0
+                        )
+                        resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams))
                     }
                 }
-
-            if (bestMatch != null) {
-                val plugin = bestMatch.plugin
-                val action = bestMatch.action
-
-                if (absorbedActions.contains("${plugin.manifest.id}.${action.name}")) continue
-
-                val schemaParams = mutableMapOf<String, Any>()
-                action.parameters.forEach { param ->
-                    schemaParams[param.name] = param.defaultValue ?: ""
+                
+                // TRƯỜNG HỢP B: Câu đa nhiệm (Nhiều Intent khác nhau, các Alias khác nhóm)
+                isMultiIntent -> {
+                    for (meta in matchedMetadata) {
+                        val plugin = meta.plugin
+                        val action = meta.action
+                        val schemaParams = mutableMapOf<String, Any>()
+                        action.parameters.forEach { param ->
+                            schemaParams[param.name] = param.defaultValue ?: ""
+                        }
+                        val resolvedParams = resolveParametersWithMeta(
+                            parameters = action.parameters,
+                            inputParams = schemaParams,
+                            context = context,
+                            excludeIntentId = null,
+                            depth = 0
+                        )
+                        resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams))
+                    }
                 }
-
-                val resolvedParams = resolveParametersWithMeta(
-                    parameters = action.parameters,
-                    inputParams = schemaParams,
-                    context = context,
-                    excludeIntentId = null,
-                    depth = 0
-                )
-
-                resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams))
+                
+                // TRƯỜNG HỢP C: Câu đơn lẻ thông thường
+                matchedMetadata.size == 1 && matchedAliases.size <= 1 -> {
+                    val meta = matchedMetadata.first()
+                    val plugin = meta.plugin
+                    val action = meta.action
+                    val schemaParams = mutableMapOf<String, Any>()
+                    action.parameters.forEach { param ->
+                        schemaParams[param.name] = param.defaultValue ?: ""
+                    }
+                    val resolvedParams = resolveParametersWithMeta(
+                        parameters = action.parameters,
+                        inputParams = schemaParams,
+                        context = context,
+                        excludeIntentId = null,
+                        depth = 0
+                    )
+                    resolvedIntents.add(plugin to Intent(plugin.manifest.id, action.name, resolvedParams))
+                }
             }
         }
 
@@ -740,7 +853,7 @@ class AgentKernel @Inject constructor(
     ): Map<String, Any> {
         if (depth > MAX_DEPTH) return emptyMap()
 
-        val secondaryIntentQA = context.matchResult.intentMatches
+        val secondaryIntentQA = context.globalMatchResult.intentMatches
             .filter { it.first.type == "intent" }
             .map { it.first }
             .firstOrNull { it.id != excludeIntentId }
@@ -817,7 +930,7 @@ class AgentKernel @Inject constructor(
         var finalIsPlh = isPlh
         
         if (!finalIsPlh && currentValue != null) {
-            val isAliasVal = context.matchResult.aliasMatches.any { 
+            val isAliasVal = context.globalMatchResult.aliasMatches.any { 
                 it.first.category == param.semanticType && 
                 it.first.question.equals(currentValue.toString().trim(), ignoreCase = true) 
             }
@@ -828,11 +941,11 @@ class AgentKernel @Inject constructor(
 
         if (!finalIsPlh) return currentValue ?: ""
 
-        val matchedAliasValue = aliasMatchesForType(context.matchResult, param.semanticType)
+        val matchedAliasValue = aliasMatchesForType(context.globalMatchResult, param.semanticType)
         if (matchedAliasValue != null) return matchedAliasValue
 
         if (context.resolvedQuery.isNotBlank()) {
-            val containsMatch = context.matchResult.aliasMatches
+            val containsMatch = context.globalMatchResult.aliasMatches
                 .filter { it.first.category == param.semanticType }
                 .sortedByDescending { it.first.question.length }
                 .firstOrNull { context.resolvedQuery.contains(it.first.question, ignoreCase = true) }
@@ -1068,6 +1181,7 @@ class AgentKernel @Inject constructor(
             }
         }
 
+        // ── ĐÃ SỬA: XÁC ĐỊNH THAM SỐ ĐANG HỎI ĐỂ ĐỐI CHIẾU BYPASS GROQ ──
         val currentAskedParam = pending.missingParams.firstOrNull()
         
         val filled = if (currentAskedParam != null && heuristicFilled.containsKey(currentAskedParam)) {
@@ -1199,7 +1313,7 @@ class AgentKernel @Inject constructor(
     ): RouterOutcome {
         val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
 
-        val foundAliases = context.matchResult.aliasMatches
+        val foundAliases = context.globalMatchResult.aliasMatches
             .filter { it.second >= configAliasThreshold }
             .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
 
@@ -1232,11 +1346,11 @@ class AgentKernel @Inject constructor(
         val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
 
         val routerPrompt = buildString {
-            append("<sys>Intent Formatter. Bạn là bộ định tuyến lệnh. Chỉ được phép xuất JSON thô dạng: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
-            append("QUY TẮC BẮT BUỘC:\n")
-            append("1. Nếu câu lệnh của người dùng khớp với một hành động thiết bị trong danh sách <candidates>, hãy xuất JSON điều khiển tương ứng.\n")
-            append("2. Nếu người dùng đang nói chuyện phiếm, tán gẫu, yêu cầu kể chuyện (ví dụ: 'kể chuyện', 'một câu chuyện'), chào hỏi ('hello', 'hi'), hoặc hỏi đáp kiến thức tổng hợp KHÔNG liên quan trực tiếp đến việc điều khiển thiết bị, bạn BẮT BUỘC phải xuất đúng cấu trúc: {\"plugin\":\"chat\",\"action\":\"none\",\"params\":{}}\n")
-            append("3. Tuyệt đối KHÔNG được viết lời giải thích, không được tư vấn, không được trả lời hội thoại bằng văn bản thường. Chỉ xuất duy nhất JSON.</sys>\n")
+            append("<sys>Intent Formatter. Chỉ xuất JSON: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
+            append("- Khớp thông điệp người dùng vào một trong các ứng viên (candidates) được tìm thấy bên dưới.\n")
+            append("- Nếu là hội thoại thông thường, xuất: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
+            append("- Dựa vào danh bạ aliases được tìm thấy gửi kèm để gán chính xác tham số ID.\n")
+            append("- Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.</sys>\n")
             append("<candidates>\n$candidateLines\n</candidates>\n")
             if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
             append("<context>last_device: \"$lastDevice\"</context>\n")
@@ -1402,7 +1516,7 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT)
+        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT VỚI ALIAS THRESHOLD 0.0)
         val devicePlugins = plugins.filter { it.manifest.routable }
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage,
@@ -1424,9 +1538,35 @@ class AgentKernel @Inject constructor(
             resolvedQuery = resolvedMessage,
             username = username,
             clauses = clauses,
-            matchResult = matchResult,
+            globalMatchResult = matchResult,
             localEntities = localEntities
         )
+
+        // ── TẦNG 2A: MÀNG LỌC PHỦ ĐỊNH CỤC BỘ (BYPASS THẲNG XUỐNG TẦNG 5) ──
+        val lowerMsg = resolvedMessage.lowercase().trim()
+        val negationWords = setOf("không", "chưa", "đừng", "hủy", "huỷ", "không muốn", "đừng có")
+        val hasNegation = negationWords.any { word -> Regex("\\b$word\\b").containsMatchIn(lowerMsg) }
+        
+        if (hasNegation && finalOutcome == null) {
+            finalOutcome = "🔵 [Màng lọc Phủ định Cục bộ] Phát hiện từ khóa phủ định trong câu lệnh. Hệ thống bypass toàn bộ bộ lọc tĩnh xuống Tầng 5 (LLM Fallback) để đảm bảo hiểu đúng ngữ nghĩa."
+            simulatedTiers.add(DiagnosticTier("Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)", 2, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
+            simulatedTiers.add(DiagnosticTier("Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)", 3, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
+            simulatedTiers.add(DiagnosticTier("Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)", 4, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
+            simulatedTiers.add(DiagnosticTier("Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)", 5, true, "• [KÍCH HOẠT] Đã chuyển xuống LLM xử lý."))
+            
+            return DiagnosticInfo(
+                query = userMessage,
+                tiers = simulatedTiers,
+                resolvedIntents = emptyList(),
+                resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer },
+                intentMatches = matchResult.intentMatches,
+                aliasMatches = matchResult.aliasMatches,
+                bestAliasMatches = matchResult.bestAliasMatches,
+                intentThreshold = intentThreshold,
+                aliasThreshold = aliasThreshold,
+                executionOutcome = finalOutcome
+            )
+        }
 
         // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (HỖ TRỢ CHẠY THẬT) ──
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
@@ -1458,7 +1598,7 @@ class AgentKernel @Inject constructor(
 
         // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (HỖ TRỢ CHẠY THẬT) ──
         val layer3Result = if (!isT2Matched) {
-            processLayer3ClauseEntitySpotter(context, devicePlugins)
+            processLayer3ClauseEntitySpotter(context, devicePlugins, "DIAGNOSTIC-TRACE")
         } else {
             Layer3Result.NoMatch
         }
@@ -1509,7 +1649,7 @@ class AgentKernel @Inject constructor(
             }
             is Layer3Result.Nested -> "• Khớp bộ khung lập lịch (schedule) lồng hành động: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
             is Layer3Result.Multi -> "• Phân tích cú pháp đa hành động (song song/tuần tự): ${layer3Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-            else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn."
+            else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn hoặc độ bao phủ mệnh đề chưa đạt 80%."
         }
         simulatedTiers.add(
             DiagnosticTier(
@@ -1567,7 +1707,7 @@ class AgentKernel @Inject constructor(
             is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
             is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
             is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-            else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin."
+            else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
         }
         simulatedTiers.add(
             DiagnosticTier(
@@ -1610,7 +1750,7 @@ class AgentKernel @Inject constructor(
             bestAliasMatches = matchResult.bestAliasMatches,
             intentThreshold = intentThreshold,
             aliasThreshold = aliasThreshold,
-            executionOutcome = finalOutcome // Trả về kết quả thực tế thu thập được
+            executionOutcome = finalOutcome
         )
     }
 
