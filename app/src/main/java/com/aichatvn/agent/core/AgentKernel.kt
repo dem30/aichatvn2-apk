@@ -22,10 +22,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
-import com.aichatvn.agent.data.model.QAEntity
-
 private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
-
 
 data class DiagnosticTier(
     val tierName: String,
@@ -46,7 +43,6 @@ data class DiagnosticInfo(
     val intentThreshold: Float = 0.3f,
     val aliasThreshold: Float = 0.2f
 )
-
 
 data class LocalCandidate(
     val pluginId: String,
@@ -76,14 +72,13 @@ sealed class Layer3Result {
     object NoMatch : Layer3Result()
 }
 
-// Cấu trúc dữ liệu yêu cầu và phản hồi Chat trung tâm
 data class ChatRequest(
     val message: String,
     val username: String = "default_user",
     val imageBase64: String? = null,
     val fileUrl: String? = null,
     val extraContext: String = "",
-    val chatMode: String = "COMBINED" // "GROQ" | "QA" | "COMBINED"
+    val chatMode: String = "COMBINED"
 )
 
 data class ChatResponse(
@@ -99,9 +94,9 @@ class AgentKernel @Inject constructor(
     private val trainingSkill: TrainingSkill,
     private val chatHistoryManager: ChatHistoryManager,
     private val configProvider: AppConfigProvider,
-    private val database: AppDatabase, // Dùng để tải ngữ cảnh lịch sử cho LLM độc lập
+    private val database: AppDatabase,
     private val logger: Logger,
-    private val dialogManager: DialogManager // ← TẦNG 0: Dialog Manager (Cancel/Pronoun/Focus)
+    private val dialogManager: DialogManager
 ) {
 
     companion object {
@@ -122,158 +117,6 @@ class AgentKernel @Inject constructor(
         }
     }
 
-
-
-     /* Chạy thử nghiệm và phân tích chính xác luồng xử lý 5 tầng mà không gây tác động phụ (dry-run).
-     * Phục vụ mục đích chẩn đoán trực quan hóa cho màn hình kiểm thử.
-     */
-    suspend fun explainDeviceCommand(
-        userMessage: String,
-        username: String = "default_user"
-    ): DiagnosticInfo {
-        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
-        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
-        val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
-
-        val simulatedTiers = mutableListOf<DiagnosticTier>()
-
-        // ── TẦNG 0: PRONOUN RESOLUTION & CANCEL CHECK ──
-        val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
-        val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
-        val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
-        
-        val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
-        val resolvedMessage = pronounResult.rewrittenMessage
-
-        // ── TẦNG 1: TRẠNG THÁI DỞ DANG (PENDING INTENTS) ──
-        val pendings = chatHistoryManager.getActivePendingIntents()
-        val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
-        val t1Details = buildString {
-            if (pronounResult.wasResolved) {
-                append("• [Tầng 0] Pronoun: Thay thế đại từ thành công \"${pronounResult.resolvedFrom}\" ➔ \"${pronounResult.resolvedTo}\". Câu xử lý tiếp theo: \"$resolvedMessage\"\n")
-            }
-            if (cancelDecision is CancelDecision.CancelPending) {
-                append("• [Tầng 0] Cancel: Xác nhận hủy tiến trình dở dang: ${cancelDecision.pluginId}.${cancelDecision.action}\n")
-            }
-            if (pendings.isNotEmpty()) {
-                append("• Phát hiện ${pendings.size} tiến trình chưa hoàn thành: ")
-                append(pendings.joinToString { "${it.pluginId}.${it.action}" })
-            } else {
-                append("• Không phát hiện hàng đợi dở dang nào đang chờ.")
-            }
-        }
-        simulatedTiers.add(
-            DiagnosticTier(
-                tierName = "Tầng 1: Trạng thái lệnh dở dang (Pending Intents)",
-                tierNum = 1,
-                matched = isT1Matched || cancelDecision is CancelDecision.CancelPending,
-                details = t1Details
-            )
-        )
-
-        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (EXACT/FUZZY INTENT MATCH) ──
-        val devicePlugins = plugins.filter { it.manifest.routable }
-        val matchResult = trainingSkill.fuzzyMatchCategorized(
-            resolvedMessage,
-            username,
-            intentThreshold = intentThreshold,
-            aliasThreshold = 0.0f
-        )
-        val layer2Result = tryTier2SemanticSlotResolver(resolvedMessage, matchResult, devicePlugins)
-        val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
-
-        val t2Details = when {
-            layer2Result == null -> "• Không tìm thấy ý định mẫu nào khớp với nội dung đã nhập."
-            isT2Matched -> "• Khớp ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' với điểm số cao (${String.format("%.2f", layer2Result.confidence)} >= $tier2HighConf). Lệnh được bypass thực thi trực tiếp."
-            else -> "• Ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' chưa đạt điểm tin cậy thực thi nhanh (${String.format("%.2f", layer2Result.confidence)} < $tier2HighConf). Chuyển xuống Tầng 3."
-        }
-        simulatedTiers.add(
-            DiagnosticTier(
-                tierName = "Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)",
-                tierNum = 2,
-                matched = isT2Matched,
-                score = layer2Result?.confidence ?: 0.0,
-                details = t2Details
-            )
-        )
-
-        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (CLAUSE SPOTTER) ──
-        val layer3Result = if (!isT2Matched) {
-            processLayer3ClauseEntitySpotter(resolvedMessage, username, devicePlugins, "DIAGNOSTIC-TRACE")
-        } else {
-            Layer3Result.NoMatch
-        }
-        val t3Details = when (layer3Result) {
-            is Layer3Result.Single -> "• Tách và nhận diện được câu lệnh đơn: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
-            is Layer3Result.Nested -> "• Khớp bộ khung lập lịch (schedule) lồng hành động: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
-            is Layer3Result.Multi -> "• Phân tích cú pháp đa hành động (song song/tuần tự): ${layer3Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-            else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn."
-        }
-        simulatedTiers.add(
-            DiagnosticTier(
-                tierName = "Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)",
-                tierNum = 3,
-                matched = layer3Result !is Layer3Result.NoMatch,
-                details = t3Details
-            )
-        )
-
-        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN (METADATA MATCHER) ──
-        val isT4Checkable = !isT2Matched && layer3Result is Layer3Result.NoMatch
-        val layer4Result = if (isT4Checkable) {
-            tryTier2_5ActionMetadataMatcher(resolvedMessage, matchResult, devicePlugins)
-        } else {
-            Layer3Result.NoMatch
-        }
-        val t4Details = when (layer4Result) {
-            is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
-            is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
-            is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-            else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin."
-        }
-        simulatedTiers.add(
-            DiagnosticTier(
-                tierName = "Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)",
-                tierNum = 4,
-                matched = layer4Result !is Layer3Result.NoMatch,
-                details = t4Details
-            )
-        )
-
-        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI (LLM FALLBACK) ──
-        val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
-        val t5Details = if (isT5Matched) {
-            "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
-        } else {
-            "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải quyết xong."
-        }
-        simulatedTiers.add(
-            DiagnosticTier(
-                tierName = "Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)",
-                tierNum = 5,
-                matched = isT5Matched,
-                details = t5Details
-            )
-        )
-
-        return DiagnosticInfo(
-            query = userMessage,
-            tiers = simulatedTiers,
-            resolvedIntents = matchResult.intentMatches
-                .filter { it.second >= intentThreshold }
-                .map { "${it.first.question} (${String.format("%.2f", it.second)})" },
-            resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer },
-            intentMatches = matchResult.intentMatches,
-            aliasMatches = matchResult.aliasMatches,
-            bestAliasMatches = matchResult.bestAliasMatches,
-            intentThreshold = intentThreshold,
-            aliasThreshold = aliasThreshold
-        )
-    }
-}
-
-
-    
     private val normalizedActionMetadataList: List<NormalizedActionMetadata> by lazy {
         plugins.flatMap { plugin ->
             plugin.manifest.actions.map { action ->
@@ -319,10 +162,6 @@ class AgentKernel @Inject constructor(
 
     private fun generateTraceId(): String = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
 
-    // ────────────────────────────────────────────────────────────
-    // TẦNG 0 — Cầu nối PendingIntent (ChatHistoryManager) -> PendingState (DialogManager)
-    // Chỉ là mapper đọc dữ liệu, không sửa ChatHistoryManager.
-    // ────────────────────────────────────────────────────────────
     private fun PendingIntent.toPendingState(): PendingState = PendingState(
         isActive = true,
         pluginId = this.pluginId,
@@ -467,7 +306,7 @@ class AgentKernel @Inject constructor(
                         val qa = matches.firstOrNull()?.qa
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
                     }
-                    else -> { //combined hoặc groq
+                    else -> {
                         val historySnapshot = try {
                             database.chatMessageDao().getMessages(username, 6)
                                 .reversed()
@@ -509,9 +348,6 @@ class AgentKernel @Inject constructor(
         val devicePlugins = plugins.filter { it.manifest.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
-        // ── TẦNG 0a: CANCEL RESOLVER ──
-        // Chỉ coi là "hủy" khi thực sự có Pending đang chờ. Nếu không pending,
-        // DialogManager trả NotCancelNoPending/NotCancel và câu đi tiếp xuống Router như bình thường.
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -531,16 +367,12 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ── TẦNG 0b: PRONOUN RESOLVER ──
-        // Viết lại câu, thay "nó"/"cái đó"/"thiết bị đó"... bằng giá trị cụ thể từ Focus,
-        // TRƯỚC khi câu đi vào Tầng 1-5. Nếu không resolve được gì, dùng nguyên văn.
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
         if (pronounResult.wasResolved) {
             logger.d("AgentKernel", "[$traceId] [Tầng 0] Pronoun Resolver: \"${pronounResult.resolvedFrom}\" -> \"${pronounResult.resolvedTo}\". Câu sau khi viết lại: \"$resolvedMessage\"")
         }
 
-        // ── TẦNG 1: Xử lý trạng thái dở dang đa lệnh song song (Pending Intents Queue) ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         if (pendings.isNotEmpty()) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
@@ -705,11 +537,9 @@ class AgentKernel @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
-        // ✅ ĐÃ SỬA: VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper - schedule) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNorm = normalizeVietnamese(clause)
             
-            // Lọc và chỉ quét các QA có chứa câu lệnh cấu trúc schedule để tránh bị Leaf (gửi email) cướp quyền [1]
             val wrapperQA = intentQAs
                 .filter { it.answer.contains("\"plugin\":\"schedule\"") }
                 .firstOrNull { clauseNorm.contains(normalizeVietnamese(it.question)) }
@@ -748,11 +578,9 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ✅ ĐÃ SỬA: VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
         for (clause in clauses) {
             val clauseNorm = normalizeVietnamese(clause)
             
-            // Loại bỏ hoàn toàn plugin schedule ở vòng quét thứ hai [1]
             val leafQA = intentQAs
                 .filter { !it.answer.contains("\"plugin\":\"schedule\"") }
                 .firstOrNull { clauseNorm.contains(normalizeVietnamese(it.question)) }
@@ -805,7 +633,6 @@ class AgentKernel @Inject constructor(
             .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
             ?.value?.toDoubleOrNull() ?: 0.3
 
-        // ✅ ĐÃ SỬA: Ưu tiên chọn wrapper (như schedule) nếu có nhiều khớp để đảm bảo nạp đúng khung lập lịch [1]
         val wrapperIntentPair = matchResult.intentMatches
             .filter { it.second >= dynamicMinScore }
             .find { it.first.answer.contains("\"plugin\":\"schedule\"") }
@@ -852,11 +679,9 @@ class AgentKernel @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
-        // ✅ ĐÃ SỬA: VÒNG LẶP 1: Ưu tiên bóc tách và phân tích các bộ khung lên lịch trình (Wrapper - schedule) trước bằng câu lệnh gốc đầy đủ
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
             
-            // Lọc riêng Action metadata của plugin schedule ở vòng quét 1 để dứt điểm gán Wrapper [1]
             val bestMatch = normalizedActionMetadataList
                 .filter { it.plugin.manifest.id == "schedule" && it.plugin.manifest.routable && it.action.enabled }
                 .find { meta ->
@@ -898,11 +723,9 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ✅ ĐÃ SỬA: VÒNG LẶP 2: Xử lý các câu lệnh đơn lẻ hành động độc lập (Leaf) còn lại
         for (clause in clauses) {
             val clauseNormalized = normalizeVietnamese(clause)
             
-            // Bỏ qua plugin schedule ở vòng 2
             val bestMatch = normalizedActionMetadataList
                 .filter { it.plugin.manifest.id != "schedule" && it.plugin.manifest.routable && it.action.enabled }
                 .find { meta ->
@@ -1161,97 +984,89 @@ class AgentKernel @Inject constructor(
         return matchResult.bestAliasMatches[semanticType]?.first?.answer
     }
 
-
     private fun parseVietnameseTime(message: String): String? {
-    val lower = message.lowercase().trim()
-    
-    // 1. Trích xuất giờ và phút (hỗ trợ cả dạng 7h và dạng điện tử 2:00)
-    var extractedHour: Int? = null
-    var extractedMinute: Int = 0
-    
-    // Thử khớp định dạng điện tử (VD: 2:00 hoặc 14:30)
-    val digitalRegex = Regex("\\b(\\d{1,2}):(\\d{2})\\s*(sáng|chiều|tối|đêm)?\\b")
-    val digitalMatch = digitalRegex.find(lower)
-    
-    if (digitalMatch != null) {
-        var hour = digitalMatch.groupValues[1].toIntOrNull() ?: 0
-        extractedMinute = digitalMatch.groupValues[2].toIntOrNull() ?: 0
-        val period = digitalMatch.groupValues[3]
+        val lower = message.lowercase().trim()
         
-        if ((period == "chiều" || period == "tối") && hour < 12) {
-            hour += 12
-        } else if (period == "đêm" && hour == 12) {
-            hour = 0
-        }
-        extractedHour = hour
-    } else {
-        // Thử khớp định dạng chữ thông thường (VD: 7 giờ sáng, 7h sáng)
-        val hourRegex = Regex("\\b(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?\\b")
-        val hourMatch = hourRegex.find(lower)
-        if (hourMatch != null) {
-            var hour = hourMatch.groupValues[1].toIntOrNull() ?: 0
-            val period = hourMatch.groupValues[3]
+        var extractedHour: Int? = null
+        var extractedMinute: Int = 0
+        
+        val digitalRegex = Regex("\\b(\\d{1,2}):(\\d{2})\\s*(sáng|chiều|tối|đêm)?\\b")
+        val digitalMatch = digitalRegex.find(lower)
+        
+        if (digitalMatch != null) {
+            var hour = digitalMatch.groupValues[1].toIntOrNull() ?: 0
+            extractedMinute = digitalMatch.groupValues[2].toIntOrNull() ?: 0
+            val period = digitalMatch.groupValues[3]
+            
             if ((period == "chiều" || period == "tối") && hour < 12) {
                 hour += 12
             } else if (period == "đêm" && hour == 12) {
                 hour = 0
             }
             extractedHour = hour
+        } else {
+            val hourRegex = Regex("\\b(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?\\b")
+            val hourMatch = hourRegex.find(lower)
+            if (hourMatch != null) {
+                var hour = hourMatch.groupValues[1].toIntOrNull() ?: 0
+                val period = hourMatch.groupValues[3]
+                if ((period == "chiều" || period == "tối") && hour < 12) {
+                    hour += 12
+                } else if (period == "đêm" && hour == 12) {
+                    hour = 0
+                }
+                extractedHour = hour
+            }
         }
-    }
 
-    // 2. Trích xuất nhiều thứ trong tuần (gom tất cả các thứ tìm thấy thành danh sách ngăn cách bởi dấu phẩy)
-    val days = mutableListOf<String>()
-    
-    val mondayRegex = Regex("\\b(thứ hai|thứ 2)\\b")
-    val tuesdayRegex = Regex("\\b(thứ ba|thứ 3)\\b")
-    val wednesdayRegex = Regex("\\b(thứ tư|thứ 4)\\b")
-    val thursdayRegex = Regex("\\b(thứ năm|thứ 5)\\b")
-    val fridayRegex = Regex("\\b(thứ sáu|thứ 6)\\b")
-    val saturdayRegex = Regex("\\b(thứ bảy|thứ 7)\\b")
-    val sundayRegex = Regex("\\b(chủ nhật|cn)\\b")
+        val days = mutableListOf<String>()
+        
+        val mondayRegex = Regex("\\b(thứ hai|thứ 2)\\b")
+        val tuesdayRegex = Regex("\\b(thứ ba|thứ 3)\\b")
+        val wednesdayRegex = Regex("\\b(thứ tư|thứ 4)\\b")
+        val thursdayRegex = Regex("\\b(thứ năm|thứ 5)\\b")
+        val fridayRegex = Regex("\\b(thứ sáu|thứ 6)\\b")
+        val saturdayRegex = Regex("\\b(thứ bảy|thứ 7)\\b")
+        val sundayRegex = Regex("\\b(chủ nhật|cn)\\b")
 
-    if (mondayRegex.containsMatchIn(lower)) days.add("1")
-    if (tuesdayRegex.containsMatchIn(lower)) days.add("2")
-    if (wednesdayRegex.containsMatchIn(lower)) days.add("3")
-    if (thursdayRegex.containsMatchIn(lower)) days.add("4")
-    if (fridayRegex.containsMatchIn(lower)) days.add("5")
-    if (saturdayRegex.containsMatchIn(lower)) days.add("6")
-    if (sundayRegex.containsMatchIn(lower)) days.add("0")
+        if (mondayRegex.containsMatchIn(lower)) days.add("1")
+        if (tuesdayRegex.containsMatchIn(lower)) days.add("2")
+        if (wednesdayRegex.containsMatchIn(lower)) days.add("3")
+        if (thursdayRegex.containsMatchIn(lower)) days.add("4")
+        if (fridayRegex.containsMatchIn(lower)) days.add("5")
+        if (saturdayRegex.containsMatchIn(lower)) days.add("6")
+        if (sundayRegex.containsMatchIn(lower)) days.add("0")
 
-    // Nếu tìm thấy thứ, kết hợp với giờ và phút (mặc định giờ là 0 nếu không nói)
-    if (days.isNotEmpty()) {
-        val hour = extractedHour ?: 0
-        val dayOfWeek = days.joinToString(",")
-        return "$extractedMinute $hour * * $dayOfWeek"
-    }
+        if (days.isNotEmpty()) {
+            val hour = extractedHour ?: 0
+            val dayOfWeek = days.joinToString(",")
+            return "$extractedMinute $hour * * $dayOfWeek"
+        }
 
-    // 3. Trích xuất các trường hợp lặp ngày/tuần hoặc "ngày mai"
-    val dailyRegex = Regex("\\b(mỗi ngày|hằng ngày|hàng ngày)\\b")
-    if (dailyRegex.containsMatchIn(lower)) {
-        val hour = extractedHour ?: 0
-        return "$extractedMinute $hour * * *"
-    }
-    
-    val weeklyRegex = Regex("\\b(hằng tuần|hàng tuần)\\b")
-    if (weeklyRegex.containsMatchIn(lower)) {
-        val hour = extractedHour ?: 0
-        return "$extractedMinute $hour * * 0" // Mặc định Chủ Nhật
-    }
-    
-    val tomorrowRegex = Regex("\\b(ngày mai|mai)\\b")
-    if (tomorrowRegex.containsMatchIn(lower)) {
-        val hour = extractedHour ?: 8 // Mặc định 8h sáng nếu không nói giờ cụ thể
-        return "$extractedMinute $hour * * *"
-    }
+        val dailyRegex = Regex("\\b(mỗi ngày|hằng ngày|hàng ngày)\\b")
+        if (dailyRegex.containsMatchIn(lower)) {
+            val hour = extractedHour ?: 0
+            return "$extractedMinute $hour * * *"
+        }
+        
+        val weeklyRegex = Regex("\\b(hằng tuần|hàng tuần)\\b")
+        if (weeklyRegex.containsMatchIn(lower)) {
+            val hour = extractedHour ?: 0
+            return "$extractedMinute $hour * * 0"
+        }
+        
+        val tomorrowRegex = Regex("\\b(ngày mai|mai)\\b")
+        if (tomorrowRegex.containsMatchIn(lower)) {
+            val hour = extractedHour ?: 8
+            return "$extractedMinute $hour * * *"
+        }
 
-    // 4. Nếu chỉ có giờ độc lập (mỗi ngày vào giờ đó)
-    if (extractedHour != null) {
-        return "$extractedMinute $extractedHour * * *"
-    }
+        if (extractedHour != null) {
+            return "$extractedMinute $extractedHour * * *"
+        }
 
-    return null
-}
+        return null
+    }
 
     private fun parseVietnameseInterval(message: String): Int? {
         val lower = message.lowercase()
@@ -1375,7 +1190,6 @@ class AgentKernel @Inject constructor(
             )
             is PluginResult.Success -> {
                 chatHistoryManager.removePendingIntent(plugin.manifest.id, intent.action)
-                // ── TẦNG 0: Cập nhật Conversation Focus sau khi thực thi THÀNH CÔNG ──
                 dialogManager.updateFocus(
                     "default_user",
                     ConversationFocus(
@@ -1525,7 +1339,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── ĐÃ SỬA: XÁC ĐỊNH THAM SỐ ĐANG HỎI ĐỂ ĐỐI CHIẾU BYPASS GROQ ──
         val currentAskedParam = pending.missingParams.firstOrNull()
         
         val filled = if (currentAskedParam != null && heuristicFilled.containsKey(currentAskedParam)) {
@@ -1637,7 +1450,6 @@ class AgentKernel @Inject constructor(
 
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
-    
 
     private suspend fun executeTier3LlmRouting(
         userMessage: String,
@@ -1679,7 +1491,6 @@ class AgentKernel @Inject constructor(
         val shortHistory = chatHistoryManager.getRecentTurnsAsText()
         val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
 
-        // ── CẢI TIẾN PROMPT: ÉP PHÂN BIỆT CHAT THƯỜNG / KỂ CHUYỆN / TÁN GẪU ──
         val routerPrompt = buildString {
             append("<sys>Intent Formatter. Bạn là bộ định tuyến lệnh. Chỉ được phép xuất JSON thô dạng: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
             append("QUY TẮC BẮT BUỘC:\n")
@@ -1722,7 +1533,6 @@ class AgentKernel @Inject constructor(
         return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = result))
     }
 
-    
     private fun normalizeParams(
         params: Map<String, Any>, 
         plugin: Plugin, 
@@ -1837,6 +1647,144 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    suspend fun explainDeviceCommand(
+        userMessage: String,
+        username: String = "default_user"
+    ): DiagnosticInfo {
+        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+        val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
+
+        val simulatedTiers = mutableListOf<DiagnosticTier>()
+
+        val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
+        val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
+        val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
+        
+        val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
+        val resolvedMessage = pronounResult.rewrittenMessage
+
+        val pendings = chatHistoryManager.getActivePendingIntents()
+        val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
+        val t1Details = buildString {
+            if (pronounResult.wasResolved) {
+                append("• [Tầng 0] Pronoun: Thay thế đại từ thành công \"${pronounResult.resolvedFrom}\" ➔ \"${pronounResult.resolvedTo}\". Câu xử lý tiếp theo: \"$resolvedMessage\"\n")
+            }
+            if (cancelDecision is CancelDecision.CancelPending) {
+                append("• [Tầng 0] Cancel: Xác nhận hủy tiến trình dở dang: ${cancelDecision.pluginId}.${cancelDecision.action}\n")
+            }
+            if (pendings.isNotEmpty()) {
+                append("• Phát hiện ${pendings.size} tiến trình chưa hoàn thành: ")
+                append(pendings.joinToString { "${it.pluginId}.${it.action}" })
+            } else {
+                append("• Không phát hiện hàng đợi dở dang nào đang chờ.")
+            }
+        }
+        simulatedTiers.add(
+            DiagnosticTier(
+                tierName = "Tầng 1: Trạng thái lệnh dở dang (Pending Intents)",
+                tierNum = 1,
+                matched = isT1Matched || cancelDecision is CancelDecision.CancelPending,
+                details = t1Details
+            )
+        )
+
+        val devicePlugins = plugins.filter { it.manifest.routable }
+        val matchResult = trainingSkill.fuzzyMatchCategorized(
+            resolvedMessage,
+            username,
+            intentThreshold = intentThreshold,
+            aliasThreshold = 0.0f
+        )
+        val layer2Result = tryTier2SemanticSlotResolver(resolvedMessage, matchResult, devicePlugins)
+        val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
+
+        val t2Details = when {
+            layer2Result == null -> "• Không tìm thấy ý định mẫu nào khớp với nội dung đã nhập."
+            isT2Matched -> "• Khớp ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' với điểm số cao (${String.format("%.2f", layer2Result.confidence)} >= $tier2HighConf). Lệnh được bypass thực thi trực tiếp."
+            else -> "• Ý định '${layer2Result.intent.pluginId}.${layer2Result.intent.action}' chưa đạt điểm tin cậy thực thi nhanh (${String.format("%.2f", layer2Result.confidence)} < $tier2HighConf). Chuyển xuống Tầng 3."
+        }
+        simulatedTiers.add(
+            DiagnosticTier(
+                tierName = "Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)",
+                tierNum = 2,
+                matched = isT2Matched,
+                score = layer2Result?.confidence ?: 0.0,
+                details = t2Details
+            )
+        )
+
+        val layer3Result = if (!isT2Matched) {
+            processLayer3ClauseEntitySpotter(resolvedMessage, username, devicePlugins, "DIAGNOSTIC-TRACE")
+        } else {
+            Layer3Result.NoMatch
+        }
+        val t3Details = when (layer3Result) {
+            is Layer3Result.Single -> "• Tách và nhận diện được câu lệnh đơn: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
+            is Layer3Result.Nested -> "• Khớp bộ khung lập lịch (schedule) lồng hành động: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
+            is Layer3Result.Multi -> "• Phân tích cú pháp đa hành động (song song/tuần tự): ${layer3Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
+            else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn."
+        }
+        simulatedTiers.add(
+            DiagnosticTier(
+                tierName = "Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)",
+                tierNum = 3,
+                matched = layer3Result !is Layer3Result.NoMatch,
+                details = t3Details
+            )
+        )
+
+        val isT4Checkable = !isT2Matched && layer3Result is Layer3Result.NoMatch
+        val layer4Result = if (isT4Checkable) {
+            tryTier2_5ActionMetadataMatcher(resolvedMessage, matchResult, devicePlugins)
+        } else {
+            Layer3Result.NoMatch
+        }
+        val t4Details = when (layer4Result) {
+            is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
+            is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
+            is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
+            else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin."
+        }
+        simulatedTiers.add(
+            DiagnosticTier(
+                tierName = "Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)",
+                tierNum = 4,
+                matched = layer4Result !is Layer3Result.NoMatch,
+                details = t4Details
+            )
+        )
+
+        val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
+        val t5Details = if (isT5Matched) {
+            "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
+        } else {
+            "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải quyết xong."
+        }
+        simulatedTiers.add(
+            DiagnosticTier(
+                tierName = "Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)",
+                tierNum = 5,
+                matched = isT5Matched,
+                details = t5Details
+            )
+        )
+
+        return DiagnosticInfo(
+            query = userMessage,
+            tiers = simulatedTiers,
+            resolvedIntents = matchResult.intentMatches
+                .filter { it.second >= intentThreshold }
+                .map { "${it.first.question} (${String.format("%.2f", it.second)})" },
+            resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer },
+            intentMatches = matchResult.intentMatches,
+            aliasMatches = matchResult.aliasMatches,
+            bestAliasMatches = matchResult.bestAliasMatches,
+            intentThreshold = intentThreshold,
+            aliasThreshold = aliasThreshold
+        )
+    }
+
     data class Intent(
         val pluginId: String,
         val action: String,
@@ -1859,3 +1807,4 @@ class AgentKernel @Inject constructor(
         data class Failure(val error: String) : PluginResult()
         data class NeedMoreInfo(val missingParams: List<String>, val question: String) : PluginResult()
     }
+}
