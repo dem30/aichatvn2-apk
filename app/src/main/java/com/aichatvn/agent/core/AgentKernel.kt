@@ -7,10 +7,10 @@ import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
-import com.skills.SearchMatch
-import com.skills.TrainingSkill
-import com.tools.ai.GroqClientTool
-import com.utils.Logger
+import com.aichatvn.agent.skills.SearchMatch
+import com.aichatvn.agent.skills.TrainingSkill
+import com.aichatvn.agent.tools.ai.GroqClientTool
+import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.core.DialogManager
 import com.aichatvn.agent.core.PendingState
 import com.aichatvn.agent.core.CancelDecision
