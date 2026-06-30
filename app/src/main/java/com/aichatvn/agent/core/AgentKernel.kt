@@ -219,7 +219,7 @@ class AgentKernel @Inject constructor(
                     action = actionName,
                     params = mapOf(
                         "message" to message,
-                        "username" -> username,
+                        "username" to username,
                         "imageBase64" to (imageBase64 ?: ""),
                         "fileUrl" to (fileUrl ?: ""),
                         "extraContext" to extraContext
