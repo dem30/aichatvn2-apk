@@ -4,6 +4,8 @@ import android.content.Context
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.ChatHistoryManager
+import com.aichatvn.agent.core.DialogManager
+import com.aichatvn.agent.core.DialogManagerImpl
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.*
@@ -96,6 +98,13 @@ object AppModule {
         logger: Logger
     ): AppConfigProvider = AppConfigProvider(context, logger)
 
+    // ===== TẦNG 0: DIALOG MANAGER =====
+    @Provides
+    @Singleton
+    fun provideDialogManager(): DialogManager {
+        return DialogManagerImpl()
+    }
+
     // ===== ĐĂNG KÝ VOICE ASSISTANT MANAGER DẠNG SINGLETON =====
     @Provides
     @Singleton
@@ -117,7 +126,8 @@ object AppModule {
         chatHistoryManager: ChatHistoryManager,
         configProvider: AppConfigProvider,
         database: AppDatabase,
-        logger: Logger
+        logger: Logger,
+        dialogManager: DialogManager
     ): AgentKernel {
         return AgentKernel(
             plugins,
@@ -126,7 +136,8 @@ object AppModule {
             chatHistoryManager,
             configProvider,
             database,
-            logger
+            logger,
+            dialogManager
         )
     }
 }

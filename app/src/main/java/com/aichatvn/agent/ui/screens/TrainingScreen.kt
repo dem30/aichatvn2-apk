@@ -29,8 +29,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.QAEntity
-import com.aichatvn.agent.ui.viewmodels.DiagnosticInfo
-import com.aichatvn.agent.ui.viewmodels.DiagnosticTier
+import com.aichatvn.agent.core.DiagnosticInfo // Đã đổi import từ viewmodels sang core
+import com.aichatvn.agent.core.DiagnosticTier // Đã đổi import từ viewmodels sang core
 import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
 
 val PRESET_CATEGORIES = listOf("chat", "email", "device", "camera", "faq", "general", "alert")
@@ -204,7 +204,6 @@ fun TrainingScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        // HIỂN THỊ DIAGNOSTICS PANEL Ở ĐẦU LIST KHI CÓ TRUY VẤN TEST
                         if (searchQuery.isNotBlank() && diagnosticInfo != null) {
                             item {
                                 AgentKernelDiagnosticsPanel(diagnosticInfo!!)
@@ -307,9 +306,6 @@ fun TrainingScreen(
     }
 }
 
-/**
- * PANEL DIAGNOSTICS CHUẨN HÓA 5 TẦNG PIPELINE TRỰC QUAN
- */
 @Composable
 fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
     var isExpanded by remember { mutableStateOf(true) }
@@ -325,7 +321,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Header Panel
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -359,7 +354,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
             AnimatedVisibility(visible = isExpanded) {
                 Column(modifier = Modifier.padding(top = 10.dp)) {
-                    // Trạng thái cấu hình hiện tại
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -392,7 +386,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // PHẦN 1: DÒNG THỜI GIAN LÀM VIỆC CỦA 5 TẦNG PIPELINE (CHƯA TỪNG ĐƯỢC HIỂN THỊ)
                     Text(
                         "1. Sơ đồ xử lý tuần tự 5 tầng:",
                         style = MaterialTheme.typography.labelLarge,
@@ -409,7 +402,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // PHẦN 2: CHI TIẾT DỮ LIỆU ĐỐI KHỚP DƯỚI TẦNG THẤP
                     Text(
                         "2. Các thực thể trích xuất tốt nhất (Best Aliases):",
                         style = MaterialTheme.typography.labelLarge,
@@ -465,7 +457,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         }
                     }
 
-                    // PHẦN 3: RAW DETAILS (KẾT QUẢ ĐỐI KHỚP ĐẦY ĐỦ ĐỂ DEBUG)
                     Text(
                         "3. Điểm khớp mẫu (Tĩnh & Heuristic):",
                         style = MaterialTheme.typography.labelLarge,
@@ -485,7 +476,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     AnimatedVisibility(visible = showRawScores) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-                            // Khớp Intent
                             Text("Ý định (Intent Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             if (info.intentMatches.isEmpty()) {
                                 Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -517,7 +507,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                             Spacer(modifier = Modifier.height(4.dp))
 
-                            // Khớp Alias
                             Text("Thực thể thô (Alias Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             if (info.aliasMatches.isEmpty()) {
                                 Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -554,9 +543,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
     }
 }
 
-/**
- * COMPONENT HIỂN THỊ STEP-BY-STEP TỪNG TẦNG LOGIC CỦA CORE ENGINE
- */
 @Composable
 fun TierRow(tier: DiagnosticTier) {
     val isMatched = tier.matched
@@ -574,7 +560,6 @@ fun TierRow(tier: DiagnosticTier) {
             modifier = Modifier.padding(10.dp),
             verticalAlignment = Alignment.Top
         ) {
-            // Vòng tròn hiển thị thứ tự Tầng
             Box(
                 modifier = Modifier
                     .size(24.dp)
@@ -607,7 +592,6 @@ fun TierRow(tier: DiagnosticTier) {
                         color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
                     )
                     
-                    // Hiển thị trạng thái hoạt động của tầng
                     Surface(
                         shape = RoundedCornerShape(4.dp),
                         color = (if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline).copy(alpha = 0.1f)
