@@ -395,27 +395,26 @@ class AgentKernel @Inject constructor(
                 val results = mutableListOf<String>()
                 var allSucceeded = true
 
-                for (pending in pendings) {
-                    // Đã tối ưu truyền biến 'mode' xuống bộ Pending Resolver thực tế
-                    val resolvedResult = tryResolvePendingIntent(pending, userMessage, devicePlugins, traceId, mode)
-                    if (resolvedResult != null) {
-                        val r = resolvedResult.result
-                        val msg = when (r) {
-                            is PluginResult.Success -> {
-                                chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
-                                (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ Thực hiện thành công"
-                            }
-                            is PluginResult.Failure -> {
-                                chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
-                                "❌ Lỗi: ${r.error}"
-                            }
-                            is PluginResult.NeedMoreInfo -> {
-                                allSucceeded = false
-                                r.question
-                            }
+                // ĐÃ SỬA: CHỈ XỬ LÝ LỆNH DỞ DANG ĐẦU TIÊN để thực hiện tuần tự hóa (Sequential Slot-Filling)
+                val activePending = pendings.first()
+                val resolvedResult = tryResolvePendingIntent(activePending, userMessage, devicePlugins, traceId, mode)
+                if (resolvedResult != null) {
+                    val r = resolvedResult.result
+                    val msg = when (r) {
+                        is PluginResult.Success -> {
+                            chatHistoryManager.removePendingIntent(activePending.pluginId, activePending.action)
+                            (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ Thực hiện thành công"
                         }
-                        results.add(msg)
+                        is PluginResult.Failure -> {
+                            chatHistoryManager.removePendingIntent(activePending.pluginId, activePending.action)
+                            "❌ Lỗi: ${r.error}"
+                        }
+                        is PluginResult.NeedMoreInfo -> {
+                            allSucceeded = false
+                            r.question
+                        }
                     }
+                    results.add(msg)
                 }
 
                 if (results.isNotEmpty()) {
@@ -433,7 +432,7 @@ class AgentKernel @Inject constructor(
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
-                // Đã tối ưu truyền biến 'mode' ở dạng DIAGNOSTIC xuống bộ Pending Resolver kiểm thử
+                // Đã tối ưu truyền biến 'mode' ở dạng DIAGNOSTIC xuống bộ Pending Resolver kiểm thử đầu tiên
                 val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, traceId, mode)
                 finalOutcome = if (pendingResult != null) {
                     when (val r = pendingResult.result) {
@@ -631,7 +630,7 @@ class AgentKernel @Inject constructor(
             if (layer3Result !is Layer3Result.NoMatch && finalOutcome == null) {
                 finalOutcome = when (layer3Result) {
                     is Layer3Result.Single -> {
-                        val executionResult = executeIntent(layer3Result.plugin, layer3Result.intent, context, traceId)
+                        val executionResult = executeIntent(layer3Result.plugin, layer3Result.intent, context, "DIAGNOSTIC-TRACE")
                         when (executionResult) {
                             is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
                             is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
@@ -639,7 +638,7 @@ class AgentKernel @Inject constructor(
                         }
                     }
                     is Layer3Result.Nested -> {
-                        val executionResult = executeIntent(layer3Result.wrapper, layer3Result.intent, context, traceId)
+                        val executionResult = executeIntent(layer3Result.wrapper, layer3Result.intent, context, "DIAGNOSTIC-TRACE")
                         when (executionResult) {
                             is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
                             is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
@@ -649,7 +648,7 @@ class AgentKernel @Inject constructor(
                     is Layer3Result.Multi -> {
                         val results = mutableListOf<String>()
                         layer3Result.intents.forEach { (plugin, intent) ->
-                            val executionResult = executeIntent(plugin, intent, context, traceId)
+                            val executionResult = executeIntent(plugin, intent, context, "DIAGNOSTIC-TRACE")
                             val msg = when (executionResult) {
                                 is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
                                 is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
@@ -744,7 +743,7 @@ class AgentKernel @Inject constructor(
             if (layer4Result !is Layer3Result.NoMatch && finalOutcome == null) {
                 finalOutcome = when (layer4Result) {
                     is Layer3Result.Single -> {
-                        val executionResult = executeIntent(layer4Result.plugin, layer4Result.intent, context, traceId)
+                        val executionResult = executeIntent(layer4Result.plugin, layer4Result.intent, context, "DIAGNOSTIC-TRACE")
                         when (executionResult) {
                             is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
                             is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
@@ -752,7 +751,7 @@ class AgentKernel @Inject constructor(
                         }
                     }
                     is Layer3Result.Nested -> {
-                        val executionResult = executeIntent(layer4Result.wrapper, layer4Result.intent, context, traceId)
+                        val executionResult = executeIntent(layer4Result.wrapper, layer4Result.intent, context, "DIAGNOSTIC-TRACE")
                         when (executionResult) {
                             is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
                             is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
@@ -762,7 +761,7 @@ class AgentKernel @Inject constructor(
                     is Layer3Result.Multi -> {
                         val results = mutableListOf<String>()
                         layer4Result.intents.forEach { (plugin, intent) ->
-                            val executionResult = executeIntent(plugin, intent, context, traceId)
+                            val executionResult = executeIntent(plugin, intent, context, "DIAGNOSTIC-TRACE")
                             val msg = when (executionResult) {
                                 is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
                                 is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
@@ -1346,13 +1345,12 @@ class AgentKernel @Inject constructor(
                 return executionResult
             }
 
-            // Đug c chế 'mode: PipelineMode' để biết khi nào đang chạy chẩn đoán, tránh gọi Groq
             private suspend fun tryResolvePendingIntent(
                 pending: PendingIntent,
                 userMessage: String,
                 devicePlugins: List<Plugin>,
                 traceId: String,
-                mode: PipelineMode = PipelineMode.EXECUTE // Đã đồng bộ thêm biến mode
+                mode: PipelineMode = PipelineMode.EXECUTE
             ): DeviceCommandResult? {
                 val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
                     chatHistoryManager.clearPendingIntent()
@@ -1449,7 +1447,9 @@ class AgentKernel @Inject constructor(
                             if (matchedAliasVal != null) {
                                 heuristicFilled[param] = matchedAliasVal
                             } else {
-                                if (paramMeta.semanticType == "email" && localEntities.containsKey("email")) {
+                                // ĐÃ TỐI ƯU: Cho phép nhận diện tham số Email có các nhãn thông dụng (to, recipient, email)
+                                val isEmailParam = paramMeta.semanticType == "email" || actualKey == "email" || actualKey == "to" || actualKey == "recipient"
+                                if (isEmailParam && localEntities.containsKey("email")) {
                                     heuristicFilled[param] = localEntities["email"]!!
                                 } else if (paramMeta.type.lowercase() == "string" && trimmed.isNotBlank()) {
                                     val textParams = setOf("subject", "body", "message", "title")
@@ -1470,7 +1470,6 @@ class AgentKernel @Inject constructor(
                     logger.d("AgentKernel", "[$traceId] Heuristic tự xử lý thành công tham số '$currentAskedParam'. Bypass LLM.")
                     heuristicFilled
                 } else {
-                    // SỬA: Chặn đứng gọi API Groq khi hệ thống đang ở chế độ CHẨN ĐOÁN (DIAGNOSTIC)
                     if (mode == PipelineMode.DIAGNOSTIC) {
                         logger.d("AgentKernel", "[$traceId] 🔵 [DIAGNOSTIC] Chặn gọi Groq thực tế cho Tầng 1 dở dang.")
                         return DeviceCommandResult(
@@ -1772,9 +1771,10 @@ class AgentKernel @Inject constructor(
                 
                 if (isT1Matched && finalOutcome == null) {
                     val devicePlugins = plugins.filter { it.manifest.routable }
-                    // SỬA: Truyền PipelineMode.DIAGNOSTIC để Tầng 1 biết và chặn đứng gọi Groq API thật
+                    // SỬA: CHỈ XỬ LÝ LỆNH DỞ DANG ĐẦU TIÊN để thực hiện tuần tự hóa (Sequential Slot-Filling)
+                    val activePending = pendings.first()
                     val pendingResult = tryResolvePendingIntent(
-                        pending = pendings.first(), 
+                        pending = activePending, 
                         userMessage = userMessage, 
                         devicePlugins = devicePlugins, 
                         traceId = "DIAGNOSTIC-TRACE",
