@@ -58,7 +58,7 @@ data class Layer2Result(
 )
 
 data class NormalizedActionMetadata(
-    val plugin = Plugin,
+    val plugin: Plugin,
     val action: PluginAction,
     val normalizedDescription: String,
     val normalizedExamples: List<String>,
