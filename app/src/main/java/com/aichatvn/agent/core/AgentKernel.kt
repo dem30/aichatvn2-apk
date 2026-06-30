@@ -1859,4 +1859,3 @@ class AgentKernel @Inject constructor(
         data class Failure(val error: String) : PluginResult()
         data class NeedMoreInfo(val missingParams: List<String>, val question: String) : PluginResult()
     }
-}
