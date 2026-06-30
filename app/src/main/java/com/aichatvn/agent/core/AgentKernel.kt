@@ -96,6 +96,11 @@ class AgentKernel @Inject constructor(
     private val dialogManager: DialogManager
 ) {
 
+    companion object {
+        private val SPACE_REGEX = Regex("\\s+")
+        private const val MAX_DEPTH = 3
+    }
+
     private val actionCandidates: List<LocalCandidate> by lazy {
         plugins.flatMap { plugin ->
             plugin.manifest.actions.map { act ->
@@ -318,7 +323,6 @@ class AgentKernel @Inject constructor(
         val devicePlugins = plugins.filter { it.manifest.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
-        // ── TẦNG 0a: CANCEL RESOLVER ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -338,14 +342,12 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ── TẦNG 0b: PRONOUN RESOLVER ──
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
         if (pronounResult.wasResolved) {
             logger.d("AgentKernel", "[$traceId] [Tầng 0] Pronoun Resolver: \"${pronounResult.resolvedFrom}\" -> \"${pronounResult.resolvedTo}\". Câu sau khi viết lại: \"$resolvedMessage\"")
         }
 
-        // ── TẦNG 1: PENDING RESOLVER ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         if (pendings.isNotEmpty()) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
@@ -389,7 +391,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT) ──
         val dynamicMinScore = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage, 
@@ -415,7 +416,6 @@ class AgentKernel @Inject constructor(
             localEntities = localEntities
         )
 
-        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (EXACT/FUZZY INTENT MATCH) ──
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         if (layer2Result != null) {
@@ -435,7 +435,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (CLAUSE SPOTTER) ──
         val layer3Result = processLayer3ClauseEntitySpotter(context, devicePlugins)
         when (layer3Result) {
             is Layer3Result.Single -> {
@@ -470,7 +469,6 @@ class AgentKernel @Inject constructor(
             is Layer3Result.NoMatch -> { }
         }
 
-        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN (METADATA MATCHER) ──
         val layer4Result = tryTier2_5ActionMetadataMatcher(context, devicePlugins)
         when (layer4Result) {
             is Layer3Result.Single -> {
@@ -505,7 +503,6 @@ class AgentKernel @Inject constructor(
             is Layer3Result.NoMatch -> { }
         }
 
-        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI (LLM FALLBACK) ──
         logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
         return executeTier3LlmRouting(context, devicePlugins, traceId)
     }
@@ -855,14 +852,13 @@ class AgentKernel @Inject constructor(
         return matchResult.bestAliasMatches[semanticType]?.first?.answer
     }
 
-    private fun getQuestionForMissingParamInDryRun(
+    private fun getQuestionForMissingParam(
         param: String, 
-        pluginId: String, 
-        actionName: String
+        plugin: Plugin? = null, 
+        actionName: String? = null
     ): String {
         val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
-        val plugin = plugins.find { it.manifest.id == pluginId }
-        val targetAction = plugin?.manifest?.actions?.find { it.name == actionName }
+        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
         val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
@@ -1349,7 +1345,6 @@ class AgentKernel @Inject constructor(
 
         val simulatedTiers = mutableListOf<DiagnosticTier>()
 
-        // ── TẦNG 0: DIALOG MANAGER (CANCEL / PRONOUN RESOLUTION) ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -1357,7 +1352,6 @@ class AgentKernel @Inject constructor(
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
 
-        // ── TẦNG 1: PENDING RESOLVER ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
         val t1Details = buildString {
@@ -1383,7 +1377,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN) ──
         val devicePlugins = plugins.filter { it.manifest.routable }
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage,
@@ -1409,7 +1402,6 @@ class AgentKernel @Inject constructor(
             localEntities = localEntities
         )
 
-        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (EXACT/FUZZY INTENT MATCH) ──
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
 
@@ -1428,7 +1420,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (CLAUSE SPOTTER) ──
         val layer3Result = if (!isT2Matched) {
             processLayer3ClauseEntitySpotter(context, devicePlugins)
         } else {
@@ -1438,7 +1429,7 @@ class AgentKernel @Inject constructor(
             is Layer3Result.Single -> {
                 val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
                 if (missing.isNotEmpty()) {
-                    "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParamInDryRun(it, layer3Result.intent.pluginId, layer3Result.intent.action) }}]"
+                    "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParam(it, layer3Result.plugin, layer3Result.intent.action) }}]"
                 } else {
                     "• Tách thành công câu lệnh đơn và điền đủ tham số: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
                 }
@@ -1456,7 +1447,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN (METADATA MATCHER) ──
         val isT4Checkable = !isT2Matched && layer3Result is Layer3Result.NoMatch
         val layer4Result = if (isT4Checkable) {
             tryTier2_5ActionMetadataMatcher(context, devicePlugins)
@@ -1478,7 +1468,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI (LLM FALLBACK) ──
         val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
         val t5Details = if (isT5Matched) {
             "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
