@@ -38,7 +38,8 @@ data class DiagnosticInfo(
     val aliasMatches: List<Pair<QAEntity, Double>> = emptyList(),
     val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap(),
     val intentThreshold: Float = 0.3f,
-    val aliasThreshold: Float = 0.2f
+    val aliasThreshold: Float = 0.2f,
+    val executionOutcome: String? = null // Bổ sung trường kết quả chạy thực tế
 )
 
 data class LocalCandidate(
@@ -218,7 +219,7 @@ class AgentKernel @Inject constructor(
                     action = actionName,
                     params = mapOf(
                         "message" to message,
-                        "username" to username,
+                        "username" -> username,
                         "imageBase64" to (imageBase64 ?: ""),
                         "fileUrl" to (fileUrl ?: ""),
                         "extraContext" to extraContext
@@ -1344,7 +1345,9 @@ class AgentKernel @Inject constructor(
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
 
         val simulatedTiers = mutableListOf<DiagnosticTier>()
+        var finalOutcome: String? = null
 
+        // ── TẦNG 0: DIALOG MANAGER (CANCEL / PRONOUN RESOLUTION) ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -1352,8 +1355,30 @@ class AgentKernel @Inject constructor(
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
 
+        if (cancelDecision is CancelDecision.CancelPending) {
+            val cancelledPluginId = cancelDecision.pluginId ?: "không xác định"
+            val cancelledAction = cancelDecision.action ?: "lệnh trước đó"
+            finalOutcome = "✅ Đã huỷ lệnh trước đó của \"$cancelledPluginId.$cancelledAction\" thành công."
+        }
+
+        // ── TẦNG 1: PENDING RESOLVER (HỖ TRỢ CHẠY THẬT) ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
+        
+        if (isT1Matched && finalOutcome == null) {
+            val devicePlugins = plugins.filter { it.manifest.routable }
+            val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, "DIAGNOSTIC-TRACE")
+            finalOutcome = if (pendingResult != null) {
+                when (val r = pendingResult.result) {
+                    is PluginResult.Success -> "✅ [Tầng 1 Chạy Thật Thành Công] ${(r.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                    is PluginResult.Failure -> "❌ [Tầng 1 Chạy Thật Thất Bại] ${r.error}"
+                    is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 1 Yêu Cầu Nhập Thêm] ${r.question} (Danh sách thiếu: ${r.missingParams.joinToString()})"
+                }
+            } else {
+                "🔵 [Tầng 1 Bỏ Qua] Tiến trình dở dang không liên quan đến câu trả lời."
+            }
+        }
+
         val t1Details = buildString {
             if (pronounResult.wasResolved) {
                 append("• [Tầng 0] Pronoun: Thay thế đại từ thành công \"${pronounResult.resolvedFrom}\" ➔ \"${pronounResult.resolvedTo}\". Câu xử lý tiếp theo: \"$resolvedMessage\"\n")
@@ -1377,6 +1402,7 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT)
         val devicePlugins = plugins.filter { it.manifest.routable }
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage,
@@ -1402,8 +1428,18 @@ class AgentKernel @Inject constructor(
             localEntities = localEntities
         )
 
+        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (HỖ TRỢ CHẠY THẬT) ──
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
+
+        if (isT2Matched && finalOutcome == null) {
+            val executionResult = executeIntent(layer2Result!!.plugin, layer2Result.intent, context, "DIAGNOSTIC-TRACE")
+            finalOutcome = when (executionResult) {
+                is PluginResult.Success -> "✅ [Tầng 2 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                is PluginResult.Failure -> "❌ [Tầng 2 Chạy Thật Thất Bại] ${executionResult.error}"
+                is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 2 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+            }
+        }
 
         val t2Details = when {
             layer2Result == null -> "• Không tìm thấy ý định mẫu nào khớp với nội dung đã nhập."
@@ -1420,11 +1456,48 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (HỖ TRỢ CHẠY THẬT) ──
         val layer3Result = if (!isT2Matched) {
             processLayer3ClauseEntitySpotter(context, devicePlugins)
         } else {
             Layer3Result.NoMatch
         }
+
+        if (layer3Result !is Layer3Result.NoMatch && finalOutcome == null) {
+            finalOutcome = when (layer3Result) {
+                is Layer3Result.Single -> {
+                    val executionResult = executeIntent(layer3Result.plugin, layer3Result.intent, context, "DIAGNOSTIC-TRACE")
+                    when (executionResult) {
+                        is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                        is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
+                        is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 3 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                    }
+                }
+                is Layer3Result.Nested -> {
+                    val executionResult = executeIntent(layer3Result.wrapper, layer3Result.intent, context, "DIAGNOSTIC-TRACE")
+                    when (executionResult) {
+                        is PluginResult.Success -> "✅ [Tầng 3 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                        is PluginResult.Failure -> "❌ [Tầng 3 Chạy Thật Thất Bại] ${executionResult.error}"
+                        is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 3 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                    }
+                }
+                is Layer3Result.Multi -> {
+                    val results = mutableListOf<String>()
+                    layer3Result.intents.forEach { (plugin, intent) ->
+                        val executionResult = executeIntent(plugin, intent, context, "DIAGNOSTIC-TRACE")
+                        val msg = when (executionResult) {
+                            is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
+                            is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${executionResult.question}"
+                        }
+                        results.add(msg)
+                    }
+                    "✅ [Tầng 3 Chạy Thật Đa Lệnh]:\n" + results.joinToString("\n")
+                }
+                else -> null
+            }
+        }
+
         val t3Details = when (layer3Result) {
             is Layer3Result.Single -> {
                 val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
@@ -1447,12 +1520,49 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN (HỖ TRỢ CHẠY THẬT) ──
         val isT4Checkable = !isT2Matched && layer3Result is Layer3Result.NoMatch
         val layer4Result = if (isT4Checkable) {
             tryTier2_5ActionMetadataMatcher(context, devicePlugins)
         } else {
             Layer3Result.NoMatch
         }
+
+        if (layer4Result !is Layer3Result.NoMatch && finalOutcome == null) {
+            finalOutcome = when (layer4Result) {
+                is Layer3Result.Single -> {
+                    val executionResult = executeIntent(layer4Result.plugin, layer4Result.intent, context, "DIAGNOSTIC-TRACE")
+                    when (executionResult) {
+                        is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                        is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
+                        is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 4 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                    }
+                }
+                is Layer3Result.Nested -> {
+                    val executionResult = executeIntent(layer4Result.wrapper, layer4Result.intent, context, "DIAGNOSTIC-TRACE")
+                    when (executionResult) {
+                        is PluginResult.Success -> "✅ [Tầng 4 Chạy Thật Thành Công] ${(executionResult.data as? Map<*, *>)?.get("message") ?: "Đã thực hiện."}"
+                        is PluginResult.Failure -> "❌ [Tầng 4 Chạy Thật Thất Bại] ${executionResult.error}"
+                        is PluginResult.NeedMoreInfo -> "⚠️ [Tầng 4 Yêu Cầu Nhập Thêm] ${executionResult.question} (Danh sách thiếu: ${executionResult.missingParams.joinToString()})"
+                    }
+                }
+                is Layer3Result.Multi -> {
+                    val results = mutableListOf<String>()
+                    layer4Result.intents.forEach { (plugin, intent) ->
+                        val executionResult = executeIntent(plugin, intent, context, "DIAGNOSTIC-TRACE")
+                        val msg = when (executionResult) {
+                            is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
+                            is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${executionResult.error}"
+                            is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${executionResult.question}"
+                        }
+                        results.add(msg)
+                    }
+                    "✅ [Tầng 4 Chạy Thật Đa Lệnh]:\n" + results.joinToString("\n")
+                }
+                else -> null
+            }
+        }
+
         val t4Details = when (layer4Result) {
             is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
             is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
@@ -1468,7 +1578,12 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI (LLM FALLBACK - BYPASS KHÔNG CHẠY ĐỂ TRÁNH TỐN TOKEN) ──
         val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
+        if (isT5Matched && finalOutcome == null) {
+            finalOutcome = "🔵 [Bypass Tầng 5] Đã chuyển xuống Tầng 5 để LLM phân giải tự do. Hệ thống không tự động chạy thật ở tầng này nhằm tiết kiệm token API Groq."
+        }
+
         val t5Details = if (isT5Matched) {
             "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
         } else {
@@ -1494,7 +1609,8 @@ class AgentKernel @Inject constructor(
             aliasMatches = matchResult.aliasMatches,
             bestAliasMatches = matchResult.bestAliasMatches,
             intentThreshold = intentThreshold,
-            aliasThreshold = aliasThreshold
+            aliasThreshold = aliasThreshold,
+            executionOutcome = finalOutcome // Trả về kết quả thực tế thu thập được
         )
     }
 

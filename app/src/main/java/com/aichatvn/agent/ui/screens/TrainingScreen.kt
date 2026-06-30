@@ -306,6 +306,7 @@ fun TrainingScreen(
     }
 }
 
+
 @Composable
 fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
     var isExpanded by remember { mutableStateOf(true) }
@@ -321,6 +322,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
+            // Header Panel
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -354,6 +356,58 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
             AnimatedVisibility(visible = isExpanded) {
                 Column(modifier = Modifier.padding(top = 10.dp)) {
+                    
+                    // ── PHẦN MỚI BỔ SUNG: HIỂN THỊ KẾT QUẢ CHẠY THỰC TẾ (LIVE OUTCOME) ──
+                    if (info.executionOutcome != null) {
+                        val outcome = info.executionOutcome
+                        val isSuccess = outcome.startsWith("✅")
+                        val isWarning = outcome.startsWith("⚠️")
+                        val isFailure = outcome.startsWith("❌")
+                        
+                        val containerColor = when {
+                            isSuccess -> Color(0xFF2E7D32).copy(alpha = 0.08f)
+                            isWarning -> Color(0xFFFFB300).copy(alpha = 0.08f)
+                            isFailure -> Color(0xFFC62828).copy(alpha = 0.08f)
+                            else -> MaterialTheme.colorScheme.surface
+                        }
+                        val borderColor = when {
+                            isSuccess -> Color(0xFF2E7D32).copy(alpha = 0.3f)
+                            isWarning -> Color(0xFFFFB300).copy(alpha = 0.3f)
+                            isFailure -> Color(0xFFC62828).copy(alpha = 0.3f)
+                            else -> MaterialTheme.colorScheme.outlineVariant
+                        }
+                        val titleColor = when {
+                            isSuccess -> Color(0xFF2E7D32)
+                            isWarning -> Color(0xFFE65100)
+                            isFailure -> Color(0xFFC62828)
+                            else -> MaterialTheme.colorScheme.onSurface
+                        }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp)
+                                .background(containerColor, RoundedCornerShape(8.dp))
+                                .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = "KẾT QUẢ THỰC THI THỰC TẾ (LIVE OUTCOME):",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = titleColor
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = outcome,
+                                fontSize = 12.5.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    // Trạng thái cấu hình hiện tại
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -386,6 +440,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    // PHẦN 1: DÒNG THỜI GIAN LÀM VIỆC CỦA 5 TẦNG PIPELINE
                     Text(
                         "1. Sơ đồ xử lý tuần tự 5 tầng:",
                         style = MaterialTheme.typography.labelLarge,
@@ -402,6 +457,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // PHẦN 2: CHI TIẾT DỮ LIỆU ĐỐI KHỚP DƯỚI TẦNG THẤP
                     Text(
                         "2. Các thực thể trích xuất tốt nhất (Best Aliases):",
                         style = MaterialTheme.typography.labelLarge,
@@ -457,6 +513,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         }
                     }
 
+                    // PHẦN 3: RAW DETAILS (KẾT QUẢ ĐỐI KHỚP ĐẦY ĐỦ ĐỂ DEBUG)
                     Text(
                         "3. Điểm khớp mẫu (Tĩnh & Heuristic):",
                         style = MaterialTheme.typography.labelLarge,
@@ -476,6 +533,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     AnimatedVisibility(visible = showRawScores) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                            // Khớp Intent
                             Text("Ý định (Intent Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             if (info.intentMatches.isEmpty()) {
                                 Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -507,6 +565,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                             Spacer(modifier = Modifier.height(4.dp))
 
+                            // Khớp Alias
                             Text("Thực thể thô (Alias Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             if (info.aliasMatches.isEmpty()) {
                                 Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -542,6 +601,10 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
         }
     }
 }
+
+
+
+
 
 @Composable
 fun TierRow(tier: DiagnosticTier) {
