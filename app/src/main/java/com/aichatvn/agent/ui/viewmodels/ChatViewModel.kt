@@ -46,8 +46,8 @@ class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
     private val agentKernel: AgentKernel,
     private val groqClient: GroqClientTool,
-    private val database: AppDatabase, // Tiêm DB phục vụ ghi nhật ký voice tự động
-    val voiceManager: VoiceAssistantManager, // Sử dụng Singleton từ Hilt thay vì khởi tạo thủ công
+    private val database: AppDatabase,
+    val voiceManager: VoiceAssistantManager,
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
@@ -60,8 +60,6 @@ class ChatViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    // ── Voice ────────────────────────────────────────────────────────────────
-
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
 
@@ -73,10 +71,7 @@ class ChatViewModel @Inject constructor(
 
     private var consecutiveRouterFailures = 0
 
-    // Ngăn chặn gửi nhiều câu hỏi đồng thời lên AI nhờ cờ nguyên tử
     private val isProcessingQuery = AtomicBoolean(false)
-
-    // ── Quick commands ────────────────────────────────────────────────────────
 
     val quickCommandGroups: List<QuickCommandGroup> = agentKernel.getAvailablePluginsForUI().map { plugin ->
         QuickCommandGroup(
@@ -90,20 +85,17 @@ class ChatViewModel @Inject constructor(
         )
     }
 
-    // ── Init ─────────────────────────────────────────────────────────────────
-
     @Volatile private var isInForeground = true
 
     init {
         viewModelScope.launch {
             chatSkill.initialize()
-            observeVoiceManagerFlows() // Lắng nghe trạng thái và dữ liệu Reactive Flow của Mic
+            observeVoiceManagerFlows()
             observeAndSpeak()
             startVoiceSession()
         }
     }
 
-    // Lắng nghe dòng dữ liệu Reactive phát ra từ Singleton VoiceAssistantManager
     private fun observeVoiceManagerFlows() {
         // 1. Đồng bộ trạng thái bật/tắt Micro lên UI Chat
         viewModelScope.launch {
@@ -112,23 +104,27 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        // 2. Đồng bộ văn bản nhận diện được từ giọng nói vào DB để hiển thị lên khung Chat
+        // 2. Đồng bộ văn bản nhận diện được từ giọng nói vào DB để hiển thị lên khung Chat (bỏ qua chuỗi rỗng)
         viewModelScope.launch {
             voiceManager.recognizedText.collect { text ->
-                saveMessageToHistory(text, "user")
+                if (text.isNotBlank()) {
+                    saveMessageToHistory(text, "user")
+                }
             }
         }
 
-        // 3. Đồng bộ câu trả lời AI của cuộc thoại giọng nói vào DB để hiển thị lên khung Chat
+        // 3. Đồng bộ câu trả lời AI của cuộc thoại giọng nói vào DB (gắn nhãn sourcePlugin = "voice_assistant")
         viewModelScope.launch {
             voiceManager.aiResponseText.collect { reply ->
-                saveMessageToHistory(reply, "assistant")
+                if (reply.isNotBlank()) {
+                    saveMessageToHistory(reply, "assistant", sourcePlugin = "voice_assistant")
+                }
             }
         }
     }
 
     // Ghi nhật ký cuộc thoại giọng nói xuống SQLite và kích hoạt cập nhật lại UI Flow
-    private fun saveMessageToHistory(content: String, role: String) {
+    private fun saveMessageToHistory(content: String, role: String, sourcePlugin: String? = null) {
         viewModelScope.launch {
             val msg = ChatMessageEntity(
                 id = UUID.randomUUID().toString(),
@@ -137,12 +133,12 @@ class ChatViewModel @Inject constructor(
                 content = content,
                 role = role,
                 type = "text",
-                timestamp = System.currentTimeMillis()
+                timestamp = System.currentTimeMillis(),
+                sourcePlugin = sourcePlugin
             )
             withContext(Dispatchers.IO) {
                 database.chatMessageDao().insertMessage(msg)
             }
-            // Gọi nạp lại lịch sử hiển thị của ChatSkill
             chatSkill.initialize()
         }
     }
@@ -179,8 +175,11 @@ class ChatViewModel @Inject constructor(
                 if (last.role != "assistant") return@collect
                 if (!_voiceModeActive.value) return@collect
 
-                // Nếu tin nhắn đến từ cuộc thoại giọng nói tự động thì bỏ qua, tránh đọc lặp lại hai lần
-                if (last.sourcePlugin == "vision" || last.sourcePlugin == "learn" || last.sourcePlugin == "device_control") {
+                // Bỏ qua nếu tin nhắn đến từ cuộc thoại giọng nói tự động hoặc các plugin khác đã tự nói
+                if (last.sourcePlugin == "vision" || 
+                    last.sourcePlugin == "learn" || 
+                    last.sourcePlugin == "device_control" ||
+                    last.sourcePlugin == "voice_assistant") { // Chặn lặp tiếng/khựng tiếng tại đây
                     return@collect
                 }
 
@@ -223,8 +222,6 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    // ── Voice controls ────────────────────────────────────────────────────────
-
     fun toggleVoiceMode() {
         val next = !_voiceModeActive.value
         _voiceModeActive.value = next
@@ -237,8 +234,6 @@ class ChatViewModel @Inject constructor(
             voiceManager.ttsHelper.stop()
         }
     }
-
-    // ── Chat actions ──────────────────────────────────────────────────────────
 
     fun setChatMode(mode: ChatMode) {
         chatSkill.setChatMode(mode)
@@ -296,7 +291,7 @@ class ChatViewModel @Inject constructor(
                 if (response is PluginResult.Failure) {
                     logger.e("ChatViewModel", "Error: ${response.error}")
                 }
-            } finally { // ✅ ĐÃ SỬA: Khôi phục chính xác từ khóa 'finally' bị thiếu
+            } finally {
                 _isLoading.value = false
                 isProcessingQuery.set(false)
             }
@@ -343,8 +338,6 @@ class ChatViewModel @Inject constructor(
             chatSkill.clearHistory("default_user")
         }
     }
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     fun onForeground() {
         if (isInForeground) return

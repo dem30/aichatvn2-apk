@@ -226,12 +226,14 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
             "hủy", "huỷ", "thôi", "bỏ qua", "không làm nữa", "đừng làm nữa", "dừng lại", "dừng"
         )
 
-        // Các cụm này nếu xuất hiện CÙNG với từ hủy thì chứng tỏ câu KHÔNG phải ý định
+        // Các từ này nếu xuất hiện CÙNG với từ hủy thì chứng tỏ câu KHÔNG phải ý định
         // hủy Pending, mà là một lệnh thiết bị khác có chứa từ "hủy"/"thôi" như một phần
         // ngữ nghĩa (vd. "hủy lịch tưới cây"). Ta coi đây là dấu hiệu câu có object cụ thể
         // đi kèm -> không phải lệnh hủy ngữ cảnh (context-free cancel).
-        private val OBJECT_INDICATOR_REGEX = Regex(
-            "\\b(lịch|đèn|quạt|máy|camera|thông báo|email|báo thức|hẹn giờ)\\b"
+        // LƯU Ý: không dùng Regex("\\b...\\b") vì \b không nhận đúng ranh giới với
+        // ký tự tiếng Việt có dấu — dùng containsWholePhrase() tự viết bên dưới thay thế.
+        private val OBJECT_INDICATOR_WORDS = setOf(
+            "lịch", "đèn", "quạt", "máy", "camera", "thông báo", "email", "báo thức", "hẹn giờ"
         )
     }
 
@@ -275,7 +277,9 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
         // dùng đang ra một lệnh hủy có chủ đích cụ thể, không phải hủy Pending hiện tại
         // một cách context-free. Trường hợp này vẫn ưu tiên coi là hủy Pending CHỈ KHI
         // toàn câu chỉ gồm cụm hủy ngắn gọn (không có object đi kèm).
-        val hasExplicitObject = OBJECT_INDICATOR_REGEX.containsMatchIn(normalized)
+        val hasExplicitObject = OBJECT_INDICATOR_WORDS.any { word ->
+            containsWholePhrase(normalized, normalizeVietnamese(word))
+        }
         val isShortStandaloneCancel = normalized.trim().split(SPACE_REGEX).size <= 3
 
         return if (hasExplicitObject && !isShortStandaloneCancel) {

@@ -29,8 +29,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.QAEntity
-import com.aichatvn.agent.core.DiagnosticInfo // Đã đổi import từ viewmodels sang core
-import com.aichatvn.agent.core.DiagnosticTier // Đã đổi import từ viewmodels sang core
+import com.aichatvn.agent.core.DiagnosticInfo // Import từ core
+import com.aichatvn.agent.core.DiagnosticTier // Import từ core
 import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
 
 val PRESET_CATEGORIES = listOf("chat", "email", "device", "camera", "faq", "general", "alert")
@@ -306,7 +306,6 @@ fun TrainingScreen(
     }
 }
 
-
 @Composable
 fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
     var isExpanded by remember { mutableStateOf(true) }
@@ -357,7 +356,7 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
             AnimatedVisibility(visible = isExpanded) {
                 Column(modifier = Modifier.padding(top = 10.dp)) {
                     
-                    // ── PHẦN MỚI BỔ SUNG: HIỂN THỊ KẾT QUẢ CHẠY THỰC TẾ (LIVE OUTCOME) ──
+                    // Hiển thị kết quả thực thi live outcome
                     if (info.executionOutcome != null) {
                         val outcome = info.executionOutcome
                         val isSuccess = outcome.startsWith("✅")
@@ -513,7 +512,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
                         }
                     }
 
-                    // PHẦN 3: RAW DETAILS (KẾT QUẢ ĐỐI KHỚP ĐẦY ĐỦ ĐỂ DEBUG)
                     Text(
                         "3. Điểm khớp mẫu (Tĩnh & Heuristic):",
                         style = MaterialTheme.typography.labelLarge,
@@ -533,7 +531,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                     AnimatedVisibility(visible = showRawScores) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-                            // Khớp Intent
                             Text("Ý định (Intent Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             if (info.intentMatches.isEmpty()) {
                                 Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -565,7 +562,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
 
                             Spacer(modifier = Modifier.height(4.dp))
 
-                            // Khớp Alias
                             Text("Thực thể thô (Alias Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             if (info.aliasMatches.isEmpty()) {
                                 Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -601,10 +597,6 @@ fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
         }
     }
 }
-
-
-
-
 
 @Composable
 fun TierRow(tier: DiagnosticTier) {
@@ -869,3 +861,4 @@ fun QADialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
     )
 }
+

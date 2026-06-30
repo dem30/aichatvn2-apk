@@ -32,7 +32,6 @@ class VoiceAssistantManager @Inject constructor(
 ) {
     private val sttHelper = SpeechRecognizerHelper(context)
     
-    // ✅ ĐÃ SỬA: Đảm bảo khai báo 'public val' để ChatViewModel có thể truy cập hợp lệ
     val ttsHelper = TextToSpeechHelper(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -126,7 +125,6 @@ class VoiceAssistantManager @Inject constructor(
 
                 scope.launch {
                     try {
-                        // ✅ ĐÃ SỬA: Trỏ chính xác đến gói com.aichatvn.agent.core.ChatRequest
                         val result = agentKernel.chat(
                             com.aichatvn.agent.core.ChatRequest(
                                 message = text,
@@ -153,7 +151,13 @@ class VoiceAssistantManager @Inject constructor(
                     consecutiveSttFailures = 0
                     Log.e("VoiceAssistantManager", "Lỗi Mic liên tiếp: $errorMsg")
                 } else {
-                    val delay = if (errorCode == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 300L else 2000L
+                    // Rút ngắn thời gian khởi động lại cho lỗi im lặng/timeout để tăng độ nhạy phản hồi
+                    val delay = when (errorCode) {
+                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 200L
+                        SpeechRecognizer.ERROR_NO_MATCH,
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 300L
+                        else -> 1500L
+                    }
                     scheduleRestart(delayMs = delay)
                 }
             },

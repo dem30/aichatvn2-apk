@@ -85,7 +85,6 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
             val pending = pendingSpeak
             pendingSpeak = null
             if (pending != null) {
-                // Đảm bảo chạy tác vụ phát giọng nói còn chờ trên Main Thread một cách an toàn nhất
                 mainHandler.post(pending)
             }
         } else {
@@ -135,7 +134,6 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
             }
         }
 
-        // KHẮC PHỤC CRASH: Bao bọc cuộc gọi tts?.speak bằng try-catch đề phòng thiết bị lỗi hỏng dịch vụ TTS Engine ngầm
         val result = try {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
         } catch (e: Exception) {

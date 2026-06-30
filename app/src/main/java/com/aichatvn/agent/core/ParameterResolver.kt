@@ -6,18 +6,28 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 object ParameterResolver {
     private val SPACE_REGEX = Regex("\\s+")
 
+    /**
+     * Kiểm tra một giá trị có phải "chưa được điền" (placeholder) hay không.
+     *
+     * QUAN TRỌNG: KHÔNG coi "0" / "0.0" là placeholder ở đây — vì nhiều tham số số học
+     * hợp lệ có thể nhận giá trị 0 (độ sáng = 0, volume = 0, số lần lặp = 0...).
+     * Coi 0 là "chưa điền" vô điều kiện sẽ khiến hệ thống hỏi lại sai khi user đã
+     * cung cấp giá trị 0 một cách cố ý.
+     *
+     * Trường hợp đặc biệt của riêng schedule (interval = 0 nghĩa là "chưa đặt lịch lặp")
+     * được xử lý CỤC BỘ trong getUnresolvedParams(), không nằm ở hàm dùng chung này.
+     */
     fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
         val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
-        // RÀNG BUỘC: Đánh dấu các giá trị mặc định số học không hợp lệ (0, 0.0) là placeholder
-        if (strVal.isBlank() || strVal == "null" || strVal == "0" || strVal == "0.0") return true
-        
+        if (strVal.isBlank() || strVal.equals("null", ignoreCase = true)) return true
+
         if (parameter != null && parameter.placeholder.isNotBlank()) {
             val paramPlh = parameter.placeholder.trim().replace(SPACE_REGEX, " ")
             if (strVal.equals(paramPlh, ignoreCase = true)) {
                 return true
             }
         }
-        
+
         val defaultPlaceholders = setOf(
             "device_1", "device_2", "camera_1", "camera_2",
             "device 1", "device 2", "camera 1", "camera 2",
@@ -25,6 +35,17 @@ object ParameterResolver {
             "schedule_1", "schedule_id_here"
         )
         return strVal in defaultPlaceholders
+    }
+
+    /**
+     * Helper riêng cho ràng buộc đặc thù của schedule: với tham số "interval",
+     * giá trị 0 (hoặc rỗng) thực sự có nghĩa "chưa đặt khoảng lặp" — khác với các
+     * tham số số học thông thường khác. Chỉ dùng trong ngữ cảnh schedule.add/create.
+     */
+    private fun isScheduleIntervalUnset(value: Any?, parameter: PluginParameter?): Boolean {
+        if (isPlaceholder(value, parameter)) return true
+        val strVal = value?.toString()?.trim() ?: ""
+        return strVal == "0" || strVal == "0.0"
     }
 
     fun getUnresolvedParams(
@@ -44,7 +65,8 @@ object ParameterResolver {
             }
         }
 
-        // 2. ── RÀNG BUỘC TINH HOA: Kiểm tra điều kiện phụ thuộc của Plugin Lập lịch (schedule) ──
+        // 2. ── RÀNG BUỘC RIÊNG CỦA SCHEDULE: cron rỗng VÀ interval = 0 đồng thời -> thiếu thời gian ──
+        // Chỉ áp dụng đặc cách "0 = chưa điền" cho CHÍNH NGỮ CẢNH NÀY, không lan ra isPlaceholder() chung.
         if (plugin.manifest.id == "schedule" && (actionName == "add" || actionName == "create")) {
             val cronParam = action.parameters.find { 
                 it.name.contains("cron", ignoreCase = true) || 
@@ -55,17 +77,15 @@ object ParameterResolver {
                 it.name.contains("interval", ignoreCase = true) || 
                 it.semanticType.equals("interval", ignoreCase = true) 
             }
-            
+
             val cronVal = cronParam?.let { params[it.name] }
             val intervalVal = intervalParam?.let { params[it.name] }
-            
+
             val isCronPlh = cronParam?.let { isPlaceholder(cronVal, it) } ?: true
-            val isIntervalPlh = intervalParam?.let { 
-                isPlaceholder(intervalVal, it) || intervalVal == 0 || intervalVal == "0" || intervalVal == 0.0 
-            } ?: true
-            
-            if (isCronPlh && isIntervalPlh) {
-                cronParam?.let { missing.add(it.name) }
+            val isIntervalUnset = intervalParam?.let { isScheduleIntervalUnset(intervalVal, it) } ?: true
+
+            if (isCronPlh && isIntervalUnset) {
+                cronParam?.let { if (it.name !in missing) missing.add(it.name) }
             }
         }
 
@@ -155,4 +175,3 @@ object ParameterResolver {
         }
     }
 }
-

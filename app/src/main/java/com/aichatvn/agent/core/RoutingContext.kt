@@ -1,6 +1,6 @@
 package com.aichatvn.agent.core
 
-import com.skills.TrainingSkill
+import com.aichatvn.agent.skills.TrainingSkill
 
 /**
  * Ngữ cảnh điều hướng (Pipeline State) đóng vai trò lưu giữ toàn bộ dữ liệu 

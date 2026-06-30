@@ -148,7 +148,7 @@ class TrainingViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
 
-            // Gọi trực tiếp AgentKernel thực hiện dry-run phân tích thực tế
+            // Gọi hàm giải thích thực tế từ nhân AgentKernel đã cập nhật
             val realTrace = agentKernel.explainDeviceCommand(query, "default_user")
             _diagnosticInfo.value = realTrace
 
@@ -281,3 +281,4 @@ class TrainingViewModel @Inject constructor(
     fun clearExportResult() { _exportResult.value = null }
     fun clearImportResult() { _importResult.value = null }
 }
+
