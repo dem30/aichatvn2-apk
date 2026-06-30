@@ -417,18 +417,40 @@ class AgentKernel @Inject constructor(
                     results.add(msg)
                 }
 
-                if (results.isNotEmpty()) {
-                    val combined = results.distinct().joinToString("\n")
-                    val finalResult = if (allSucceeded) {
-                        PluginResult.Success(mapOf("message" to combined))
+
+                
+            if (results.isNotEmpty()) {
+                val combined = results.distinct().joinToString("\n")
+                val finalResult = if (allSucceeded) {
+                    // Nếu lệnh dở dang hiện tại đã xử lý xong, kiểm tra xem trong hàng đợi còn lệnh nào khác không
+                    val remainingPendings = chatHistoryManager.getActivePendingIntents()
+                    if (remainingPendings.isNotEmpty()) {
+                        // Lấy lệnh dở dang tiếp theo và lập tức hỏi người dùng thay vì kết thúc luồng chat
+                        val nextPending = remainingPendings.first()
+                        val combinedMsg = "$combined\n\n⚠️ Tiếp theo: ${nextPending.askedQuestion}"
+                        PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg)
                     } else {
-                        val remainingPending = chatHistoryManager.getActivePendingIntents()
-                        PluginResult.NeedMoreInfo(remainingPending.flatMap { it.missingParams }, combined)
+                        PluginResult.Success(mapOf("message" to combined))
                     }
-                    return PipelineResult(
-                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi_pending", finalResult))
-                    )
+                } else {
+                    val remainingPending = chatHistoryManager.getActivePendingIntents()
+                    PluginResult.NeedMoreInfo(remainingPending.flatMap { it.missingParams }, combined)
                 }
+                return PipelineResult(
+                    routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi_pending", finalResult))
+                )
+            }
+
+
+
+
+                
+
+
+
+
+
+                
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
