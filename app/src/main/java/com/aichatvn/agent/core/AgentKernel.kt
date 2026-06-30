@@ -11,12 +11,9 @@ import com.aichatvn.agent.skills.SearchMatch
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.core.DialogManager
-import com.aichatvn.agent.core.PendingState
-import com.aichatvn.agent.core.CancelDecision
-import com.aichatvn.agent.core.ConversationFocus
+import com.aichatvn.agent.utils.StringSimilarityUtil
+import com.aichatvn.agent.utils.DateTimeParser
 import org.json.JSONObject
-import java.util.UUID
 import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -99,11 +96,6 @@ class AgentKernel @Inject constructor(
     private val dialogManager: DialogManager
 ) {
 
-    companion object {
-        private val SPACE_REGEX = Regex("\\s+")
-        private const val MAX_DEPTH = 3
-    }
-
     private val actionCandidates: List<LocalCandidate> by lazy {
         plugins.flatMap { plugin ->
             plugin.manifest.actions.map { act ->
@@ -123,9 +115,9 @@ class AgentKernel @Inject constructor(
                 NormalizedActionMetadata(
                     plugin = plugin,
                     action = action,
-                    normalizedDescription = normalizeVietnamese(action.description),
-                    normalizedExamples = action.examples.map { normalizeVietnamese(it) },
-                    normalizedTags = action.tags.map { normalizeVietnamese(it) }
+                    normalizedDescription = StringSimilarityUtil.normalizeVietnamese(action.description),
+                    normalizedExamples = action.examples.map { StringSimilarityUtil.normalizeVietnamese(it) },
+                    normalizedTags = action.tags.map { StringSimilarityUtil.normalizeVietnamese(it) }
                 )
             }
         }
@@ -135,28 +127,26 @@ class AgentKernel @Inject constructor(
         param: PluginParameter,
         currentValue: Any?,
         isPlh: Boolean,
-        matchResult: TrainingSkill.MatchResult,
-        localEntities: Map<String, Any>,
+        context: RoutingContext,
         secondaryIntentQA: QAEntity?,
         devicePlugins: List<Plugin>,
         excludeIntentId: String?,
-        depth: Int,
-        userMessage: String
+        depth: Int
     ) -> Any?> = mapOf(
-        "time" to { _, currentValue, _, _, localEntities, _, _, _, _, _ ->
-            localEntities["cron"] ?: currentValue ?: ""
+        "time" to { _, currentValue, _, context, _, _, _, _ ->
+            context.localEntities["cron"] ?: currentValue ?: ""
         },
-        "interval" to { _, currentValue, _, _, localEntities, _, _, _, _, _ ->
-            localEntities["intervalMinutes"] ?: currentValue ?: 0
+        "interval" to { _, currentValue, _, context, _, _, _, _ ->
+            context.localEntities["intervalMinutes"] ?: currentValue ?: 0
         },
-        "plugin_id" to { _, currentValue, isPlh, _, _, secondaryIntent, _, _, _, _ ->
+        "plugin_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
             if (isPlh && secondaryIntent != null) resolvePluginIdFromSecondary(secondaryIntent) else currentValue ?: ""
         },
-        "action_id" to { _, currentValue, isPlh, _, _, secondaryIntent, _, _, _, _ ->
+        "action_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
             if (isPlh && secondaryIntent != null) resolveActionIdFromSecondary(secondaryIntent) else currentValue ?: ""
         },
-        "params" to { param, currentValue, _, matchResult, _, secondaryIntent, devicePlugins, excludeId, depth, userMessage ->
-            resolveNestedParams(param, currentValue, matchResult, secondaryIntent, devicePlugins, excludeId, depth, userMessage)
+        "params" to { param, currentValue, _, context, secondaryIntent, devicePlugins, excludeId, depth ->
+            resolveNestedParams(param, currentValue, context, secondaryIntent, devicePlugins, excludeId, depth)
         }
     )
 
@@ -171,26 +161,6 @@ class AgentKernel @Inject constructor(
     )
 
     private fun emptyPendingState(): PendingState = PendingState(isActive = false)
-
-    private fun isPlaceholder(value: Any?, parameter: PluginParameter?): Boolean {
-        val strVal = value?.toString()?.trim()?.replace(SPACE_REGEX, " ") ?: ""
-        if (strVal.isBlank()) return true
-        
-        if (parameter != null && parameter.placeholder.isNotBlank()) {
-            val paramPlh = parameter.placeholder.trim().replace(SPACE_REGEX, " ")
-            if (strVal.equals(paramPlh, ignoreCase = true)) {
-                return true
-            }
-        }
-        
-        val defaultPlaceholders = setOf(
-            "device_1", "device_2", "camera_1", "camera_2",
-            "device 1", "device 2", "camera 1", "camera 2",
-            "example@gmail.com", "example@email.com",
-            "schedule_1", "schedule_id_here"
-        )
-        return strVal in defaultPlaceholders
-    }
 
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
 
@@ -348,6 +318,7 @@ class AgentKernel @Inject constructor(
         val devicePlugins = plugins.filter { it.manifest.routable }
         if (devicePlugins.isEmpty()) return RouterOutcome.NotACommand
 
+        // ── TẦNG 0a: CANCEL RESOLVER ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -367,12 +338,14 @@ class AgentKernel @Inject constructor(
             )
         }
 
+        // ── TẦNG 0b: PRONOUN RESOLVER ──
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
         if (pronounResult.wasResolved) {
             logger.d("AgentKernel", "[$traceId] [Tầng 0] Pronoun Resolver: \"${pronounResult.resolvedFrom}\" -> \"${pronounResult.resolvedTo}\". Câu sau khi viết lại: \"$resolvedMessage\"")
         }
 
+        // ── TẦNG 1: PENDING RESOLVER ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         if (pendings.isNotEmpty()) {
             logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
@@ -416,10 +389,8 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        val dynamicMinScore = configProvider.allConfigs.value
-            .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
-            ?.value?.toFloatOrNull() ?: 0.3f
-
+        // ── KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT) ──
+        val dynamicMinScore = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage, 
             username, 
@@ -427,18 +398,33 @@ class AgentKernel @Inject constructor(
             aliasThreshold = 0.0f
         )
 
-        val tier2HighConf = configProvider.allConfigs.value
-            .find { it.key == AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE }
-            ?.value?.toDoubleOrNull() ?: 0.80
+        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
+        val clauses = clauseSeparator.split(resolvedMessage).map { it.trim() }.filter { it.isNotBlank() }
 
-        val layer2Result = tryTier2SemanticSlotResolver(resolvedMessage, matchResult, devicePlugins)
+        val localEntities = mutableMapOf<String, Any>()
+        EMAIL_REGEX.find(resolvedMessage)?.value?.let { localEntities["email"] = it }
+        DateTimeParser.parseVietnameseTime(resolvedMessage)?.let { localEntities["cron"] = it }
+        DateTimeParser.parseVietnameseInterval(resolvedMessage)?.let { localEntities["intervalMinutes"] = it }
+
+        val context = RoutingContext(
+            originalQuery = userMessage,
+            resolvedQuery = resolvedMessage,
+            username = username,
+            clauses = clauses,
+            matchResult = matchResult,
+            localEntities = localEntities
+        )
+
+        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (EXACT/FUZZY INTENT MATCH) ──
+        val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
+        val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         if (layer2Result != null) {
             if (layer2Result.confidence >= tier2HighConf) {
                 val plugin = layer2Result.plugin
                 val intent = layer2Result.intent
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 2 Hit - Confidence: ${layer2Result.confidence}] ${intent.pluginId}.${intent.action}")
                 return try {
-                    val result = executeIntent(plugin, intent, resolvedMessage, traceId)
+                    val result = executeIntent(plugin, intent, context, traceId)
                     RouterOutcome.Matched(DeviceCommandResult(pluginId = intent.pluginId, result = result))
                 } catch (e: Exception) {
                     logger.e("AgentKernel", "[$traceId] Tầng 2 execute error: ${e.message}", e)
@@ -449,16 +435,17 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        val layer3Result = processLayer3ClauseEntitySpotter(resolvedMessage, username, devicePlugins, traceId)
+        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (CLAUSE SPOTTER) ──
+        val layer3Result = processLayer3ClauseEntitySpotter(context, devicePlugins)
         when (layer3Result) {
             is Layer3Result.Single -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Single] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
-                val result = executeIntent(layer3Result.plugin, layer3Result.intent, resolvedMessage, traceId)
+                val result = executeIntent(layer3Result.plugin, layer3Result.intent, context, traceId)
                 return RouterOutcome.Matched(DeviceCommandResult(layer3Result.plugin.manifest.id, result))
             }
             is Layer3Result.Nested -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Nested] ${layer3Result.intent.pluginId}.${layer3Result.intent.action}")
-                val result = executeIntent(layer3Result.wrapper, layer3Result.intent, resolvedMessage, traceId)
+                val result = executeIntent(layer3Result.wrapper, layer3Result.intent, context, traceId)
                 return RouterOutcome.Matched(DeviceCommandResult(layer3Result.wrapper.manifest.id, result))
             }
             is Layer3Result.Multi -> {
@@ -466,7 +453,7 @@ class AgentKernel @Inject constructor(
                 val results = mutableListOf<String>()
                 layer3Result.intents.forEach { (plugin, intent) ->
                     try {
-                        val r = executeIntent(plugin, intent, resolvedMessage, traceId)
+                        val r = executeIntent(plugin, intent, context, traceId)
                         val msg = when (r) {
                             is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
                             is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
@@ -483,16 +470,17 @@ class AgentKernel @Inject constructor(
             is Layer3Result.NoMatch -> { }
         }
 
-        val layer4Result = tryTier2_5ActionMetadataMatcher(resolvedMessage, matchResult, devicePlugins)
+        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN (METADATA MATCHER) ──
+        val layer4Result = tryTier2_5ActionMetadataMatcher(context, devicePlugins)
         when (layer4Result) {
             is Layer3Result.Single -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Single] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
-                val result = executeIntent(layer4Result.plugin, layer4Result.intent, resolvedMessage, traceId)
+                val result = executeIntent(layer4Result.plugin, layer4Result.intent, context, traceId)
                 return RouterOutcome.Matched(DeviceCommandResult(layer4Result.plugin.manifest.id, result))
             }
             is Layer3Result.Nested -> {
                 logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Nested] ${layer4Result.intent.pluginId}.${layer4Result.intent.action}")
-                val result = executeIntent(layer4Result.wrapper, layer4Result.intent, resolvedMessage, traceId)
+                val result = executeIntent(layer4Result.wrapper, layer4Result.intent, context, traceId)
                 return RouterOutcome.Matched(DeviceCommandResult(layer4Result.wrapper.manifest.id, result))
             }
             is Layer3Result.Multi -> {
@@ -500,7 +488,7 @@ class AgentKernel @Inject constructor(
                 val results = mutableListOf<String>()
                 layer4Result.intents.forEach { (plugin, intent) ->
                     try {
-                        val r = executeIntent(plugin, intent, resolvedMessage, traceId)
+                        val r = executeIntent(plugin, intent, context, traceId)
                         val msg = when (r) {
                             is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
                             is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
@@ -517,32 +505,28 @@ class AgentKernel @Inject constructor(
             is Layer3Result.NoMatch -> { }
         }
 
+        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI (LLM FALLBACK) ──
         logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
-        return executeTier3LlmRouting(resolvedMessage, matchResult, devicePlugins, traceId)
+        return executeTier3LlmRouting(context, devicePlugins, traceId)
     }
 
     private suspend fun processLayer3ClauseEntitySpotter(
-        userMessage: String,
-        username: String,
-        devicePlugins: List<Plugin>,
-        traceId: String
+        context: RoutingContext,
+        devicePlugins: List<Plugin>
     ): Layer3Result {
-        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
-        val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
-
-        val intentQAs = trainingSkill.getRawCachedQAList(username)
+        val intentQAs = trainingSkill.getRawCachedQAList(context.username)
             .filter { it.type == "intent" }
             .sortedByDescending { it.question.length }
 
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
-        for (clause in clauses) {
-            val clauseNorm = normalizeVietnamese(clause)
+        for (clause in context.clauses) {
+            val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
             
             val wrapperQA = intentQAs
                 .filter { it.answer.contains("\"plugin\":\"schedule\"") }
-                .firstOrNull { clauseNorm.contains(normalizeVietnamese(it.question)) }
+                .firstOrNull { clauseNorm.contains(StringSimilarityUtil.normalizeVietnamese(it.question)) }
 
             if (wrapperQA != null) {
                 val rootJson = try { JSONObject(wrapperQA.answer) } catch (e: Exception) { null }
@@ -554,15 +538,11 @@ class AgentKernel @Inject constructor(
                 
                 if (targetPlugin != null && targetAction != null) {
                     val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-                    
-                    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, username, aliasThreshold = 0.0f)
 
                     val resolvedParams = resolveParametersWithMeta(
                         parameters = targetAction.parameters,
                         inputParams = rootParams,
-                        matchResult = matchResult,
-                        userMessage = userMessage,
-                        devicePlugins = devicePlugins,
+                        context = context,
                         excludeIntentId = wrapperQA.id,
                         depth = 0
                     )
@@ -578,12 +558,12 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        for (clause in clauses) {
-            val clauseNorm = normalizeVietnamese(clause)
+        for (clause in context.clauses) {
+            val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
             
             val leafQA = intentQAs
                 .filter { !it.answer.contains("\"plugin\":\"schedule\"") }
-                .firstOrNull { clauseNorm.contains(normalizeVietnamese(it.question)) }
+                .firstOrNull { clauseNorm.contains(StringSimilarityUtil.normalizeVietnamese(it.question)) }
 
             if (leafQA != null) {
                 val rootJson = try { JSONObject(leafQA.answer) } catch (e: Exception) { null }
@@ -597,14 +577,11 @@ class AgentKernel @Inject constructor(
                 
                 if (targetPlugin != null && targetAction != null) {
                     val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-                    val matchResult = trainingSkill.fuzzyMatchCategorized(clause, username, aliasThreshold = 0.0f)
 
                     val resolvedParams = resolveParametersWithMeta(
                         parameters = targetAction.parameters,
                         inputParams = rootParams,
-                        matchResult = matchResult,
-                        userMessage = clause,
-                        devicePlugins = devicePlugins,
+                        context = context,
                         excludeIntentId = leafQA.id,
                         depth = 0
                     )
@@ -625,19 +602,16 @@ class AgentKernel @Inject constructor(
     }
 
     private suspend fun tryTier2SemanticSlotResolver(
-        userMessage: String,
-        matchResult: TrainingSkill.MatchResult,
+        context: RoutingContext,
         devicePlugins: List<Plugin>
     ): Layer2Result? {
-        val dynamicMinScore = configProvider.allConfigs.value
-            .find { it.key == AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD }
-            ?.value?.toDoubleOrNull() ?: 0.3
+        val dynamicMinScore = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
 
-        val wrapperIntentPair = matchResult.intentMatches
+        val wrapperIntentPair = context.matchResult.intentMatches
             .filter { it.second >= dynamicMinScore }
             .find { it.first.answer.contains("\"plugin\":\"schedule\"") }
 
-        val bestIntentPair = wrapperIntentPair ?: matchResult.intentMatches
+        val bestIntentPair = wrapperIntentPair ?: context.matchResult.intentMatches
             .filter { it.second >= dynamicMinScore }
             .firstOrNull() ?: return null
 
@@ -658,9 +632,7 @@ class AgentKernel @Inject constructor(
         val resolvedParams = resolveParametersWithMeta(
             parameters = rootAction.parameters,
             inputParams = rootParams,
-            matchResult = matchResult,
-            userMessage = userMessage,
-            devicePlugins = devicePlugins,
+            context = context,
             excludeIntentId = bestIntentQA.id,
             depth = 0
         )
@@ -669,18 +641,14 @@ class AgentKernel @Inject constructor(
     }
 
     private suspend fun tryTier2_5ActionMetadataMatcher(
-        userMessage: String,
-        matchResult: TrainingSkill.MatchResult,
+        context: RoutingContext,
         devicePlugins: List<Plugin>
     ): Layer3Result {
-        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
-        val clauses = clauseSeparator.split(userMessage).map { it.trim() }.filter { it.isNotBlank() }
-
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val absorbedActions = mutableSetOf<String>()
 
-        for (clause in clauses) {
-            val clauseNormalized = normalizeVietnamese(clause)
+        for (clause in context.clauses) {
+            val clauseNormalized = StringSimilarityUtil.normalizeVietnamese(clause)
             
             val bestMatch = normalizedActionMetadataList
                 .filter { it.plugin.manifest.id == "schedule" && it.plugin.manifest.routable && it.action.enabled }
@@ -701,14 +669,10 @@ class AgentKernel @Inject constructor(
                     schemaParams[param.name] = param.defaultValue ?: ""
                 }
 
-                val fullMatchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = 0.0f)
-
                 val resolvedParams = resolveParametersWithMeta(
                     parameters = action.parameters,
                     inputParams = schemaParams,
-                    matchResult = fullMatchResult,
-                    userMessage = userMessage,
-                    devicePlugins = devicePlugins,
+                    context = context,
                     excludeIntentId = null,
                     depth = 0
                 )
@@ -723,8 +687,8 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        for (clause in clauses) {
-            val clauseNormalized = normalizeVietnamese(clause)
+        for (clause in context.clauses) {
+            val clauseNormalized = StringSimilarityUtil.normalizeVietnamese(clause)
             
             val bestMatch = normalizedActionMetadataList
                 .filter { it.plugin.manifest.id != "schedule" && it.plugin.manifest.routable && it.action.enabled }
@@ -747,14 +711,10 @@ class AgentKernel @Inject constructor(
                     schemaParams[param.name] = param.defaultValue ?: ""
                 }
 
-                val clauseMatchResult = trainingSkill.fuzzyMatchCategorized(clause, "default_user", aliasThreshold = 0.0f)
-
                 val resolvedParams = resolveParametersWithMeta(
                     parameters = action.parameters,
                     inputParams = schemaParams,
-                    matchResult = clauseMatchResult,
-                    userMessage = clause,
-                    devicePlugins = devicePlugins,
+                    context = context,
                     excludeIntentId = null,
                     depth = 0
                 )
@@ -773,100 +733,16 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    private fun calculateLocalSimilarity(clean1: String, clean2: String): Double {
-        if (clean1.isEmpty() || clean2.isEmpty()) return 0.0
-        if (clean1 == clean2) return 1.0
-
-        val lenDiff = Math.abs(clean1.length - clean2.length)
-        val maxLen = maxOf(clean1.length, clean2.length)
-        if (maxLen > 10 && lenDiff.toDouble() / maxLen > 0.7) {
-            return 0.0
-        }
-
-        val tokens1 = clean1.split(SPACE_REGEX).toSet()
-        val tokens2 = clean2.split(SPACE_REGEX).toSet()
-        val intersectionSize = tokens1.intersect(tokens2).size.toDouble()
-
-        if (tokens1.size > 1 && tokens2.size > 1 && intersectionSize == 0.0) {
-            return 0.0
-        }
-
-        val isWordMatch = when {
-            clean1.contains(clean2) -> {
-                val index = clean1.indexOf(clean2)
-                val charBefore = if (index > 0) clean1[index - 1] else ' '
-                val charAfter = if (index + clean2.length < clean1.length) clean1[index + clean2.length] else ' '
-                charBefore.isWhitespace() && charAfter.isWhitespace()
-            }
-            clean2.contains(clean1) -> {
-                val index = clean2.indexOf(clean1)
-                val charBefore = if (index > 0) clean2[index - 1] else ' '
-                val charAfter = if (index + clean1.length < clean2.length) clean2[index + clean1.length] else ' '
-                charBefore.isWhitespace() && charAfter.isWhitespace()
-            }
-            else -> false
-        }
-
-        if (isWordMatch) {
-            return 0.95
-        }
-
-        val union = tokens1.union(tokens2).size.toDouble()
-        val jaccard = if (union > 0) intersectionSize / union else 0.0
-
-        val lenDistance = levenshteinDistance(clean1, clean2)
-        val levSim = 1.0 - (lenDistance.toDouble() / maxLen)
-
-        return (jaccard * 0.4) + (levSim * 0.6)
-    }
-
-    private fun levenshteinDistance(s1: String, s2: String): Int {
-        val dp = Array(s1.length + 1) { IntArray(s2.length + 1) }
-        for (i in 0..s1.length) dp[i][0] = i
-        for (j in 0..s2.length) dp[0][j] = j
-        for (i in 1..s1.length) {
-            for (j in 1..s2.length) {
-                val cost = if (s1[i - 1] == s2[j - 1]) 0 else 1
-                dp[i][j] = minOf(
-                    dp[i - 1][j] + 1,
-                    dp[i][j - 1] + 1,
-                    dp[i - 1][j - 1] + cost
-                )
-            }
-        }
-        return dp[s1.length][s2.length]
-    }
-
-    private fun normalizeVietnamese(text: String): String {
-        val temp = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
-        val regex = "\\p{InCombiningDiacriticalMarks}+".toRegex()
-        return regex.replace(temp, "")
-            .replace("đ", "d")
-            .replace("Đ", "D")
-            .lowercase()
-            .trim()
-            .replace(SPACE_REGEX, " ")
-    }
-
     private suspend fun resolveParametersWithMeta(
         parameters: List<PluginParameter>,
         inputParams: Map<String, Any>,
-        matchResult: TrainingSkill.MatchResult,
-        userMessage: String,
-        devicePlugins: List<Plugin>,
+        context: RoutingContext,
         excludeIntentId: String? = null,
         depth: Int = 0
     ): Map<String, Any> {
         if (depth > MAX_DEPTH) return emptyMap()
 
-        val localEntities = mutableMapOf<String, Any>()
-        if (userMessage.isNotBlank()) {
-            EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
-            parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
-            parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
-        }
-
-        val secondaryIntentQA = matchResult.intentMatches
+        val secondaryIntentQA = context.matchResult.intentMatches
             .filter { it.first.type == "intent" }
             .map { it.first }
             .firstOrNull { it.id != excludeIntentId }
@@ -875,16 +751,16 @@ class AgentKernel @Inject constructor(
 
         parameters.forEach { param ->
             val currentValue = inputParams[param.name]
-            val isPlh = isPlaceholder(currentValue, param)
+            val isPlh = ParameterResolver.isPlaceholder(currentValue, param)
 
             val resolver = resolverTable[param.semanticType.lowercase()]
             if (resolver != null) {
                 resolved[param.name] = resolver(
-                    param, currentValue, isPlh, matchResult, localEntities,
-                    secondaryIntentQA, devicePlugins, excludeIntentId, depth, userMessage
+                    param, currentValue, isPlh, context,
+                    secondaryIntentQA, plugins.toList(), excludeIntentId, depth
                 ) ?: ""
             } else {
-                resolved[param.name] = resolveAliasOrFallback(param, currentValue, isPlh, matchResult, localEntities, userMessage)
+                resolved[param.name] = resolveAliasOrFallback(param, currentValue, isPlh, context)
             }
         }
 
@@ -902,12 +778,11 @@ class AgentKernel @Inject constructor(
     private suspend fun resolveNestedParams(
         param: PluginParameter,
         currentValue: Any?,
-        matchResult: TrainingSkill.MatchResult,
+        context: RoutingContext,
         secondaryIntentQA: QAEntity?,
         devicePlugins: List<Plugin>,
         excludeIntentId: String?,
-        depth: Int,
-        userMessage: String
+        depth: Int
     ): Any {
         if (secondaryIntentQA == null) return currentValue ?: emptyMap<String, Any>()
         return try {
@@ -923,9 +798,7 @@ class AgentKernel @Inject constructor(
                 resolveParametersWithMeta(
                     parameters = secAction.parameters,
                     inputParams = secParams,
-                    matchResult = matchResult,
-                    userMessage = userMessage,
-                    devicePlugins = devicePlugins,
+                    context = context,
                     excludeIntentId = excludeIntentId,
                     depth = depth + 1
                 )
@@ -941,14 +814,12 @@ class AgentKernel @Inject constructor(
         param: PluginParameter,
         currentValue: Any?,
         isPlh: Boolean,
-        matchResult: TrainingSkill.MatchResult,
-        localEntities: Map<String, Any>,
-        userMessage: String = ""
+        context: RoutingContext
     ): Any {
         var finalIsPlh = isPlh
         
         if (!finalIsPlh && currentValue != null) {
-            val isAliasVal = matchResult.aliasMatches.any { 
+            val isAliasVal = context.matchResult.aliasMatches.any { 
                 it.first.category == param.semanticType && 
                 it.first.question.equals(currentValue.toString().trim(), ignoreCase = true) 
             }
@@ -959,19 +830,19 @@ class AgentKernel @Inject constructor(
 
         if (!finalIsPlh) return currentValue ?: ""
 
-        val matchedAliasValue = aliasMatchesForType(matchResult, param.semanticType)
+        val matchedAliasValue = aliasMatchesForType(context.matchResult, param.semanticType)
         if (matchedAliasValue != null) return matchedAliasValue
 
-        if (userMessage.isNotBlank()) {
-            val containsMatch = matchResult.aliasMatches
+        if (context.resolvedQuery.isNotBlank()) {
+            val containsMatch = context.matchResult.aliasMatches
                 .filter { it.first.category == param.semanticType }
                 .sortedByDescending { it.first.question.length }
-                .firstOrNull { userMessage.contains(it.first.question, ignoreCase = true) }
+                .firstOrNull { context.resolvedQuery.contains(it.first.question, ignoreCase = true) }
                 ?.first?.answer
             if (containsMatch != null) return containsMatch
         }
 
-        val localMatch = localEntities[param.semanticType]
+        val localMatch = context.localEntities[param.semanticType]
         if (localMatch != null) return localMatch
 
         return currentValue ?: ""
@@ -984,153 +855,14 @@ class AgentKernel @Inject constructor(
         return matchResult.bestAliasMatches[semanticType]?.first?.answer
     }
 
-    private fun parseVietnameseTime(message: String): String? {
-        val lower = message.lowercase().trim()
-        
-        var extractedHour: Int? = null
-        var extractedMinute: Int = 0
-        
-        val digitalRegex = Regex("\\b(\\d{1,2}):(\\d{2})\\s*(sáng|chiều|tối|đêm)?\\b")
-        val digitalMatch = digitalRegex.find(lower)
-        
-        if (digitalMatch != null) {
-            var hour = digitalMatch.groupValues[1].toIntOrNull() ?: 0
-            extractedMinute = digitalMatch.groupValues[2].toIntOrNull() ?: 0
-            val period = digitalMatch.groupValues[3]
-            
-            if ((period == "chiều" || period == "tối") && hour < 12) {
-                hour += 12
-            } else if (period == "đêm" && hour == 12) {
-                hour = 0
-            }
-            extractedHour = hour
-        } else {
-            val hourRegex = Regex("\\b(\\d+)\\s*(giờ|g|h)\\s*(sáng|chiều|tối|đêm)?\\b")
-            val hourMatch = hourRegex.find(lower)
-            if (hourMatch != null) {
-                var hour = hourMatch.groupValues[1].toIntOrNull() ?: 0
-                val period = hourMatch.groupValues[3]
-                if ((period == "chiều" || period == "tối") && hour < 12) {
-                    hour += 12
-                } else if (period == "đêm" && hour == 12) {
-                    hour = 0
-                }
-                extractedHour = hour
-            }
-        }
-
-        val days = mutableListOf<String>()
-        
-        val mondayRegex = Regex("\\b(thứ hai|thứ 2)\\b")
-        val tuesdayRegex = Regex("\\b(thứ ba|thứ 3)\\b")
-        val wednesdayRegex = Regex("\\b(thứ tư|thứ 4)\\b")
-        val thursdayRegex = Regex("\\b(thứ năm|thứ 5)\\b")
-        val fridayRegex = Regex("\\b(thứ sáu|thứ 6)\\b")
-        val saturdayRegex = Regex("\\b(thứ bảy|thứ 7)\\b")
-        val sundayRegex = Regex("\\b(chủ nhật|cn)\\b")
-
-        if (mondayRegex.containsMatchIn(lower)) days.add("1")
-        if (tuesdayRegex.containsMatchIn(lower)) days.add("2")
-        if (wednesdayRegex.containsMatchIn(lower)) days.add("3")
-        if (thursdayRegex.containsMatchIn(lower)) days.add("4")
-        if (fridayRegex.containsMatchIn(lower)) days.add("5")
-        if (saturdayRegex.containsMatchIn(lower)) days.add("6")
-        if (sundayRegex.containsMatchIn(lower)) days.add("0")
-
-        if (days.isNotEmpty()) {
-            val hour = extractedHour ?: 0
-            val dayOfWeek = days.joinToString(",")
-            return "$extractedMinute $hour * * $dayOfWeek"
-        }
-
-        val dailyRegex = Regex("\\b(mỗi ngày|hằng ngày|hàng ngày)\\b")
-        if (dailyRegex.containsMatchIn(lower)) {
-            val hour = extractedHour ?: 0
-            return "$extractedMinute $hour * * *"
-        }
-        
-        val weeklyRegex = Regex("\\b(hằng tuần|hàng tuần)\\b")
-        if (weeklyRegex.containsMatchIn(lower)) {
-            val hour = extractedHour ?: 0
-            return "$extractedMinute $hour * * 0"
-        }
-        
-        val tomorrowRegex = Regex("\\b(ngày mai|mai)\\b")
-        if (tomorrowRegex.containsMatchIn(lower)) {
-            val hour = extractedHour ?: 8
-            return "$extractedMinute $hour * * *"
-        }
-
-        if (extractedHour != null) {
-            return "$extractedMinute $extractedHour * * *"
-        }
-
-        return null
-    }
-
-    private fun parseVietnameseInterval(message: String): Int? {
-        val lower = message.lowercase()
-        val intervalRegex = Regex("mỗi\\s*(\\d+)\\s*phút")
-        val match = intervalRegex.find(lower)
-        if (match != null) {
-            return match.groupValues[1].toIntOrNull()
-        }
-        return null
-    }
-
-    private fun getUnresolvedParams(params: Map<String, Any>, plugin: Plugin, actionName: String): List<String> {
-        val missing = mutableListOf<String>()
-        val action = plugin.manifest.actions.find { it.name == actionName } ?: return missing
-
-        action.parameters.filter { it.required }.forEach { param ->
-            val value = params[param.name]
-            if (isPlaceholder(value, param)) {
-                missing.add(param.name)
-            }
-        }
-
-        val paramsMeta = action.parameters.find { it.semanticType == "params" || it.name == "params" }
-        if (paramsMeta != null) {
-            val value = params[paramsMeta.name]
-            val nestedParams = value as? Map<*, *>
-            val targetPluginId = params["plugin_id"]?.toString()
-                ?: params["pluginId"]?.toString()
-                ?: params["plugin"]?.toString() ?: ""
-            val targetAction = params["action_id"]?.toString()
-                ?: params["action"]?.toString()
-                ?: params["actionId"]?.toString() ?: ""
-            
-            if (targetPluginId.isNotBlank() && targetAction.isNotBlank()) {
-                val tPlugin = plugins.find { it.manifest.id == targetPluginId }
-                val tAction = tPlugin?.manifest?.actions?.find { it.name == targetAction }
-                
-                if (tAction != null) {
-                    if (nestedParams == null) {
-                        tAction.parameters.filter { it.required }.forEach { subParam ->
-                            missing.add("params.${subParam.name}")
-                        }
-                    } else {
-                        tAction.parameters.filter { it.required }.forEach { subParam ->
-                            val subVal = nestedParams[subParam.name]
-                            if (isPlaceholder(subVal, subParam)) {
-                                missing.add("params.${subParam.name}")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return missing.distinct()
-    }
-
-    private fun getQuestionForMissingParam(
+    private fun getQuestionForMissingParamInDryRun(
         param: String, 
-        plugin: Plugin? = null, 
-        actionName: String? = null
+        pluginId: String, 
+        actionName: String
     ): String {
         val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
-        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
+        val plugin = plugins.find { it.manifest.id == pluginId }
+        val targetAction = plugin?.manifest?.actions?.find { it.name == actionName }
         val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
@@ -1153,16 +885,16 @@ class AgentKernel @Inject constructor(
     private suspend fun executeIntent(
         plugin: Plugin,
         intent: Intent,
-        userMessage: String,
+        context: RoutingContext,
         traceId: String
     ): PluginResult {
-        val normalizedParams = normalizeParams(intent.params, plugin, intent.action, userMessage)
+        val normalizedParams = ParameterResolver.normalizeParams(intent.params, plugin, intent.action, plugins, context.resolvedQuery)
         val normalizedIntent = intent.copy(params = normalizedParams)
 
         val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
         device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
 
-        val missing = getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action)
+        val missing = ParameterResolver.getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action, plugins)
 
         val executionResult = if (missing.isNotEmpty()) {
             val question = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
@@ -1218,7 +950,7 @@ class AgentKernel @Inject constructor(
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
-        chatHistoryManager.addTurn(userMessage, replyForHistory)
+        chatHistoryManager.addTurn(context.originalQuery, replyForHistory)
 
         return executionResult
     }
@@ -1260,8 +992,8 @@ class AgentKernel @Inject constructor(
 
         val localEntities = mutableMapOf<String, Any>()
         EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
-        parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
-        parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
+        DateTimeParser.parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
+        DateTimeParser.parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
 
         val heuristicFilled = mutableMapOf<String, Any>()
         for (param in pending.missingParams) {
@@ -1399,7 +1131,7 @@ class AgentKernel @Inject constructor(
         val mergedParams = pending.knownParams + flatFilled +
             if (mergedNested.isNotEmpty()) mapOf("params" to mergedNested) else emptyMap()
 
-        val normalizedMergedParams = normalizeParams(mergedParams, targetPlugin, pending.action, userMessage)
+        val normalizedMergedParams = ParameterResolver.normalizeParams(mergedParams, targetPlugin, pending.action, plugins, userMessage)
 
         val stillMissing = pending.missingParams.filter { key ->
             if (key.startsWith("params.")) {
@@ -1407,10 +1139,22 @@ class AgentKernel @Inject constructor(
                 @Suppress("UNCHECKED_CAST")
                 val nested = normalizedMergedParams["params"] as? Map<String, Any>
                 val v = nested?.get(nestedKey)
-                v == null || v.toString().isBlank()
+
+                val targetPluginId = normalizedMergedParams["plugin_id"]?.toString()
+                    ?: normalizedMergedParams["pluginId"]?.toString()
+                    ?: normalizedMergedParams["plugin"]?.toString() ?: ""
+                val targetActionName = normalizedMergedParams["action_id"]?.toString()
+                    ?: normalizedMergedParams["action"]?.toString()
+                    ?: normalizedMergedParams["actionId"]?.toString() ?: ""
+                val tPlugin = devicePlugins.find { it.manifest.id == targetPluginId }
+                val tAction = tPlugin?.manifest?.actions?.find { it.name == targetActionName }
+                val param = tAction?.parameters?.find { it.name == nestedKey }
+
+                ParameterResolver.isPlaceholder(v, param)
             } else {
                 val v = normalizedMergedParams[key]
-                v == null || v.toString().isBlank()
+                val param = targetAction.parameters.find { it.name == key }
+                ParameterResolver.isPlaceholder(v, param)
             }
         }
 
@@ -1452,18 +1196,17 @@ class AgentKernel @Inject constructor(
     }
 
     private suspend fun executeTier3LlmRouting(
-        userMessage: String,
-        matchResult: TrainingSkill.MatchResult,
+        context: RoutingContext,
         devicePlugins: List<Plugin>,
         traceId: String
     ): RouterOutcome {
-        val queryNormalized = normalizeVietnamese(userMessage)
         val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
 
-        val foundAliases = matchResult.aliasMatches
+        val foundAliases = context.matchResult.aliasMatches
             .filter { it.second >= configAliasThreshold }
             .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
 
+        val queryNormalized = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
         val matchedActions = normalizedActionMetadataList.filter { meta ->
             meta.plugin.manifest.routable && meta.action.enabled && (
                 meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
@@ -1501,7 +1244,7 @@ class AgentKernel @Inject constructor(
             if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
             append("<context>last_device: \"$lastDevice\"</context>\n")
             append("<history>\n$shortHistory\n</history>\n")
-            append("<input>$userMessage</input>\n")
+            append("<input>${context.resolvedQuery}</input>\n")
             append("<output>")
         }
 
@@ -1520,66 +1263,15 @@ class AgentKernel @Inject constructor(
         val finalParams = resolveParametersWithMeta(
             parameters = targetAction.parameters,
             inputParams = rawIntent.params,
-            matchResult = matchResult,
-            userMessage = userMessage,
-            devicePlugins = devicePlugins,
+            context = context,
             excludeIntentId = null,
             depth = 0
         )
         
         val intent = rawIntent.copy(params = finalParams)
-        val result = executeIntent(targetPlugin, intent, userMessage, traceId)
+        val result = executeIntent(targetPlugin, intent, context, traceId)
 
         return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = result))
-    }
-
-    private fun normalizeParams(
-        params: Map<String, Any>, 
-        plugin: Plugin, 
-        actionName: String, 
-        userMessage: String? = null
-    ): Map<String, Any> {
-        val action = plugin.manifest.actions.find { it.name == actionName } ?: return params
-        return params.mapValues { (key, value) ->
-            if (key == "params" && value is Map<*, *>) {
-                @Suppress("UNCHECKED_CAST")
-                val nested = value as Map<String, Any>
-                val targetPluginId = params["plugin_id"]?.toString()
-                    ?: params["pluginId"]?.toString()
-                    ?: params["plugin"]?.toString() ?: ""
-                val targetAction = params["action_id"]?.toString()
-                    ?: params["action"]?.toString()
-                    ?: params["actionId"]?.toString() ?: ""
-                val targetPlugin = plugins.find { it.manifest.id == targetPluginId }
-                return@mapValues if (targetPlugin != null && targetAction.isNotEmpty()) {
-                    normalizeParams(nested, targetPlugin, targetAction, userMessage)
-                } else nested
-            }
-
-            val paramMeta = action.parameters.find { it.name == key } ?: return@mapValues value
-
-            var rawValue = value
-            if (paramMeta.type.lowercase() == "boolean" && 
-                (value.toString().isBlank() || value.toString() == "null") && 
-                userMessage != null) {
-                rawValue = extractBooleanFromMessage(userMessage) ?: value
-            }
-
-            paramMeta.normalize(rawValue) ?: paramMeta.defaultValue ?: ""
-        }
-    }
-
-    private fun extractBooleanFromMessage(userMessage: String): Boolean? {
-        val str = userMessage.lowercase()
-        val trueWords = setOf("mở", "bật", "on")
-        val falseWords = setOf("tắt", "off")
-        val hasTrue = trueWords.any { str.contains(it) }
-        val hasFalse = falseWords.any { str.contains(it) }
-        return when {
-            hasTrue && !hasFalse -> true
-            hasFalse && !hasTrue -> false
-            else -> null
-        }
     }
 
     private fun parseIntentResponse(response: String): Intent? {
@@ -1628,7 +1320,7 @@ class AgentKernel @Inject constructor(
         val plugin = plugins.find { it.manifest.id == pluginId }
             ?: return PluginResult.Failure("Không tìm thấy plugin: $pluginId")
 
-        val normalizedParams = normalizeParams(params, plugin, action, null)
+        val normalizedParams = ParameterResolver.normalizeParams(params, plugin, action, plugins, null)
 
         return try {
             plugin.execute(action, normalizedParams)
@@ -1657,6 +1349,7 @@ class AgentKernel @Inject constructor(
 
         val simulatedTiers = mutableListOf<DiagnosticTier>()
 
+        // ── TẦNG 0: DIALOG MANAGER (CANCEL / PRONOUN RESOLUTION) ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -1664,6 +1357,7 @@ class AgentKernel @Inject constructor(
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
 
+        // ── TẦNG 1: PENDING RESOLVER ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
         val t1Details = buildString {
@@ -1689,6 +1383,7 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN) ──
         val devicePlugins = plugins.filter { it.manifest.routable }
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage,
@@ -1696,7 +1391,26 @@ class AgentKernel @Inject constructor(
             intentThreshold = intentThreshold,
             aliasThreshold = 0.0f
         )
-        val layer2Result = tryTier2SemanticSlotResolver(resolvedMessage, matchResult, devicePlugins)
+
+        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
+        val clauses = clauseSeparator.split(resolvedMessage).map { it.trim() }.filter { it.isNotBlank() }
+
+        val localEntities = mutableMapOf<String, Any>()
+        EMAIL_REGEX.find(resolvedMessage)?.value?.let { localEntities["email"] = it }
+        DateTimeParser.parseVietnameseTime(resolvedMessage)?.let { localEntities["cron"] = it }
+        DateTimeParser.parseVietnameseInterval(resolvedMessage)?.let { localEntities["intervalMinutes"] = it }
+
+        val context = RoutingContext(
+            originalQuery = userMessage,
+            resolvedQuery = resolvedMessage,
+            username = username,
+            clauses = clauses,
+            matchResult = matchResult,
+            localEntities = localEntities
+        )
+
+        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH (EXACT/FUZZY INTENT MATCH) ──
+        val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
 
         val t2Details = when {
@@ -1714,13 +1428,21 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING (CLAUSE SPOTTER) ──
         val layer3Result = if (!isT2Matched) {
-            processLayer3ClauseEntitySpotter(resolvedMessage, username, devicePlugins, "DIAGNOSTIC-TRACE")
+            processLayer3ClauseEntitySpotter(context, devicePlugins)
         } else {
             Layer3Result.NoMatch
         }
         val t3Details = when (layer3Result) {
-            is Layer3Result.Single -> "• Tách và nhận diện được câu lệnh đơn: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
+            is Layer3Result.Single -> {
+                val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
+                if (missing.isNotEmpty()) {
+                    "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParamInDryRun(it, layer3Result.intent.pluginId, layer3Result.intent.action) }}]"
+                } else {
+                    "• Tách thành công câu lệnh đơn và điền đủ tham số: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
+                }
+            }
             is Layer3Result.Nested -> "• Khớp bộ khung lập lịch (schedule) lồng hành động: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
             is Layer3Result.Multi -> "• Phân tích cú pháp đa hành động (song song/tuần tự): ${layer3Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
             else -> "• Không tìm thấy hoặc cấu trúc câu không chứa mệnh đề/từ khóa lập lịch đạt chuẩn."
@@ -1734,9 +1456,10 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN (METADATA MATCHER) ──
         val isT4Checkable = !isT2Matched && layer3Result is Layer3Result.NoMatch
         val layer4Result = if (isT4Checkable) {
-            tryTier2_5ActionMetadataMatcher(resolvedMessage, matchResult, devicePlugins)
+            tryTier2_5ActionMetadataMatcher(context, devicePlugins)
         } else {
             Layer3Result.NoMatch
         }
@@ -1755,6 +1478,7 @@ class AgentKernel @Inject constructor(
             )
         )
 
+        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI (LLM FALLBACK) ──
         val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
         val t5Details = if (isT5Matched) {
             "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."

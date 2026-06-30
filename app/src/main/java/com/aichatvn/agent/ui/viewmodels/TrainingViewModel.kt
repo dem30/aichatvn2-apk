@@ -6,9 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
-import com.aichatvn.agent.core.AgentKernel // Thêm import AgentKernel
-import com.aichatvn.agent.core.DiagnosticTier // Thêm import DiagnosticTier từ core
-import com.aichatvn.agent.core.DiagnosticInfo // Thêm import DiagnosticInfo từ core
+import com.aichatvn.agent.core.AgentKernel // Import AgentKernel mới
+import com.aichatvn.agent.core.DiagnosticTier // Import mô hình chẩn đoán từ core
+import com.aichatvn.agent.core.DiagnosticInfo // Import mô hình chẩn đoán từ core
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
@@ -28,7 +28,7 @@ import javax.inject.Inject
 class TrainingViewModel @Inject constructor(
     private val trainingSkill: TrainingSkill,
     private val configProvider: AppConfigProvider,
-    private val agentKernel: AgentKernel // Inject AgentKernel
+    private val agentKernel: AgentKernel // Inject AgentKernel điều phối thực tế
 ) : ViewModel() {
 
     val qaList: StateFlow<List<QAEntity>> = trainingSkill.qaList
@@ -148,7 +148,7 @@ class TrainingViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
 
-            // Gọi hàm giải thích thực tế từ nhân AgentKernel đã cập nhật
+            // Gọi trực tiếp AgentKernel thực hiện dry-run phân tích thực tế
             val realTrace = agentKernel.explainDeviceCommand(query, "default_user")
             _diagnosticInfo.value = realTrace
 
