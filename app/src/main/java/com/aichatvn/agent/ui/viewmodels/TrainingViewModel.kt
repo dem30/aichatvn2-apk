@@ -31,6 +31,7 @@ class TrainingViewModel @Inject constructor(
     private val agentKernel: AgentKernel // Inject AgentKernel điều phối thực tế
 ) : ViewModel() {
 
+    // Lấy luồng dữ liệu Q&A trực tiếp từ Skill
     val qaList: StateFlow<List<QAEntity>> = trainingSkill.qaList
 
     private val _isLoading = MutableStateFlow(false)
@@ -48,69 +49,39 @@ class TrainingViewModel @Inject constructor(
     private val _importResult = MutableStateFlow<String?>(null)
     val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
-    private val _currentPage = MutableStateFlow(1)
-    val currentPage: StateFlow<Int> = _currentPage.asStateFlow()
-
-    private val _hasMore = MutableStateFlow(true)
-    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
-
     private var activeSearchQuery: String = ""
-    private val PAGE_SIZE = 20
 
     init {
-        viewModelScope.launch {
-            loadMoreQAs()
-        }
+        reloadQAs()
     }
 
-    fun loadMoreQAs() {
+    // Làm mới dữ liệu huấn luyện nhanh chóng không cần phân trang ảo phức tạp
+    fun reloadQAs() {
         viewModelScope.launch {
-            if (!_hasMore.value || _isLoading.value) return@launch
             _isLoading.value = true
-
-            val result = trainingSkill.getQAsPaginated(_currentPage.value, PAGE_SIZE, "default_user")
-            if (result is PluginResult.Success) {
-                @Suppress("UNCHECKED_CAST")
-                val newQAs = (result.data as? Map<String, Any>)?.get("qas") as? List<QAEntity> ?: emptyList()
-                _messagesValueAndMore(newQAs)
-            }
+            trainingSkill.refreshQAList("default_user")
             _isLoading.value = false
-        }
-    }
-
-    private fun _messagesValueAndMore(newQAs: List<QAEntity>) {
-        _hasMore.value = newQAs.size == PAGE_SIZE
-        if (newQAs.isNotEmpty()) {
-            _currentPage.value++
-        }
-    }
-
-    private fun resetAndReload() {
-        _currentPage.value = 1
-        _hasMore.value = true
-        viewModelScope.launch {
-            loadMoreQAs()
         }
     }
 
     fun addQA(question: String, answer: String, type: String, category: String) {
         viewModelScope.launch {
             trainingSkill.addQA(question, answer, type, category, "default_user")
-            resetAndReload()
+            reloadQAs()
         }
     }
 
     fun updateQA(id: String, question: String?, answer: String?, type: String?, category: String?) {
         viewModelScope.launch {
             trainingSkill.updateQA(id, question, answer, type, category, "default_user")
-            resetAndReload()
+            reloadQAs()
         }
     }
 
     fun deleteQA(id: String, username: String) {
         viewModelScope.launch {
             trainingSkill.deleteQA(id, username)
-            resetAndReload()
+            reloadQAs()
             if (activeSearchQuery.isNotBlank()) {
                 refreshSearchResults()
             }
@@ -123,7 +94,7 @@ class TrainingViewModel @Inject constructor(
             for (id in ids) {
                 trainingSkill.deleteQA(id, "default_user")
             }
-            resetAndReload()
+            reloadQAs()
             if (activeSearchQuery.isNotBlank()) {
                 refreshSearchResults()
             }
@@ -138,7 +109,7 @@ class TrainingViewModel @Inject constructor(
     fun deleteAllQAs() {
         viewModelScope.launch {
             trainingSkill.deleteAllQAs("default_user")
-            resetAndReload()
+            reloadQAs()
             clearSearch()
         }
     }
@@ -243,7 +214,10 @@ class TrainingViewModel @Inject constructor(
                 var skipped = 0
 
                 for (line in csvLines) {
-                    val cols = line.split(",").map { it.trim().removeSurrounding("\"") }
+                    // SỬA: Phân tách thông minh dựa trên Regex để không vỡ cột khi nội dung có dấu phẩy nằm trong ngoặc kép
+                    val cols = line.split(Regex(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)"))
+                        .map { it.trim().removeSurrounding("\"") }
+                    
                     if (cols.size >= 2 && cols[0].isNotBlank() && cols[1].isNotBlank()) {
                         val obj = JSONObject().apply {
                             put("question", cols[0])
@@ -281,4 +255,3 @@ class TrainingViewModel @Inject constructor(
     fun clearExportResult() { _exportResult.value = null }
     fun clearImportResult() { _importResult.value = null }
 }
-

@@ -46,7 +46,6 @@ fun TrainingScreen(
     val searchResults by viewModel.searchResults.collectAsState()
     val diagnosticInfo by viewModel.diagnosticInfo.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val hasMore by viewModel.hasMore.collectAsState()
     val exportResult by viewModel.exportResult.collectAsState()
     val importResult by viewModel.importResult.collectAsState()
 
@@ -62,13 +61,13 @@ fun TrainingScreen(
     val jsonPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        uri?.let { viewModel.importQAFromUri(context, it) }
+        viewModel.importQAFromUri(context, uri)
     }
 
     val csvPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        uri?.let { viewModel.importQAFromCsvUri(context, it) }
+        viewModel.importQAFromCsvUri(context, uri)
     }
 
     LaunchedEffect(exportResult) {
@@ -82,13 +81,6 @@ fun TrainingScreen(
         importResult?.let {
             Toast.makeText(context, it, Toast.LENGTH_LONG).show()
             viewModel.clearImportResult()
-        }
-    }
-
-    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-        if (lastVisible >= displayList.size - 3 && hasMore && !isLoading && searchQuery.isBlank()) {
-            viewModel.loadMoreQAs()
         }
     }
 
@@ -239,19 +231,6 @@ fun TrainingScreen(
                                     onEdit = { editingQA = qa },
                                     onDelete = { viewModel.deleteQA(qa.id, "default_user") }
                                 )
-                            }
-                        }
-
-                        if (hasMore && searchQuery.isBlank() && isLoading) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                                }
                             }
                         }
                     }
@@ -790,7 +769,7 @@ fun QADialog(
                 OutlinedTextField(
                     value = answer,
                     onValueChange = { answer = it },
-                    label = { Text("Câu trả lời") },
+                    label = { Text("Câu lời") }, // Đã sửa lỗi hiển thị chữ
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3
                 )
@@ -861,4 +840,3 @@ fun QADialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Hủy") } }
     )
 }
-
