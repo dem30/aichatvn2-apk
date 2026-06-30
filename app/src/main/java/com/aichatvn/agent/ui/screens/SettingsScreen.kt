@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check // ĐÃ THÊM: Icon check lưu nhanh
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -21,7 +22,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType // ĐÃ THÊM: Sửa lỗi bàn phím số
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,7 +83,7 @@ fun SettingsScreen(
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Cài đặt") }) }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Cấu hình hệ thống") }) }) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -88,13 +91,13 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) { // ✅ ĐÃ KHÔI PHỤC: Dấu ngoặc nhọn mở khối Column chính xác
+        ) {
 
-            Text("🤖 Groq API", style = MaterialTheme.typography.titleMedium)
+            Text("🤖 Groq AI Cloud Services", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             OutlinedTextField(
                 value = groqKeyInput,
                 onValueChange = { groqKeyInput = it },
-                label = { Text("Groq API Key") },
+                label = { Text("Groq API Key (Khóa kết nối)") },
                 modifier = Modifier.fillMaxWidth(),
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
@@ -113,25 +116,25 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            Text("🔌 Tuya Smart Life", style = MaterialTheme.typography.titleMedium)
+            Text("🔌 Thiết lập nhà thông minh Tuya Smart Life", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
             ) {
                 Column(modifier = Modifier.padding(10.dp)) {
-                    Text("Đăng ký miễn phí tại developer.tuya.com → tạo Cloud Project → link Smart Life.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                    Text("Lấy Client ID và Client Secret từ project.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
+                    Text("Đăng ký tài khoản miễn phí tại developer.tuya.com → Tạo Cloud Project → Liên kết app Smart Life.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    Text("Lấy Client ID và Client Secret từ project để điền xuống phía dưới.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
                 }
             }
-            OutlinedTextField(value = tuyaClientIdInput, onValueChange = { tuyaClientIdInput = it }, label = { Text("Tuya Client ID") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            OutlinedTextField(value = tuyaClientSecretInput, onValueChange = { tuyaClientSecretInput = it }, label = { Text("Tuya Client Secret") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
+            OutlinedTextField(value = tuyaClientIdInput, onValueChange = { tuyaClientIdInput = it }, label = { Text("Tuya Access ID / Client ID") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(value = tuyaClientSecretInput, onValueChange = { tuyaClientSecretInput = it }, label = { Text("Tuya Access Secret / Client Secret") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput); showSaved = true }, modifier = Modifier.weight(1f)) { Text("💾 Lưu Tuya") }
+                Button(onClick = { viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput); showSaved = true }, modifier = Modifier.weight(1f)) { Text("💾 Lưu cấu hình Tuya") }
                 Button(
                     onClick = { scope.launch { tuyaTestResult = viewModel.testTuyaConnection(tuyaClientIdInput, tuyaClientSecretInput) } },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                ) { Text("🔌 Test") }
+                ) { Text("🔌 Thử kết nối") }
             }
             if (tuyaTestResult != null) {
                 Text(tuyaTestResult!!, style = MaterialTheme.typography.bodySmall,
@@ -141,33 +144,33 @@ fun SettingsScreen(
                 onClick = { navController.navigate("tuya") },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("🔌 Quản lý thiết bị Tuya")
+                Text("🔌 Quản lý danh sách thiết bị Tuya")
             }
 
             HorizontalDivider()
 
-            Text("📧 Resend Email API", style = MaterialTheme.typography.titleMedium)
+            Text("📧 Cấu hình gửi Mail cảnh báo bằng Resend.com", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
                 Column(modifier = Modifier.padding(10.dp)) {
-                    Text("Đăng ký miễn phí tại resend.com → tạo API Key → điền vào đây.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                    Text("Free: 3.000 email/tháng, 100 email/ngày.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
-                    Text("Email gửi phải dùng domain đã xác minh trên Resend.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f))
+                    Text("Đăng ký tại resend.com → Tạo API Key → Điền khóa của bạn vào đây.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    Text("Tài khoản Free: Giới hạn gửi 3.000 email/tháng, tối đa 100 email/ngày.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
+                    Text("Địa chỉ gửi đi (From) bắt buộc phải dùng domain đã xác minh (Verify) trên Resend.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f))
                 }
             }
             OutlinedTextField(value = resendKeyInput, onValueChange = { resendKeyInput = it }, label = { Text("Resend API Key") }, placeholder = { Text("re_xxxxxxxxxxxxxxxxxxxx") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
-            OutlinedTextField(value = resendSenderInput, onValueChange = { resendSenderInput = it }, label = { Text("Email gửi (From)") }, placeholder = { Text("AIChatVN <onboarding@resend.dev>") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(value = resendSenderInput, onValueChange = { resendSenderInput = it }, label = { Text("Địa chỉ Email gửi đi (From)") }, placeholder = { Text("AIChatVN <onboarding@resend.dev>") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
 
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("📤 Kiểm tra gửi email", style = MaterialTheme.typography.labelMedium)
+                    Text("📤 Thử nghiệm tính năng gửi Email", style = MaterialTheme.typography.labelMedium)
                     Spacer(Modifier.height(4.dp))
-                    OutlinedTextField(value = testEmailAddress, onValueChange = { testEmailAddress = it }, label = { Text("Email nhận test") }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("ban@example.com") })
+                    OutlinedTextField(value = testEmailAddress, onValueChange = { testEmailAddress = it }, label = { Text("Email nhận thử nghiệm") }, modifier = Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("ban@example.com") })
                     Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { scope.launch { testEmailResult = null; viewModel.saveResendSettings(resendKeyInput, resendSenderInput); testEmailResult = viewModel.testSendEmail(testEmailAddress) } },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = testEmailAddress.isNotBlank() && resendKeyInput.isNotBlank()
-                    ) { Text("📤 Gửi email test") }
+                    ) { Text("📤 Gửi Email thử nghiệm") }
                     if (testEmailResult != null) {
                         Text(testEmailResult!!, style = MaterialTheme.typography.bodySmall,
                             color = if (testEmailResult!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
@@ -191,18 +194,23 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            Text("💾 Sao lưu cài đặt", style = MaterialTheme.typography.titleMedium)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("💾 Sao lưu & Phục hồi dữ liệu", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedButton(
-                    onClick = { scope.launch { viewModel.exportSettings(context) } },
+                    onClick = { viewModel.exportSettings(context) },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
-                ) { Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("📤 Export") }
+                ) { Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Xuất file (Export)") }
                 OutlinedButton(
                     onClick = { filePickerLauncher.launch("application/json") },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
-                ) { Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("📥 Import") }
+                ) { Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Nhập file (Import)") }
             }
             if (exportResult != null) {
                 Text(exportResult!!, style = MaterialTheme.typography.bodySmall,
@@ -212,7 +220,7 @@ fun SettingsScreen(
             HorizontalDivider()
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Text("Chế độ tối", style = MaterialTheme.typography.bodyLarge)
+                Text("Chế độ tối (Dark Mode)", style = MaterialTheme.typography.bodyLarge)
                 Switch(checked = darkMode, onCheckedChange = { viewModel.toggleDarkMode(it) })
             }
 
@@ -234,9 +242,12 @@ fun SettingsScreen(
                 }
             }
             if (showSaved) {
-                LaunchedEffect(Unit) { delay(2000); showSaved = false }
                 Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                    Text("✅ Đã lưu!", modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("✅ Đã lưu cấu hình thành công!", modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                LaunchedEffect(showSaved) {
+                    delay(2000)
+                    showSaved = false
                 }
             }
 
@@ -259,7 +270,7 @@ private fun PluginConfigSection(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text("⚙️ Cấu hình Plugin", style = MaterialTheme.typography.titleMedium)
+        Text("⚙️ Ngưỡng lọc & Tham số nâng cao", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         IconButton(onClick = { expanded = !expanded }) {
             Icon(
                 imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -270,7 +281,7 @@ private fun PluginConfigSection(
 
     if (!expanded) {
         Text(
-            "${configs.size} biến cấu hình — bấm mũi tên để chỉnh sửa",
+            "${configs.size} biến cấu hình — bấm mũi tên để mở bảng điều chỉnh",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -330,7 +341,7 @@ private fun PluginGroupCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("$icon $pluginId", style = MaterialTheme.typography.titleSmall)
+                Text("$icon Cấu hình $pluginId", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { groupExpanded = !groupExpanded }) {
                     Text(if (groupExpanded) "Thu gọn" else "${items.size} biến", style = MaterialTheme.typography.labelSmall)
                 }
@@ -355,11 +366,29 @@ private fun ConfigItemRow(
 ) {
     var inputValue by remember(entity.key, entity.value) { mutableStateOf(entity.value) }
     val isDirty = inputValue != entity.value
+    // Nhận diện kiểu dữ liệu để mở đúng bàn phím số cho người dùng nhập liệu [1]
+    val isNumeric = entity.type in setOf("int", "long", "float", "double", "number")
 
-    Column {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        // Hiển thị nhãn Tiếng Việt thân thiện (Label) làm tiêu đề chính của biến
+        val displayName = if (entity.label.isNotBlank()) entity.label else entity.key
+        Text(displayName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        
+        // Hiển thị tên Key kỹ thuật nhỏ ở dạng chữ Monospace mờ bên dưới [1]
         if (entity.label.isNotBlank()) {
-            Text(entity.label, style = MaterialTheme.typography.labelMedium)
+            Text(
+                text = "Key: ${entity.key}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp
+            )
         }
+
         if (entity.description.isNotBlank()) {
             Text(entity.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
         }
@@ -370,12 +399,15 @@ private fun ConfigItemRow(
                 onValueChange = { inputValue = it },
                 modifier = Modifier.weight(1f),
                 singleLine = entity.type != "string" || entity.value.length < 80,
-                label = { Text(entity.key, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp)) },
                 textStyle = MaterialTheme.typography.bodySmall,
+                // ĐÃ SỬA: Tự động bật bàn phím số nếu là biến kiểu số (int, long, float) [1]
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (isNumeric) KeyboardType.Number else KeyboardType.Text
+                ),
                 trailingIcon = {
                     if (isDirty) {
                         IconButton(onClick = { onSave(entity.key, inputValue) }, modifier = Modifier.size(32.dp)) {
-                            Text("✓", color = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.Check, contentDescription = "Lưu nhanh biến này", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
@@ -385,7 +417,7 @@ private fun ConfigItemRow(
             }
         }
         Text(
-            "Loại: ${entity.type}  •  Sửa lần cuối: ${fmtTs(entity.updatedAt)}",
+            "Kiểu dữ liệu: ${entity.type.uppercase()}  •  Sửa lần cuối: ${fmtTs(entity.updatedAt)}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
         )
@@ -401,7 +433,7 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text("🔍 Request gửi Groq (kèm token)", style = MaterialTheme.typography.titleMedium)
+        Text("🔍 Nhật ký cuộc gọi gửi Groq", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         IconButton(onClick = { expanded = !expanded }) {
             Icon(
                 imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -412,8 +444,8 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
 
     if (!expanded) {
         Text(
-            if (promptLog.isEmpty()) "Chưa có request nào trong phiên này"
-            else "${promptLog.size} request gần nhất (toàn bộ nội dung gửi/nhận + token) — bấm mũi tên để xem",
+            if (promptLog.isEmpty()) "Chưa có cuộc gọi nào trong phiên này"
+            else "${promptLog.size} cuộc gọi gần nhất (chi tiết nội dung gửi/nhận kèm tokens tiêu thụ) — bấm mũi tên để xem",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -422,7 +454,7 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
 
     if (promptLog.isEmpty()) {
         Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-            Text("Chưa có request nào. Gửi 1 tin nhắn để xem log ở đây.", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+            Text("Chưa có nhật ký nào. Hãy gửi 1 tin nhắn để xem log chi tiết ở đây.", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
         }
         return
     }
@@ -471,7 +503,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                     Text(
                         "• ${entry.promptTokens ?: "?"}→${entry.completionTokens ?: "?"} = ${entry.totalTokens} tokens",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.primary
                     )
                 } else {
                     Text(
@@ -483,7 +515,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "Gửi đi:",
+                "Nội dung gửi đi:",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )

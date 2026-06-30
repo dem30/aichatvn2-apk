@@ -1,4 +1,5 @@
 
+
 package com.aichatvn.agent.core
 
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -57,7 +58,7 @@ data class Layer2Result(
 )
 
 data class NormalizedActionMetadata(
-    val plugin: Plugin,
+    val plugin = Plugin,
     val action: PluginAction,
     val normalizedDescription: String,
     val normalizedExamples: List<String>,
@@ -395,7 +396,7 @@ class AgentKernel @Inject constructor(
                 val results = mutableListOf<String>()
                 var allSucceeded = true
 
-                // ĐÃ SỬA: CHỈ XỬ LÝ LỆNH DỞ DANG ĐẦU TIÊN để thực hiện tuần tự hóa (Sequential Slot-Filling)
+                // CHỈ XỬ LÝ LỆNH DỞ DANG ĐẦU TIÊN để thực hiện tuần tự hóa (Sequential Slot-Filling)
                 val activePending = pendings.first()
                 val resolvedResult = tryResolvePendingIntent(activePending, userMessage, devicePlugins, traceId, mode)
                 if (resolvedResult != null) {
@@ -419,42 +420,31 @@ class AgentKernel @Inject constructor(
 
 
                 
-            if (results.isNotEmpty()) {
-                val combined = results.distinct().joinToString("\n")
-                val finalResult = if (allSucceeded) {
-                    // Nếu lệnh dở dang hiện tại đã xử lý xong, kiểm tra xem trong hàng đợi còn lệnh nào khác không
-                    val remainingPendings = chatHistoryManager.getActivePendingIntents()
-                    if (remainingPendings.isNotEmpty()) {
-                        // Lấy lệnh dở dang tiếp theo và lập tức hỏi người dùng thay vì kết thúc luồng chat
-                        val nextPending = remainingPendings.first()
-                        val combinedMsg = "$combined\n\n⚠️ Tiếp theo: ${nextPending.askedQuestion}"
-                        PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg)
+                if (results.isNotEmpty()) {
+                    val combined = results.distinct().joinToString("\n")
+                    val finalResult = if (allSucceeded) {
+                        // Nếu lệnh dở dang hiện tại đã xử lý xong, kiểm tra xem trong hàng đợi còn lệnh dở dang tiếp theo nào không
+                        val remainingPendings = chatHistoryManager.getActivePendingIntents()
+                        if (remainingPendings.isNotEmpty()) {
+                            // Lấy lệnh dở dang tiếp theo và lập tức hỏi người dùng thay vì kết thúc luồng chat
+                            val nextPending = remainingPendings.first()
+                            val combinedMsg = "$combined\n\n⚠️ Tiếp theo: ${nextPending.askedQuestion}"
+                            PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg)
+                        } else {
+                            PluginResult.Success(mapOf("message" to combined))
+                        }
                     } else {
-                        PluginResult.Success(mapOf("message" to combined))
+                        val remainingPending = chatHistoryManager.getActivePendingIntents()
+                        PluginResult.NeedMoreInfo(remainingPending.flatMap { it.missingParams }, combined)
                     }
-                } else {
-                    val remainingPending = chatHistoryManager.getActivePendingIntents()
-                    PluginResult.NeedMoreInfo(remainingPending.flatMap { it.missingParams }, combined)
+                    return PipelineResult(
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi_pending", finalResult))
+                    )
                 }
-                return PipelineResult(
-                    routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi_pending", finalResult))
-                )
-            }
-
-
-
-
-                
-
-
-
-
-
-                
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
-                // Đã tối ưu truyền biến 'mode' ở dạng DIAGNOSTIC xuống bộ Pending Resolver kiểm thử đầu tiên
+                // Đăng ký dynamic aliasThreshold và truyền mode dạng DIAGNOSTIC để chặn lọt alias cũ ở Tầng 1
                 val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, traceId, mode)
                 finalOutcome = if (pendingResult != null) {
                     when (val r = pendingResult.result) {
@@ -491,12 +481,12 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT VỚI ALIAS THRESHOLD 0.0)
+        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT VỚI ALIAS THRESHOLD ĐỘNG)
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage, 
             username, 
             intentThreshold = intentThreshold,
-            aliasThreshold = 0.0f
+            aliasThreshold = aliasThreshold // Sửa đổi: Áp dụng aliasThreshold cấu hình động thay vì 0.0f cứng
         )
 
         val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
