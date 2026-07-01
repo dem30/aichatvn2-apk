@@ -48,7 +48,8 @@ class SpeechRecognizerHelper(private val context: Context) {
         onError: (errorCode: Int, message: String) -> Unit,
         onSpeechStarted: (() -> Unit)? = null,
         onEndOfSpeech: (() -> Unit)? = null,
-        onPartialResult: ((String) -> Unit)? = null
+        onPartialResult: ((String) -> Unit)? = null,
+        onReadyForSpeech: (() -> Unit)? = null
     ) {
         pendingStart?.let { mainHandler.removeCallbacks(it) }
 
@@ -71,7 +72,9 @@ class SpeechRecognizerHelper(private val context: Context) {
             }
 
             rec.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onReadyForSpeech(params: Bundle?) {
+                    onReadyForSpeech?.invoke()
+                }
 
                 override fun onResults(results: Bundle?) {
                     val text = results

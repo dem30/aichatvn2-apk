@@ -101,6 +101,20 @@ class VoiceAssistantManager @Inject constructor(
         }
     }
 
+    // Thử tắt tạm tiếng "tút" hệ thống phát khi SpeechRecognizer bắt đầu phiên mới.
+    // Lưu ý: phụ thuộc OEM/Android version, không đảm bảo hiệu quả trên mọi máy.
+    private fun muteStartupBeep(mute: Boolean) {
+        try {
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                if (mute) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE,
+                0
+            )
+        } catch (e: Exception) {
+            // Bỏ qua — một số thiết bị không cho chỉnh mute theo cách này
+        }
+    }
+
     fun startListening() {
         if (destroyed) return
 
@@ -114,59 +128,48 @@ class VoiceAssistantManager @Inject constructor(
 
         cancelPendingRestart()
         requestAudioFocus()
-        _isListening.value = true
+        muteStartupBeep(true)
         _partialText.value = ""
 
         sttHelper.startListening(
             onResult = { text ->
-                isListeningActive = false
-                consecutiveSttFailures = 0
-                stopTimer()
-                _isListening.value = false
-                _partialText.value = ""
-                abandonAudioFocus()
-
-                scope.launch { _recognizedText.emit(text) }
-
-                scope.launch {
-                    try {
-                        val result = agentKernel.chat(
-                            com.aichatvn.agent.core.ChatRequest(
-                                message = text,
-                                chatMode = "COMBINED"
-                            )
-                        )
-                        _aiResponseText.emit(result.responseText)
-
-                        speak(result.responseText) {
-                            startListening()
-                        }
-                    } catch (e: Exception) {
-                        logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)
-                        speak("Xin lỗi, hệ thống gặp sự cố khi xử lý câu lệnh.")
-                    }
-                }
+                handleRecognizedText(text)
             },
             onError = { errorCode, errorMsg ->
+                val lastPartial = _partialText.value
                 isListeningActive = false
                 stopTimer()
                 _isListening.value = false
                 _partialText.value = ""
+                muteStartupBeep(false)
                 abandonAudioFocus()
 
-                consecutiveSttFailures++
-                if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
+                Log.w("VoiceAssistantManager", "STT lỗi (code=$errorCode): $errorMsg")
+
+                val isFinalizeFailure = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
+                    errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+
+                if (isFinalizeFailure && lastPartial.isNotBlank()) {
+                    // Máy đã nghe được nội dung qua partial nhưng bước chốt kết quả bị lỗi
+                    // → dùng tạm partial cuối làm kết quả thay vì bỏ lệnh của người dùng.
+                    Log.w("VoiceAssistantManager", "Dùng partial cuối làm kết quả: \"$lastPartial\"")
                     consecutiveSttFailures = 0
-                    Log.e("VoiceAssistantManager", "Lỗi Mic liên tiếp: $errorMsg")
+                    handleRecognizedText(lastPartial)
                 } else {
-                    // Rút ngắn thời gian khởi động lại cho lỗi im lặng/timeout để tăng độ nhạy phản hồi
-                    val delay = when (errorCode) {
-                        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 200L
-                        SpeechRecognizer.ERROR_NO_MATCH,
-                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 300L
-                        else -> 1500L
+                    consecutiveSttFailures++
+                    if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
+                        consecutiveSttFailures = 0
+                        Log.e("VoiceAssistantManager", "Lỗi Mic liên tiếp: $errorMsg")
+                    } else {
+                        // Rút ngắn thời gian khởi động lại cho lỗi im lặng/timeout để tăng độ nhạy phản hồi
+                        val delay = when (errorCode) {
+                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 200L
+                            SpeechRecognizer.ERROR_NO_MATCH,
+                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 300L
+                            else -> 1500L
+                        }
+                        scheduleRestart(delayMs = delay)
                     }
-                    scheduleRestart(delayMs = delay)
                 }
             },
             onSpeechStarted = {
@@ -179,10 +182,45 @@ class VoiceAssistantManager @Inject constructor(
             },
             onPartialResult = { text ->
                 _partialText.value = text
+            },
+            onReadyForSpeech = {
+                // Chỉ báo "đang nghe" khi máy THỰC SỰ sẵn sàng nhận audio (sau khi tiếng "tút" hệ thống phát xong)
+                _isListening.value = true
+                muteStartupBeep(false)
             }
         )
 
         startTimeoutTimer()
+    }
+
+    private fun handleRecognizedText(text: String) {
+        isListeningActive = false
+        consecutiveSttFailures = 0
+        stopTimer()
+        _isListening.value = false
+        _partialText.value = ""
+        abandonAudioFocus()
+
+        scope.launch { _recognizedText.emit(text) }
+
+        scope.launch {
+            try {
+                val result = agentKernel.chat(
+                    com.aichatvn.agent.core.ChatRequest(
+                        message = text,
+                        chatMode = "COMBINED"
+                    )
+                )
+                _aiResponseText.emit(result.responseText)
+
+                speak(result.responseText) {
+                    startListening()
+                }
+            } catch (e: Exception) {
+                logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)
+                speak("Xin lỗi, hệ thống gặp sự cố khi xử lý câu lệnh.")
+            }
+        }
     }
 
     fun stopListening() {
@@ -192,6 +230,7 @@ class VoiceAssistantManager @Inject constructor(
         sttHelper.destroy()
         _isListening.value = false
         _partialText.value = ""
+        muteStartupBeep(false)
         abandonAudioFocus()
     }
 
