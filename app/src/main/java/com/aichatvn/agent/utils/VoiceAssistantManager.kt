@@ -92,6 +92,12 @@ class VoiceAssistantManager @Inject constructor(
         }
     }
 
+    override fun onStart(owner: LifecycleOwner) {
+        super.onStart(owner)
+        Log.d("VoiceAssistantManager", "Ứng dụng lên Foreground -> Tự động kích hoạt lại mic")
+        startListening()
+    }
+
     override fun onStop(owner: LifecycleOwner) {
         super.onStop(owner)
         Log.d("VoiceAssistantManager", "Ứng dụng xuống Background -> Tự động dừng kết nối mic và dọn dẹp")
