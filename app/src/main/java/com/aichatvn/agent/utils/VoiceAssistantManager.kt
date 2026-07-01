@@ -28,12 +28,23 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Vòng đời của luồng thoại.
+ */
+enum class VoiceState {
+    IDLE,
+    LISTENING,
+    PROCESSING,
+    SPEAKING,
+    RESTARTING
+}
+
 @Singleton
 class VoiceAssistantManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
     private val logger: Logger
-) : DefaultLifecycleObserver { // Thực thi DefaultLifecycleObserver để tự lắng nghe vòng đời ứng dụng
+) : DefaultLifecycleObserver {
 
     private val sttHelper = SpeechRecognizerHelper(context)
     val ttsHelper = TextToSpeechHelper(context)
@@ -48,16 +59,17 @@ class VoiceAssistantManager @Inject constructor(
 
     @Volatile private var destroyed = false
 
-    private val _voiceState = MutableStateFlow(VoiceState.IDLE)
+    // Xác định rõ ràng kiểu dữ liệu để tránh lỗi "Cannot infer type"
+    private val _voiceState = MutableStateFlow<VoiceState>(VoiceState.IDLE)
     val voiceState = _voiceState.asStateFlow()
 
-    private val _isListening = MutableStateFlow(false)
+    private val _isListening = MutableStateFlow<Boolean>(false)
     val isListening = _isListening.asStateFlow()
 
     private val _recognizedText = MutableSharedFlow<String>(replay = 0)
     val recognizedText = _recognizedText.asSharedFlow()
 
-    private val _partialText = MutableStateFlow("")
+    private val _partialText = MutableStateFlow<String>("")
     val partialText = _partialText.asStateFlow()
 
     private val _aiResponseText = MutableSharedFlow<String>(replay = 0)
@@ -71,7 +83,6 @@ class VoiceAssistantManager @Inject constructor(
     private val MAX_CONSECUTIVE_STT_FAILURES = 5
 
     init {
-        // Đăng ký lắng nghe sự kiện Foreground/Background của toàn bộ ứng dụng
         mainHandler.post {
             try {
                 ProcessLifecycleOwner.get().lifecycle.addObserver(this)
@@ -81,11 +92,9 @@ class VoiceAssistantManager @Inject constructor(
         }
     }
 
-    // ================= TỰ ĐỘNG XỬ LÝ KHI APP XUỐNG BACKGROUND =================
     override fun onStop(owner: LifecycleOwner) {
         super.onStop(owner)
         Log.d("VoiceAssistantManager", "Ứng dụng xuống Background -> Tự động dừng kết nối mic và dọn dẹp")
-        // Dừng nghe ngay lập tức để chặn tiếng "tút tút" phát ngầm dưới nền
         stopListening()
     }
 
@@ -154,7 +163,6 @@ class VoiceAssistantManager @Inject constructor(
     }
 
     fun startListening() {
-        // ================= TỰ KHÔI PHỤC KHI MỞ LẠI APP =================
         if (destroyed) {
             Log.d("VoiceAssistantManager", "Phát hiện trạng thái destroyed cũ từ Singleton sống ngầm -> Tự động khôi phục")
             reactivate()
@@ -239,8 +247,6 @@ class VoiceAssistantManager @Inject constructor(
         _isListening.value = false
         _partialText.value = ""
         
-        // Giữ Audio Focus liền mạch trong khi chờ API phản hồi
-
         processingJob?.cancel()
         processingJob = scope.launch {
             _recognizedText.emit(text)
