@@ -63,6 +63,8 @@ class ChatViewModel @Inject constructor(
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
 
+    val partialText: StateFlow<String> = voiceManager.partialText
+
     private val _voiceModeActive = MutableStateFlow(true)
     val voiceModeActive: StateFlow<Boolean> = _voiceModeActive.asStateFlow()
 

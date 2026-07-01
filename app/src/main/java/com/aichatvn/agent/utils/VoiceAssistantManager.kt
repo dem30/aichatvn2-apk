@@ -49,6 +49,9 @@ class VoiceAssistantManager @Inject constructor(
     private val _recognizedText = MutableSharedFlow<String>(replay = 0)
     val recognizedText = _recognizedText.asSharedFlow()
 
+    private val _partialText = MutableStateFlow("")
+    val partialText = _partialText.asStateFlow()
+
     private val _aiResponseText = MutableSharedFlow<String>(replay = 0)
     val aiResponseText = _aiResponseText.asSharedFlow()
 
@@ -112,6 +115,7 @@ class VoiceAssistantManager @Inject constructor(
         cancelPendingRestart()
         requestAudioFocus()
         _isListening.value = true
+        _partialText.value = ""
 
         sttHelper.startListening(
             onResult = { text ->
@@ -119,6 +123,7 @@ class VoiceAssistantManager @Inject constructor(
                 consecutiveSttFailures = 0
                 stopTimer()
                 _isListening.value = false
+                _partialText.value = ""
                 abandonAudioFocus()
 
                 scope.launch { _recognizedText.emit(text) }
@@ -133,7 +138,9 @@ class VoiceAssistantManager @Inject constructor(
                         )
                         _aiResponseText.emit(result.responseText)
 
-                        speak(result.responseText)
+                        speak(result.responseText) {
+                            startListening()
+                        }
                     } catch (e: Exception) {
                         logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)
                         speak("Xin lỗi, hệ thống gặp sự cố khi xử lý câu lệnh.")
@@ -144,6 +151,7 @@ class VoiceAssistantManager @Inject constructor(
                 isListeningActive = false
                 stopTimer()
                 _isListening.value = false
+                _partialText.value = ""
                 abandonAudioFocus()
 
                 consecutiveSttFailures++
@@ -168,6 +176,9 @@ class VoiceAssistantManager @Inject constructor(
             onEndOfSpeech = {
                 Log.d("VoiceAssistantManager", "User ngừng nói, hủy timer chờ kết quả STT.")
                 stopTimer()
+            },
+            onPartialResult = { text ->
+                _partialText.value = text
             }
         )
 
@@ -180,6 +191,7 @@ class VoiceAssistantManager @Inject constructor(
         stopTimer()
         sttHelper.destroy()
         _isListening.value = false
+        _partialText.value = ""
         abandonAudioFocus()
     }
 

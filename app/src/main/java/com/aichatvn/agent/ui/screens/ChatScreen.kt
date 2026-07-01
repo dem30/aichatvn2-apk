@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import androidx.compose.ui.draw.alpha
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.ui.viewmodels.ChatViewModel
@@ -56,6 +57,7 @@ fun ChatScreen(
     val groqRateLimit by viewModel.groqRateLimit.collectAsState()
     val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
     val isListening by viewModel.isListening.collectAsState()
+    val partialText by viewModel.partialText.collectAsState()
     val voiceModeActive by viewModel.voiceModeActive.collectAsState()
     val pausedDueToError by viewModel.pausedDueToError.collectAsState()
     val lockedPluginName by viewModel.lockedPluginName.collectAsState()
@@ -294,6 +296,27 @@ fun ChatScreen(
             ) {
                 items(messages) { message ->
                     ChatBubble(message = message)
+                }
+
+                // Bong bóng tạm hiển thị văn bản đang nhận dạng khi người dùng còn đang nói
+                // (chưa lưu DB — chỉ hiện tạm, biến mất khi có kết quả cuối hoặc dừng nghe)
+                if (isListening && partialText.isNotBlank()) {
+                    item(key = "partial_draft") {
+                        Box(modifier = Modifier.alpha(0.55f)) {
+                            ChatBubble(
+                                message = ChatMessageEntity(
+                                    id = "draft_partial",
+                                    sessionToken = "session_default_user",
+                                    username = "default_user",
+                                    content = partialText,
+                                    role = "user",
+                                    type = "text",
+                                    timestamp = System.currentTimeMillis(),
+                                    sourcePlugin = null
+                                )
+                            )
+                        }
+                    }
                 }
                 
                 if (isTyping) {

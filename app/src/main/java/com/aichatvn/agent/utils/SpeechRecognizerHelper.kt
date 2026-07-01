@@ -47,7 +47,8 @@ class SpeechRecognizerHelper(private val context: Context) {
         onResult: (String) -> Unit,
         onError: (errorCode: Int, message: String) -> Unit,
         onSpeechStarted: (() -> Unit)? = null,
-        onEndOfSpeech: (() -> Unit)? = null
+        onEndOfSpeech: (() -> Unit)? = null,
+        onPartialResult: ((String) -> Unit)? = null
     ) {
         pendingStart?.let { mainHandler.removeCallbacks(it) }
 
@@ -91,7 +92,12 @@ class SpeechRecognizerHelper(private val context: Context) {
                     onEndOfSpeech?.invoke()
                 }
 
-                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val text = partialResults
+                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        ?.firstOrNull()?.trim()
+                    if (!text.isNullOrBlank()) onPartialResult?.invoke(text)
+                }
                 override fun onRmsChanged(rmsdB: Float) {}
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}

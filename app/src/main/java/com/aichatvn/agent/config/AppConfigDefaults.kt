@@ -197,19 +197,19 @@ object AppConfigDefaults {
         // ── GLOBAL ──
         AppConfigEntity(
             key = GLOBAL_FUZZY_THRESHOLD,
-            value = "0.3",
+            value = "0.5",
             type = "float",
             pluginId = "global",
             label = "Ngưỡng fuzzy match (Fuzzy Threshold)",
-            description = "Điểm tối thiểu để fuzzyMatchCategorized đưa kết quả intent vào Tầng 2 (Exact/Fuzzy QA Match). 0.0–1.0. Thấp = nhạy hơn, dễ nhầm. Cao = chặt hơn, dễ bỏ sót. Mặc định 0.3."
+            description = "full Threshold."
         ),
         AppConfigEntity(
             key = GLOBAL_ALIAS_THRESHOLD,
-            value = "0.0",
+            value = "0.5",
             type = "float",
             pluginId = "global",
             label = "Ngưỡng alias gửi LLM (Alias Threshold)",
-            description = "Ngưỡng lọc alias khi hiển thị context gửi LLM ở Tầng 5. Không ảnh hưởng đến resolve alias ở Tầng 1-4 (luôn dùng 0.0 cứng). Mặc định 0.0 = gửi toàn bộ alias lên Groq."
+            description = "Alias."
         ),
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
