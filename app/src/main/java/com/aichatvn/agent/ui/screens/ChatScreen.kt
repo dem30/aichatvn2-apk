@@ -81,11 +81,17 @@ fun ChatScreen(
         }
     }
     
-    LaunchedEffect(messages.size, typingMessage) {
-        if (messages.isNotEmpty() || typingMessage.isNotEmpty()) {
-            listState.animateScrollToItem(
-                if (typingMessage.isNotEmpty()) messages.size else messages.size - 1
-            )
+    // Bong bóng nháp (partial STT) là 1 item thêm vào cuối LazyColumn khi đang nghe.
+    // Dùng boolean (không dùng partialText thô) làm key để chỉ cuộn lại khi bong bóng
+    // XUẤT HIỆN/BIẾN MẤT, không cuộn lại theo từng ký tự nhận dạng được (tránh giật animation).
+    val hasDraftBubble = isListening && partialText.isNotBlank()
+
+    LaunchedEffect(messages.size, typingMessage, hasDraftBubble, isTyping) {
+        val totalItems = messages.size +
+            (if (hasDraftBubble) 1 else 0) +
+            (if (isTyping) 1 else 0)
+        if (totalItems > 0) {
+            listState.animateScrollToItem(totalItems - 1)
         }
     }
     

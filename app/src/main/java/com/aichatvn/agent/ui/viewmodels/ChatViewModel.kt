@@ -95,6 +95,7 @@ class ChatViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            voiceManager.reactivate() // Phòng hờ: gỡ khóa nếu destroy() từng bị gọi ở lần trước
             chatSkill.initialize()
             observeVoiceManagerFlows()
             observeAndSpeak()
@@ -377,6 +378,16 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        voiceManager.destroy()
+        // KHÔNG gọi voiceManager.destroy() ở đây: voiceManager là @Singleton (scope theo
+        // Application), còn ChatViewModel scope theo Activity/back-stack entry — hủy chu kỳ
+        // sống ngắn hơn nhiều. Gọi destroy() tại đây từng khiến cờ `destroyed` trong
+        // VoiceAssistantManager bị khóa vĩnh viễn cho cả phần đời còn lại của tiến trình:
+        // lần sau ChatViewModel được tạo lại (quay lại màn hình, mở lại app mà process
+        // chưa bị OS kill), speak() vẫn phát được lời chào (không kiểm tra cờ này) nhưng
+        // startListening() luôn no-op im lặng → "còn nghe được tiếng chào nhưng không nói
+        // chuyện được nữa". Chỉ dừng phiên nghe/nói tại đây; việc giải phóng tài nguyên
+        // native thật sự để hệ điều hành xử lý khi tiến trình bị kill.
+        voiceManager.stopListening()
+        voiceManager.ttsHelper.stop()
     }
 }

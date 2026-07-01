@@ -279,6 +279,20 @@ class VoiceAssistantManager @Inject constructor(
         ttsHelper.speak(text, onDone)
     }
 
+    /**
+     * QUAN TRỌNG: VoiceAssistantManager là @Singleton — sống theo tiến trình app,
+     * không theo vòng đời từng Activity/Screen. Gọi destroy() từ onDestroy()/onCleared()
+     * của Activity/ViewModel sẽ khóa cờ `destroyed` VĨNH VIỄN cho cả phần đời còn lại
+     * của process, kể cả khi user quay lại màn hình thoại sau đó (STT sẽ im lặng không
+     * chạy nữa, trong khi TTS/lời chào qua speak() vẫn hoạt động bình thường vì speak()
+     * không kiểm tra cờ này — đây thường là nguyên nhân của hiện tượng "mất tiếng nói
+     * sau khi mở lại app").
+     *
+     * → Nếu chỉ muốn tạm dừng khi rời màn hình: gọi stopListening(), KHÔNG gọi destroy().
+     * → destroy() chỉ nên gọi khi chắc chắn muốn tắt hẳn (ví dụ ứng dụng có nút "Tắt trợ lý
+     *   giọng nói" tường minh), và nếu có khả năng người dùng bật lại mà process chưa chết,
+     *   phải gọi reactivate() trước khi startListening() lần kế tiếp.
+     */
     fun destroy() {
         destroyed = true
         transitionTo(VoiceState.IDLE)
@@ -286,6 +300,17 @@ class VoiceAssistantManager @Inject constructor(
         stopTimer()
         sttHelper.destroy() // Giải phóng thật sự — chỉ khi Manager bị hủy hẳn
         ttsHelper.shutdown()
+    }
+
+    /**
+     * Gỡ khóa cờ `destroyed` sau khi destroy() đã từng được gọi trên một vòng đời
+     * trước đó của màn hình thoại. Cần gọi hàm này ở điểm khởi tạo lại phiên thoại
+     * (ví dụ onCreate()/onResume() của màn hình chứa voice session) TRƯỚC khi gọi
+     * startListening(), phòng trường hợp process không bị OS kill giữa hai lần mở app.
+     */
+    fun reactivate() {
+        destroyed = false
+        transitionTo(VoiceState.IDLE)
     }
 
     private fun startTimeoutTimer() {
