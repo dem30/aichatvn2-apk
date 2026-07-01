@@ -163,6 +163,7 @@ dependencies {
     // Hilt WorkManager integration
     implementation("androidx.hilt:hilt-work:1.2.0")
     ksp("androidx.hilt:hilt-compiler:1.2.0")
+    implementation("androidx.lifecycle:lifecycle-process:2.7.0")
 }
 
 kapt {

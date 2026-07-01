@@ -10,11 +10,15 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.ChatRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,36 +28,20 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Vòng đời của luồng thoại. Thay thế cho cờ boolean `isListeningActive` rời rạc
- * trước đây — mọi chuyển trạng thái đi qua transitionTo() để một callback (STT/TTS/
- * timeout) không thể "giẫm" lên trạng thái do callback khác vừa thiết lập.
- *
- *   IDLE ── startListening() ──▶ LISTENING
- *   LISTENING ── có kết quả ──▶ PROCESSING ── có phản hồi AI ──▶ SPEAKING
- *   SPEAKING ── TTS xong ──▶ RESTARTING ──▶ LISTENING
- *   LISTENING ── lỗi/timeout ──▶ RESTARTING ──▶ LISTENING (hoặc IDLE nếu lỗi liên tiếp)
- */
-enum class VoiceState {
-    IDLE,
-    LISTENING,
-    PROCESSING,
-    SPEAKING,
-    RESTARTING
-}
-
 @Singleton
 class VoiceAssistantManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
     private val logger: Logger
-) {
-    private val sttHelper = SpeechRecognizerHelper(context)
+) : DefaultLifecycleObserver { // Thực thi DefaultLifecycleObserver để tự lắng nghe vòng đời ứng dụng
 
+    private val sttHelper = SpeechRecognizerHelper(context)
     val ttsHelper = TextToSpeechHelper(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
+    private val mainHandler = Handler(Looper.getMainLooper())
+    
+    private var processingJob: Job? = null
     private var listeningTimer: CountDownTimer? = null
     private val restartHandler = Handler(Looper.getMainLooper())
     private var pendingRestart: Runnable? = null
@@ -82,7 +70,24 @@ class VoiceAssistantManager @Inject constructor(
     private var consecutiveSttFailures = 0
     private val MAX_CONSECUTIVE_STT_FAILURES = 5
 
-    // ---------- Quản lý trạng thái tập trung ----------
+    init {
+        // Đăng ký lắng nghe sự kiện Foreground/Background của toàn bộ ứng dụng
+        mainHandler.post {
+            try {
+                ProcessLifecycleOwner.get().lifecycle.addObserver(this)
+            } catch (e: Exception) {
+                Log.e("VoiceAssistantManager", "Không thể đăng ký ProcessLifecycleOwner: ${e.message}")
+            }
+        }
+    }
+
+    // ================= TỰ ĐỘNG XỬ LÝ KHI APP XUỐNG BACKGROUND =================
+    override fun onStop(owner: LifecycleOwner) {
+        super.onStop(owner)
+        Log.d("VoiceAssistantManager", "Ứng dụng xuống Background -> Tự động dừng kết nối mic và dọn dẹp")
+        // Dừng nghe ngay lập tức để chặn tiếng "tút tút" phát ngầm dưới nền
+        stopListening()
+    }
 
     @Synchronized
     private fun transitionTo(newState: VoiceState) {
@@ -136,9 +141,6 @@ class VoiceAssistantManager @Inject constructor(
         }
     }
 
-    // Best-effort: một số thiết bị/OEM phát tiếng "tút" khởi động STT qua STREAM_MUSIC,
-    // nhưng không đảm bảo — nhiều Recognition Service phát qua STREAM_SYSTEM hoặc
-    // ngoài AudioManager hoàn toàn. KHÔNG coi đây là cơ chế triệt tiếng chính thức.
     private fun muteStartupBeep(mute: Boolean) {
         try {
             audioManager.adjustStreamVolume(
@@ -147,11 +149,17 @@ class VoiceAssistantManager @Inject constructor(
                 0
             )
         } catch (e: Exception) {
-            // Bỏ qua — một số thiết bị không cho chỉnh mute theo cách này
+            // Bỏ qua
         }
     }
 
     fun startListening() {
+        // ================= TỰ KHÔI PHỤC KHI MỞ LẠI APP =================
+        if (destroyed) {
+            Log.d("VoiceAssistantManager", "Phát hiện trạng thái destroyed cũ từ Singleton sống ngầm -> Tự động khôi phục")
+            reactivate()
+        }
+
         if (!canStartListening()) {
             Log.d("VoiceAssistantManager", "Bỏ qua startListening(): đang ở trạng thái ${_voiceState.value}")
             return
@@ -159,6 +167,10 @@ class VoiceAssistantManager @Inject constructor(
 
         transitionTo(VoiceState.LISTENING)
         cancelPendingRestart()
+        
+        processingJob?.cancel()
+        processingJob = null
+
         requestAudioFocus()
         muteStartupBeep(true)
         _partialText.value = ""
@@ -172,8 +184,6 @@ class VoiceAssistantManager @Inject constructor(
                 stopTimer()
                 _isListening.value = false
                 _partialText.value = ""
-                muteStartupBeep(false)
-                abandonAudioFocus()
 
                 Log.w("VoiceAssistantManager", "STT lỗi (code=$errorCode): $errorMsg")
 
@@ -181,12 +191,10 @@ class VoiceAssistantManager @Inject constructor(
                     errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
 
                 if (isFinalizeFailure && lastPartial.isNotBlank()) {
-                    // Máy đã nghe được nội dung qua partial nhưng bước chốt kết quả bị lỗi
-                    // → dùng tạm partial cuối làm kết quả thay vì bỏ lệnh của người dùng.
-                    Log.w("VoiceAssistantManager", "Dùng partial cuối làm kết quả: \"$lastPartial\"")
                     consecutiveSttFailures = 0
                     handleRecognizedText(lastPartial)
                 } else {
+                    abandonAudioFocus()
                     consecutiveSttFailures++
                     if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
                         consecutiveSttFailures = 0
@@ -216,7 +224,6 @@ class VoiceAssistantManager @Inject constructor(
                 _partialText.value = text
             },
             onReadyForSpeech = {
-                // Chỉ báo "đang nghe" khi máy THỰC SỰ sẵn sàng nhận audio
                 _isListening.value = true
                 muteStartupBeep(false)
             }
@@ -231,16 +238,15 @@ class VoiceAssistantManager @Inject constructor(
         stopTimer()
         _isListening.value = false
         _partialText.value = ""
-        abandonAudioFocus()
+        
+        // Giữ Audio Focus liền mạch trong khi chờ API phản hồi
 
-        // Xử lý TUẦN TỰ trong cùng một coroutine (thay vì 2 launch song song như trước)
-        // để đảm bảo thứ tự emit là tất định: user text -> AI trả lời -> TTS.
-        // Không dùng delay() để "đoán" thời gian đồng bộ.
-        scope.launch {
+        processingJob?.cancel()
+        processingJob = scope.launch {
             _recognizedText.emit(text)
             try {
                 val result = agentKernel.chat(
-                    com.aichatvn.agent.core.ChatRequest(
+                    ChatRequest(
                         message = text,
                         chatMode = "COMBINED"
                     )
@@ -264,8 +270,10 @@ class VoiceAssistantManager @Inject constructor(
         transitionTo(VoiceState.IDLE)
         cancelPendingRestart()
         stopTimer()
-        // Chỉ hủy phiên nghe hiện tại, GIỮ instance SpeechRecognizer để tái sử dụng.
-        // Không destroy()/create() liên tục — tránh ERROR_RECOGNIZER_BUSY và chi phí bind service.
+        
+        processingJob?.cancel()
+        processingJob = null
+
         sttHelper.stopListening()
         _isListening.value = false
         _partialText.value = ""
@@ -274,40 +282,27 @@ class VoiceAssistantManager @Inject constructor(
     }
 
     fun speak(text: String, onDone: (() -> Unit)? = null) {
+        if (destroyed) return
         stopListening()
         transitionTo(VoiceState.SPEAKING)
+        requestAudioFocus()
         ttsHelper.speak(text, onDone)
     }
 
-    /**
-     * QUAN TRỌNG: VoiceAssistantManager là @Singleton — sống theo tiến trình app,
-     * không theo vòng đời từng Activity/Screen. Gọi destroy() từ onDestroy()/onCleared()
-     * của Activity/ViewModel sẽ khóa cờ `destroyed` VĨNH VIỄN cho cả phần đời còn lại
-     * của process, kể cả khi user quay lại màn hình thoại sau đó (STT sẽ im lặng không
-     * chạy nữa, trong khi TTS/lời chào qua speak() vẫn hoạt động bình thường vì speak()
-     * không kiểm tra cờ này — đây thường là nguyên nhân của hiện tượng "mất tiếng nói
-     * sau khi mở lại app").
-     *
-     * → Nếu chỉ muốn tạm dừng khi rời màn hình: gọi stopListening(), KHÔNG gọi destroy().
-     * → destroy() chỉ nên gọi khi chắc chắn muốn tắt hẳn (ví dụ ứng dụng có nút "Tắt trợ lý
-     *   giọng nói" tường minh), và nếu có khả năng người dùng bật lại mà process chưa chết,
-     *   phải gọi reactivate() trước khi startListening() lần kế tiếp.
-     */
     fun destroy() {
         destroyed = true
         transitionTo(VoiceState.IDLE)
         cancelPendingRestart()
         stopTimer()
-        sttHelper.destroy() // Giải phóng thật sự — chỉ khi Manager bị hủy hẳn
+        
+        processingJob?.cancel()
+        processingJob = null
+
+        sttHelper.destroy()
         ttsHelper.shutdown()
+        abandonAudioFocus()
     }
 
-    /**
-     * Gỡ khóa cờ `destroyed` sau khi destroy() đã từng được gọi trên một vòng đời
-     * trước đó của màn hình thoại. Cần gọi hàm này ở điểm khởi tạo lại phiên thoại
-     * (ví dụ onCreate()/onResume() của màn hình chứa voice session) TRƯỚC khi gọi
-     * startListening(), phòng trường hợp process không bị OS kill giữa hai lần mở app.
-     */
     fun reactivate() {
         destroyed = false
         transitionTo(VoiceState.IDLE)
@@ -321,7 +316,7 @@ class VoiceAssistantManager @Inject constructor(
                 _isListening.value = false
                 abandonAudioFocus()
                 transitionTo(VoiceState.RESTARTING)
-                sttHelper.stopListening() // Không destroy — giữ instance để tái sử dụng
+                sttHelper.stopListening()
                 scheduleRestart(delayMs = 300L)
             }
         }.start()

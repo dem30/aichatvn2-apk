@@ -30,6 +30,9 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     @Volatile
     private var pendingSpeak: Runnable? = null
 
+    // Hẹn giờ bảo vệ phòng lỗi treo callback của OS Android
+    private var watchdogRunnable: Runnable? = null
+
     init {
         initTts()
     }
@@ -100,6 +103,7 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
 
     private fun completeCallback(utteranceId: String?) {
         if (utteranceId == null) return
+        cancelWatchdog()
         val callback = synchronized(callbacks) { callbacks.remove(utteranceId) }
         _isSpeaking.set(false)
         callback?.let {
@@ -110,6 +114,7 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     }
 
     fun speak(text: String, onDone: (() -> Unit)? = null) {
+        cancelWatchdog()
         if (text.isBlank()) {
             _isSpeaking.set(false)
             onDone?.invoke()
@@ -145,10 +150,31 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
             _isSpeaking.set(false)
             synchronized(callbacks) { callbacks.remove(utteranceId) }
             onDone?.invoke()
+        } else {
+            // Lên lịch kích hoạt watchdog đề phòng treo âm thanh
+            scheduleWatchdog(utteranceId, text)
         }
     }
 
+    private fun scheduleWatchdog(utteranceId: String, text: String) {
+        cancelWatchdog()
+        // Tốc độ nói ước tính: 150ms/ký tự tiếng Việt + 4000ms sai số an toàn
+        val estimatedDurationMs = (text.length * 150L) + 4000L
+        val runnable = Runnable {
+            Log.w("TextToSpeechHelper", "TTS Watchdog được kích hoạt cho $utteranceId do quá thời gian phản hồi.")
+            completeCallback(utteranceId)
+        }
+        watchdogRunnable = runnable
+        mainHandler.postDelayed(runnable, estimatedDurationMs)
+    }
+
+    private fun cancelWatchdog() {
+        watchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+        watchdogRunnable = null
+    }
+
     fun stop() {
+        cancelWatchdog()
         _isSpeaking.set(false)
         try {
             tts?.stop()
@@ -159,6 +185,7 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
     }
 
     fun shutdown() {
+        cancelWatchdog()
         _isSpeaking.set(false)
         isReady = false
         try {
