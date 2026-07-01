@@ -1402,6 +1402,9 @@ class AgentKernel @Inject constructor(
         return executionResult
     }
 
+
+    
+
     private suspend fun tryResolvePendingIntent(
         pending: PendingIntent,
         userMessage: String,
@@ -1425,18 +1428,12 @@ class AgentKernel @Inject constructor(
             return null
         }
 
-        val lower = userMessage.trim().lowercase()
-        val cancelWords = listOf("dừng", "hủy", "huỷ", "bỏ qua")
-        if (cancelWords.any { lower.contains(it) }) {
-            chatHistoryManager.clearPendingIntent()
-            chatHistoryManager.addTurn(userMessage, "Đã huỷ lệnh trước đó.")
-            return DeviceCommandResult(
-                pluginId = pending.pluginId,
-                result = PluginResult.Success(mapOf("message" to "Đã huỷ lệnh trước đó."))
-            )
-        }
+        // ĐÃ SỬA: Bộ lọc cancelWords xung đột đã được loại bỏ hoàn toàn khỏi đây.
 
-        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
+
+
+        
         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
 
         val localEntities = mutableMapOf<String, Any>()
