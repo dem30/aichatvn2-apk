@@ -1010,26 +1010,30 @@ class AgentKernel @Inject constructor(
         return original.copy(bestAliasMatches = updatedBest)
     }
 
+
+    
+
     private suspend fun tryTier2SemanticSlotResolver(
-        context: RoutingContext,
-        devicePlugins: List<Plugin>
-    ): Layer2Result? {
-        val dynamicMinScore = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
+    context: RoutingContext,
+    devicePlugins: List<Plugin>
+): Layer2Result? {
+    // ĐÃ SỬA: Loại bỏ dòng đọc cấu hình thừa để tối ưu hóa hiệu năng đọc DB
 
-        val wrapperIntentPair = context.globalMatchResult.intentMatches
-            .filter { it.second >= dynamicMinScore }
-            .find { 
-                try {
-                    JSONObject(it.first.answer).optString("plugin") == "schedule"
-                } catch (_: Exception) {
-                    false
-                }
+    val wrapperIntentPair = context.globalMatchResult.intentMatches
+        .find { 
+            try {
+                JSONObject(it.first.answer).optString("plugin") == "schedule"
+            } catch (_: Exception) {
+                false
             }
+        }
 
-        val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
-            .filter { it.second >= dynamicMinScore }
-            .firstOrNull() ?: return null
+    val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
+        .firstOrNull() ?: return null
 
+
+
+      
         val bestIntentQA = bestIntentPair.first
         val confidence = bestIntentPair.second
 
