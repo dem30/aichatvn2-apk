@@ -10,9 +10,6 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.SpeechRecognizer
 import android.util.Log
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ProcessLifecycleOwner
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.ChatRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -44,13 +41,12 @@ class VoiceAssistantManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
     private val logger: Logger
-) : DefaultLifecycleObserver {
+) {
 
     private val sttHelper = SpeechRecognizerHelper(context)
     val ttsHelper = TextToSpeechHelper(context)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val mainHandler = Handler(Looper.getMainLooper())
     
     private var processingJob: Job? = null
     private var listeningTimer: CountDownTimer? = null
@@ -58,9 +54,6 @@ class VoiceAssistantManager @Inject constructor(
     private var pendingRestart: Runnable? = null
 
     @Volatile private var destroyed = false
-
-    // Lưu trữ ý muốn thực tế của người dùng (Bật hay Tắt chế độ rảnh tay)
-    @Volatile private var isHandsFreeEnabled = false
 
     private val _voiceState = MutableStateFlow<VoiceState>(VoiceState.IDLE)
     val voiceState = _voiceState.asStateFlow()
@@ -83,36 +76,6 @@ class VoiceAssistantManager @Inject constructor(
 
     private var consecutiveSttFailures = 0
     private val MAX_CONSECUTIVE_STT_FAILURES = 5
-
-    init {
-        mainHandler.post {
-            try {
-                ProcessLifecycleOwner.get().lifecycle.addObserver(this)
-            } catch (e: Exception) {
-                Log.e("VoiceAssistantManager", "Không thể đăng ký ProcessLifecycleOwner: ${e.message}")
-            }
-        }
-    }
-
-    // ================= TỰ ĐỘNG XỬ LÝ THEO VÒNG ĐỜI ỨNG DỤNG =================
-
-    override fun onStart(owner: LifecycleOwner) {
-        super.onStart(owner)
-        Log.d("VoiceAssistantManager", "Ứng dụng lên Foreground. Trạng thái hands-free hoạt động: $isHandsFreeEnabled")
-        // Chỉ tự động khởi động lại mic nếu trước đó người dùng đang bật Hands-free
-        if (isHandsFreeEnabled) {
-            startListening()
-        }
-    }
-
-    override fun onStop(owner: LifecycleOwner) {
-        super.onStop(owner)
-        Log.d("VoiceAssistantManager", "Ứng dụng xuống Background -> Tự động dừng kết nối mic và dọn dẹp")
-        // Dừng nghe tạm thời để không phát tiếng bíp dưới nền (nhưng giữ cờ isHandsFreeEnabled để khôi phục sau)
-        val tempHandsFreeState = isHandsFreeEnabled
-        stopListening()
-        isHandsFreeEnabled = tempHandsFreeState
-    }
 
     @Synchronized
     private fun transitionTo(newState: VoiceState) {
@@ -184,9 +147,6 @@ class VoiceAssistantManager @Inject constructor(
             reactivate()
         }
 
-        // Đánh dấu người dùng muốn kích hoạt Hands-free chủ động
-        isHandsFreeEnabled = true
-
         if (!canStartListening()) {
             Log.d("VoiceAssistantManager", "Bỏ qua startListening(): đang ở trạng thái ${_voiceState.value}")
             return
@@ -214,9 +174,6 @@ class VoiceAssistantManager @Inject constructor(
 
                 Log.w("VoiceAssistantManager", "STT lỗi (code=$errorCode): $errorMsg")
 
-                // ✅ GIẢI QUYẾT LỖI TỰ KHỞI ĐỘNG LẠI:
-                // Nếu trạng thái máy hiện tại đã là IDLE (do người dùng chủ động nhấn nút dừng trước đó),
-                // chúng ta bỏ qua hoàn toàn và giải phóng Audio Focus thay vì chạy tiếp khối logic else phía dưới.
                 if (_voiceState.value == VoiceState.IDLE) {
                     Log.d("VoiceAssistantManager", "Bỏ qua lỗi STT phản hồi muộn sau khi người dùng tắt mic.")
                     abandonAudioFocus()
@@ -300,9 +257,6 @@ class VoiceAssistantManager @Inject constructor(
     }
 
     fun stopListening() {
-        // Tắt cờ Hands-free vì người dùng đã chủ động dừng
-        isHandsFreeEnabled = false
-
         transitionTo(VoiceState.IDLE)
         cancelPendingRestart()
         stopTimer()
@@ -327,7 +281,6 @@ class VoiceAssistantManager @Inject constructor(
 
     fun destroy() {
         destroyed = true
-        isHandsFreeEnabled = false
         transitionTo(VoiceState.IDLE)
         cancelPendingRestart()
         stopTimer()

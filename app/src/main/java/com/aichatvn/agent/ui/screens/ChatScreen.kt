@@ -81,9 +81,6 @@ fun ChatScreen(
         }
     }
     
-    // Bong bóng nháp (partial STT) là 1 item thêm vào cuối LazyColumn khi đang nghe.
-    // Dùng boolean (không dùng partialText thô) làm key để chỉ cuộn lại khi bong bóng
-    // XUẤT HIỆN/BIẾN MẤT, không cuộn lại theo từng ký tự nhận dạng được (tránh giật animation).
     val hasDraftBubble = isListening && partialText.isNotBlank()
 
     LaunchedEffect(messages.size, typingMessage, hasDraftBubble, isTyping) {
@@ -107,10 +104,19 @@ fun ChatScreen(
     }
 
     LaunchedEffect(Unit) {
-        viewModel.updateLockedPluginStatus() // Đảm bảo trạng thái khóa được cập nhật tức thời khi truy cập màn hình
+        viewModel.updateLockedPluginStatus()
+    }
+
+    // ✅ 1. TỰ ĐỘNG BẬT MIC KHI DỮ LIỆU ĐÃ LOAD XONG TỪ DATABASE/PREFERENCES (Đặt ở cấp cao nhất)
+    LaunchedEffect(voiceModeActive) {
+        if (voiceModeActive && !isListening) {
+            viewModel.onForeground()
+        }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
+    
+    // ✅ 2. ĐƯA DISPOSABLE EFFECT VỀ ĐÚNG CÚ PHÁP CHUẨN CỦA COMPOSE
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -120,7 +126,11 @@ fun ChatScreen(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose { 
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            // ✅ QUAN TRỌNG: Khi rời màn hình Chat (chuyển tab hoặc đóng màn hình), tắt mic ngay lập tức!
+            viewModel.onBackground() 
+        }
     }
     
     Box(
@@ -253,7 +263,6 @@ fun ChatScreen(
                 }
             }
 
-            // BANNER NHÃN CẢNH BÁO CHẾ ĐỘ ĐIỀU KHIỂN RIÊNG BIỆT (LOCKED CONTROL BANNER)
             if (lockedPluginName != null) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -304,8 +313,6 @@ fun ChatScreen(
                     ChatBubble(message = message)
                 }
 
-                // Bong bóng tạm hiển thị văn bản đang nhận dạng khi người dùng còn đang nói
-                // (chưa lưu DB — chỉ hiện tạm, biến mất khi có kết quả cuối hoặc dừng nghe)
                 if (isListening && partialText.isNotBlank()) {
                     item(key = "partial_draft") {
                         Box(modifier = Modifier.alpha(0.55f)) {
@@ -590,7 +597,6 @@ fun ChatBubble(message: ChatMessageEntity) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        // Tải và giải mã hình ảnh bất đồng bộ trên luồng IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
         var bitmap by remember(message.fileUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
         
         LaunchedEffect(message.fileUrl) {
