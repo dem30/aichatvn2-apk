@@ -201,11 +201,16 @@ fun SettingsScreen(
                     .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = { viewModel.exportSettings(context) },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
-                ) { Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Xuất file (Export)") }
+                
+              
+              OutlinedButton(
+    onClick = { scope.launch { viewModel.exportSettings(context) } },
+    modifier = Modifier.weight(1f),
+    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+) {
+
+                
+                Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Xuất file (Export)") }
                 OutlinedButton(
                     onClick = { filePickerLauncher.launch("application/json") },
                     modifier = Modifier.weight(1f),
@@ -499,13 +504,14 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
+                
                 if (entry.totalTokens != null) {
-                    Text(
-                        "• ${entry.promptTokens ?: "?"}→${entry.completionTokens ?: "?"} = ${entry.totalTokens} tokens",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.primary
-                    )
-                } else {
+    Text(
+        "• ${entry.promptTokens ?: "?"}→${entry.completionTokens ?: "?"} = ${entry.totalTokens} tokens",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.primary
+    )
+} else {
                     Text(
                         "• đang chờ / không có usage",
                         style = MaterialTheme.typography.labelSmall,

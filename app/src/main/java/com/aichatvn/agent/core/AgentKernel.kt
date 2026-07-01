@@ -1253,7 +1253,7 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    private fun resolveAliasOrFallback(
+    private suspend fun resolveAliasOrFallback(
         param: PluginParameter,
         currentValue: Any?,
         isPlh: Boolean,
