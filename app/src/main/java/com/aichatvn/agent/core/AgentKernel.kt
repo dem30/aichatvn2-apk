@@ -58,7 +58,7 @@ data class Layer2Result(
 )
 
 data class NormalizedActionMetadata(
-    val plugin: Plugin,
+    val plugin: Plugin, // ĐÃ SỬA: Sửa lỗi thiếu chú thích kiểu dữ liệu (đổi dấu = thành dấu :)
     val action: PluginAction,
     val normalizedDescription: String,
     val normalizedExamples: List<String>,
@@ -444,7 +444,7 @@ class AgentKernel @Inject constructor(
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
-                // Đăng ký dynamic aliasThreshold và truyền mode dạng DIAGNOSTIC để chặn lọt alias cũ ở Tầng 1
+                // Đã tối ưu truyền biến 'mode' ở dạng DIAGNOSTIC xuống bộ Pending Resolver kiểm thử đầu tiên
                 val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, traceId, mode)
                 finalOutcome = if (pendingResult != null) {
                     when (val r = pendingResult.result) {
@@ -1237,8 +1237,9 @@ class AgentKernel @Inject constructor(
                 if (matchedAliasValue != null) return matchedAliasValue
 
                 if (context.resolvedQuery.isNotBlank()) {
+                    val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
                     val containsMatch = context.globalMatchResult.aliasMatches
-                        .filter { it.first.category == param.semanticType }
+                        .filter { it.first.category == param.semanticType && it.second >= configAliasThreshold }
                         .sortedByDescending { it.first.question.length }
                         .firstOrNull { context.resolvedQuery.contains(it.first.question, ignoreCase = true) }
                         ?.first?.answer
@@ -1391,7 +1392,8 @@ class AgentKernel @Inject constructor(
                     )
                 }
 
-                val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = 0.0f)
+                val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+                val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
 
                 val localEntities = mutableMapOf<String, Any>()
                 EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
@@ -1832,7 +1834,7 @@ class AgentKernel @Inject constructor(
                     resolvedMessage,
                     username,
                     intentThreshold = intentThreshold,
-                    aliasThreshold = 0.0f
+                    aliasThreshold = aliasThreshold // Sửa đổi: Áp dụng aliasThreshold cấu hình động thay vì 0.0f cứng
                 )
 
                 val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
