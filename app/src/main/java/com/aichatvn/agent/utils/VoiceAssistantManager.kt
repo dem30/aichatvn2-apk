@@ -214,37 +214,36 @@ class VoiceAssistantManager @Inject constructor(
 
                 Log.w("VoiceAssistantManager", "STT lỗi (code=$errorCode): $errorMsg")
 
-                // ✅ GIẢI QUYẾT LỖI TỰ KHỞI ĐỘNG LẠI SAU KHI TẮT:
+                // ✅ GIẢI QUYẾT LỖI TỰ KHỞI ĐỘNG LẠI:
                 // Nếu trạng thái máy hiện tại đã là IDLE (do người dùng chủ động nhấn nút dừng trước đó),
-                // chúng ta bỏ qua hoàn toàn lỗi Client/Cancel do SpeechRecognizer trả về muộn.
+                // chúng ta bỏ qua hoàn toàn và giải phóng Audio Focus thay vì chạy tiếp khối logic else phía dưới.
                 if (_voiceState.value == VoiceState.IDLE) {
                     Log.d("VoiceAssistantManager", "Bỏ qua lỗi STT phản hồi muộn sau khi người dùng tắt mic.")
                     abandonAudioFocus()
-                    return@onError
-                }
-
-                val isFinalizeFailure = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
-                    errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-
-                if (isFinalizeFailure && lastPartial.isNotBlank()) {
-                    consecutiveSttFailures = 0
-                    handleRecognizedText(lastPartial)
                 } else {
-                    abandonAudioFocus()
-                    consecutiveSttFailures++
-                    if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
+                    val isFinalizeFailure = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
+                        errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+
+                    if (isFinalizeFailure && lastPartial.isNotBlank()) {
                         consecutiveSttFailures = 0
-                        Log.e("VoiceAssistantManager", "Lỗi Mic liên tiếp: $errorMsg")
-                        transitionTo(VoiceState.IDLE)
+                        handleRecognizedText(lastPartial)
                     } else {
-                        transitionTo(VoiceState.RESTARTING)
-                        val delay = when (errorCode) {
-                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 200L
-                            SpeechRecognizer.ERROR_NO_MATCH,
-                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 300L
-                            else -> 1500L
+                        abandonAudioFocus()
+                        consecutiveSttFailures++
+                        if (consecutiveSttFailures >= MAX_CONSECUTIVE_STT_FAILURES) {
+                            consecutiveSttFailures = 0
+                            Log.e("VoiceAssistantManager", "Lỗi Mic liên tiếp: $errorMsg")
+                            transitionTo(VoiceState.IDLE)
+                        } else {
+                            transitionTo(VoiceState.RESTARTING)
+                            val delay = when (errorCode) {
+                                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 200L
+                                SpeechRecognizer.ERROR_NO_MATCH,
+                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 300L
+                                else -> 1500L
+                            }
+                            scheduleRestart(delayMs = delay)
                         }
-                        scheduleRestart(delayMs = delay)
                     }
                 }
             },
