@@ -117,6 +117,31 @@ class SpeechRecognizerHelper(private val context: Context) {
         mainHandler.post(task)
     }
 
+    /**
+     * Hủy phiên nghe HIỆN TẠI nhưng GIỮ instance SpeechRecognizer để tái sử dụng
+     * cho lần startListening() kế tiếp. Dùng cho mọi lần restart bình thường
+     * (timeout, kết thúc lượt nói, chuyển sang xử lý AI...).
+     *
+     * Không gọi destroy() ở đây: tạo lại native SpeechRecognizer liên tục là
+     * nguyên nhân phổ biến gây ERROR_RECOGNIZER_BUSY và tốn chi phí bind service.
+     */
+    fun stopListening() {
+        pendingStart?.let { mainHandler.removeCallbacks(it) }
+        pendingStart = null
+
+        mainHandler.post {
+            try {
+                recognizer?.cancel()
+            } catch (e: Exception) {
+                // Bỏ qua
+            }
+        }
+    }
+
+    /**
+     * Giải phóng HOÀN TOÀN native SpeechRecognizer. Chỉ gọi khi Manager bị destroy
+     * hẳn (đóng app / ViewModel cleared) — KHÔNG dùng cho restart thông thường.
+     */
     fun destroy() {
         pendingStart?.let { mainHandler.removeCallbacks(it) }
         pendingStart = null

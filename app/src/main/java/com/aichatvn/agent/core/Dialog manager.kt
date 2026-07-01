@@ -263,7 +263,23 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
         val normalized = normalizeVietnamese(userMessage)
 
         val matchedCancelPhrase = CANCEL_PHRASES.any { phrase ->
-            containsWholePhrase(normalized, normalizeVietnamese(phrase))
+            val normalizedPhrase = normalizeVietnamese(phrase)
+            if (containsWholePhrase(normalized, normalizedPhrase)) {
+                // Khắc phục lỗi đồng hóa dấu tiếng Việt (ví dụ "dừng" -> "dung" trùng với "nội dung", "thôi" -> "thoi" trùng với "thời gian")
+                when (normalizedPhrase) {
+                    "dung" -> {
+                        val originalWords = userMessage.lowercase().split(SPACE_REGEX)
+                        originalWords.any { it == "dừng" || it == "dưng" } // Chỉ chấp nhận khi từ gốc thực sự là "dừng" hoặc "dưng"
+                    }
+                    "thoi" -> {
+                        val originalWords = userMessage.lowercase().split(SPACE_REGEX)
+                        originalWords.any { it == "thôi" } // Chỉ chấp nhận khi từ gốc thực sự là "thôi"
+                    }
+                    else -> true
+                }
+            } else {
+                false
+            }
         }
 
         if (!matchedCancelPhrase) return CancelDecision.NotCancel
