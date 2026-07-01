@@ -29,6 +29,37 @@ class ChatHistoryManager @Inject constructor() {
     // Bộ đệm danh sách đa lệnh dở dang song song
     private val pendingIntents = mutableListOf<PendingIntent>()
 
+    // Quản lý trạng thái khóa cứng điều khiển 1 plugin (Không dùng timeout)
+    data class LockedControl(val pluginId: String)
+    private var lockedControl: LockedControl? = null
+    var pendingLockRequest: String? = null
+        private set
+
+    @Synchronized
+    fun setPendingLockRequest(pluginId: String) { 
+        pendingLockRequest = pluginId 
+    }
+
+    @Synchronized
+    fun clearLockRequest() { 
+        pendingLockRequest = null 
+    }
+
+    @Synchronized
+    fun lockPlugin(pluginId: String) {
+        lockedControl = LockedControl(pluginId)
+    }
+
+    @Synchronized
+    fun getLockedPlugin(): String? {
+        return lockedControl?.pluginId
+    }
+
+    @Synchronized
+    fun unlockPlugin() { 
+        lockedControl = null 
+    }
+
     @Synchronized
     fun addTurn(userMessage: String, aiResponse: String) {
         if (history.size >= 2) {
@@ -90,5 +121,7 @@ class ChatHistoryManager @Inject constructor() {
         history.clear()
         lastMentionedDeviceId = null
         pendingIntents.clear()
+        lockedControl = null
+        pendingLockRequest = null
     }
 }

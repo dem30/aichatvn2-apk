@@ -69,6 +69,10 @@ class ChatViewModel @Inject constructor(
     private val _pausedDueToError = MutableStateFlow(false)
     val pausedDueToError: StateFlow<Boolean> = _pausedDueToError.asStateFlow()
 
+    // Luồng quan sát trạng thái khóa cứng điều khiển phục vụ hiển thị nhãn lên UI
+    private val _lockedPluginName = MutableStateFlow<String?>(null)
+    val lockedPluginName: StateFlow<String?> = _lockedPluginName.asStateFlow()
+
     private var consecutiveRouterFailures = 0
 
     private val isProcessingQuery = AtomicBoolean(false)
@@ -93,6 +97,7 @@ class ChatViewModel @Inject constructor(
             observeVoiceManagerFlows()
             observeAndSpeak()
             startVoiceSession()
+            updateLockedPluginStatus() // Khởi tạo nhãn điều khiển lúc khởi chạy
         }
     }
 
@@ -140,6 +145,7 @@ class ChatViewModel @Inject constructor(
                 database.chatMessageDao().insertMessage(msg)
             }
             chatSkill.initialize()
+            updateLockedPluginStatus() // Cập nhật nhãn điều khiển sau phiên thoại giọng nói
         }
     }
 
@@ -239,6 +245,12 @@ class ChatViewModel @Inject constructor(
         chatSkill.setChatMode(mode)
     }
 
+    fun updateLockedPluginStatus() {
+        viewModelScope.launch {
+            _lockedPluginName.value = agentKernel.getLockedPluginName()
+        }
+    }
+
     fun sendMessage(message: String) {
         sendMessageWithImage(message, null)
     }
@@ -294,6 +306,7 @@ class ChatViewModel @Inject constructor(
             } finally {
                 _isLoading.value = false
                 isProcessingQuery.set(false)
+                updateLockedPluginStatus() // Đồng bộ lại nhãn điều khiển sau khi nhận được phản hồi của Agent
             }
         }
     }
@@ -336,6 +349,7 @@ class ChatViewModel @Inject constructor(
     fun clearHistory() {
         viewModelScope.launch {
             chatSkill.clearHistory("default_user")
+            updateLockedPluginStatus()
         }
     }
 

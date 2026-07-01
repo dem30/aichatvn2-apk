@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -57,6 +58,7 @@ fun ChatScreen(
     val isListening by viewModel.isListening.collectAsState()
     val voiceModeActive by viewModel.voiceModeActive.collectAsState()
     val pausedDueToError by viewModel.pausedDueToError.collectAsState()
+    val lockedPluginName by viewModel.lockedPluginName.collectAsState()
     
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
@@ -94,6 +96,10 @@ fun ChatScreen(
             isTyping = false
             typingMessage = ""
         }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.updateLockedPluginStatus() // Đảm bảo trạng thái khóa được cập nhật tức thời khi truy cập màn hình
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -234,6 +240,44 @@ fun ChatScreen(
                         Text(
                             text = if (voiceModeActive) "Tắt mic" else "Bật mic",
                             style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+            }
+
+            // BANNER NHÃN CẢNH BÁO CHẾ ĐỘ ĐIỀU KHIỂN RIÊNG BIỆT (LOCKED CONTROL BANNER)
+            if (lockedPluginName != null) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Locked Control",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "🔒 Đang điều khiển riêng: \"$lockedPluginName\"",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                        Text(
+                            text = "Gõ \"thoát\" để dừng",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
@@ -517,7 +561,7 @@ fun ChatBubble(message: ChatMessageEntity) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        // TỐI ƯU HÓA LỚN: Tải và giải mã hình ảnh bất đồng bộ trên luồng IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
+        // Tải và giải mã hình ảnh bất đồng bộ trên luồng IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
         var bitmap by remember(message.fileUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
         
         LaunchedEffect(message.fileUrl) {
