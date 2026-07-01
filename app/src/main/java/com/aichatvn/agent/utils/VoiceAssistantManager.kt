@@ -59,7 +59,9 @@ class VoiceAssistantManager @Inject constructor(
 
     @Volatile private var destroyed = false
 
-    // Xác định rõ ràng kiểu dữ liệu để tránh lỗi "Cannot infer type"
+    // Lưu trữ ý muốn thực tế của người dùng (Bật hay Tắt chế độ rảnh tay)
+    @Volatile private var isHandsFreeEnabled = false
+
     private val _voiceState = MutableStateFlow<VoiceState>(VoiceState.IDLE)
     val voiceState = _voiceState.asStateFlow()
 
@@ -92,16 +94,24 @@ class VoiceAssistantManager @Inject constructor(
         }
     }
 
+    // ================= TỰ ĐỘNG XỬ LÝ THEO VÒNG ĐỜI ỨNG DỤNG =================
+
     override fun onStart(owner: LifecycleOwner) {
         super.onStart(owner)
-        Log.d("VoiceAssistantManager", "Ứng dụng lên Foreground -> Tự động kích hoạt lại mic")
-        startListening()
+        Log.d("VoiceAssistantManager", "Ứng dụng lên Foreground. Trạng thái hands-free hoạt động: $isHandsFreeEnabled")
+        // Chỉ tự động khởi động lại mic nếu trước đó người dùng đang bật Hands-free
+        if (isHandsFreeEnabled) {
+            startListening()
+        }
     }
 
     override fun onStop(owner: LifecycleOwner) {
         super.onStop(owner)
         Log.d("VoiceAssistantManager", "Ứng dụng xuống Background -> Tự động dừng kết nối mic và dọn dẹp")
+        // Dừng nghe tạm thời để không phát tiếng bíp dưới nền (nhưng giữ cờ isHandsFreeEnabled để khôi phục sau)
+        val tempHandsFreeState = isHandsFreeEnabled
         stopListening()
+        isHandsFreeEnabled = tempHandsFreeState
     }
 
     @Synchronized
@@ -174,6 +184,9 @@ class VoiceAssistantManager @Inject constructor(
             reactivate()
         }
 
+        // Đánh dấu người dùng muốn kích hoạt Hands-free chủ động
+        isHandsFreeEnabled = true
+
         if (!canStartListening()) {
             Log.d("VoiceAssistantManager", "Bỏ qua startListening(): đang ở trạng thái ${_voiceState.value}")
             return
@@ -200,6 +213,15 @@ class VoiceAssistantManager @Inject constructor(
                 _partialText.value = ""
 
                 Log.w("VoiceAssistantManager", "STT lỗi (code=$errorCode): $errorMsg")
+
+                // ✅ GIẢI QUYẾT LỖI TỰ KHỞI ĐỘNG LẠI SAU KHI TẮT:
+                // Nếu trạng thái máy hiện tại đã là IDLE (do người dùng chủ động nhấn nút dừng trước đó),
+                // chúng ta bỏ qua hoàn toàn lỗi Client/Cancel do SpeechRecognizer trả về muộn.
+                if (_voiceState.value == VoiceState.IDLE) {
+                    Log.d("VoiceAssistantManager", "Bỏ qua lỗi STT phản hồi muộn sau khi người dùng tắt mic.")
+                    abandonAudioFocus()
+                    return@onError
+                }
 
                 val isFinalizeFailure = errorCode == SpeechRecognizer.ERROR_NO_MATCH ||
                     errorCode == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
@@ -279,6 +301,9 @@ class VoiceAssistantManager @Inject constructor(
     }
 
     fun stopListening() {
+        // Tắt cờ Hands-free vì người dùng đã chủ động dừng
+        isHandsFreeEnabled = false
+
         transitionTo(VoiceState.IDLE)
         cancelPendingRestart()
         stopTimer()
@@ -303,6 +328,7 @@ class VoiceAssistantManager @Inject constructor(
 
     fun destroy() {
         destroyed = true
+        isHandsFreeEnabled = false
         transitionTo(VoiceState.IDLE)
         cancelPendingRestart()
         stopTimer()

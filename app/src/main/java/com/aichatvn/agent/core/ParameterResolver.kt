@@ -29,10 +29,9 @@ object ParameterResolver {
         }
 
         val defaultPlaceholders = setOf(
-            "device_1", "device_2", "camera_1", "camera_2",
-            "device 1", "device 2", "camera 1", "camera 2",
+            
             "example@gmail.com", "example@email.com",
-            "schedule_1", "schedule_id_here"
+            "schedule_id_here"
         )
         return strVal in defaultPlaceholders
     }
