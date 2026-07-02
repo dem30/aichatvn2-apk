@@ -6,8 +6,11 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.ChatRequest
@@ -28,6 +31,7 @@ import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.Properties
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
 
@@ -46,8 +50,11 @@ class WebhookGatewayService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var server: NettyApplicationEngine? = null
-    private var wakeLock: android.os.PowerManager.WakeLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private var sshSession: Session? = null
+
+    // Biến lưu trạng thái thông báo gần nhất để chống spam cập nhật hệ thống
+    private var lastNotificationText = ""
 
     companion object {
         private const val CHANNEL_ID = "WebhookGatewayServiceChannel"
@@ -60,8 +67,8 @@ class WebhookGatewayService : Service() {
 
         // 1. Giữ CPU chạy ổn định khi tắt màn hình điện thoại
         try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-            wakeLock = powerManager.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "AIChatVN2::WebhookWakeLock").apply {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AIChatVN2::WebhookWakeLock").apply {
                 acquire()
             }
         } catch (e: Exception) {
@@ -85,22 +92,39 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ Tạo builder dùng chung, để cả lúc khởi động và lúc cập nhật đều đồng nhất cấu hình im lặng
+    // ✅ Tạo builder dùng chung, thiết lập chế độ im lặng (IMPORTANCE_LOW)
     private fun buildNotification(contentText: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AIChatVN2 Omnichannel")
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setOngoing(true)
-            .setOnlyAlertOnce(true) // Chỉ rung/kêu đúng 1 lần lúc tạo mới, các lần update sau im lặng
+            .setOnlyAlertOnce(true) // Chỉ báo động rung/kêu 1 lần đầu tiên lúc tạo mới
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
-    // ✅ Cập nhật nội dung notification khi có domain thật (không tạo thông báo mới, không rung/kêu lại)
+    // ✅ Cập nhật nội dung notification và lọc trùng lặp để chống spam hệ thống
     private fun updateNotification(contentText: String) {
+        if (contentText == lastNotificationText) return 
+        lastNotificationText = contentText
+
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(contentText))
+    }
+
+    // ✅ Hàm kiểm tra thiết bị có kết nối Internet (Wi-Fi hoặc 4G) hay không
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = connectivityManager.activeNetwork ?: return false
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+            return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } else {
+            @Suppress("DEPRECATION")
+            val activeNetworkInfo = connectivityManager.activeNetworkInfo
+            return activeNetworkInfo != null && activeNetworkInfo.isConnected
+        }
     }
 
     // Hàm phụ tìm kiếm Plugin động ở Runtime bằng ID
@@ -135,7 +159,6 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'fbText' và 'fbPsid' từ JSON thô
                                         val fbText = "Tin nhắn test từ FB"
                                         val fbPsid = "fb_sender_id_placeholder"
 
@@ -163,7 +186,6 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'igText' và 'igPsid'
                                         val igText = "Tin nhắn test từ Instagram"
                                         val igPsid = "ig_sender_id_placeholder"
 
@@ -181,7 +203,6 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'zaloText' và 'zaloUserId' từ JSON thô của Zalo
                                         val zaloText = "Tin nhắn test từ Zalo"
                                         val zaloUserId = "zalo_user_id_placeholder"
 
@@ -209,7 +230,6 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'waText' và 'waPhone'
                                         val waText = "Tin nhắn test từ WhatsApp"
                                         val waPhone = "wa_phone_placeholder"
 
@@ -227,7 +247,6 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'tgText' và 'tgChatId'
                                         val tgText = "Tin nhắn test từ Telegram"
                                         val tgChatId = "tg_chat_id_placeholder"
 
@@ -266,26 +285,42 @@ class WebhookGatewayService : Service() {
         return keyFile.absolutePath
     }
 
-   
-  
-  private fun startEmbeddedSSHTunnel() {
+    private fun startEmbeddedSSHTunnel() {
         serviceScope.launch(Dispatchers.IO) {
             val privateKeyPath = getOrCreateSshKey()
+            var isOfflineLogged = false // Cờ đánh dấu để chỉ ghi log mất mạng 1 lần duy nhất
 
             while (isActive) {
+                // ✅ KIỂM TRA MẠNG: Nếu mất kết nối Internet, tạm dừng kết nối hầm để tránh spam log lỗi và notification
+                if (!isNetworkAvailable()) {
+                    if (!isOfflineLogged) {
+                        logger.i("WebhookGateway", "⚠️ Không có kết nối Internet. Tạm dừng kết nối hầm...")
+                        updateNotification("Không có Internet, đang chờ kết nối lại...")
+                        isOfflineLogged = true
+                    }
+                    delay(5000) // Đợi 5 giây rồi kiểm tra lại một cách im lặng, không cố kết nối sinh lỗi
+                    continue
+                }
+
+                // Khi có mạng trở lại, reset trạng thái ghi nhận offline
+                if (isOfflineLogged) {
+                    isOfflineLogged = false
+                    logger.i("WebhookGateway", "📶 Đã có kết nối Internet trở lại. Bắt đầu kết nối hầm...")
+                }
+
                 try {
                     logger.i("WebhookGateway", "🔑 Đang kết nối hầm bảo mật SSH cố định đa kênh (serveo.net)...")
                     val jsch = JSch()
                     jsch.addIdentity(privateKeyPath)
 
                     sshSession = jsch.getSession("current_user", "serveo.net", 22)
-                    val config = java.util.Properties()
+                    val config = Properties()
                     config["StrictHostKeyChecking"] = "no"
                     sshSession?.setConfig(config)
 
                     sshSession?.connect(15000)
                     
-                    // Kích hoạt chuyển tiếp cổng ẩn danh
+                    // Kích hoạt chuyển tiếp cổng ẩn danh để tránh bị bắt đăng ký key
                     sshSession?.setPortForwardingR(80, "127.0.0.1", 8080)
                     logger.i("WebhookGateway", "🟢 Đã gửi yêu cầu đăng ký hầm đa kênh, đang chờ Serveo cấp domain...")
 
@@ -298,7 +333,7 @@ class WebhookGatewayService : Service() {
                     while (reader.readLine().also { line = it } != null) {
                         logger.d("WebhookGateway", "Serveo: $line")
 
-                        // Kiểm tra dòng chứa thông tin chuyển tiếp
+                        // Kiểm tra dòng chứa thông tin chuyển tiếp từ Serveo
                         if (line?.contains("Forwarding HTTP traffic from") == true) {
                             // ✅ ĐÃ SỬA: Regex hỗ trợ cả đuôi .serveo.net và .serveousercontent.com
                             val cleanLink = Regex("https?://[a-zA-Z0-9.-]+\\.(serveo\\.net|serveousercontent\\.com)").find(line!!)?.value
@@ -306,15 +341,15 @@ class WebhookGatewayService : Service() {
                                 val webhookBase = "$cleanLink/webhook"
                                 logger.i("WebhookGateway", "🌍 URL WEBHOOK ĐA KÊNH CỦA BẠN: $webhookBase")
 
-                                // Cập nhật thông báo hiển thị domain thật lên thanh trạng thái
+                                // Cập nhật notification hiển thị domain thật lên thanh trạng thái
                                 updateNotification("Đã kết nối: $cleanLink")
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    logger.e("WebhookGateway", "❌ Lỗi kết nối hầm: ${e.message}. Thử lại sau 10 giây...", e)
+                    logger.e("WebhookGateway", "❌ Lỗi kết nối hầm: ${e.message}. Thử lại sau 15 giây...", e)
                     updateNotification("Mất kết nối, đang thử lại...")
-                    delay(10000)
+                    delay(15000) // Tăng thời gian đợi khi rớt kết nối lên 15 giây để giảm tần suất kết nối lại liên tục
                 } finally {
                     sshSession?.disconnect()
                 }
@@ -322,11 +357,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-
-
-  
-
-    // ✅ ĐÃ SỬA: IMPORTANCE_LOW thay vì DEFAULT — im lặng hoàn toàn, không rung/kêu khi mạng chập chờn
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
