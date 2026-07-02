@@ -92,15 +92,15 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ Tạo builder dùng chung, thiết lập chế độ im lặng (IMPORTANCE_LOW)
+    // ✅ ĐÃ SỬA: Đưa Priority về DEFAULT để luôn hiển thị icon trên thanh trạng thái và màn hình khóa
     private fun buildNotification(contentText: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AIChatVN2 Omnichannel")
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setOngoing(true)
-            .setOnlyAlertOnce(true) // Chỉ báo động rung/kêu 1 lần đầu tiên lúc tạo mới
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOnlyAlertOnce(true) // Chỉ đổ chuông/rung đúng 1 lần đầu tiên khi dịch vụ chạy, các lần cập nhật sau sẽ im lặng
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
     }
 
@@ -113,17 +113,24 @@ class WebhookGatewayService : Service() {
         manager.notify(NOTIFICATION_ID, buildNotification(contentText))
     }
 
-    // ✅ Hàm kiểm tra thiết bị có kết nối Internet (Wi-Fi hoặc 4G) hay không
+    // ✅ ĐÃ SỬA: Bọc bảo vệ chống sập ứng dụng nếu điện thoại chưa khai báo quyền ACCESS_NETWORK_STATE trong Manifest
     private fun isNetworkAvailable(): Boolean {
-        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val network = connectivityManager.activeNetwork ?: return false
-            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-            return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } else {
-            @Suppress("DEPRECATION")
-            val activeNetworkInfo = connectivityManager.activeNetworkInfo
-            return activeNetworkInfo != null && activeNetworkInfo.isConnected
+        try {
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val network = connectivityManager.activeNetwork ?: return false
+                val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+                return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            } else {
+                @Suppress("DEPRECATION")
+                val activeNetworkInfo = connectivityManager.activeNetworkInfo
+                return activeNetworkInfo != null && activeNetworkInfo.isConnected
+            }
+        } catch (e: SecurityException) {
+            logger.e("WebhookGateway", "⚠️ Thiếu quyền ACCESS_NETWORK_STATE trong AndroidManifest.xml. Mặc định chạy tiếp không crash.")
+            return true
+        } catch (e: Exception) {
+            return true
         }
     }
 
@@ -140,7 +147,6 @@ class WebhookGatewayService : Service() {
                         gson()
                     }
                     routing {
-                        // Nhóm tất cả các router dưới tiền tố chung /webhook
                         route("/webhook") {
 
                             // ─── CỔNG 1: FACEBOOK MESSENGER ───
@@ -163,8 +169,6 @@ class WebhookGatewayService : Service() {
                                         val fbPsid = "fb_sender_id_placeholder"
 
                                         val reply = agentKernel.chat(ChatRequest(message = fbText, username = fbPsid, chatMode = "COMBINED"))
-
-                                        // Gọi plugin Facebook để gửi tin nhắn đi
                                         findPlugin("facebook")?.execute("send_messenger", mapOf("recipient_id" to fbPsid, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK, "EVENT_RECEIVED")
@@ -190,8 +194,6 @@ class WebhookGatewayService : Service() {
                                         val igPsid = "ig_sender_id_placeholder"
 
                                         val reply = agentKernel.chat(ChatRequest(message = igText, username = igPsid, chatMode = "COMBINED"))
-
-                                        // Instagram dùng chung hạ tầng Graph API với Facebook
                                         findPlugin("instagram")?.execute("send_messenger", mapOf("recipient_id" to igPsid, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK)
@@ -207,8 +209,6 @@ class WebhookGatewayService : Service() {
                                         val zaloUserId = "zalo_user_id_placeholder"
 
                                         val reply = agentKernel.chat(ChatRequest(message = zaloText, username = zaloUserId, chatMode = "COMBINED"))
-
-                                        // Gọi Zalo Skill tự nhận diện động sau này khi bạn khởi tạo file
                                         findPlugin("zalo")?.execute("send_message", mapOf("recipient_id" to zaloUserId, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK)
@@ -234,8 +234,6 @@ class WebhookGatewayService : Service() {
                                         val waPhone = "wa_phone_placeholder"
 
                                         val reply = agentKernel.chat(ChatRequest(message = waText, username = waPhone, chatMode = "COMBINED"))
-
-                                        // Gọi WhatsApp Skill tự nhận diện động sau này
                                         findPlugin("whatsapp")?.execute("send_message", mapOf("phone" to waPhone, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK)
@@ -251,8 +249,6 @@ class WebhookGatewayService : Service() {
                                         val tgChatId = "tg_chat_id_placeholder"
 
                                         val reply = agentKernel.chat(ChatRequest(message = tgText, username = tgChatId, chatMode = "COMBINED"))
-
-                                        // Gọi Telegram Skill tự nhận diện động sau này
                                         findPlugin("telegram")?.execute("send_message", mapOf("chat_id" to tgChatId, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK)
@@ -291,14 +287,14 @@ class WebhookGatewayService : Service() {
             var isOfflineLogged = false // Cờ đánh dấu để chỉ ghi log mất mạng 1 lần duy nhất
 
             while (isActive) {
-                // ✅ KIỂM TRA MẠNG: Nếu mất kết nối Internet, tạm dừng kết nối hầm để tránh spam log lỗi và notification
+                // KIỂM TRA MẠNG: Nếu mất kết nối Internet, tạm dừng kết nối hầm để tránh spam log lỗi và notification
                 if (!isNetworkAvailable()) {
                     if (!isOfflineLogged) {
                         logger.i("WebhookGateway", "⚠️ Không có kết nối Internet. Tạm dừng kết nối hầm...")
                         updateNotification("Không có Internet, đang chờ kết nối lại...")
                         isOfflineLogged = true
                     }
-                    delay(5000) // Đợi 5 giây rồi kiểm tra lại một cách im lặng, không cố kết nối sinh lỗi
+                    delay(5000) // Đợi 5 giây rồi kiểm tra lại một cách im lặng
                     continue
                 }
 
@@ -335,7 +331,7 @@ class WebhookGatewayService : Service() {
 
                         // Kiểm tra dòng chứa thông tin chuyển tiếp từ Serveo
                         if (line?.contains("Forwarding HTTP traffic from") == true) {
-                            // ✅ ĐÃ SỬA: Regex hỗ trợ cả đuôi .serveo.net và .serveousercontent.com
+                            // Regex hỗ trợ cả đuôi .serveo.net và .serveousercontent.com
                             val cleanLink = Regex("https?://[a-zA-Z0-9.-]+\\.(serveo\\.net|serveousercontent\\.com)").find(line!!)?.value
                             if (cleanLink != null) {
                                 val webhookBase = "$cleanLink/webhook"
@@ -349,7 +345,7 @@ class WebhookGatewayService : Service() {
                 } catch (e: Exception) {
                     logger.e("WebhookGateway", "❌ Lỗi kết nối hầm: ${e.message}. Thử lại sau 15 giây...", e)
                     updateNotification("Mất kết nối, đang thử lại...")
-                    delay(15000) // Tăng thời gian đợi khi rớt kết nối lên 15 giây để giảm tần suất kết nối lại liên tục
+                    delay(15000) // Đợi 15 giây trước khi thử kết nối lại
                 } finally {
                     sshSession?.disconnect()
                 }
@@ -357,12 +353,13 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    // ✅ ĐÃ SỬA: Chuyển sang IMPORTANCE_DEFAULT để tránh bị hệ điều hành tự động ẩn/bỏ vào mục im lặng của các dòng máy Xiaomi/Oppo/Samsung
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Webhook Gateway Service Channel",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(serviceChannel)
