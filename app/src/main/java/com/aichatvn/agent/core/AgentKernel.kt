@@ -188,6 +188,7 @@ class AgentKernel @Inject constructor(
         return trainingSkill.fuzzyMatchQuestion(query, username, threshold)
     }
 
+
     suspend fun chat(request: ChatRequest): ChatResponse {
         val message = request.message
         val username = request.username
@@ -261,9 +262,7 @@ class AgentKernel @Inject constructor(
             }
             return ChatResponse(responseText, "device_control", outcome.result.pluginId)
         }
-
-
-        // --- ĐOẠN MÃ MỚI ĐÃ ĐƯỢC TỐI ƯU HÓA ---
+        
         val routerFailed = outcome is RouterOutcome.RouterFailed
         val usedMode = request.chatMode
         val usedPluginId = if (routerFailed) "router_error" else null
@@ -290,7 +289,7 @@ class AgentKernel @Inject constructor(
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
                     }
 
-                    // 2. Chế độ GROQ: AI thuần túy, bỏ qua qaContext để Prompt sạch và giảm truy cập DB vô ích
+                    // 2. Chế độ GROQ: AI thuần túy, loại bỏ qaContext để Prompt sạch và giảm truy cập DB vô ích
                     "groq" -> {
                         val historySnapshot = try {
                             database.chatMessageDao().getMessages(username, 6)
@@ -354,8 +353,13 @@ class AgentKernel @Inject constructor(
         }
         
         return ChatResponse(responseText, usedMode, usedPluginId)
+    } // <-- Dấu ngoặc nhọn đóng của hàm chat() đã được bổ sung đầy đủ tại đây
+
+
     
 
+
+    
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
         val matches = search(message, username, 0.7f)
         if (matches.isEmpty()) return ""
