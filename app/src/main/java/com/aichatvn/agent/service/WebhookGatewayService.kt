@@ -266,7 +266,9 @@ class WebhookGatewayService : Service() {
         return keyFile.absolutePath
     }
 
-    private fun startEmbeddedSSHTunnel() {
+   
+  
+  private fun startEmbeddedSSHTunnel() {
         serviceScope.launch(Dispatchers.IO) {
             val privateKeyPath = getOrCreateSshKey()
 
@@ -282,8 +284,8 @@ class WebhookGatewayService : Service() {
                     sshSession?.setConfig(config)
 
                     sshSession?.connect(15000)
-                    // ✅ ĐÃ SỬA: KHÔNG chỉ định tên subdomain riêng nữa (gây đòi đăng ký key qua trình duyệt).
-                    // Để Serveo tự cấp subdomain theo IP + username SSH — thường giữ nguyên giữa các lần kết nối lại.
+                    
+                    // Kích hoạt chuyển tiếp cổng ẩn danh
                     sshSession?.setPortForwardingR(80, "127.0.0.1", 8080)
                     logger.i("WebhookGateway", "🟢 Đã gửi yêu cầu đăng ký hầm đa kênh, đang chờ Serveo cấp domain...")
 
@@ -296,15 +298,15 @@ class WebhookGatewayService : Service() {
                     while (reader.readLine().also { line = it } != null) {
                         logger.d("WebhookGateway", "Serveo: $line")
 
-                        // ✅ ĐÃ SỬA: Chỉ trích domain từ đúng dòng "Forwarding HTTP traffic from",
-                        // KHÔNG bắt nhầm link đăng ký key (console.serveo.net/ssh/keys?add=...)
+                        // Kiểm tra dòng chứa thông tin chuyển tiếp
                         if (line?.contains("Forwarding HTTP traffic from") == true) {
-                            val cleanLink = Regex("https?://[a-zA-Z0-9.-]+\\.serveo\\.net").find(line!!)?.value
+                            // ✅ ĐÃ SỬA: Regex hỗ trợ cả đuôi .serveo.net và .serveousercontent.com
+                            val cleanLink = Regex("https?://[a-zA-Z0-9.-]+\\.(serveo\\.net|serveousercontent\\.com)").find(line!!)?.value
                             if (cleanLink != null) {
                                 val webhookBase = "$cleanLink/webhook"
                                 logger.i("WebhookGateway", "🌍 URL WEBHOOK ĐA KÊNH CỦA BẠN: $webhookBase")
 
-                                // ✅ Cập nhật notification hiển thị domain thật, không tạo thông báo mới
+                                // Cập nhật thông báo hiển thị domain thật lên thanh trạng thái
                                 updateNotification("Đã kết nối: $cleanLink")
                             }
                         }
@@ -319,6 +321,10 @@ class WebhookGatewayService : Service() {
             }
         }
     }
+
+
+
+  
 
     // ✅ ĐÃ SỬA: IMPORTANCE_LOW thay vì DEFAULT — im lặng hoàn toàn, không rung/kêu khi mạng chập chờn
     private fun createNotificationChannel() {
