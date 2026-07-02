@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.ChatRequest
@@ -251,11 +250,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    private fun getUniqueDeviceId(): String {
-        val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
-        return androidId?.lowercase()?.replace(Regex("[^a-z0-9]"), "")?.takeIf { it.isNotBlank() } ?: "defaultdevice"
-    }
-
     private fun getOrCreateSshKey(): String {
         val keyFile = File(filesDir, "id_rsa")
         if (!keyFile.exists()) {
@@ -275,8 +269,6 @@ class WebhookGatewayService : Service() {
     private fun startEmbeddedSSHTunnel() {
         serviceScope.launch(Dispatchers.IO) {
             val privateKeyPath = getOrCreateSshKey()
-            val deviceId = getUniqueDeviceId()
-            val desiredSubdomain = "aichat-$deviceId"
 
             while (isActive) {
                 try {
@@ -290,8 +282,10 @@ class WebhookGatewayService : Service() {
                     sshSession?.setConfig(config)
 
                     sshSession?.connect(15000)
-                    sshSession?.setPortForwardingR(desiredSubdomain, 80, "127.0.0.1", 8080)
-                    logger.i("WebhookGateway", "🟢 Đăng ký hầm đa kênh thành công! Subdomain cố định: $desiredSubdomain")
+                    // ✅ ĐÃ SỬA: KHÔNG chỉ định tên subdomain riêng nữa (gây đòi đăng ký key qua trình duyệt).
+                    // Để Serveo tự cấp subdomain theo IP + username SSH — thường giữ nguyên giữa các lần kết nối lại.
+                    sshSession?.setPortForwardingR(80, "127.0.0.1", 8080)
+                    logger.i("WebhookGateway", "🟢 Đã gửi yêu cầu đăng ký hầm đa kênh, đang chờ Serveo cấp domain...")
 
                     val channel = sshSession?.openChannel("shell")
                     val inputStream = channel?.inputStream
@@ -302,9 +296,9 @@ class WebhookGatewayService : Service() {
                     while (reader.readLine().also { line = it } != null) {
                         logger.d("WebhookGateway", "Serveo: $line")
 
-                        // ✅ ĐÃ SỬA: Bắt trọn cụm URL bằng regex thay vì split + lọc ký tự,
-                        // tránh bị dính chữ "http" thừa vào domain
-                        if (line?.contains("serveo.net") == true) {
+                        // ✅ ĐÃ SỬA: Chỉ trích domain từ đúng dòng "Forwarding HTTP traffic from",
+                        // KHÔNG bắt nhầm link đăng ký key (console.serveo.net/ssh/keys?add=...)
+                        if (line?.contains("Forwarding HTTP traffic from") == true) {
                             val cleanLink = Regex("https?://[a-zA-Z0-9.-]+\\.serveo\\.net").find(line!!)?.value
                             if (cleanLink != null) {
                                 val webhookBase = "$cleanLink/webhook"
