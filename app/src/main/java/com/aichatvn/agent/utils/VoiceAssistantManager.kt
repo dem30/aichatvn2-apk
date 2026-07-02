@@ -193,12 +193,18 @@ class VoiceAssistantManager @Inject constructor(
                             transitionTo(VoiceState.IDLE)
                         } else {
                             transitionTo(VoiceState.RESTARTING)
-                            val delay = when (errorCode) {
-                                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 200L
-                                SpeechRecognizer.ERROR_NO_MATCH,
-                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 300L
-                                else -> 1500L
-                            }
+
+                            
+                            // ĐOẠN CODE MỚI:
+val delay = when (errorCode) {
+    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1200L // ✅ Tăng lên 1.2 giây để tránh dồn ép phần cứng
+    SpeechRecognizer.ERROR_NO_MATCH,
+    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 1000L  // ✅ Tăng lên 1 giây để chu kỳ mượt mà hơn
+    else -> 1500L
+}
+
+
+                            
                             scheduleRestart(delayMs = delay)
                         }
                     }
@@ -242,10 +248,15 @@ class VoiceAssistantManager @Inject constructor(
                     )
                 )
                 _aiResponseText.emit(result.responseText)
-                speak(result.responseText) {
-                    transitionTo(VoiceState.RESTARTING)
-                    startListening()
-                }
+               
+              // ĐOẠN CODE MỚI:
+speak(result.responseText) {
+    transitionTo(VoiceState.RESTARTING)
+    scheduleRestart(delayMs = 800L) // ✅ Chờ 800ms để loa ngoài xả hết âm thanh rồi mới bật lại Mic
+}
+
+
+                
             } catch (e: Exception) {
                 logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)
                 speak("Xin lỗi, hệ thống gặp sự cố khi xử lý câu lệnh.") {
