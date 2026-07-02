@@ -44,13 +44,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+// Biến tĩnh cấp tiến trình để kiểm tra lần đầu mở app (Cold Start)
+private var isColdStart = true
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     navController: NavController,
     viewModel: ChatViewModel = hiltViewModel()
 ) {
-    val context = LocalContext.current
     val messages by viewModel.messages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val chatMode by viewModel.chatMode.collectAsState()
@@ -67,7 +69,6 @@ fun ChatScreen(
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var selectedChipTab by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
     
     var typingMessage by remember { mutableStateOf("") }
     var isTyping by remember { mutableStateOf(false) }
@@ -107,20 +108,35 @@ fun ChatScreen(
         viewModel.updateLockedPluginStatus()
     }
 
-    // ✅ 1. TỰ ĐỘNG BẬT MIC KHI DỮ LIỆU ĐÃ LOAD XONG TỪ DATABASE/PREFERENCES (Đặt ở cấp cao nhất)
+    // TỰ ĐỘNG BẬT MIC KHI DỮ LIỆU ĐÃ LOAD XONG TỪ DATABASE/PREFERENCES (Đặt ở cấp cao nhất)
     LaunchedEffect(voiceModeActive) {
-        if (voiceModeActive && !isListening) {
+        if (!isColdStart && voiceModeActive && !isListening) {
             viewModel.onForeground()
+        }
+    }
+
+    // QUẢN LÝ LẦN ĐẦU KHỞI ĐỘNG (COLD START)
+    LaunchedEffect(Unit) {
+        delay(300) // Chờ 300ms đảm bảo preferences/database đã load xong dữ liệu cũ
+        if (isColdStart) {
+            if (voiceModeActive) {
+                viewModel.toggleVoiceMode() // Nếu bật từ phiên trước, chủ động tắt đi ở lần đầu mở app
+            }
+            isColdStart = false // Đánh dấu đã vượt qua bước khởi động lạnh thành công
         }
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     
-    // ✅ 2. ĐƯA DISPOSABLE EFFECT VỀ ĐÚNG CÚ PHÁP CHUẨN CỦA COMPOSE
+    // ĐƯA DISPOSABLE EFFECT VỀ ĐÚNG CÚ PHÁP CHUẨN CỦA COMPOSE
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> viewModel.onForeground()
+                Lifecycle.Event.ON_START -> {
+                    if (!isColdStart && voiceModeActive) {
+                        viewModel.onForeground()
+                    }
+                }
                 Lifecycle.Event.ON_STOP  -> viewModel.onBackground()
                 else -> {}
             }
@@ -128,7 +144,7 @@ fun ChatScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { 
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // ✅ QUAN TRỌNG: Khi rời màn hình Chat (chuyển tab hoặc đóng màn hình), tắt mic ngay lập tức!
+            // QUAN TRỌNG: Khi rời màn hình Chat (chuyển tab hoặc đóng màn hình), tắt mic ngay lập tức!
             viewModel.onBackground() 
         }
     }
@@ -162,47 +178,26 @@ fun ChatScreen(
                             expanded = expandedMenu,
                             onDismissRequest = { expandedMenu = false }
                         ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (chatMode == ChatMode.GROQ) {
-                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        Text("🤖 Groq AI (Mặc định)")
-                                    }
-                                },
-                                onClick = {
+                            ModeMenuItem(
+                                label = "🤖 Groq AI (Mặc định)",
+                                selected = chatMode == ChatMode.GROQ,
+                                onSelect = {
                                     viewModel.setChatMode(ChatMode.GROQ)
                                     expandedMenu = false
                                 }
                             )
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (chatMode == ChatMode.QA) {
-                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        Text("📚 Q&A Database")
-                                    }
-                                },
-                                onClick = {
+                            ModeMenuItem(
+                                label = "📚 Q&A Database",
+                                selected = chatMode == ChatMode.QA,
+                                onSelect = {
                                     viewModel.setChatMode(ChatMode.QA)
                                     expandedMenu = false
                                 }
                             )
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (chatMode == ChatMode.COMBINED) {
-                                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                                            Spacer(Modifier.width(8.dp))
-                                        }
-                                        Text("🔄 Kết hợp (QA + AI)")
-                                    }
-                                },
-                                onClick = {
+                            ModeMenuItem(
+                                label = "🔄 Kết hợp (QA + AI)",
+                                selected = chatMode == ChatMode.COMBINED,
+                                onSelect = {
                                     viewModel.setChatMode(ChatMode.COMBINED)
                                     expandedMenu = false
                                 }
@@ -482,6 +477,30 @@ fun ChatScreen(
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun ModeMenuItem(
+    label: String,
+    selected: Boolean,
+    onSelect: () -> Unit
+) {
+    DropdownMenuItem(
+        text = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (selected) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(label)
+            }
+        },
+        onClick = onSelect
+    )
+}
 
 @Composable
 private fun GroqRateLimitLabel(
