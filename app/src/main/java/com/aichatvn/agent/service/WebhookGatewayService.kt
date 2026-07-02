@@ -41,7 +41,7 @@ class WebhookGatewayService : Service() {
     @Inject
     lateinit var logger: Logger
 
-    // ✅ Tinh tế: Nạp động Set các Plugin để tránh lỗi biên dịch của Hilt khi chưa tạo Zalo/WhatsApp/Telegram Skill
+    // Nạp động Set các Plugin để tránh lỗi biên dịch khi chưa khởi tạo đủ Zalo/WhatsApp/Telegram Skill
     @Inject
     lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
 
@@ -122,7 +122,7 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'fbText' và 'fbPsid' từ JSON thô
+                                        // TODO: Phân tách 'fbText' và 'fbPsid' từ JSON thô của FB
                                         val fbText = "Tin nhắn test từ FB"
                                         val fbPsid = "fb_sender_id_placeholder"
 
@@ -156,7 +156,7 @@ class WebhookGatewayService : Service() {
 
                                         val reply = agentKernel.chat(ChatRequest(message = igText, username = igPsid, chatMode = "COMBINED"))
                                         
-                                        // Tương lai: Gọi instagramSkill nếu có, hoặc dùng chung facebookSkill (Instagram API chung hạ tầng Graph API)
+                                        // Gọi plugin Instagram (chung hạ tầng Graph API với FB)
                                         findPlugin("instagram")?.execute("send_messenger", mapOf("recipient_id" to igPsid, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK)
@@ -168,13 +168,8 @@ class WebhookGatewayService : Service() {
                                 post {
                                     val body = call.receiveText()
                                     serviceScope.launch {
-                                        // TODO: Phân tách 'zaloText' và 'zaloUserId'
-                                        val zaloText = "Tin nhắn test từ Zalo"
-                                        val zaloUserId = "zalo_user_id_placeholder"
-
-                                        val reply = agentKernel.chat(ChatRequest(message = zaloText, username = zaloUserId, chatMode = "COMBINED"))
-                                        
-                                        // Gọi Zalo Skill tự nhận diện động sau này khi bạn khởi tạo file
+                                        val reply = agentKernel.chat(ChatRequest(message = zaloText, username = zaloUserId))
+                                        // Gọi zaloSkill để gửi tin nhắn CSKH Zalo OA
                                         findPlugin("zalo")?.execute("send_message", mapOf("recipient_id" to zaloUserId, "message" to reply.responseText))
                                     }
                                     call.respond(io.ktor.http.HttpStatusCode.OK)
@@ -287,11 +282,14 @@ class WebhookGatewayService : Service() {
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
                         logger.d("WebhookGateway", "Serveo: $line")
-                        if (line?.contains("serveo.net") == true) {
+                        
+                        // ✅ ĐÃ SỬA: Chỉ lọc đúng dòng thông báo Forwarding thực tế từ máy chủ Serveo
+                        if (line?.contains("Forwarding HTTP traffic from") == true) {
                             val extractedLink = line!!.split(" ").find { it.contains("serveo.net") }
                             if (extractedLink != null) {
-                                val cleanLink = extractedLink.replace(Regex("[^a-zA-Z0-9.-]"), "")
-                                logger.i("WebhookGateway", "🌍 URL WEBHOOK ĐA KÊNH CỦA BẠN: https://$cleanLink/webhook/...")
+                                // Loại bỏ ký tự màu ANSI dư thừa, chỉ giữ lại định dạng liên kết chuẩn
+                                val cleanLink = extractedLink.replace(Regex("[^a-zA-Z0-9.:/-]"), "")
+                                logger.i("WebhookGateway", "🌍 URL WEBHOOK ĐA KÊNH CỦA BẠN: $cleanLink/webhook")
                             }
                         }
                     }
