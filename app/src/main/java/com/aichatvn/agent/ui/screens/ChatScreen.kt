@@ -108,12 +108,7 @@ fun ChatScreen(
         viewModel.updateLockedPluginStatus()
     }
 
-    // TỰ ĐỘNG BẬT MIC KHI DỮ LIỆU ĐÃ LOAD XONG TỪ DATABASE/PREFERENCES (Đặt ở cấp cao nhất)
-    LaunchedEffect(voiceModeActive) {
-        if (!isColdStart && voiceModeActive && !isListening) {
-            viewModel.onForeground()
-        }
-    }
+    
 
     // QUẢN LÝ LẦN ĐẦU KHỞI ĐỘNG (COLD START)
     LaunchedEffect(Unit) {
