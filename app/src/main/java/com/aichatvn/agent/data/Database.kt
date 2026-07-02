@@ -417,6 +417,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
+                    // ✅ BỔ SUNG: Cho phép đọc ghi đồng thời từ nhiều luồng mà không bị nghẽn (Lock DB)
+                    .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                     .addMigrations(
                         MIGRATION_1_2, 
                         MIGRATION_2_3, 
@@ -424,7 +426,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_5_6, 
                         MIGRATION_6_7, 
                         MIGRATION_7_8,
-                        MIGRATION_8_9 // Khai báo nạp MIGRATION 8 -> 9
+                        MIGRATION_8_9
                     )
                     .build()
                 INSTANCE = instance

@@ -1,11 +1,14 @@
 package com.aichatvn.agent
 
 import android.app.Application
+import android.content.Intent
+import android.os.Build
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.QAInitBuilder
 import com.aichatvn.agent.scheduler.TaskScheduler
+import com.aichatvn.agent.service.WebhookGatewayService
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +42,19 @@ class MainApplication : Application(), Configuration.Provider {
         initializePlugins()
 
         TaskScheduler.ensureRunning(this)
+
+        // ✅ ĐÃ SỬA: Tự động khởi chạy WebhookGatewayService khi mở ứng dụng
+        try {
+            val serviceIntent = Intent(this, WebhookGatewayService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            logger.i("MainApplication", "🚀 WebhookGatewayService started successfully on App Launch")
+        } catch (e: Exception) {
+            logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
+        }
     }
 
     private fun initializePlugins() {
@@ -46,7 +62,6 @@ class MainApplication : Application(), Configuration.Provider {
             plugins.forEach { plugin ->
                 try {
                     plugin.initialize()
-                    // ✅ ĐÃ SỬA: Sửa plugin.id thành plugin.manifest.id để đồng nhất (hoặc plugin.id nhờ cầu nối tương thích)
                     logger.i("MainApplication", "✅ Initialized plugin: ${plugin.manifest.id}")
                 } catch (e: Exception) {
                     logger.e("MainApplication", "❌ Failed to initialize ${plugin.manifest.id}", e)

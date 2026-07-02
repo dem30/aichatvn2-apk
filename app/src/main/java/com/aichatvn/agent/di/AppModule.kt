@@ -91,6 +91,18 @@ object AppModule {
     @Singleton
     fun provideVisionPlugin(skill: VisionPlugin): Plugin = skill
 
+    // Đăng ký Plugin Quản gia tự động mới
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideHousekeeperSkill(skill: HousekeeperSkill): Plugin = skill
+
+    // Đăng ký Plugin Facebook Assistant mới
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideFacebookSkill(skill: FacebookSkill): Plugin = skill
+
     @Provides
     @Singleton
     fun provideAppConfigProvider(

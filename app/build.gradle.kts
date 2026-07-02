@@ -142,10 +142,6 @@ dependencies {
     // DataStore
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
-    // ✅ Đã bỏ io.github.ljcamargo:llamacpp-kotlin — không còn LLM cục bộ (LocalRouterEngine
-    // đã xoá), routing + chat giờ qua Groq API (xem GroqClientTool.kt). Lý do bỏ: crash
-    // SIGILL trên CPU yếu/cũ không có dotprod/i8mm (vd Cortex-A53 trên Helio G36).
-
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
@@ -164,6 +160,13 @@ dependencies {
     implementation("androidx.hilt:hilt-work:1.2.0")
     ksp("androidx.hilt:hilt-compiler:1.2.0")
     implementation("androidx.lifecycle:lifecycle-process:2.7.0")
+
+    // ===== ✅ BỔ SUNG: Ktor Server Webhook Facebook =====
+    implementation("io.ktor:ktor-server-core:2.3.12")
+    implementation("io.ktor:ktor-server-netty:2.3.12")
+    implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
+    implementation("io.ktor:ktor-serialization-gson:2.3.12")
+    implementation("com.jcraft:jsch:0.1.55")
 }
 
 kapt {

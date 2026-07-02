@@ -3,30 +3,12 @@ package com.aichatvn.agent.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import com.aichatvn.agent.scheduler.TaskScheduler
+import com.aichatvn.agent.service.WebhookGatewayService
 
 /**
- * Khởi động lại TaskScheduler sau khi thiết bị reboot.
- *
- * WorkManager periodic work bị huỷ khi thiết bị tắt nguồn — BroadcastReceiver này
- * đăng ký BOOT_COMPLETED để tự động schedule lại ngay khi Android khởi động xong.
- *
- * Bắt buộc khai báo trong AndroidManifest.xml:
- *
- * <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
- *
- * <receiver
- *     android:name=".receiver.BootReceiver"
- *     android:enabled="true"
- *     android:exported="true">
- *     <intent-filter>
- *         <action android:name="android.intent.action.BOOT_COMPLETED" />
- *         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
- *     </intent-filter>
- * </receiver>
- *
- * MY_PACKAGE_REPLACED: tự restart sau khi app được update (WorkManager cũng bị
- * cancel khi APK được replace).
+ * Khởi động lại TaskScheduler và WebhookGatewayService sau khi thiết bị reboot hoặc ứng dụng được cập nhật.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -34,6 +16,18 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 TaskScheduler.ensureRunning(context)
+                
+                // ✅ ĐÃ SỬA: Tự động khởi chạy lại WebhookGatewayService đa kênh sau reboot
+                try {
+                    val serviceIntent = Intent(context, WebhookGatewayService::class.java)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(serviceIntent)
+                    } else {
+                        context.startService(serviceIntent)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
