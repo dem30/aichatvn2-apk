@@ -182,6 +182,7 @@ private fun CustomerDialog(
     onDismiss: () -> Unit,
     onSave: (id: String?, name: String, email: String, address: String, note: String) -> Unit
 ) {
+    var id      by remember { mutableStateOf(customer?.id      ?: "") }
     var name    by remember { mutableStateOf(customer?.name    ?: "") }
     var email   by remember { mutableStateOf(customer?.email   ?: "") }
     var address by remember { mutableStateOf(customer?.address ?: "") }
@@ -198,6 +199,14 @@ private fun CustomerDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                OutlinedTextField(
+                    value = id,
+                    onValueChange = { id = it },
+                    label = { Text("Mã khách hàng *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = customer == null,
+                    singleLine = true
+                )
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -231,8 +240,8 @@ private fun CustomerDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(customer?.id, name, email, address, note) },
-                enabled = !isLoading && name.isNotBlank()
+                onClick = { onSave(id.trim(), name, email, address, note) },
+                enabled = !isLoading && name.isNotBlank() && id.isNotBlank()
             ) {
                 if (isLoading) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 else Text("Lưu")

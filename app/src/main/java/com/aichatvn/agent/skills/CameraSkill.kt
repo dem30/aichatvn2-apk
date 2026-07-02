@@ -128,7 +128,7 @@ class CameraSkill @Inject constructor(
     private val database by lazy { AppDatabase.getDatabase(context) }
     private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()
     private fun getMutexForCamera(cameraId: String): Mutex =
-        cameraMutexMap.getOrPut(cameraId) { Mutex() }
+        cameraMutexMap.getOrPut(cameraId.trim()) { Mutex() }
     
     private data class CameraLearningState(
         var lastPhash: String = "",
@@ -186,7 +186,6 @@ class CameraSkill @Inject constructor(
     private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
     private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
     
-    // ✅ ĐÃ SỬA: Gọi thông qua hàm getLong() gọn gàng, an toàn của configProvider
     private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
     
@@ -212,13 +211,13 @@ class CameraSkill @Inject constructor(
             val isOnline = cam.isOnline == 1
 
             DeviceNode(
-                id = cam.id,
+                id = cam.id.trim(),
                 name = cam.customername,
                 type = DeviceType.CAMERA,
                 pluginId = manifest.id,
                 
                 defaultAction = "scan",
-                defaultParams = mapOf("cameraId" to cam.id),
+                defaultParams = mapOf("cameraId" to cam.id.trim()),
                 supportedActions = listOf(
                     DashboardDeviceAction(id = "scan", title = "Quét camera", icon = "📸"),
                     DashboardDeviceAction(id = "status", title = "Trạng thái", icon = "ℹ️"),
@@ -254,7 +253,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun handleConfigure(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
-        val cameraId = params["cameraId"] as? String
+        val cameraId = (params["cameraId"] as? String)?.trim()
             ?: return@withContext PluginResult.Failure("Thiếu cameraId. Dùng action list_cameras để xem danh sách camera.")
         val cam = database.cameraDao().getCameraById(cameraId)
             ?: return@withContext PluginResult.Failure("Không tìm thấy camera id=$cameraId")
@@ -288,19 +287,19 @@ class CameraSkill @Inject constructor(
         if (cameras.isEmpty()) return@withContext PluginResult.Success(mapOf("message" to "Chưa có camera nào"))
         val list = cameras.map { c ->
             mapOf(
-                "id" to c.id,
+                "id" to c.id.trim(),
                 "name" to c.customername,
                 "url" to c.snapshoturl,
                 "active" to (c.manualOff == 0),
                 "online" to (c.isOnline == 1)
             )
         }
-        val summary = cameras.joinToString("\n") { "• ${it.customername} (id: ${it.id})" }
+        val summary = cameras.joinToString("\n") { "• ${it.customername} (id: ${it.id.trim()})" }
         PluginResult.Success(mapOf("cameras" to list, "message" to "Danh sách camera:\n$summary"))
     }
 
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
-        val cameraId = params["cameraId"] as? String
+        val cameraId = (params["cameraId"] as? String)?.trim()
         val result = scanCamera(cameraId, false)
 
         return when (result) {
@@ -322,7 +321,7 @@ class CameraSkill @Inject constructor(
 
                     for (r in results) {
                         val cam = r as? Map<*, *> ?: continue
-                        val id = cam["cameraId"] as? String ?: continue
+                        val id = (cam["cameraId"] as? String)?.trim() ?: continue
                         val success = cam["success"] as? Boolean ?: false
                         if (!success) {
                             val err = cam["error"] as? String ?: "lỗi không xác định"
@@ -350,7 +349,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun handleStatus(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
-        val cameraId = params["cameraId"] as? String
+        val cameraId = (params["cameraId"] as? String)?.trim()
             ?: return@withContext PluginResult.Failure("Thiếu cameraId. Dùng action list_cameras để xem danh sách.")
 
         val cam = database.cameraDao().getCameraById(cameraId)
@@ -361,10 +360,10 @@ class CameraSkill @Inject constructor(
         val cb = circuitBreakers[cameraId]
 
         val text = buildString {
-            append("📷 Camera: ${cam.customername} (id: ${cam.id})\n")
+            append("📷 Camera: ${cam.customername} (id: ${cam.id.trim()})\n")
             append("• Trạng thái kết nối: ${if (cam.isOnline == 1) "🟢 Online" else "🔴 Offline"}\n")
             append("• Theo dõi: ${if (cam.manualOff == 0) "Bật" else "Tắt (thủ công)"}\n")
-            append("• Khách hàng: ${cam.customerId} — ${if (setting?.isActive == 1) "Active" else "Inactive"}\n")
+            append("• Khách hàng: ${cam.customerId.trim()} — ${if (setting?.isActive == 1) "Active" else "Inactive"}\n")
             append("• AI Smart Mode: ${if (setting?.smartMode == 1) "Bật" else "Tắt"}\n")
             if (cam.landinfo != null) append("• Vị trí: ${cam.landinfo}\n")
             if (diag != null) {
@@ -383,7 +382,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun handleSetActive(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
-        val cameraId = params["cameraId"] as? String
+        val cameraId = (params["cameraId"] as? String)?.trim()
             ?: return@withContext PluginResult.Failure("Bạn muốn bật/tắt camera nào? Dùng list_cameras để xem danh sách.")
 
         val active = params["active"] as? Boolean
@@ -402,7 +401,7 @@ class CameraSkill @Inject constructor(
         database.cameraDao().updateCamera(cam.copy(manualOff = newManualOff))
         logger.i("CameraSkill", "set_active cameraId=$cameraId active=$active (manualOff=$newManualOff)")
 
-        deviceRegistry.updateNode(cam.id) { current ->
+        deviceRegistry.updateNode(cam.id.trim()) { current ->
             current.copy(
                 online = active,
                 status = if (active) "Đang hoạt động" else "Đã tắt",
@@ -425,20 +424,20 @@ class CameraSkill @Inject constructor(
         val resolvedCustomerId: String
         val cameraName: String
 
-        val cameraId = params["cameraId"] as? String
+        val cameraId = (params["cameraId"] as? String)?.trim()
         if (cameraId != null) {
             val cam = database.cameraDao().getCameraById(cameraId)
                 ?: return@withContext PluginResult.Failure("Không tìm thấy camera id=$cameraId. Dùng list_cameras để xem danh sách đúng.")
-            resolvedCustomerId = cam.customerId
+            resolvedCustomerId = cam.customerId.trim()
             cameraName = cam.customername
         } else {
-            val customerId = params["customerId"] as? String
+            val customerId = (params["customerId"] as? String)?.trim()
                 ?: return@withContext PluginResult.Failure("Thiếu cameraId hoặc customerId. Dùng list_cameras để xem danh sách.")
             val setting = database.cameraDao().getCustomerSetting(customerId)
             if (setting == null) {
                 val cam = database.cameraDao().getCameraById(customerId)
                 if (cam != null) {
-                    resolvedCustomerId = cam.customerId
+                    resolvedCustomerId = cam.customerId.trim()
                     cameraName = cam.customername
                 } else {
                     return@withContext PluginResult.Failure("Không tìm thấy customerId=$customerId và cũng không phải cameraId hợp lệ.")
@@ -454,7 +453,7 @@ class CameraSkill @Inject constructor(
         if (result is PluginResult.Success) {
             val cameras = database.cameraDao().getCamerasByCustomer(resolvedCustomerId)
             cameras.forEach { camera ->
-                deviceRegistry.updateNode(camera.id) { current ->
+                deviceRegistry.updateNode(camera.id.trim()) { current ->
                     current.copy(
                         status = if (enabled) "AI Đang bật" else "AI Đang tắt"
                     )
@@ -481,8 +480,9 @@ class CameraSkill @Inject constructor(
             database.cameraDao().getActiveCameras()
         }
         cameras.forEach { camera ->
-            learningStates[camera.id] = CameraLearningState()
-            circuitBreakers[camera.id] = CircuitBreakerState()
+            val tid = camera.id.trim()
+            learningStates[tid] = CameraLearningState()
+            circuitBreakers[tid] = CircuitBreakerState()
         }
         updateDiagnostics()
         cleanupOldAlerts()
@@ -505,15 +505,16 @@ class CameraSkill @Inject constructor(
         try {
             pruneMutex.withLock {
                 val allIds = withContext(Dispatchers.IO) {
-                    database.cameraDao().getAllCamerasFlow().first().map { it.id }.toSet()
+                    database.cameraDao().getAllCamerasFlow().first().map { it.id.trim() }.toSet()
                 }
                 val orphans = (learningStates.keys + circuitBreakers.keys + pendingResets.keys + dailyEvents.keys + cameraMutexMap.keys) - allIds
                 orphans.forEach { id ->
-                    learningStates.remove(id)
-                    circuitBreakers.remove(id)
-                    pendingResets.remove(id)
-                    dailyEvents.remove(id)
-                    cameraMutexMap.remove(id)
+                    val tid = id.trim()
+                    learningStates.remove(tid)
+                    circuitBreakers.remove(tid)
+                    pendingResets.remove(tid)
+                    dailyEvents.remove(tid)
+                    cameraMutexMap.remove(tid)
                 }
                 if (orphans.isNotEmpty()) {
                     logger.i("CameraSkill", "🧹 Pruned ${orphans.size} orphaned camera state entries")
@@ -573,15 +574,16 @@ class CameraSkill @Inject constructor(
         try {
             val customers = withContext(Dispatchers.IO) {
                 database.cameraDao().getActiveCameras()
-            }.groupBy { it.customerId }
+            }.groupBy { it.customerId.trim() }
             
             for ((customerId, cameras) in customers) {
                 val events = mutableListOf<Map<String, Any>>()
                 for (camera in cameras) {
-                    val dailyEventsList = dailyEvents[camera.id] ?: continue
+                    val tid = camera.id.trim()
+                    val dailyEventsList = dailyEvents[tid] ?: continue
                     if (dailyEventsList.isNotEmpty()) {
                         events.add(mapOf(
-                            "cameraId" to camera.id,
+                            "cameraId" to tid,
                             "cameraName" to camera.customername,
                             "landInfo" to (camera.landinfo ?: "N/A"),
                             "events" to dailyEventsList.map { event ->
@@ -592,7 +594,7 @@ class CameraSkill @Inject constructor(
                             },
                             "hasImage" to dailyEventsList.any { it.imageBytes != null }
                         ))
-                        dailyEvents[camera.id]?.clear()
+                        dailyEvents[tid]?.clear()
                     }
                 }
                 
@@ -613,12 +615,12 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun sendDailySummaryEmail(to: String, customerId: String, events: List<Map<String, Any>>) {
-        val subject = "📋 BÁO CÁO GIÁM SÁT ĐỊNH KỲ - $customerId - ${DATE_FORMATTER.format(Instant.now())}"
+        val subject = "📋 BÁO CÁO GIÁM SÁT ĐỊNH KỲ - ${customerId.trim()} - ${DATE_FORMATTER.format(Instant.now())}"
         
         val body = buildString {
             append("<html><body style='font-family: Arial, sans-serif;'>")
             append("<h2>BÁO CÁO GIÁM SÁT </h2>")
-            append("<p>Xin chào Quý khách hàng <b>$customerId</b>,</p>")
+            append("<p>Xin chào Quý khách hàng <b>${customerId.trim()}</b>,</p>")
             append("<p>Hệ thống gửi báo cáo hôm nay (${events.size} camera có sự kiện):</p>")
             
             for (event in events) {
@@ -646,7 +648,8 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun isCircuitBreakerOpen(cameraId: String): Boolean {
-        val cb = circuitBreakers[cameraId] ?: return false
+        val tid = cameraId.trim()
+        val cb = circuitBreakers[tid] ?: return false
         if (!cb.isOpen) return false
 
         val elapsed = System.currentTimeMillis() - cb.offlineSince
@@ -655,12 +658,12 @@ class CameraSkill @Inject constructor(
         if (elapsed > resetMs) {
             if (!cb.halfOpenAttempted) {
                 cb.halfOpenAttempted = true
-                logger.i("CameraSkill", "🔁 Circuit Breaker HALF-OPEN for camera $cameraId - thử lại...")
+                logger.i("CameraSkill", "🔁 Circuit Breaker HALF-OPEN for camera $tid - thử lại...")
                 return false
             } else {
                 cb.offlineSince = System.currentTimeMillis()
                 cb.halfOpenAttempted = false
-                logger.w("CameraSkill", "🔌 Circuit Breaker reset timer for camera $cameraId")
+                logger.w("CameraSkill", "🔌 Circuit Breaker reset timer for camera $tid")
                 return true
             }
         }
@@ -668,37 +671,40 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun recordOffline(cameraId: String) {
-        val cb = circuitBreakers.getOrPut(cameraId) { CircuitBreakerState() }
+        val tid = cameraId.trim()
+        val cb = circuitBreakers.getOrPut(tid) { CircuitBreakerState() }
         cb.offlineCount++
         cb.halfOpenAttempted = false
         val threshold = circuitBreakerThreshold()
         if (cb.offlineCount >= threshold) {
             cb.isOpen = true
             cb.offlineSince = System.currentTimeMillis()
-            logger.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $cameraId (offline ${cb.offlineCount} times)")
+            logger.w("CameraSkill", "🔌 Circuit Breaker OPEN for camera $tid (offline ${cb.offlineCount} times)")
         }
     }
     
     private suspend fun recordOnline(cameraId: String) {
-        circuitBreakers[cameraId] = CircuitBreakerState()
-        deviceRegistry.updateOnlineStatus(cameraId, true, status = "Đang hoạt động")
+        val tid = cameraId.trim()
+        circuitBreakers[tid] = CircuitBreakerState()
+        deviceRegistry.updateOnlineStatus(tid, true, status = "Đang hoạt động")
     }
     
     private fun checkPendingReset(cameraId: String, currentDiff: Int, absDiffTrigger: Int): Boolean {
-        val pending = pendingResets[cameraId]
+        val tid = cameraId.trim()
+        val pending = pendingResets[tid]
         if (pending == null) return false
         
         val diffChange = kotlin.math.abs(currentDiff - pending.diff)
         val timeSince = System.currentTimeMillis() - pending.timestamp
         
         if (timeSince > 60 * 60 * 1000L && diffChange <= 5 && currentDiff >= absDiffTrigger / 2) {
-            logger.w("CameraSkill", "🔄 Pending Reset triggered for camera $cameraId - resetting learning state")
-            pendingResets.remove(cameraId)
+            logger.w("CameraSkill", "🔄 Pending Reset triggered for camera $tid - resetting learning state")
+            pendingResets.remove(tid)
             return true
         }
         
         if (currentDiff < absDiffTrigger / 2) {
-            pendingResets.remove(cameraId)
+            pendingResets.remove(tid)
         }
         
         return false
@@ -708,7 +714,7 @@ class CameraSkill @Inject constructor(
         return try {
             val cameras = if (cameraId != null) {
                 withContext(Dispatchers.IO) {
-                    listOfNotNull(database.cameraDao().getCameraById(cameraId))
+                    listOfNotNull(database.cameraDao().getCameraById(cameraId.trim()))
                 }
             } else {
                 withContext(Dispatchers.IO) {
@@ -733,17 +739,18 @@ class CameraSkill @Inject constructor(
             var skippedInactive = 0
 
             for (camera in cameras) {
-                if (!isDailyReport && isCircuitBreakerOpen(camera.id)) {
-                    logger.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera ${camera.id}")
+                val tid = camera.id.trim()
+                if (!isDailyReport && isCircuitBreakerOpen(tid)) {
+                    logger.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera $tid")
                     skippedCircuitBreaker++
                     continue
                 }
 
                 val customerSetting = withContext(Dispatchers.IO) {
-                    database.cameraDao().getCustomerSetting(camera.customerId)
+                    database.cameraDao().getCustomerSetting(camera.customerId.trim())
                 }
                 if (customerSetting?.isActive != 1) {
-                    logger.d("CameraSkill", "⏭️ Camera ${camera.id} skipped: " +
+                    logger.d("CameraSkill", "⏭️ Camera $tid skipped: " +
                         if (customerSetting == null) "không có customerSetting (chưa tạo?)"
                         else "isActive=${customerSetting.isActive} (không phải 1)")
                     skippedInactive++
@@ -779,19 +786,20 @@ class CameraSkill @Inject constructor(
     
     suspend fun processImage(cameraId: String, imageBytes: ByteArray): PluginResult {
         return try {
+            val tid = cameraId.trim()
             val camera = withContext(Dispatchers.IO) {
-                database.cameraDao().getCameraById(cameraId)
+                database.cameraDao().getCameraById(tid)
             }
             if (camera == null) {
-                logger.w("CameraSkill", "processImage: camera not found: $cameraId")
+                logger.w("CameraSkill", "processImage: camera not found: $tid")
                 return PluginResult.Failure("Camera not found")
             }
             
             val customerSetting = withContext(Dispatchers.IO) {
-                database.cameraDao().getCustomerSetting(camera.customerId)
+                database.cameraDao().getCustomerSetting(camera.customerId.trim())
             }
             if (customerSetting?.isActive != 1) {
-                logger.d("CameraSkill", "processImage: camera ${camera.id} is inactive, skipping")
+                logger.d("CameraSkill", "processImage: camera $tid is inactive, skipping")
                 return PluginResult.Success(mapOf("skipped" to true))
             }
             
@@ -809,12 +817,13 @@ class CameraSkill @Inject constructor(
         imageBytes: ByteArray,
         isSmartMode: Boolean
     ): Map<String, Any> {
-        return getMutexForCamera(camera.id).withLock {
-            val state = learningStates.getOrPut(camera.id) { CameraLearningState() }
+        val tid = camera.id.trim()
+        return getMutexForCamera(tid).withLock {
+            val state = learningStates.getOrPut(tid) { CameraLearningState() }
             val now = System.currentTimeMillis()
             
             try {
-                recordOnline(camera.id)
+                recordOnline(tid)
                 
                 val currentPhash = imageHashTool.calculatePhash(imageBytes)
                 val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
@@ -842,14 +851,14 @@ class CameraSkill @Inject constructor(
                 
                 val isMature = state.baselineWindow.size >= 3
                 
-                val shouldReset = checkPendingReset(camera.id, currentDiff, absDiffTrigger)
+                val shouldReset = checkPendingReset(tid, currentDiff, absDiffTrigger)
                 if (shouldReset) {
-                    learningStates[camera.id] = CameraLearningState(
+                    learningStates[tid] = CameraLearningState(
                         lastPhash = currentPhash,
                         lastDiff = currentDiff
                     )
                     return@withLock mapOf(
-                        "cameraId" to camera.id,
+                        "cameraId" to tid,
                         "success" to true,
                         "hasChange" to false,
                         "message" to "Learning reset due to stable scene change"
@@ -868,7 +877,7 @@ class CameraSkill @Inject constructor(
                             groqClient.analyzeImage(optimizedBytes, prompt)
                         }
                     } catch (e: TimeoutCancellationException) {
-                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id}, bỏ qua phân tích AI lần này")
+                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid, bỏ qua phân tích AI lần này")
                         "Không thể phân tích (AI timeout)"
                     }
                     aiComment = aiResult
@@ -893,7 +902,7 @@ class CameraSkill @Inject constructor(
                         state.realEvents++
                         state.cooldownUntil = now + cooldownDurationMs()
                         
-                        val cameraDailyEvents = dailyEvents.getOrPut(camera.id) { mutableListOf() }
+                        val cameraDailyEvents = dailyEvents.getOrPut(tid) { mutableListOf() }
                         cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
                         if (cameraDailyEvents.size > maxDailyEvents()) {
                             cameraDailyEvents.removeAt(0)
@@ -926,12 +935,12 @@ class CameraSkill @Inject constructor(
                             emailSent = emailSent
                         )
                         
-                        logger.i("CameraSkill", "🚨 ALERT detected for camera ${camera.id}: $aiComment")
+                        logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
                         
                     } else {
                         if (isMature && isSuddenChange) {
-                            pendingResets[camera.id] = PendingResetState(currentDiff, now)
-                            logger.i("CameraSkill", "⚠️ Pending reset for camera ${camera.id} - monitoring next cycle")
+                            pendingResets[tid] = PendingResetState(currentDiff, now)
+                            logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
                         }
                     }
                 }
@@ -971,12 +980,12 @@ class CameraSkill @Inject constructor(
                     }
                 }
                 
-                logger.d("CameraSkill", "📷 Camera ${camera.id} scanned, hasChange=$isSuddenChange")
+                logger.d("CameraSkill", "📷 Camera $tid scanned, hasChange=$isSuddenChange")
                 
                 updateDiagnostics()
                 
                 return@withLock mapOf(
-                    "cameraId" to camera.id,
+                    "cameraId" to tid,
                     "success" to true,
                     "hasChange" to isSuddenChange,
                     "isSuspicious" to isSuspicious,
@@ -991,7 +1000,7 @@ class CameraSkill @Inject constructor(
             } catch (e: Exception) {
                 logger.e("CameraSkill", "Error in processImageWithLearning: ${e.message}", e)
                 return@withLock mapOf(
-                    "cameraId" to camera.id,
+                    "cameraId" to tid,
                     "success" to false,
                     "error" to (e.message ?: "Unknown error")
                 )
@@ -1000,13 +1009,14 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
+        val tid = camera.id.trim()
         try {
             val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
             if (imageBytes == null) {
                 handleOfflineCamera(camera)
-                recordOffline(camera.id)
+                recordOffline(tid)
                 return mapOf(
-                    "cameraId" to camera.id,
+                    "cameraId" to tid,
                     "success" to false,
                     "error" to "Cannot fetch snapshot"
                 )
@@ -1017,7 +1027,7 @@ class CameraSkill @Inject constructor(
         } catch (e: Exception) {
             logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
             return mapOf(
-                "cameraId" to camera.id,
+                "cameraId" to tid,
                 "success" to false,
                 "error" to (e.message ?: "Unknown error")
             )
@@ -1025,11 +1035,12 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun scanForDailyReport(camera: CameraConfigEntity): Map<String, Any> {
+        val tid = camera.id.trim()
         return try {
             val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
             if (imageBytes == null) {
                 return mapOf(
-                    "cameraId" to camera.id,
+                    "cameraId" to tid,
                     "success" to false,
                     "error" to "Cannot fetch snapshot for daily report"
                 )
@@ -1042,12 +1053,12 @@ class CameraSkill @Inject constructor(
                     groqClient.analyzeImage(optimizedBytes, prompt)
                 }
             } catch (e: TimeoutCancellationException) {
-                logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=${camera.id} (daily report)")
+                logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid (daily report)")
                 "Không thể phân tích (AI timeout)"
             }
             
             mapOf(
-                "cameraId" to camera.id,
+                "cameraId" to tid,
                 "success" to true,
                 "aiComment" to aiComment,
                 "imageBytes" to optimizedBytes
@@ -1055,7 +1066,7 @@ class CameraSkill @Inject constructor(
             
         } catch (e: Exception) {
             mapOf(
-                "cameraId" to camera.id,
+                "cameraId" to tid,
                 "success" to false,
                 "error" to (e.message ?: "Unknown error")
             )
@@ -1063,12 +1074,13 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun handleOfflineCamera(camera: CameraConfigEntity) {
+        val tid = camera.id.trim()
         if (camera.isOnline != 0) {
             withContext(Dispatchers.IO) {
                 database.cameraDao().updateCamera(camera.copy(isOnline = 0, status = "offline"))
             }
             
-            deviceRegistry.updateOnlineStatus(camera.id, false, status = "Mất kết nối")
+            deviceRegistry.updateOnlineStatus(tid, false, status = "Mất kết nối")
             
             notificationSkill.sendNotification(
                 title = "Camera ${camera.customername} mất kết nối",
@@ -1079,7 +1091,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun sendAdminAlert(camera: CameraConfigEntity, reason: String) {
-        val subject = "🚨 [HỆ THỐNG] LỖI CAMERA: ${camera.customername} (${camera.id})"
+        val subject = "🚨 [HỆ THỐNG] LỖI CAMERA: ${camera.customername} (${camera.id.trim()})"
         val body = """
             <html>
             <body>
@@ -1087,8 +1099,8 @@ class CameraSkill @Inject constructor(
                 <p>Hệ thống phát hiện sự cố tại thiết bị camera giám sát thửa đất:</p>
                 <table>
                     <tr><td><strong>Tên Camera:</strong></td><td>${camera.customername}</td></tr>
-                    <tr><td><strong>Mã Camera:</strong></td><td>${camera.id}</td></tr>
-                    <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId}</td></tr>
+                    <tr><td><strong>Mã Camera:</strong></td><td>${camera.id.trim()}</td></tr>
+                    <tr><td><strong>Mã Khách hàng:</strong></td><td>${camera.customerId.trim()}</td></tr>
                     <tr><td><strong>Thời gian:</strong></td><td>${DATETIME_FORMATTER.format(Instant.now())}</td></tr>
                 </table>
                 <div style="background: #fef2f2; padding: 10px; border-left: 4px solid #dc2626;">
@@ -1107,26 +1119,27 @@ class CameraSkill @Inject constructor(
     
     suspend fun saveCameraConfig(config: Map<String, Any>): PluginResult {
         return try {
-            val id = config["id"] as? String ?: return PluginResult.Failure("Missing camera id")
+            val id = (config["id"] as? String)?.trim() ?: return PluginResult.Failure("Missing camera id")
+            val customerId = (config["customerId"] as? String)?.trim() ?: ""
             val existing = withContext(Dispatchers.IO) {
                 database.cameraDao().getCameraById(id)
             }
 
             val camera = CameraConfigEntity(
                 id = id,
-                customerId = config["customerId"] as? String ?: existing?.customerId ?: "",
-                customername = config["customername"] as? String ?: existing?.customername ?: "",
-                customeremail = config["customeremail"] as? String ?: existing?.customeremail ?: "",
-                snapshoturl = config["snapshoturl"] as? String ?: existing?.snapshoturl ?: "",
-                landinfo = config["landinfo"] as? String ?: existing?.landinfo,
+                customerId = customerId,
+                customername = (config["customername"] as? String ?: existing?.customername ?: "").trim(),
+                customeremail = (config["customeremail"] as? String ?: existing?.customeremail ?: "").trim(),
+                snapshoturl = (config["snapshoturl"] as? String ?: existing?.snapshoturl ?: "").trim(),
+                landinfo = (config["landinfo"] as? String ?: existing?.landinfo)?.trim(),
                 snapshotPath = existing?.snapshotPath,
                 timestamp = System.currentTimeMillis(),
                 status = config["status"] as? String ?: existing?.status ?: "online",
                 isOnline = (config["isOnline"] as? Int) ?: (config["isOnline"] as? Number)?.toInt() ?: existing?.isOnline ?: 1,
                 manualOff = (config["manualOff"] as? Int) ?: (config["manualOff"] as? Number)?.toInt() ?: existing?.manualOff ?: 0,
-                aiPrompt = config["aiPrompt"] as? String ?: existing?.aiPrompt ?: "",
-                aiPositiveKeywords = config["aiPositiveKeywords"] as? String ?: existing?.aiPositiveKeywords ?: "",
-                aiNegativeKeywords = config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: ""
+                aiPrompt = (config["aiPrompt"] as? String ?: existing?.aiPrompt ?: "").trim(),
+                aiPositiveKeywords = (config["aiPositiveKeywords"] as? String ?: existing?.aiPositiveKeywords ?: "").trim(),
+                aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim()
             )
             
             withContext(Dispatchers.IO) {
@@ -1148,9 +1161,10 @@ class CameraSkill @Inject constructor(
                 )
             }
             
-            if (!learningStates.containsKey(camera.id)) {
-                learningStates[camera.id] = CameraLearningState()
-                circuitBreakers[camera.id] = CircuitBreakerState()
+            val tid = camera.id.trim()
+            if (!learningStates.containsKey(tid)) {
+                learningStates[tid] = CameraLearningState()
+                circuitBreakers[tid] = CircuitBreakerState()
             }
             
             syncToDeviceRegistry()
@@ -1165,14 +1179,15 @@ class CameraSkill @Inject constructor(
     
     suspend fun deleteCamera(cameraId: String): PluginResult {
         return try {
+            val tid = cameraId.trim()
             withContext(Dispatchers.IO) {
-                database.cameraDao().deleteCamera(cameraId)
+                database.cameraDao().deleteCamera(tid)
             }
-            learningStates.remove(cameraId)
-            circuitBreakers.remove(cameraId)
-            pendingResets.remove(cameraId)
-            dailyEvents.remove(cameraId)
-            cameraMutexMap.remove(cameraId)
+            learningStates.remove(tid)
+            circuitBreakers.remove(tid)
+            pendingResets.remove(tid)
+            dailyEvents.remove(tid)
+            cameraMutexMap.remove(tid)
             
             syncToDeviceRegistry()
             
@@ -1184,20 +1199,22 @@ class CameraSkill @Inject constructor(
     
     suspend fun deleteCustomer(customerId: String): PluginResult {
         return try {
+            val trimmedCustomerId = customerId.trim()
             val cameras = withContext(Dispatchers.IO) {
-                database.cameraDao().getCamerasByCustomer(customerId)
+                database.cameraDao().getCamerasByCustomer(trimmedCustomerId)
             }
             withContext(Dispatchers.IO) {
-                database.cameraDao().deleteCamerasByCustomer(customerId)
-                database.cameraDao().deleteCustomerSetting(customerId)
+                database.cameraDao().deleteCamerasByCustomer(trimmedCustomerId)
+                database.cameraDao().deleteCustomerSetting(trimmedCustomerId)
             }
             
             cameras.forEach { camera ->
-                learningStates.remove(camera.id)
-                circuitBreakers.remove(camera.id)
-                pendingResets.remove(camera.id)
-                dailyEvents.remove(camera.id)
-                cameraMutexMap.remove(camera.id)
+                val tid = camera.id.trim()
+                learningStates.remove(tid)
+                circuitBreakers.remove(tid)
+                pendingResets.remove(tid)
+                dailyEvents.remove(tid)
+                cameraMutexMap.remove(tid)
             }
             
             syncToDeviceRegistry()
@@ -1210,8 +1227,9 @@ class CameraSkill @Inject constructor(
     
     suspend fun setSmartMode(customerId: String, enabled: Boolean): PluginResult {
         return try {
+            val trimmedCustomerId = customerId.trim()
             withContext(Dispatchers.IO) {
-                database.cameraDao().updateSmartMode(customerId, enabled, System.currentTimeMillis())
+                database.cameraDao().updateSmartMode(trimmedCustomerId, enabled, System.currentTimeMillis())
             }
             PluginResult.Success(mapOf("message" to "Smart mode updated"))
         } catch (e: Exception) {
@@ -1221,8 +1239,9 @@ class CameraSkill @Inject constructor(
     
     suspend fun setCustomerActive(customerId: String, active: Boolean): PluginResult {
         return try {
+            val trimmedCustomerId = customerId.trim()
             withContext(Dispatchers.IO) {
-                database.cameraDao().updateActiveStatus(customerId, active, System.currentTimeMillis())
+                database.cameraDao().updateActiveStatus(trimmedCustomerId, active, System.currentTimeMillis())
             }
             PluginResult.Success(mapOf("message" to "Customer status updated"))
         } catch (e: Exception) {
@@ -1284,14 +1303,16 @@ class CameraSkill @Inject constructor(
     }
 
     fun resetCircuitBreaker(cameraId: String) {
-        circuitBreakers[cameraId] = CircuitBreakerState()
-        learningStates[cameraId] = CameraLearningState()
-        logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $cameraId")
+        val tid = cameraId.trim()
+        circuitBreakers[tid] = CircuitBreakerState()
+        learningStates[tid] = CameraLearningState()
+        logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $tid")
     }
 
     fun resetAllCircuitBreakers() {
         circuitBreakers.keys.forEach { id ->
-            circuitBreakers[id] = CircuitBreakerState()
+            val tid = id.trim()
+            circuitBreakers[tid] = CircuitBreakerState()
         }
         logger.i("CameraSkill", "🔄 All Circuit Breakers reset manually")
     }
@@ -1300,7 +1321,8 @@ class CameraSkill @Inject constructor(
     
     private suspend fun updateDiagnostics() {
         val stats = learningStates.mapValues { (cameraId, state) ->
-            val cb = circuitBreakers[cameraId]
+            val tid = cameraId.trim()
+            val cb = circuitBreakers[tid]
             mapOf(
                 "samples" to state.falseDeltas.size,
                 "realEvents" to state.realEvents,
@@ -1310,7 +1332,7 @@ class CameraSkill @Inject constructor(
                 "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
                 "circuitBreakerOpen" to (cb?.isOpen ?: false),
                 "offlineCount" to (cb?.offlineCount ?: 0),
-                "pendingReset" to pendingResets.containsKey(cameraId)
+                "pendingReset" to pendingResets.containsKey(tid)
             )
         }
         _diagnostics.value = stats
@@ -1325,14 +1347,15 @@ class CameraSkill @Inject constructor(
         absDiffTrigger: Int,
         emailSent: Boolean
     ) {
+        val tid = camera.id.trim()
         try {
             val alertId = UUID.randomUUID().toString()
             val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
 
             val alert = AlertEntity(
                 id = alertId,
-                cameraId = camera.id,
-                customerId = camera.customerId,
+                cameraId = tid,
+                customerId = camera.customerId.trim(),
                 cameraName = camera.customername,
                 timestamp = System.currentTimeMillis(),
                 aiComment = aiComment,

@@ -38,7 +38,7 @@ class CustomerCameraViewModel @Inject constructor(
     private val logger: Logger
 ) : ViewModel() {
 
-    val customerId: String = savedStateHandle.get<String>("customerId") ?: ""
+    val customerId: String = (savedStateHandle.get<String>("customerId") ?: "").trim()
 
     private val _customer = MutableStateFlow<CustomerEntity?>(null)
     val customer: StateFlow<CustomerEntity?> = _customer.asStateFlow()
@@ -107,8 +107,9 @@ class CustomerCameraViewModel @Inject constructor(
 
     fun deleteCamera(cameraId: String) {
         viewModelScope.launch {
+            val trimmedId = cameraId.trim()
             withContext(Dispatchers.IO) {
-                cameraSkill.deleteCamera(cameraId)
+                cameraSkill.deleteCamera(trimmedId)
             }
             load()
         }
@@ -116,8 +117,9 @@ class CustomerCameraViewModel @Inject constructor(
 
     fun toggleCameraActive(cameraId: String) {
         viewModelScope.launch {
+            val trimmedId = cameraId.trim()
             val camera = withContext(Dispatchers.IO) {
-                database.cameraDao().getCameraById(cameraId)
+                database.cameraDao().getCameraById(trimmedId)
             } ?: return@launch
             
             val newManualOff = if (camera.manualOff == 0) 1 else 0
@@ -141,13 +143,14 @@ class CustomerCameraViewModel @Inject constructor(
 
     fun toggleCameraSmartMode(cameraId: String) {
         viewModelScope.launch {
-            val current = _cameraSmartModes.value[cameraId] ?: true
+            val trimmedId = cameraId.trim()
+            val current = _cameraSmartModes.value[trimmedId] ?: true
             val newMode = !current
             withContext(Dispatchers.IO) {
-                database.cameraDao().updateCameraSmartMode(cameraId, if (newMode) 1 else 0)
+                database.cameraDao().updateCameraSmartMode(trimmedId, if (newMode) 1 else 0)
             }
-            _cameraSmartModes.value = _cameraSmartModes.value.toMutableMap().apply { put(cameraId, newMode) }
-            logger.i("CustomerCameraViewModel", "CameraSmartMode $cameraId → $newMode")
+            _cameraSmartModes.value = _cameraSmartModes.value.toMutableMap().apply { put(trimmedId, newMode) }
+            logger.i("CustomerCameraViewModel", "CameraSmartMode $trimmedId → $newMode")
         }
     }
 
@@ -156,8 +159,9 @@ class CustomerCameraViewModel @Inject constructor(
             _isLoading.value = true
             _testResult.value = null
             
+            val trimmedId = cameraId.trim()
             val camera = withContext(Dispatchers.IO) {
-                database.cameraDao().getCameraById(cameraId)
+                database.cameraDao().getCameraById(trimmedId)
             }
             val setting = camera?.let {
                 withContext(Dispatchers.IO) {
@@ -174,14 +178,14 @@ class CustomerCameraViewModel @Inject constructor(
                                 customerId = camera.customerId,
                                 smartMode = 1,
                                 isActive = setting?.isActive ?: 1,
-                                updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
+                                updatedAt = System.currentTimeMillis(),
                                 timestamp = System.currentTimeMillis()
                             )
                         )
                     }
                 }
                 
-                val result = cameraSkill.scanCamera(cameraId, isDailyReport = false)
+                val result = cameraSkill.scanCamera(trimmedId, isDailyReport = false)
                 
                 when (result) {
                     is com.aichatvn.agent.core.AgentKernel.PluginResult.Success -> {
@@ -223,7 +227,7 @@ class CustomerCameraViewModel @Inject constructor(
                                     customerId = camera.customerId,
                                     smartMode = 0,
                                     isActive = setting?.isActive ?: 1,
-                                    updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
+                                    updatedAt = System.currentTimeMillis(),
                                     timestamp = System.currentTimeMillis()
                                 )
                             )
@@ -277,7 +281,7 @@ fun CustomerCameraScreen(
             camera = selectedCamera,
             onDismiss = { showAddDialog = false; selectedCamera = null },
             onSave = { config ->
-                val merged = config.toMutableMap().apply { put("customerId", viewModel.customerId) }
+                val merged = config.toMutableMap().apply { put("customerId", viewModel.customerId.trim()) }
                 viewModel.saveCamera(merged)
                 showAddDialog = false; selectedCamera = null
             }

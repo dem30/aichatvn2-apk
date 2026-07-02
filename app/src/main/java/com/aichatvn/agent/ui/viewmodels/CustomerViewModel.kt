@@ -61,11 +61,12 @@ class CustomerViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val customerId = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+                val trimmedId = id?.trim()
+                val customerId = trimmedId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
                 
                 // Di chuyển toàn bộ giao dịch SQLite I/O ra khỏi luồng chính
                 val (existing, entity) = withContext(Dispatchers.IO) {
-                    val ext = if (id != null) database.customerDao().getCustomerById(id) else null
+                    val ext = if (trimmedId != null) database.customerDao().getCustomerById(trimmedId) else null
                     val ent = CustomerEntity(
                         id = customerId,
                         name = name.trim(),
@@ -93,14 +94,15 @@ class CustomerViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
+                val trimmedCustomerId = customerId.trim()
                 // Di chuyển toàn bộ các thao tác xóa Cascade phức tạp ra khỏi luồng chính
                 withContext(Dispatchers.IO) {
-                    database.customerDao().deleteCustomer(customerId)
-                    database.cameraDao().deleteCamerasByCustomer(customerId)
-                    database.cameraDao().deleteCustomerSetting(customerId)
+                    database.customerDao().deleteCustomer(trimmedCustomerId)
+                    database.cameraDao().deleteCamerasByCustomer(trimmedCustomerId)
+                    database.cameraDao().deleteCustomerSetting(trimmedCustomerId)
                 }
                 _result.value = "🗑️ Đã xoá khách hàng"
-                logger.i("CustomerViewModel", "deleteCustomer id=$customerId")
+                logger.i("CustomerViewModel", "deleteCustomer id=$trimmedCustomerId")
             } catch (e: Exception) {
                 _result.value = "❌ Lỗi xoá: ${e.message}"
                 logger.e("CustomerViewModel", "deleteCustomer error: ${e.message}", e)

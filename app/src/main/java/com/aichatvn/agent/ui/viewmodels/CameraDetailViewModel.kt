@@ -52,7 +52,7 @@ class CameraDetailViewModel @Inject constructor(
     private val logger: Logger
 ) : ViewModel() {
 
-    val cameraId: String = savedStateHandle.get<String>("cameraId") ?: ""
+    val cameraId: String = (savedStateHandle.get<String>("cameraId") ?: "").trim()
 
     private val _camera = MutableStateFlow<CameraConfigEntity?>(null)
     val camera: StateFlow<CameraConfigEntity?> = _camera.asStateFlow()
@@ -189,7 +189,7 @@ class CameraDetailViewModel @Inject constructor(
                 val filtered = withContext(Dispatchers.Default) {
                     all.filter { schedule ->
                         runCatching {
-                            JSONObject(schedule.params).optString("cameraId") == cameraId
+                            JSONObject(schedule.params).optString("cameraId").trim() == cameraId.trim()
                         }.getOrDefault(false)
                     }
                 }
@@ -236,7 +236,7 @@ class CameraDetailViewModel @Inject constructor(
             _isLoading.value = true
             try {
                 val params = JSONObject().apply {
-                    put("cameraId", cameraId)
+                    put("cameraId", cameraId.trim())
                 }.toString()
 
                 val isNew = draft.id.isBlank()
@@ -400,7 +400,7 @@ class CameraDetailViewModel @Inject constructor(
                                 customerId = cam.customerId,
                                 smartMode = 1,
                                 isActive = setting?.isActive ?: 1,
-                                updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
+                                updatedAt = System.currentTimeMillis(),
                                 timestamp = System.currentTimeMillis()
                             )
                         )
@@ -462,7 +462,7 @@ class CameraDetailViewModel @Inject constructor(
                                     customerId = cam.customerId,
                                     smartMode = 0,
                                     isActive = setting?.isActive ?: 1,
-                                    updatedAt = System.currentTimeMillis(), // ✅ ĐÃ SỬA: Sửa lỗi chính tả từ createdAt sang updatedAt để build thành công
+                                    updatedAt = System.currentTimeMillis(),
                                     timestamp = System.currentTimeMillis()
                                 )
                             )

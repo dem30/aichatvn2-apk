@@ -261,7 +261,9 @@ class AgentKernel @Inject constructor(
             }
             return ChatResponse(responseText, "device_control", outcome.result.pluginId)
         }
-        
+
+
+        // --- ĐOẠN MÃ MỚI ĐÃ ĐƯỢC TỐI ƯU HÓA ---
         val routerFailed = outcome is RouterOutcome.RouterFailed
         val usedMode = request.chatMode
         val usedPluginId = if (routerFailed) "router_error" else null
@@ -271,28 +273,25 @@ class AgentKernel @Inject constructor(
             "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
             "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được."
 
-        val qaContext = buildQAContextForAgent(message, username)
         val guard = if (routerFailed) {
             ANTI_HALLUCINATION_GUARD + "\n" +
                 "⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm."
         } else {
             ANTI_HALLUCINATION_GUARD
         }
-        val fullContext = buildString {
-            append(guard)
-            if (qaContext.isNotEmpty()) append("\n\n$qaContext")
-            if (extraContext.isNotEmpty()) append("\n\n$extraContext")
-        }
 
         val responseText = try {
             withTimeout(30_000L) {
                 when (usedMode.lowercase()) {
+                    // 1. Chế độ QA: Chỉ tìm kiếm nội bộ, phản hồi nhanh và không gọi mạng
                     "qa" -> {
                         val matches = search(message, username, 0.6f)
                         val qa = matches.firstOrNull()?.qa
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
                     }
-                    else -> {
+
+                    // 2. Chế độ GROQ: AI thuần túy, bỏ qua qaContext để Prompt sạch và giảm truy cập DB vô ích
+                    "groq" -> {
                         val historySnapshot = try {
                             database.chatMessageDao().getMessages(username, 6)
                                 .reversed()
@@ -300,12 +299,53 @@ class AgentKernel @Inject constructor(
                         } catch (e: Exception) {
                             emptyList()
                         }
+
+                        val cleanContext = buildString {
+                            append(guard)
+                            if (extraContext.isNotEmpty()) append("\n\n$extraContext")
+                        }
+
                         groqClient.chat(
                             message = message,
-                            extraContext = fullContext,
+                            extraContext = cleanContext,
                             history = historySnapshot,
                             imageUrl = null
                         )
+                    }
+
+                    // 3. Chế độ COMBINED (Mặc định): Tối ưu hóa tuyệt đối cho chatbot bán hàng / tư vấn
+                    else -> {
+                        // Bước 1: Kiểm tra xem có khớp cứng trong DB tĩnh với độ tin cậy cao không (>= 0.85f)
+                        val matches = search(message, username, 0.85f)
+                        val perfectMatch = matches.firstOrNull()?.qa
+
+                        if (perfectMatch != null) {
+                            // Trả về trực tiếp câu trả lời tĩnh ngay lập tức (<50ms), không cần gọi Groq API
+                            perfectMatch.answer
+                        } else {
+                            // Bước 2: Chỉ khi không khớp cứng, mới tiến hành truy vấn DB mờ và RAG
+                            val historySnapshot = try {
+                                database.chatMessageDao().getMessages(username, 6)
+                                    .reversed()
+                                    .map { mapOf("role" to it.role, "content" to it.content) }
+                            } catch (e: Exception) {
+                                emptyList()
+                            }
+                            
+                            val qaContext = buildQAContextForAgent(message, username)
+                            val fullContext = buildString {
+                                append(guard)
+                                if (qaContext.isNotEmpty()) append("\n\n$qaContext")
+                                if (extraContext.isNotEmpty()) append("\n\n$extraContext")
+                            }
+
+                            groqClient.chat(
+                                message = message,
+                                extraContext = fullContext,
+                                history = historySnapshot,
+                                imageUrl = null
+                            )
+                        }
                     }
                 }
             }
@@ -314,7 +354,7 @@ class AgentKernel @Inject constructor(
         }
         
         return ChatResponse(responseText, usedMode, usedPluginId)
-    }
+    
 
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
         val matches = search(message, username, 0.7f)

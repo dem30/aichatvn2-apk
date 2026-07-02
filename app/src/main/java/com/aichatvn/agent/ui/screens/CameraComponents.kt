@@ -283,11 +283,15 @@ fun CameraDialog(
             TextButton(onClick = {
                 if (id.isNotBlank() && snapshotUrl.isNotBlank()) {
                     onSave(mapOf(
-                        "id" to id, "customerId" to customerId,
-                        "customername" to customerName, "customeremail" to customerEmail,
-                        "snapshoturl" to snapshotUrl, "landinfo" to landInfo,
-                        "aiPrompt" to aiPrompt, "aiPositiveKeywords" to aiPositiveKeywords,
-                        "aiNegativeKeywords" to aiNegativeKeywords
+                        "id" to id.trim(),
+                        "customerId" to customerId.trim(),
+                        "customername" to customerName.trim(),
+                        "customeremail" to customerEmail.trim(),
+                        "snapshoturl" to snapshotUrl.trim(),
+                        "landinfo" to landInfo.trim(),
+                        "aiPrompt" to aiPrompt.trim(),
+                        "aiPositiveKeywords" to aiPositiveKeywords.trim(),
+                        "aiNegativeKeywords" to aiNegativeKeywords.trim()
                     ))
                 }
             }) { Text("Lưu") }
