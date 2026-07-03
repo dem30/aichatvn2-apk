@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.compose.ui.draw.alpha
@@ -64,6 +65,10 @@ fun ChatScreen(
     val pausedDueToError by viewModel.pausedDueToError.collectAsState()
     val lockedPluginName by viewModel.lockedPluginName.collectAsState()
     
+    // ✅ ĐÃ THÊM: Theo dõi cấu hình Cướp quyền (smartMode) của ID khách hiện tại
+    val isBotEnabled by viewModel.isBotEnabled.collectAsState()
+    val username = viewModel.username
+
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
@@ -108,8 +113,6 @@ fun ChatScreen(
         viewModel.updateLockedPluginStatus()
     }
 
-    
-
     // QUẢN LÝ LẦN ĐẦU KHỞI ĐỘNG (COLD START)
     LaunchedEffect(Unit) {
         delay(300) // Chờ 300ms đảm bảo preferences/database đã load xong dữ liệu cũ
@@ -123,7 +126,6 @@ fun ChatScreen(
 
     val lifecycleOwner = LocalLifecycleOwner.current
     
-    // ĐƯA DISPOSABLE EFFECT VỀ ĐÚNG CÚ PHÁP CHUẨN CỦA COMPOSE
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -139,7 +141,6 @@ fun ChatScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { 
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // QUAN TRỌNG: Khi rời màn hình Chat (chuyển tab hoặc đóng màn hình), tắt mic ngay lập tức!
             viewModel.onBackground() 
         }
     }
@@ -253,6 +254,39 @@ fun ChatScreen(
                 }
             }
 
+            // ✅ ĐÃ THÊM: Giao diện bật gạt Switch "CƯỚP QUYỀN CHAT" (Chỉ hiện khi là khách hàng đa kênh)
+            if (username != "default_user") {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = if (isBotEnabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isBotEnabled) "🤖 AI đang tự động trả lời" else "👤 Đã cướp quyền (Người trực chat tay)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isBotEnabled) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        // Nút gạt Switch để đổi chế độ cướp quyền trực tiếp [1]
+                        Switch(
+                            checked = !isBotEnabled, // Gạt sang phải là Cướp quyền (tắt bot) [1]
+                            onCheckedChange = { isTakeover ->
+                                viewModel.toggleBotSmartMode(username, isBotEnabled = !isTakeover)
+                            },
+                            thumbContent = {
+                                Text(if (isBotEnabled) "🤖" else "👤", fontSize = 10.sp)
+                            }
+                        )
+                    }
+                }
+            }
+
             if (lockedPluginName != null) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -299,7 +333,7 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {
-                items(messages) { message ->
+                items(messages, key = { it.id }) { message ->
                     ChatBubble(message = message)
                 }
 
@@ -309,8 +343,8 @@ fun ChatScreen(
                             ChatBubble(
                                 message = ChatMessageEntity(
                                     id = "draft_partial",
-                                    sessionToken = "session_default_user",
-                                    username = "default_user",
+                                    sessionToken = "session_$username",
+                                    username = username,
                                     content = partialText,
                                     role = "user",
                                     type = "text",
@@ -589,6 +623,7 @@ private fun QuickCommandBar(
 }
 
 private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin) {
+    "human" -> "👤 Trực tiếp" // ✅ ĐÃ THÊM: Nhãn hiển thị cho tin nhắn của người trực tay thủ công
     "learn" -> "📚 Học"
     "camera" -> "📷 Camera"
     "light" -> "💡 Đèn"

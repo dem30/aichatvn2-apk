@@ -38,7 +38,7 @@ enum class ChatMode {
 class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
-    private val configProvider: AppConfigProvider, // ✅ ĐÃ THÊM: Inject configProvider để lấy link Render Server
+    private val configProvider: AppConfigProvider, // Inject configProvider để lấy cấu hình kết nối Render
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
@@ -112,7 +112,7 @@ class ChatSkill @Inject constructor(
         return clearHistory(username)
     }
 
-    // ✅ ĐÃ THÊM: Lưu tin nhắn khách hàng gửi từ Webhook vào SQLite (Không trả lời tự động)
+    // Lưu tin nhắn khách hàng gửi từ Webhook vào SQLite (Không trả lời tự động)
     suspend fun saveExternalUserMessage(message: String, username: String) {
         val userMessage = ChatMessageEntity(
             id = UUID.randomUUID().toString(),
@@ -133,6 +133,7 @@ class ChatSkill @Inject constructor(
         }
     }
 
+    // ✅ ĐÃ KHÔI PHỤC: Hàm setChatMode bị thiếu trong bản nâng cấp trước
     fun setChatMode(mode: ChatMode) {
         _chatMode.value = mode
     }
