@@ -153,7 +153,10 @@ class ChatSkill @Inject constructor(
                 }
             }
 
-            val isExternal = username.startsWith("facebook_") || username.startsWith("telegram_") || username.startsWith("instagram_")
+            // ✅ ĐÃ SỬA: Thêm "website_" — khách chat qua widget Website cũng là khách ngoại kênh,
+            // không phải chủ app, nên không được phép chạm vào logic điều khiển thiết bị.
+            val isExternal = username.startsWith("facebook_") || username.startsWith("telegram_") ||
+                username.startsWith("instagram_") || username.startsWith("website_")
 
             if (isExternal && isManual) {
                 // 👤 LUỒNG 1: NGƯỜI TRỰC CHAT THỦ CÔNG (ADMIN GÕ TAY TỪ ĐIỆN THOẠI)
@@ -189,6 +192,12 @@ class ChatSkill @Inject constructor(
                 } else if (username.startsWith("telegram_")) {
                     val botToken = configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim()
                     sendTelegramMessage(botToken, rawSenderId, message)
+                } else if (username.startsWith("website_")) {
+                    // ✅ ĐÃ THÊM: Trước đây rơi vào đây là hết — tin nhắn admin gõ tay chỉ lưu local,
+                    // không có gì gửi ra ngoài cho khách Website đang chờ trên widget.
+                    val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                    val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                    sendWebsiteReply(gatewayUrl, gatewayToken, rawSenderId, message)
                 }
 
                 return PluginResult.Success(
@@ -222,6 +231,16 @@ class ChatSkill @Inject constructor(
                     }
                 }
 
+                // ✅ ĐÃ SỬA: Dùng ĐÚNG công tắc đã có sẵn trong Settings (GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL)
+                // thay vì tự chế cờ mới. Trước đây key này tồn tại trong AppConfigDefaults và hiện ra
+                // như 1 switch trong màn Cài đặt, nhưng KHÔNG có chỗ nào đọc giá trị của nó — bật/tắt
+                // không có tác dụng gì. Giờ đọc đúng giá trị đó để quyết định có cho quét lệnh thiết bị
+                // hay không khi trả lời khách hàng ngoại kênh.
+                val blockExternalDeviceControl = isExternal && configProvider.getBoolean(
+                    AppConfigDefaults.GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL,
+                    false
+                )
+
                 val response = agentKernel.chat(
                     com.aichatvn.agent.core.ChatRequest(
                         message = message,
@@ -229,7 +248,8 @@ class ChatSkill @Inject constructor(
                         imageBase64 = imageBase64,
                         fileUrl = fileUrl,
                         extraContext = extraContext,
-                        chatMode = _chatMode.value.name
+                        chatMode = _chatMode.value.name,
+                        allowDeviceControl = !blockExternalDeviceControl
                     )
                 )
 
@@ -265,6 +285,36 @@ class ChatSkill @Inject constructor(
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
             PluginResult.Failure(e.message ?: "Failed to process query")
+        }
+    }
+
+    // ✅ ĐÃ THÊM: Đẩy tin nhắn admin gõ tay ra khách Website qua Gateway (không có Graph API như
+    // Facebook/Telegram nên phải đi qua hàng đợi SSE riêng /send/{token} platform=website).
+    private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, text: String) {
+        withContext(Dispatchers.IO) {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("$gatewayUrl/send/$gatewayToken")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+
+                val payload = org.json.JSONObject().apply {
+                    put("platform", "website")
+                    put("recipientId", senderId)
+                    put("message", text)
+                }.toString()
+
+                conn.outputStream.use { os ->
+                    os.write(payload.toByteArray(Charsets.UTF_8))
+                }
+                conn.responseCode
+            } catch (e: Exception) {
+                logger.e("ChatSkill", "Gửi phản hồi cho khách Website thất bại: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
         }
     }
 

@@ -333,6 +333,12 @@ class WebhookGatewayService : Service() {
                                                                         mapOf("recipient_id" to senderId, "message" to replyText)
                                                                     )
                                                                 }
+                                                                // ✅ ĐÃ THÊM: Trước đây platform "website" không rơi vào case nào cả,
+                                                                // nên câu trả lời của bot chỉ được lưu vào lịch sử local, KHÔNG BAO GIỜ
+                                                                // được gửi ngược lại cho khách đang đứng chờ trên widget Website.
+                                                                "website" -> {
+                                                                    sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText)
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -437,6 +443,37 @@ class WebhookGatewayService : Service() {
                 } finally {
                     conn?.disconnect()
                 }
+            }
+        }
+    }
+
+    // ✅ ĐÃ THÊM: Website không có Graph API để "đẩy" tin nhắn như Facebook/Instagram — Gateway phải
+    // giữ 1 hàng đợi SSE riêng cho từng khách widget. Hàm này chỉ đơn giản POST câu trả lời lên
+    // /send/{token} kèm platform=website để Gateway bỏ vào đúng hàng đợi của khách đó.
+    private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, message: String) {
+        withContext(Dispatchers.IO) {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("$gatewayUrl/send/$gatewayToken")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+
+                val payload = org.json.JSONObject().apply {
+                    put("platform", "website")
+                    put("recipientId", senderId)
+                    put("message", message)
+                }.toString()
+
+                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                conn.responseCode
+            } catch (e: Exception) {
+                logger.e("CloudGateway", "Gửi phản hồi cho khách Website thất bại: ${e.message}")
+            } finally {
+                conn?.disconnect()
             }
         }
     }

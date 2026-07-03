@@ -85,7 +85,13 @@ data class ChatRequest(
     val imageBase64: String? = null,
     val fileUrl: String? = null,
     val extraContext: String = "",
-    val chatMode: String = "COMBINED"
+    val chatMode: String = "COMBINED",
+    // ✅ ĐÃ THÊM: Cờ bật/tắt khả năng điều khiển thiết bị (Tier trigger-prefix + tryDeviceCommand).
+    // Giá trị này do ChatSkill tính toán dựa trên công tắc Settings
+    // AppConfigDefaults.GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL kết hợp với kênh (isExternal).
+    // Khi false: tin nhắn KHÔNG được đưa qua bất kỳ tầng nhận diện lệnh điều khiển thiết bị nào,
+    // chỉ đi thẳng vào QA/Groq — dùng cho lúc bot đang trả lời khách hàng ngoại kênh.
+    val allowDeviceControl: Boolean = true
 )
 
 data class ChatResponse(
@@ -213,27 +219,32 @@ class AgentKernel @Inject constructor(
         val imageBase64 = request.imageBase64
         val fileUrl = request.fileUrl
         
-        for (plugin in plugins) {
-            for (action in plugin.manifest.actions) {
-                if (!action.enabled) continue
-                val matchedPrefix = action.triggerPrefixes.find { prefix ->
-                    message.startsWith(prefix, ignoreCase = true)
-                }
-                if (matchedPrefix != null) {
-                    val result = executePluginAction(
-                        pluginId = plugin.manifest.id,
-                        action = action.name,
-                        params = mapOf("message" to message, "username" to username)
-                    )
-                    val responseText = when (result) {
-                        is PluginResult.Success -> {
-                            val data = result.data as? Map<*, *>
-                            data?.get("message") as? String ?: "✅ Đã thực hiện câu lệnh tự động."
-                        }
-                        is PluginResult.Failure -> result.error
-                        else -> "❌ Có lỗi phát sinh khi xử lý câu lệnh hệ thống."
+        // ✅ ĐÃ SỬA: Chỉ chạy Tier trigger-prefix (điều khiển thiết bị nhanh) khi được phép.
+        // Trước đây khối này chạy cho MỌI username kể cả khách hàng ngoại kênh, khiến tin nhắn
+        // khách gửi vô tình khớp prefix lệnh và kích hoạt nhầm hành động điều khiển thiết bị thật.
+        if (request.allowDeviceControl) {
+            for (plugin in plugins) {
+                for (action in plugin.manifest.actions) {
+                    if (!action.enabled) continue
+                    val matchedPrefix = action.triggerPrefixes.find { prefix ->
+                        message.startsWith(prefix, ignoreCase = true)
                     }
-                    return ChatResponse(responseText, action.name, plugin.manifest.id)
+                    if (matchedPrefix != null) {
+                        val result = executePluginAction(
+                            pluginId = plugin.manifest.id,
+                            action = action.name,
+                            params = mapOf("message" to message, "username" to username)
+                        )
+                        val responseText = when (result) {
+                            is PluginResult.Success -> {
+                                val data = result.data as? Map<*, *>
+                                data?.get("message") as? String ?: "✅ Đã thực hiện câu lệnh tự động."
+                            }
+                            is PluginResult.Failure -> result.error
+                            else -> "❌ Có lỗi phát sinh khi xử lý câu lệnh hệ thống."
+                        }
+                        return ChatResponse(responseText, action.name, plugin.manifest.id)
+                    }
                 }
             }
         }
@@ -267,7 +278,10 @@ class AgentKernel @Inject constructor(
             }
         }
         
-        val outcome = tryDeviceCommand(message, username)
+        // ✅ ĐÃ SỬA: Toàn bộ pipeline điều khiển thiết bị (Tier 1→5 trong tryDeviceCommand) chỉ chạy
+        // khi allowDeviceControl = true. Khách hàng ngoại kênh chat với AI bán hàng/tư vấn thì bỏ qua
+        // hẳn bước "search từ khoá các tầng" này, tránh dính nhầm logic điều khiển thiết bị của chủ nhà.
+        val outcome = if (request.allowDeviceControl) tryDeviceCommand(message, username) else null
         if (outcome is RouterOutcome.Matched) {
             val responseText = when (val result = outcome.result.result) {
                 is PluginResult.Success -> {

@@ -48,6 +48,21 @@ import kotlinx.coroutines.withContext
 // Biến tĩnh cấp tiến trình để kiểm tra lần đầu mở app (Cold Start)
 private var isColdStart = true
 
+// ✅ ĐÃ THÊM: Tiêu đề động theo kênh/khách hàng đang chat, thay vì luôn ghi cứng "Trò chuyện với AI"
+private fun chatScreenTitle(username: String): String {
+    if (username == "default_user") return "Trò chuyện với AI"
+    val platform = username.substringBefore("_")
+    val rawId = username.substringAfter("_")
+    val channelName = when (platform) {
+        "facebook" -> "Facebook"
+        "telegram" -> "Telegram"
+        "website" -> "Website"
+        "instagram" -> "Instagram"
+        else -> "Khách"
+    }
+    return "$channelName · $rawId"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
@@ -154,7 +169,13 @@ fun ChatScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             TopAppBar(
-                title = { Text("Trò chuyện với AI") },
+                title = { Text(chatScreenTitle(username)) },
+                navigationIcon = {
+                    // ✅ ĐÃ THÊM: Nút quay lại Inbox — trước đây thiếu nên bấm vào 1 hội thoại là kẹt luôn trong ChatScreen
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
+                    }
+                },
                 actions = {
                     GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
