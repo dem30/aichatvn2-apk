@@ -1,17 +1,17 @@
 package com.aichatvn.agent.ui.screens
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check // ĐÃ THÊM: Icon check lưu nhanh
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -24,12 +24,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.KeyboardType // ĐÃ THÊM: Sửa lỗi bàn phím số
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
@@ -202,7 +205,7 @@ fun SettingsScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = { scope.launch { viewModel.exportSettings(context) } }, // ĐÃ SỬA: Chạy trong Coroutine Scope để tránh lỗi gọi suspend
+                    onClick = { scope.launch { viewModel.exportSettings(context) } },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
                 ) { Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Xuất file (Export)") }
@@ -299,7 +302,7 @@ private fun PluginConfigSection(
     }
 
     val grouped = configs.groupBy { it.pluginId }
-    val pluginOrder = listOf("groq", "camera", "email", "schedule", "global")
+    val pluginOrder = listOf("global", "groq", "camera", "email", "schedule", "facebook", "instagram", "telegram", "zalo", "website")
     val sortedGroups = (pluginOrder.mapNotNull { pid -> grouped[pid]?.let { pid to it } } +
         grouped.entries.filter { it.key !in pluginOrder }.map { it.toPair() })
 
@@ -307,6 +310,7 @@ private fun PluginConfigSection(
         PluginGroupCard(
             pluginId = pluginId,
             items = items,
+            allConfigs = configs, // ✅ Truyền thêm toàn bộ cấu hình để làm dữ liệu nhúng
             onSave = onSave,
             onReset = onReset
         )
@@ -317,16 +321,26 @@ private fun PluginConfigSection(
 private fun PluginGroupCard(
     pluginId: String,
     items: List<AppConfigEntity>,
+    allConfigs: List<AppConfigEntity>, // ✅ Nhận thêm allConfigs
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
-    val icon = when (pluginId) {
-        "groq"     -> "🤖"
-        "camera"   -> "📷"
-        "email"    -> "📧"
-        "schedule" -> "⏰"
-        "global"   -> "🌐"
-        else       -> "🔧"
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
+    // ✅ ĐÃ SỬA: Phân bổ và ánh xạ chính xác icon biểu tượng và tiêu đề Tiếng Việt cho từng kênh liên kết
+    val (icon, title) = when (pluginId) {
+        "global"    -> Pair("🌐", "Cổng kết nối Gateway")
+        "groq"      -> Pair("🤖", "Groq AI Cloud")
+        "camera"    -> Pair("📷", "Camera giám sát thửa đất")
+        "email"     -> Pair("📧", "Email thông báo cảnh báo")
+        "schedule"  -> Pair("⏰", "Lịch trình tự động hóa")
+        "facebook"  -> Pair("📘", "Facebook Messenger")
+        "instagram" -> Pair("📸", "Instagram Assistant")
+        "telegram"  -> Pair("✈️", "Telegram Assistant")
+        "zalo"      -> Pair("💬", "Zalo Official Account")
+        "website"   -> Pair("💻", "Website Chat Widget")
+        else        -> Pair("🔧", "Cấu hình $pluginId")
     }
 
     var groupExpanded by remember { mutableStateOf(false) }
@@ -341,7 +355,7 @@ private fun PluginGroupCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("$icon Cấu hình $pluginId", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("$icon $title", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { groupExpanded = !groupExpanded }) {
                     Text(if (groupExpanded) "Thu gọn" else "${items.size} biến", style = MaterialTheme.typography.labelSmall)
                 }
@@ -349,6 +363,48 @@ private fun PluginGroupCard(
 
             if (groupExpanded) {
                 Spacer(Modifier.height(4.dp))
+
+                // ✅ ĐÃ THÊM: Nếu mở rộng thẻ cấu hình Website, tự động render mã nhúng HTML kèm nút Copy 1 chạm!
+                if (pluginId == "website") {
+                    val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
+                    val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
+                    val embedCode = "<script src=\"$gatewayUrl/widget.js?token=$gatewayToken\"></script>"
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text("💻 Mã nhúng Website của bạn:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = embedCode,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(embedCode))
+                                    Toast.makeText(context, "📋 Đã sao chép mã nhúng Website vào khay nhớ tạm!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+
                 items.forEach { entity ->
                     ConfigItemRow(entity = entity, onSave = onSave, onReset = onReset)
                     Spacer(Modifier.height(8.dp))
@@ -366,7 +422,6 @@ private fun ConfigItemRow(
 ) {
     var inputValue by remember(entity.key, entity.value) { mutableStateOf(entity.value) }
     val isDirty = inputValue != entity.value
-    // Nhận diện kiểu dữ liệu để mở đúng bàn phím số cho người dùng nhập liệu
     val isNumeric = entity.type in setOf("int", "long", "float", "double", "number")
 
     Column(
@@ -374,11 +429,9 @@ private fun ConfigItemRow(
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     ) {
-        // Hiển thị nhãn Tiếng Việt thân thiện (Label) làm tiêu đề chính của biến
         val displayName = if (entity.label.isNotBlank()) entity.label else entity.key
         Text(displayName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
         
-        // Hiển thị tên Key kỹ thuật nhỏ ở dạng chữ Monospace mờ bên dưới
         if (entity.label.isNotBlank()) {
             Text(
                 text = "Key: ${entity.key}",
@@ -400,20 +453,19 @@ private fun ConfigItemRow(
                 modifier = Modifier.weight(1f),
                 singleLine = entity.type != "string" || entity.value.length < 80,
                 textStyle = MaterialTheme.typography.bodySmall,
-                // Tự động bật bàn phím số nếu là biến kiểu số (int, long, float)
                 keyboardOptions = KeyboardOptions(
                     keyboardType = if (isNumeric) KeyboardType.Number else KeyboardType.Text
                 ),
                 trailingIcon = {
                     if (isDirty) {
                         IconButton(onClick = { onSave(entity.key, inputValue) }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Check, contentDescription = "Lưu nhanh biến này", tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.Check, contentDescription = "Lưu nhanh", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
             )
             IconButton(onClick = { onReset(entity.key); inputValue = entity.value }, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.Refresh, contentDescription = "Reset về mặc định", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                Icon(Icons.Default.Refresh, contentDescription = "Reset", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
             }
         }
         Text(
@@ -503,7 +555,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                     Text(
                         "• ${entry.promptTokens ?: "?"}→${entry.completionTokens ?: "?"} = ${entry.totalTokens} tokens",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary // ĐÃ SỬA: Sửa MaterialTheme.primary thành MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary
                     )
                 } else {
                     Text(

@@ -21,7 +21,7 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
-import com.aichatvn.agent.skills.CameraSkill // Tiêm thêm CameraSkill để cập nhật sơ đồ
+import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.skills.TuyaManager
@@ -50,7 +50,7 @@ class SettingsViewModel @Inject constructor(
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
     private val tuyaManager: TuyaManager,
-    private val cameraSkill: CameraSkill, // ✅ ĐÃ TIÊM: Đồng bộ sơ đồ sau khi import
+    private val cameraSkill: CameraSkill,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
     private val trainingSkill: TrainingSkill,
@@ -71,7 +71,6 @@ class SettingsViewModel @Inject constructor(
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // ─── DataStore keys ──────────────────────────────────────────────────────
     val groqApiKey: StateFlow<String> = context.dataStore.data
         .map { it[GROQ_API_KEY] ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
@@ -106,7 +105,6 @@ class SettingsViewModel @Inject constructor(
         id.isNotBlank() && secret.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    // ─── AppConfig ───────────────────────────────────────────────────────────
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
 
@@ -361,14 +359,13 @@ class SettingsViewModel @Inject constructor(
                         list.forEach { camera -> 
                             database.cameraDao().insertCamera(camera)
                             
-                            // ✅ TỰ ĐỘNG BÙ ĐẮP THIẾT LẬP: Khắc phục mồ côi thiết lập khách hàng khiến camera bị bỏ qua [1]
                             val setting = database.cameraDao().getCustomerSetting(camera.customerId)
                             if (setting == null && camera.customerId.isNotEmpty()) {
                                 database.cameraDao().insertCustomerSetting(
                                     CustomerSettingEntity(
                                         customerId = camera.customerId,
                                         smartMode = 0,
-                                        isActive = 1, // Kích hoạt trạng thái hoạt động tức thì [1]
+                                        isActive = 1,
                                         updatedAt = System.currentTimeMillis(),
                                         timestamp = System.currentTimeMillis()
                                     )

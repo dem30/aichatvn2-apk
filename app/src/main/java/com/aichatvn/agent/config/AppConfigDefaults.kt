@@ -38,17 +38,103 @@ object AppConfigDefaults {
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
     // ───────────────────────── GLOBAL ───────────────────────
-    // global.fuzzy_threshold: Ngưỡng lọc thô của Tầng 2 so khớp ý định (Intent Match)
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
-    // global.alias_threshold: Ngưỡng lọc alias gửi vào context LLM Tầng 5. Tầng 1-4 luôn dùng 0.0f cứng.
     const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
-    // global.tier2_high_confidence: Tầng 2 đạt điểm này trở lên sẽ thực thi trực tiếp ngay lập tức
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
+
+    // ───────────────────────── CLOUD GATEWAY ────────────────
+    const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
+    const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
+
+    // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
+    // ✅ ĐÃ THÊM: Seed sẵn toàn bộ biến cấu hình cho tất cả các kênh giao tiếp chính
+    const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
+    const val INSTAGRAM_PAGE_ACCESS_TOKEN   = "instagram.page_access_token"
+    const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
+    const val ZALO_ACCESS_TOKEN             = "zalo.access_token"
+    const val ZALO_REFRESH_TOKEN            = "zalo.refresh_token"
+    const val WEBSITE_ALLOWED_ORIGINS       = "website.allowed_origins"
 
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
     // ─────────────────────────────────────────────────────────
     fun all(): List<AppConfigEntity> = listOf(
+
+        // ── CLOUD GATEWAY ──
+        AppConfigEntity(
+            key = GLOBAL_GATEWAY_URL,
+            value = "https://thaiquangvinh-aichatvn-gateway.hf.space",
+            type = "string",
+            pluginId = "global",
+            label = "Cổng đám mây (Cloud Gateway URL)",
+            description = "Địa chỉ máy chủ trung gian cố định Hugging Face Space để nhận Webhook."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_GATEWAY_TOKEN,
+            value = "aichatvn_secret_token_123",
+            type = "string",
+            pluginId = "global",
+            label = "Mã xác thực Gateway (Gateway Token)",
+            description = "Mật khẩu bảo mật dùng chung để xác thực kết nối giữa điện thoại và Hugging Face Space."
+        ),
+
+        // ── FACEBOOK MESSENGER ──
+        AppConfigEntity(
+            key = FACEBOOK_PAGE_ACCESS_TOKEN,
+            value = "",
+            type = "string",
+            pluginId = "facebook",
+            label = "Facebook Page Access Token",
+            description = "Mã token kết nối của Fanpage Facebook dùng để gửi tin nhắn phản hồi cho người dùng."
+        ),
+
+        // ── INSTAGRAM MESSENGER ──
+        AppConfigEntity(
+            key = INSTAGRAM_PAGE_ACCESS_TOKEN,
+            value = "",
+            type = "string",
+            pluginId = "instagram",
+            label = "Instagram Page Access Token",
+            description = "Mã token kết nối của tài khoản chuyên nghiệp Instagram dùng để gửi tin nhắn phản hồi."
+        ),
+
+        // ── TELEGRAM ──
+        AppConfigEntity(
+            key = TELEGRAM_BOT_TOKEN,
+            value = "",
+            type = "string",
+            pluginId = "telegram",
+            label = "Telegram Bot Token",
+            description = "Mã token của Bot Telegram (do @BotFather cấp) dùng để kết nối nhận/gửi tin nhắn."
+        ),
+
+        // ── ZALO OA ──
+        AppConfigEntity(
+            key = ZALO_ACCESS_TOKEN,
+            value = "",
+            type = "string",
+            pluginId = "zalo",
+            label = "Zalo OA Access Token",
+            description = "Mã truy cập tạm thời của Zalo Official Account (hết hạn sau mỗi 25 giờ)."
+        ),
+        AppConfigEntity(
+            key = ZALO_REFRESH_TOKEN,
+            value = "",
+            type = "string",
+            pluginId = "zalo",
+            label = "Zalo OA Refresh Token",
+            description = "Mã dùng để tự động làm mới (refresh) Zalo Access Token khi hết hạn."
+        ),
+
+        // ── WEBSITE CHAT WIDGET ──
+        AppConfigEntity(
+            key = WEBSITE_ALLOWED_ORIGINS,
+            value = "*",
+            type = "string",
+            pluginId = "website",
+            label = "Allowed Origins (Tên miền được phép nhúng)",
+            description = "Danh sách tên miền được phép nhúng khung chat (cách nhau bởi dấu phẩy, để dấu * là cho phép tất cả)."
+        ),
 
         // ── GROQ ──
         AppConfigEntity(
