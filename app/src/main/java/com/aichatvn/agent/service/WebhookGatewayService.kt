@@ -20,7 +20,7 @@ import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
-import com.aichatvn.agent.skills.ChatSkill // ✅ ĐÃ THÊM: Import lớp ChatSkill để đồng bộ tin nhắn
+import com.aichatvn.agent.skills.ChatSkill // Import ChatSkill để lưu trữ tin nhắn đa kênh
 import dagger.hilt.android.AndroidEntryPoint
 import io.ktor.serialization.gson.*
 import io.ktor.server.application.*
@@ -45,7 +45,7 @@ class WebhookGatewayService : Service() {
     lateinit var agentKernel: AgentKernel
 
     @Inject
-    lateinit var chatSkill: ChatSkill // ✅ ĐÃ THÊM: Inject ChatSkill để quản lý bộ nhớ đệm tin nhắn đa kênh
+    lateinit var chatSkill: ChatSkill // Inject ChatSkill để quản lý lưu trữ tin nhắn đa kênh
 
     @Inject
     lateinit var logger: Logger
@@ -144,6 +144,7 @@ class WebhookGatewayService : Service() {
         return plugins.find { it.manifest.id == pluginId }
     }
 
+    // Đồng bộ và "chào lại" máy chủ với danh sách tất cả các ID Fanpage có trong SQLite
     private fun registerPageMappings(gatewayUrl: String, gatewayToken: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -235,6 +236,7 @@ class WebhookGatewayService : Service() {
                     logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
                     updateNotification("Cổng đám mây: Đã kết nối")
 
+                    // Tự động đăng ký lại toàn bộ ánh xạ Page ID của SQLite với Render
                     registerPageMappings(gatewayUrl, gatewayToken)
 
                     while (isActive && reader.readLine().also { line = it } != null) {
@@ -267,6 +269,7 @@ class WebhookGatewayService : Service() {
                                                             )
                                                         )
                                                     }
+                                                    // Lưu đè danh sách tất cả các trang vào SQLite
                                                     withContext(Dispatchers.IO) {
                                                         database.facebookPageDao().insertPages(pagesList)
                                                     }
@@ -288,7 +291,7 @@ class WebhookGatewayService : Service() {
                                             val platform = jsonObj.optString("platform", "web")
                                             val senderId = jsonObj.optString("senderId", "external_user")
                                             val text = jsonObj.optString("text", "")
-                                            val incomingPageId = jsonObj.optString("pageId", "") // Đọc thêm ID page nhận tin nhắn gửi kèm từ Server
+                                            val incomingPageId = jsonObj.optString("pageId", "")
 
                                             if (text.isNotBlank()) {
                                                 // Đặt tiền tố phân loại kênh để tránh trùng ID giữa các nền tảng mạng xã hội khác nhau
@@ -311,7 +314,7 @@ class WebhookGatewayService : Service() {
                                                     // Lấy kết quả tự động trả về của Bot để đẩy ngược ra Messenger/Mạng xã hội
                                                     if (result is AgentKernel.PluginResult.Success) {
                                                         val replyMap = result.data as? Map<*, *>
-                                                        val replyText = replyMap?.get("response") as? String ?: ""
+                                                        val replyText = (replyMap?.get("response") as? String) ?: ""
                                                         if (replyText.isNotEmpty()) {
                                                             when (platform) {
                                                                 "facebook" -> {
@@ -404,7 +407,7 @@ class WebhookGatewayService : Service() {
                                 val setting = withContext(Dispatchers.IO) {
                                     database.cameraDao().getCustomerSetting(chatId)
                                 }
-                                val isBotEnabled = setting?.smartMode != 0 [1]
+                                val isBotEnabled = setting?.smartMode != 0 // smartMode == 1: bật bot, smartMode == 0: người trực [1]
 
                                 serviceScope.launch {
                                     if (isBotEnabled) {
@@ -415,7 +418,7 @@ class WebhookGatewayService : Service() {
                                         )
                                         if (result is AgentKernel.PluginResult.Success) {
                                             val replyMap = result.data as? Map<*, *>
-                                            val replyText = replyMap?.get("response") as? String ?: ""
+                                            val replyText = (replyMap?.get("response") as? String) ?: ""
                                             if (replyText.isNotEmpty()) {
                                                 sendTelegramMessage(botToken, chatId, replyText)
                                             }
@@ -506,9 +509,10 @@ class WebhookGatewayService : Service() {
                         route("/webhook") {
                             route("/facebook") {
                                 get {
-                                    val mode = call.request.queryParameters["hub.mode"]
-                                    val token = call.request.queryParameters["hub.verify_token"]
-                                    val challenge = call.request.queryParameters["hub.challenge"]
+                                    // ✅ ĐÃ SỬA: Sửa cú pháp [] thành .get() để tránh lỗi biên dịch nạp nạp chồng toán tử
+                                    val mode = call.request.queryParameters.get("hub.mode")
+                                    val token = call.request.queryParameters.get("hub.verify_token")
+                                    val challenge = call.request.queryParameters.get("hub.challenge")
 
                                     if (mode == "subscribe" && token == VERIFY_TOKEN) {
                                         call.respondText(challenge ?: "")
