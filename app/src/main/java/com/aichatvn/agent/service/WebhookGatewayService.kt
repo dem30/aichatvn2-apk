@@ -177,7 +177,7 @@ class WebhookGatewayService : Service() {
                     connection.readTimeout = 0 // Giữ kết nối mở vô hạn không timeout
                     
                     val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                    var line: String? = null // ✅ ĐÃ KHỞI TẠO GIÁ TRỊ ĐỂ KHẮC PHỤC LỖI BIÊN DỊCH GRADLE
+                    var line: String? = null
                     
                     logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
                     updateNotification("Cổng đám mây: Đã kết nối")
@@ -192,36 +192,51 @@ class WebhookGatewayService : Service() {
                                 serviceScope.launch {
                                     try {
                                         val jsonObj = org.json.JSONObject(rawData)
-                                        val platform = jsonObj.optString("platform", "web")
-                                        val senderId = jsonObj.optString("senderId", "external_user")
-                                        val text = jsonObj.optString("text", "")
+                                        val event = jsonObj.optString("event", "")
 
-                                        if (text.isNotBlank()) {
-                                            // Gửi tin nhắn thô vào AgentKernel để xử lý cục bộ
-                                            val reply = agentKernel.chat(
-                                                ChatRequest(message = text, username = senderId, chatMode = "COMBINED")
-                                            )
-                                            logger.i("CloudGateway", "🧠 Phản hồi của Agent: ${reply.responseText}")
+                                        // ✅ ĐÃ THÊM: Đón nhận và đồng bộ hóa Token tự động qua SSE
+                                        if (event == "token_sync") {
+                                            val plat = jsonObj.optString("platform", "")
+                                            val tokenValue = jsonObj.optString("pageAccessToken", "")
+                                            if (plat == "facebook" && tokenValue.isNotEmpty()) {
+                                                configProvider.set(AppConfigDefaults.FACEBOOK_PAGE_ACCESS_TOKEN, tokenValue)
+                                                logger.i("CloudGateway", "🔑 Đã đồng bộ động Facebook Page Access Token thành công!")
+                                            } else if (plat == "instagram" && tokenValue.isNotEmpty()) {
+                                                configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ACCESS_TOKEN, tokenValue)
+                                                logger.i("CloudGateway", "🔑 Đã đồng bộ động Instagram Page Access Token thành công!")
+                                            }
+                                        } else {
+                                            // Xử lý tin nhắn chat thông thường
+                                            val platform = jsonObj.optString("platform", "web")
+                                            val senderId = jsonObj.optString("senderId", "external_user")
+                                            val text = jsonObj.optString("text", "")
 
-                                            // Tự động điều hướng và gọi đúng Plugin Skill để gửi phản hồi đi
-                                            when (platform) {
-                                                "facebook" -> {
-                                                    findPlugin("facebook")?.execute(
-                                                        "send_messenger",
-                                                        mapOf("recipient_id" to senderId, "message" to reply.responseText)
-                                                    )
-                                                }
-                                                "instagram" -> {
-                                                    findPlugin("instagram")?.execute(
-                                                        "send_messenger",
-                                                        mapOf("recipient_id" to senderId, "message" to reply.responseText)
-                                                    )
-                                                }
-                                                "zalo" -> {
-                                                    findPlugin("zalo")?.execute(
-                                                        "send_message",
-                                                        mapOf("recipient_id" to senderId, "message" to reply.responseText)
-                                                    )
+                                            if (text.isNotBlank()) {
+                                                val reply = agentKernel.chat(
+                                                    ChatRequest(message = text, username = senderId, chatMode = "COMBINED")
+                                                )
+                                                logger.i("CloudGateway", "🧠 Phản hồi của Agent: ${reply.responseText}")
+
+                                                // Tự động gọi đúng Plugin Skill để gửi phản hồi đi
+                                                when (platform) {
+                                                    "facebook" -> {
+                                                        findPlugin("facebook")?.execute(
+                                                            "send_messenger",
+                                                            mapOf("recipient_id" to senderId, "message" to reply.responseText)
+                                                        )
+                                                    }
+                                                    "instagram" -> {
+                                                        findPlugin("instagram")?.execute(
+                                                            "send_messenger",
+                                                            mapOf("recipient_id" to senderId, "message" to reply.responseText)
+                                                        )
+                                                    }
+                                                    "zalo" -> {
+                                                        findPlugin("zalo")?.execute(
+                                                            "send_message",
+                                                            mapOf("recipient_id" to senderId, "message" to reply.responseText)
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
