@@ -47,11 +47,11 @@ object AppConfigDefaults {
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
 
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
-    // ✅ ĐÃ THÊM: Seed sẵn toàn bộ biến cấu hình cho tất cả các kênh giao tiếp chính
+    // Seed sẵn toàn bộ biến cấu hình cho tất cả các kênh giao tiếp chính
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
-    const val FACEBOOK_PAGE_ID              = "facebook.page_id" // ✅ ĐÃ THÊM: lưu Page ID để tự /register lại khi Space restart
+    const val FACEBOOK_PAGE_ID              = "facebook.page_id" // lưu Page ID để tự /register lại khi Gateway restart
     const val INSTAGRAM_PAGE_ACCESS_TOKEN   = "instagram.page_access_token"
-    const val INSTAGRAM_PAGE_ID             = "instagram.page_id" // ✅ ĐÃ THÊM
+    const val INSTAGRAM_PAGE_ID             = "instagram.page_id"
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
     const val ZALO_ACCESS_TOKEN             = "zalo.access_token"
     const val ZALO_REFRESH_TOKEN            = "zalo.refresh_token"
@@ -65,11 +65,11 @@ object AppConfigDefaults {
         // ── CLOUD GATEWAY ──
         AppConfigEntity(
             key = GLOBAL_GATEWAY_URL,
-            value = "https://thaiquangvinh-aichatvn-gateway.hf.space",
+            value = "https://aichatvn2-apk-gateway.onrender.com",
             type = "string",
             pluginId = "global",
             label = "Cổng đám mây (Cloud Gateway URL)",
-            description = "Địa chỉ máy chủ trung gian cố định Hugging Face Space để nhận Webhook."
+            description = "Địa chỉ máy chủ trung gian cố định trên Render.com để nhận Webhook."
         ),
         AppConfigEntity(
             key = GLOBAL_GATEWAY_TOKEN,
@@ -77,7 +77,7 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "global",
             label = "Mã xác thực Gateway (Gateway Token)",
-            description = "Mật khẩu bảo mật dùng chung để xác thực kết nối giữa điện thoại và Hugging Face Space."
+            description = "Mật khẩu bảo mật dùng chung để xác thực kết nối giữa điện thoại và Render Gateway."
         ),
 
         // ── FACEBOOK MESSENGER ──
@@ -95,7 +95,7 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "facebook",
             label = "Facebook Page ID",
-            description = "ID Fanpage đã kết nối — dùng để tự đăng ký lại ánh xạ với Cloud Gateway sau khi Space restart."
+            description = "ID Fanpage đã kết nối — dùng để tự đăng ký lại ánh xạ với Cloud Gateway sau khi Gateway restart."
         ),
 
         // ── INSTAGRAM MESSENGER ──

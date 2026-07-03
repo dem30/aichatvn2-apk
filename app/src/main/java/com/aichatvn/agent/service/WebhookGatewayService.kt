@@ -426,7 +426,7 @@ class WebhookGatewayService : Service() {
                         conn?.disconnect()
                     }
                 }
-                delay(15 * 60 * 1000L) // Gửi nhịp tim định kỳ mỗi 15 phút
+                delay(10 * 60 * 1000L) // Gửi nhịp tim định kỳ mỗi 10 phút
             }
         }
     }
