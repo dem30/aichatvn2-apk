@@ -1,5 +1,6 @@
 package com.aichatvn.agent.ui.screens
 
+import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -310,7 +311,7 @@ private fun PluginConfigSection(
         PluginGroupCard(
             pluginId = pluginId,
             items = items,
-            allConfigs = configs, // ✅ Truyền thêm toàn bộ cấu hình để làm dữ liệu nhúng
+            allConfigs = configs,
             onSave = onSave,
             onReset = onReset
         )
@@ -321,14 +322,13 @@ private fun PluginConfigSection(
 private fun PluginGroupCard(
     pluginId: String,
     items: List<AppConfigEntity>,
-    allConfigs: List<AppConfigEntity>, // ✅ Nhận thêm allConfigs
+    allConfigs: List<AppConfigEntity>,
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
-    // ✅ ĐÃ SỬA: Phân bổ và ánh xạ chính xác icon biểu tượng và tiêu đề Tiếng Việt cho từng kênh liên kết
     val (icon, title) = when (pluginId) {
         "global"    -> Pair("🌐", "Cổng kết nối Gateway")
         "groq"      -> Pair("🤖", "Groq AI Cloud")
@@ -357,7 +357,7 @@ private fun PluginGroupCard(
             ) {
                 Text("$icon $title", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 TextButton(onClick = { groupExpanded = !groupExpanded }) {
-                    Text(if (groupExpanded) "Thu gọn" else "${items.size} biến", style = MaterialTheme.typography.labelSmall)
+                    Text(if (groupExpanded) "Thu gọn" else "${items.size} cấu hình", style = MaterialTheme.typography.labelSmall)
                 }
             }
 
@@ -402,6 +402,50 @@ private fun PluginGroupCard(
                                 Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
                             }
                         }
+                    }
+                }
+
+                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Facebook
+                if (pluginId == "facebook") {
+                    val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
+                    val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
+                    val authUrl = "$gatewayUrl/auth/facebook?token=$gatewayToken"
+
+                    Button(
+                        onClick = {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "❌ Không thể mở trình duyệt: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("🔌 Kết nối Fanpage Facebook (1-Click)", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+
+                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Zalo
+                if (pluginId == "zalo") {
+                    val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
+                    val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
+                    val authUrl = "$gatewayUrl/auth/zalo?token=$gatewayToken"
+
+                    Button(
+                        onClick = {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "❌ Không thể mở trình duyệt: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                    ) {
+                        Text("💬 Kết nối Zalo Official Account (1-Click)", style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
