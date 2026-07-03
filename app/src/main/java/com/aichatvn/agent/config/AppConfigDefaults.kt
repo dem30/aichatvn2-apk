@@ -41,6 +41,7 @@ object AppConfigDefaults {
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
     const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
+    const val GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = "global.block_external_device_control"
 
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
@@ -314,6 +315,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Ngưỡng tin cậy Tầng 2 (High Confidence)",
             description = "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.85."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL,
+            value = "false",
+            type = "boolean",
+            pluginId = "global",
+            label = "Chặn điều khiển thiết bị từ kênh ngoài",
+            description = "Khi BẬT: khách chat từ Facebook/Telegram/Instagram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào (kể cả khóa điều khiển riêng). Không ảnh hưởng đến chat nội bộ (default_user)."
         )
     )
 }

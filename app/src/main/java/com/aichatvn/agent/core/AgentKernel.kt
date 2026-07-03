@@ -1,5 +1,3 @@
-
-
 package com.aichatvn.agent.core
 
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -110,6 +108,25 @@ class AgentKernel @Inject constructor(
 
     companion object {
         private const val MAX_DEPTH = 3
+
+        // 🌐 DANH BẠ TỪ KHÓA CHỈ ĐỊNH LỆNH HÀNH ĐỘNG PHỔ BIẾN (dùng để gác cổng trước khi vào Tầng 5)
+        private val COMMAND_TRIGGER_KEYWORDS = setOf(
+            "bat", "tat", "mo", "dong", "chay", "quet", "gui", "len lich", "dat lich", "kiem tra", "setup",
+            "den", "quat", "camera", "bom", "khoa", "thiet bi", "tuya", "canh bao", "email", "thu", "status",
+            "huy", "xoa", "sua", "doi", "them", "xem", "hen gio", "bao thuc"
+        )
+
+        // Số plugin tối đa được đưa vào prompt khi fallback theo điểm liên quan cục bộ (Tầng 5)
+        private const val MAX_FALLBACK_PLUGINS = 3
+    }
+
+    /**
+     * Kiểm tra cục bộ (không tốn API) xem câu nói của người dùng có tiềm năng là một câu lệnh
+     * điều khiển thiết bị hay không. Dùng để gác cổng trước khi gọi LLM Router (Tầng 5).
+     */
+    private fun isPotentialCommand(message: String): Boolean {
+        val norm = StringSimilarityUtil.normalizeVietnamese(message.lowercase().trim())
+        return COMMAND_TRIGGER_KEYWORDS.any { keyword -> norm.contains(keyword) }
     }
 
     private val actionCandidates: List<LocalCandidate> by lazy {
@@ -828,6 +845,16 @@ class AgentKernel @Inject constructor(
                     )
                 }
                 is Layer3Result.NoMatch -> { }
+            }
+
+            // 🚀 TỐI ƯU HÓA: Nếu câu nói không chứa bất kỳ từ khóa chỉ định lệnh nào,
+            // bypass thẳng xuống chat thường, không gọi LLM Router (tiết kiệm 1 lệnh gọi Groq).
+            if (!isPotentialCommand(resolvedMessage)) {
+                logger.d("AgentKernel", "[$traceId] 🍃 [Tầng 4 Miss] Không chứa từ khóa chỉ định lệnh -> Bypass thẳng xuống Chat (bỏ qua Tầng 5)")
+                return PipelineResult(
+                    routerOutcome = RouterOutcome.NotACommand,
+                    matchResult = matchResult
+                )
             }
 
             logger.d("AgentKernel", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
@@ -1694,6 +1721,36 @@ class AgentKernel @Inject constructor(
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
 
+    /**
+     * Chấm điểm mức độ liên quan của từng plugin đối với câu nói, dựa trên độ chồng lấp token
+     * giữa câu nói và (description/examples/tags) các action của plugin đó. Chạy hoàn toàn cục bộ,
+     * KHÔNG gọi thêm API nào — dùng để thu hẹp candidate list trước khi gửi lên LLM Router,
+     * tránh phải dump toàn bộ danh sách plugin/action (rất tốn token) khi bộ so khớp substring
+     * ở `matchedActions` không tìm được kết quả nào.
+     */
+    private fun rankRelevantPlugins(queryNormalized: String, devicePlugins: List<Plugin>): List<Plugin> {
+        val queryTokens = queryNormalized.split(" ", "\t", "\n").filter { it.length >= 2 }.toSet()
+        if (queryTokens.isEmpty()) return emptyList()
+
+        val scoreByPluginId = mutableMapOf<String, Int>()
+        normalizedActionMetadataList.forEach { meta ->
+            if (!meta.plugin.manifest.routable || !meta.action.enabled) return@forEach
+            val haystack = (listOf(meta.normalizedDescription) + meta.normalizedExamples + meta.normalizedTags)
+                .flatMap { it.split(" ", "\t", "\n") }
+                .toSet()
+            val overlap = queryTokens.count { token -> haystack.any { it.contains(token) || token.contains(it) } }
+            if (overlap > 0) {
+                val pluginId = meta.plugin.manifest.id
+                scoreByPluginId[pluginId] = maxOf(scoreByPluginId[pluginId] ?: 0, overlap)
+            }
+        }
+
+        return scoreByPluginId.entries
+            .sortedByDescending { it.value }
+            .take(MAX_FALLBACK_PLUGINS)
+            .mapNotNull { entry -> devicePlugins.find { it.manifest.id == entry.key } }
+    }
+
     private suspend fun executeTier3LlmRouting(
         context: RoutingContext,
         devicePlugins: List<Plugin>,
@@ -1723,11 +1780,28 @@ class AgentKernel @Inject constructor(
                 "  - ${meta.plugin.manifest.id}.${meta.action.name}: ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
             }
         } else {
-            actionCandidates
-                .filter { c -> devicePlugins.any { it.manifest.id == c.pluginId } }
-                .joinToString("\n") { c ->
-                    "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
-                }
+            // 🚀 TỐI ƯU HÓA: Thay vì dump TOÀN BỘ action của TOÀN BỘ plugin routable (rất tốn token),
+            // chỉ lấy top plugin có liên quan nhất theo điểm chồng lấp token cục bộ.
+            val relevantPlugins = rankRelevantPlugins(queryNormalized, devicePlugins)
+
+            if (relevantPlugins.isNotEmpty()) {
+                logger.d("AgentKernel", "[$traceId] 🎯 [Tầng 5 Fallback] Thu hẹp candidate về ${relevantPlugins.size} plugin liên quan: ${relevantPlugins.joinToString { it.manifest.id }}")
+                actionCandidates
+                    .filter { c -> relevantPlugins.any { it.manifest.id == c.pluginId } }
+                    .joinToString("\n") { c ->
+                        "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
+                    }
+            } else {
+                // Phương án cuối cùng: không plugin nào có điểm liên quan -> vẫn gửi toàn bộ để tránh
+                // bỏ sót lệnh hợp lệ, nhưng log cảnh báo để theo dõi tần suất (nên hiếm khi xảy ra
+                // vì đã có bộ lọc từ khóa isPotentialCommand gác cổng trước khi vào Tầng 5).
+                logger.d("AgentKernel", "[$traceId] ⚠️ [Tầng 5 Fallback] Không tìm được plugin liên quan cục bộ -> gửi toàn bộ danh sách (cần xem lại COMMAND_TRIGGER_KEYWORDS/tags)")
+                actionCandidates
+                    .filter { c -> devicePlugins.any { it.manifest.id == c.pluginId } }
+                    .joinToString("\n") { c ->
+                        "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
+                    }
+            }
         }
 
         val shortHistory = chatHistoryManager.getRecentTurnsAsText()

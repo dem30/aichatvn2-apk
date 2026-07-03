@@ -309,6 +309,8 @@ class ChatViewModel @Inject constructor(
         sendMessageWithImage(message, null)
     }
 
+    
+
     fun sendMessageWithImage(message: String, imageUri: Uri?) {
         if (!isProcessingQuery.compareAndSet(false, true)) {
             logger.w("ChatViewModel", "Đang xử lý yêu cầu cũ, bỏ qua yêu cầu trùng lặp.")
@@ -347,12 +349,13 @@ class ChatViewModel @Inject constructor(
                     else -> message
                 }
 
-                // ✅ CẬP NHẬT: Chuyển dữ liệu qua ChatSkill xử lý theo username động
+                // ✅ CẬP NHẬT: Thêm tham số isManual = true báo hiệu người dùng gõ tay thủ công
                 val response = chatSkill.processQuery(
                     message = userMessageContent,
                     username = username,
                     fileUrl = fileUrl,
-                    imageBase64 = base64Image
+                    imageBase64 = base64Image,
+                    isManual = true // ✅ Báo hiệu cho ChatSkill
                 )
 
                 if (response is PluginResult.Failure) {
@@ -365,6 +368,8 @@ class ChatViewModel @Inject constructor(
             }
         }
     }
+
+    
 
     private fun getDownscaledImageBytes(context: Context, uri: Uri, maxDimension: Int = 1024): ByteArray? {
         return try {

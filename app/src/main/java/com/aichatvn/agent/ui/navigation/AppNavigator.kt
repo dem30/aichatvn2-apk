@@ -21,11 +21,10 @@ import com.aichatvn.agent.ui.screens.*
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
-    object Chat       : Screen("chat",        R.string.tab_chat,        Icons.Default.Chat)
+    object Inbox      : Screen("inbox",       R.string.tab_chat,        Icons.Default.Chat) // ✅ ĐÃ SỬA: Đưa Inbox lên thanh Bottom Navigation chính [1]
     object Customer   : Screen("customer",    R.string.tab_camera,      Icons.Default.People)
     object Training   : Screen("training",    R.string.tab_training,    Icons.Default.School)
     object Schedule   : Screen("schedule",    R.string.tab_schedule,    Icons.Default.Schedule)
-    object Diagnostics: Screen("diagnostics", R.string.tab_diagnostics, Icons.Default.MonitorHeart)
     object Logs       : Screen("logs",        R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",    R.string.tab_settings,    Icons.Default.Settings)
     object Tuya       : Screen("tuya",        R.string.tab_settings,    Icons.Default.Devices)
@@ -38,13 +37,13 @@ fun AppNavigator() {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
+    // Danh sách các tab chính hiển thị dưới thanh Bottom Navigation (Đã loại bỏ Diagnostics)
     val screens = listOf(
         Screen.Dashboard,
-        Screen.Chat,
+        Screen.Inbox, // ✅ ĐÃ THÊM: Hiện màn hình danh sách hộp thư ra làm tab chính [1]
         Screen.Customer,
         Screen.Training,
         Screen.Schedule,
-        Screen.Diagnostics,
         Screen.Settings
     )
 
@@ -72,18 +71,28 @@ fun AppNavigator() {
     ) { paddingValues ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Chat.route,  // ✅ Vào thẳng Chat để voice hoạt động ngay
+            startDestination = Screen.Inbox.route,  // ✅ ĐÃ THAY ĐỔI: Vào thẳng hộp thư để quản lý tất cả các kênh
             modifier = Modifier.padding(paddingValues)
         ) {
             composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
-            composable(Screen.Chat.route)        { ChatScreen(navController) }
+            composable(Screen.Inbox.route)       { InboxScreen(navController) } // ✅ ĐÃ ĐĂNG KÝ: Màn hình danh sách hội thoại Inbox
             composable(Screen.Customer.route)    { CustomerScreen(navController) }
             composable(Screen.Training.route)    { TrainingScreen(navController) }
             composable(Screen.Schedule.route)    { ScheduleScreen(navController) }
-            composable(Screen.Diagnostics.route) { DiagnosticsScreen(navController) }
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
             composable(Screen.Tuya.route)        { TuyaScreen(navController) }
+
+            // ✅ ĐÃ THÊM: Cấu hình màn hình Chat chi tiết nhận tham số username động từ InboxScreen chuyển sang
+            composable(
+                route = "chat_screen?username={username}",
+                arguments = listOf(
+                    navArgument("username") {
+                        type = NavType.StringType
+                        defaultValue = "default_user"
+                    }
+                )
+            ) { ChatScreen(navController) }
 
             // Camera theo khách hàng
             composable(

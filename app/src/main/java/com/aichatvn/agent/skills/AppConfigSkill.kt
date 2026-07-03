@@ -70,32 +70,31 @@ class AppConfigSkill @Inject constructor(
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         return when (action) {
             "get"   -> handleGet(params)
-            "set"   -> handleSet(params)
-            "add"   -> handleSet(params)
+            "add", "set" -> handleSet(params) // "set" giữ lại làm alias tương thích ngược cho code gọi trực tiếp bằng chuỗi cũ, không khai báo trong manifest
             "list"  -> handleList(params)
             "reset" -> handleReset(params)
             else    -> failure("Action không xác định: $action")
         }
     }
 
-    private suspend fun handleGet(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
+    private suspend fun handleGet(params: Map<String, Any>): PluginResult {
         val key = params["key"] as? String
-            ?: return@withContext failure("Thiếu tham số key")
+            ?: return failure("Thiếu tham số key")
 
-        val entity = configProvider.getAll().firstOrNull { it.key == key }
-            ?: return@withContext failure("Không tìm thấy biến '$key'. Dùng action=list để xem danh sách.")
+        val entity = configProvider.allConfigs.value.firstOrNull { it.key == key }
+            ?: return failure("Không tìm thấy biến '$key'. Dùng action=list để xem danh sách.")
 
-        success(
+        return success(
             "🔧 ${entity.label.ifBlank { key }} = ${entity.value}",
             mapOf("key" to entity.key, "value" to entity.value, "type" to entity.type)
         )
     }
 
-    private suspend fun handleSet(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
-        val key   = params["key"]   as? String ?: return@withContext failure("Thiếu tham số key")
-        val value = params["value"] as? String ?: return@withContext failure("Thiếu tham số value")
+    private suspend fun handleSet(params: Map<String, Any>): PluginResult {
+        val key   = params["key"]   as? String ?: return failure("Thiếu tham số key")
+        val value = params["value"] as? String ?: return failure("Thiếu tham số value")
 
-        val existing = configProvider.getAll().firstOrNull { it.key == key }
+        val existing = configProvider.allConfigs.value.firstOrNull { it.key == key }
 
         val entity = existing?.copy(value = value)
             ?: AppConfigEntity(key = key, value = value)
@@ -103,21 +102,21 @@ class AppConfigSkill @Inject constructor(
         configProvider.upsert(entity)
         logger.i("AppConfigSkill", "set $key = $value")
 
-        success(
+        return success(
             "✅ Đã cập nhật ${entity.label.ifBlank { key }} = $value",
             mapOf("key" to key, "value" to value)
         )
     }
 
-    private suspend fun handleList(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
+    private suspend fun handleList(params: Map<String, Any>): PluginResult {
         val pluginFilter = params["pluginId"] as? String
 
-        val all = configProvider.getAll()
+        val all = configProvider.allConfigs.value
         val filtered = if (pluginFilter.isNullOrBlank()) all
         else all.filter { it.pluginId == pluginFilter }
 
         if (filtered.isEmpty()) {
-            return@withContext failure("Không có biến cấu hình nào${if (!pluginFilter.isNullOrBlank()) " cho plugin '$pluginFilter'" else ""}.")
+            return failure("Không có biến cấu hình nào${if (!pluginFilter.isNullOrBlank()) " cho plugin '$pluginFilter'" else ""}.")
         }
 
         val summary = filtered
@@ -127,7 +126,7 @@ class AppConfigSkill @Inject constructor(
                 "🔹 $category:\n" + list.joinToString("\n") { "  - ${it.key}: ${it.value}" }
             }
 
-        success(summary, mapOf("configs" to filtered))
+        return success(summary, mapOf("configs" to filtered))
     }
 
     private suspend fun handleReset(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {

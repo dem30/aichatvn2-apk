@@ -38,7 +38,7 @@ enum class ChatMode {
 class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
-    private val configProvider: AppConfigProvider, // Inject configProvider để lấy cấu hình kết nối Render
+    private val configProvider: AppConfigProvider,
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
@@ -104,7 +104,7 @@ class ChatSkill @Inject constructor(
         val message = params["message"] as? String ?: return PluginResult.Failure("Thiếu tin nhắn")
         val username = params["username"] as? String ?: "default_user"
         val extraContext = params["extraContext"] as? String ?: ""
-        return processQuery(message, extraContext, username)
+        return processQuery(message, extraContext, username, isManual = true) // Mặc định gọi từ hàm Kịch bản bên ngoài là trực tiếp
     }
 
     private suspend fun handleClearHistory(params: Map<String, Any>): PluginResult {
@@ -112,14 +112,14 @@ class ChatSkill @Inject constructor(
         return clearHistory(username)
     }
 
-    // Lưu tin nhắn khách hàng gửi từ Webhook vào SQLite (Không trả lời tự động)
+    // Lưu nhanh tin nhắn khách hàng gửi từ Webhook vào SQLite dưới vai trò USER (Không trả lời tự động)
     suspend fun saveExternalUserMessage(message: String, username: String) {
         val userMessage = ChatMessageEntity(
             id = UUID.randomUUID().toString(),
             sessionToken = "session_$username",
             username = username,
             content = message,
-            role = "user",
+            role = "user", // ✅ SỬA: Đảm bảo lưu đúng vai trò khách gửi là "user" chứ không phải "assistant"
             type = "text",
             timestamp = System.currentTimeMillis()
         )
@@ -133,7 +133,6 @@ class ChatSkill @Inject constructor(
         }
     }
 
-    // ✅ ĐÃ KHÔI PHỤC: Hàm setChatMode bị thiếu trong bản nâng cấp trước
     fun setChatMode(mode: ChatMode) {
         _chatMode.value = mode
     }
@@ -143,7 +142,8 @@ class ChatSkill @Inject constructor(
         extraContext: String = "",
         username: String,
         fileUrl: String? = null,
-        imageBase64: String? = null
+        imageBase64: String? = null,
+        isManual: Boolean = false // ✅ Đmax THÊM: Cờ hiệu phân biệt luồng Admin gõ tay / Máy chủ tự động gọi
     ): PluginResult {
         return try {
             messagesMutex.withLock {
@@ -153,22 +153,20 @@ class ChatSkill @Inject constructor(
                 }
             }
 
-            // Kiểm tra xem đây có phải là tài khoản khách hàng từ Facebook/Telegram/Instagram không
             val isExternal = username.startsWith("facebook_") || username.startsWith("telegram_") || username.startsWith("instagram_")
 
-            if (isExternal) {
-                // 👤 LUỒNG 1: NGƯỜI TRỰC CHAT THỦ CÔNG (CƯỚP QUYỀN CHAT / HUMAN TAKEOVER)
-                // Admin gõ tin nhắn trực tiếp từ màn hình điện thoại -> Lưu dưới vai trò Trợ lý (assistant) [1]
+            if (isExternal && isManual) {
+                // 👤 LUỒNG 1: NGƯỜI TRỰC CHAT THỦ CÔNG (ADMIN GÕ TAY TỪ ĐIỆN THOẠI)
                 val adminMessageId = UUID.randomUUID().toString()
                 val adminMessage = ChatMessageEntity(
                     id = adminMessageId,
                     sessionToken = "session_$username",
                     username = username,
                     content = message,
-                    role = "assistant", // Lưu dạng assistant để giao diện hiểu người trực đang phản hồi [1]
+                    role = "assistant", // Ghi nhận là người trực trả lời
                     type = "text",
                     timestamp = System.currentTimeMillis(),
-                    sourcePlugin = "human" // Đánh dấu đây là người thật trả lời thủ công
+                    sourcePlugin = "human"
                 )
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(adminMessage)
@@ -179,10 +177,10 @@ class ChatSkill @Inject constructor(
                     }
                 }
 
-                // Tách lấy ID gốc của khách hàng để đẩy tin nhắn thật ra các kênh liên kết [1]
+                // Đẩy tin nhắn thật ra các cổng liên kết mạng xã hội [1]
                 val rawSenderId = username.substringAfter("_")
                 if (username.startsWith("facebook_")) {
-                    val pageId = extraContext.removePrefix("page_id:") // Lấy page_id nếu có lưu trong extraContext
+                    val pageId = extraContext.removePrefix("page_id:")
                     agentKernel.executePluginAction(
                         "facebook",
                         "send_messenger",
@@ -202,14 +200,14 @@ class ChatSkill @Inject constructor(
                 )
 
             } else {
-                // 🤖 LUỒNG 2: AI TỰ ĐỘNG TRẢ LỜI (MẶC ĐỊNH CHO DEFAULT_USER)
+                // 🤖 LUỒNG 2: AI TỰ ĐỘNG PHẢN HỒI (MÁY CHỦ SSE HOẶC default_user GỌI)
                 val userMessageId = UUID.randomUUID().toString()
                 val userMessage = ChatMessageEntity(
                     id = userMessageId,
                     sessionToken = "session_$username",
                     username = username,
                     content = message,
-                    role = "user",
+                    role = "user", // Lưu dạng tin khách hỏi
                     type = if (!fileUrl.isNullOrEmpty() || !imageBase64.isNullOrEmpty()) "image" else "text",
                     fileUrl = fileUrl,
                     timestamp = System.currentTimeMillis()
@@ -219,7 +217,9 @@ class ChatSkill @Inject constructor(
                 }
 
                 messagesMutex.withLock {
-                    _messages.value = _messages.value + userMessage
+                    if (currentUsername == username) {
+                        _messages.value = _messages.value + userMessage
+                    }
                 }
 
                 val response = agentKernel.chat(
@@ -249,7 +249,9 @@ class ChatSkill @Inject constructor(
                 }
 
                 messagesMutex.withLock {
-                    _messages.value = _messages.value + assistantMessage
+                    if (currentUsername == username) {
+                        _messages.value = _messages.value + assistantMessage
+                    }
                 }
 
                 return PluginResult.Success(
@@ -281,7 +283,9 @@ class ChatSkill @Inject constructor(
                     put("text", text)
                 }.toString()
 
-                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                conn.outputStream.use { os ->
+                    os.write(payload.toByteArray(Charsets.UTF_8))
+                }
                 conn.responseCode
             } catch (e: Exception) {
                 logger.e("ChatSkill", "Gửi phản hồi về Telegram thất bại: ${e.message}")

@@ -467,6 +467,7 @@ private fun ConfigItemRow(
     var inputValue by remember(entity.key, entity.value) { mutableStateOf(entity.value) }
     val isDirty = inputValue != entity.value
     val isNumeric = entity.type in setOf("int", "long", "float", "double", "number")
+    val isBool = entity.type == "boolean"
 
     Column(
         modifier = Modifier
@@ -475,7 +476,7 @@ private fun ConfigItemRow(
     ) {
         val displayName = if (entity.label.isNotBlank()) entity.label else entity.key
         Text(displayName, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-        
+
         if (entity.label.isNotBlank()) {
             Text(
                 text = "Key: ${entity.key}",
@@ -490,28 +491,53 @@ private fun ConfigItemRow(
             Text(entity.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
         }
         Spacer(Modifier.height(4.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            OutlinedTextField(
-                value = inputValue,
-                onValueChange = { inputValue = it },
-                modifier = Modifier.weight(1f),
-                singleLine = entity.type != "string" || entity.value.length < 80,
-                textStyle = MaterialTheme.typography.bodySmall,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = if (isNumeric) KeyboardType.Number else KeyboardType.Text
-                ),
-                trailingIcon = {
-                    if (isDirty) {
-                        IconButton(onClick = { onSave(entity.key, inputValue) }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Check, contentDescription = "Lưu nhanh", tint = MaterialTheme.colorScheme.primary)
+
+        if (isBool) {
+            // 🔘 Kiểu bool: hiển thị Switch bật/tắt, lưu ngay khi gạt (không cần nút Lưu riêng)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = if (inputValue.toBooleanStrictOrNull() == true) "Đang BẬT" else "Đang TẮT",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Switch(
+                    checked = inputValue.toBooleanStrictOrNull() == true,
+                    onCheckedChange = { checked ->
+                        val newValue = checked.toString()
+                        inputValue = newValue
+                        onSave(entity.key, newValue)
+                    }
+                )
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                OutlinedTextField(
+                    value = inputValue,
+                    onValueChange = { inputValue = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = entity.type != "string" || entity.value.length < 80,
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (isNumeric) KeyboardType.Number else KeyboardType.Text
+                    ),
+                    trailingIcon = {
+                        if (isDirty) {
+                            IconButton(onClick = { onSave(entity.key, inputValue) }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Check, contentDescription = "Lưu nhanh", tint = MaterialTheme.colorScheme.primary)
+                            }
                         }
                     }
+                )
+                IconButton(onClick = { onReset(entity.key); inputValue = entity.value }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Reset", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
                 }
-            )
-            IconButton(onClick = { onReset(entity.key); inputValue = entity.value }, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.Refresh, contentDescription = "Reset", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
             }
         }
+
         Text(
             "Kiểu dữ liệu: ${entity.type.uppercase()}  •  Sửa lần cuối: ${fmtTs(entity.updatedAt)}",
             style = MaterialTheme.typography.labelSmall,
