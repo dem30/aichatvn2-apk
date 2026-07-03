@@ -276,6 +276,29 @@ interface AppConfigDao {
     suspend fun getAll(): List<AppConfigEntity>
 }
 
+// ==================== MULTI FACEBOOK PAGES DAO ====================
+
+@Dao
+interface FacebookPageDao {
+    @Query("SELECT * FROM facebook_pages")
+    fun getAllPagesFlow(): Flow<List<FacebookPageEntity>>
+
+    @Query("SELECT * FROM facebook_pages")
+    suspend fun getAllPages(): List<FacebookPageEntity>
+
+    @Query("SELECT * FROM facebook_pages WHERE id = :pageId LIMIT 1")
+    suspend fun getPageById(pageId: String): FacebookPageEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPages(pages: List<FacebookPageEntity>)
+
+    @Query("DELETE FROM facebook_pages WHERE id = :pageId")
+    suspend fun deletePage(pageId: String)
+
+    @Query("DELETE FROM facebook_pages")
+    suspend fun clearAll()
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -288,9 +311,10 @@ interface AppConfigDao {
         ScheduleEntity::class,
         TuyaDeviceEntity::class,
         AppConfigEntity::class,
-        CustomerEntity::class
+        CustomerEntity::class,
+        FacebookPageEntity::class // ✅ ĐÃ THÊM: Thực thể lưu trữ nhiều trang Facebook
     ],
-    version = 9, // Tăng phiên bản cấu trúc từ 8 lên 9
+    version = 10, // ✅ ĐÃ TĂNG: Phiên bản cấu trúc từ 9 lên 10
 
     exportSchema = false
 )
@@ -305,6 +329,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tuyaDeviceDao(): TuyaDeviceDao
     abstract fun customerDao(): CustomerDao
     abstract fun appConfigDao(): AppConfigDao
+    abstract fun facebookPageDao(): FacebookPageDao // ✅ ĐÃ THÊM: Truy xuất DAO của Facebook Pages
 
     companion object {
         @Volatile
@@ -403,10 +428,24 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ MIGRATION 8 -> 9: Bổ sung cột 'type' vào bảng 'qa_data'
         private val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE qa_data ADD COLUMN type TEXT NOT NULL DEFAULT 'alias'")
+            }
+        }
+
+        // ✅ MIGRATION 9 -> 10: Tự động khởi tạo bảng 'facebook_pages' lưu nhiều trang không mất dữ liệu cũ
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `facebook_pages` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `accessToken` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
             }
         }
 
@@ -417,7 +456,6 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aichatvn_database"
                 )
-                    // ✅ BỔ SUNG: Cho phép đọc ghi đồng thời từ nhiều luồng mà không bị nghẽn (Lock DB)
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                     .addMigrations(
                         MIGRATION_1_2, 
@@ -426,7 +464,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_5_6, 
                         MIGRATION_6_7, 
                         MIGRATION_7_8,
-                        MIGRATION_8_9
+                        MIGRATION_8_9,
+                        MIGRATION_9_10 // ✅ ĐÃ THÊM: Đăng ký bản di cư cấu hình mới
                     )
                     .build()
                 INSTANCE = instance

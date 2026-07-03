@@ -1,17 +1,27 @@
 package com.aichatvn.agent.skills
 
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class FacebookSkill @Inject constructor(
+    private val configProvider: AppConfigProvider,
+    private val database: AppDatabase, // ✅ ĐÃ THÊM: Inject database để lấy Page Token theo từng Page ID
     logger: Logger
 ) : BaseSkill("facebook", "Facebook Assistant", logger) {
 
@@ -37,7 +47,8 @@ class FacebookSkill @Inject constructor(
                 examples = listOf("gửi tin nhắn facebook cho", "inbox messenger"),
                 parameters = listOf(
                     PluginParameter("recipient_id", "string", "ID người nhận (PSID)", true, "string"),
-                    PluginParameter("message", "string", "Nội dung tin nhắn cần gửi", true, "string")
+                    PluginParameter("message", "string", "Nội dung tin nhắn cần gửi", true, "string"),
+                    PluginParameter("page_id", "string", "ID của Fanpage gửi tin", false, "string") // ✅ ĐÃ THÊM: Nhận diện Page ID động
                 )
             )
         )
@@ -53,7 +64,70 @@ class FacebookSkill @Inject constructor(
             "send_messenger" -> {
                 val recipientId = params["recipient_id"] as? String ?: ""
                 val message = params["message"] as? String ?: ""
-                success("✅ Đã xếp hàng tin nhắn gửi qua Messenger tới khách hàng ID $recipientId: \"$message\"")
+                val pageId = params["page_id"] as? String ?: "" // ✅ ĐÃ THÊM: Lấy pageId truyền sang
+
+                if (recipientId.isBlank() || message.isBlank()) {
+                    return failure("Thiếu recipient_id hoặc nội dung tin nhắn.")
+                }
+
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+
+                // 🔍 TRUY VẤN: Lấy thực thể trang đã lưu trong cơ sở dữ liệu SQLite theo Page ID động
+                val pageEntity = withContext(Dispatchers.IO) {
+                    database.facebookPageDao().getPageById(pageId)
+                }
+
+                // Nếu tìm thấy cấu hình trang trong DB thì lấy Page Token riêng biệt, ngược lại tự động fallback về Page Token mặc định cũ
+                val pageAccessToken = pageEntity?.accessToken ?: configProvider.getString(AppConfigDefaults.FACEBOOK_PAGE_ACCESS_TOKEN).trim()
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank() || pageAccessToken.isBlank()) {
+                    return failure("Thiếu thông tin cấu hình cổng đám mây hoặc Access Token cho Page ID: $pageId")
+                }
+
+                withContext(Dispatchers.IO) {
+                    var connection: HttpURLConnection? = null
+                    try {
+                        val url = URL("$gatewayUrl/send/$gatewayToken")
+                        connection = url.openConnection() as HttpURLConnection
+                        connection.requestMethod = "POST"
+                        connection.doOutput = true
+                        connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                        connection.connectTimeout = 10000
+                        connection.readTimeout = 10000
+
+                        val payload = JSONObject().apply {
+                            put("platform", "facebook")
+                            put("recipientId", recipientId)
+                            put("message", message)
+                            put("pageAccessToken", pageAccessToken)
+                        }.toString()
+
+                        connection.outputStream.use { os ->
+                            os.write(payload.toByteArray(Charsets.UTF_8))
+                        }
+
+                        val responseCode = connection.responseCode
+                        if (responseCode == 200) {
+                            val responseBody = connection.inputStream.bufferedReader().use { it.readText() }
+                            val jsonResp = JSONObject(responseBody)
+                            
+                            if (jsonResp.optString("status") == "success") {
+                                success("✅ Gửi tin nhắn qua Messenger thành công!")
+                            } else {
+                                failure("❌ Lỗi từ máy chủ: ${jsonResp.optString("message", "Unknown error")}")
+                            }
+                        } else {
+                            val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                            failure("❌ Lỗi HTTP $responseCode: $errorBody")
+                        }
+                    } catch (e: Exception) {
+                        logger.e("FacebookSkill", "Gửi phản hồi qua Messenger thất bại: ${e.message}", e)
+                        failure("❌ Lỗi kết nối gửi tin: ${e.message}")
+                    } finally {
+                        connection?.disconnect()
+                    }
+                }
             }
             else -> failure("Không tìm thấy hành động: $action")
         }
