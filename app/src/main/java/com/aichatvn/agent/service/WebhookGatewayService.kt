@@ -136,6 +136,53 @@ class WebhookGatewayService : Service() {
         return plugins.find { it.manifest.id == pluginId }
     }
 
+    // ✅ ĐÃ THÊM: Tự "chào lại" server, đăng ký ánh xạ page_id -> token mỗi khi SSE vừa kết nối.
+    // Cần thiết vì Hugging Face Space free tier có thể tự restart (ngủ đông, deploy code mới...),
+    // làm mất sạch bảng ánh xạ trong RAM của server — điện thoại phải tự phục hồi lại.
+    private fun registerPageMappings(gatewayUrl: String, gatewayToken: String) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val fbPageId = configProvider.getString(AppConfigDefaults.FACEBOOK_PAGE_ID).trim()
+                val igPageId = configProvider.getString(AppConfigDefaults.INSTAGRAM_PAGE_ID).trim()
+
+                val pageIds = listOfNotNull(
+                    fbPageId.takeIf { it.isNotEmpty() },
+                    igPageId.takeIf { it.isNotEmpty() }
+                )
+
+                if (pageIds.isEmpty()) {
+                    return@launch // Chưa từng kết nối Facebook/Instagram nào thì không có gì để đăng ký
+                }
+
+                val jsonArray = org.json.JSONArray(pageIds)
+                val bodyJson = org.json.JSONObject().apply {
+                    put("token", gatewayToken)
+                    put("pageIds", jsonArray)
+                }
+
+                val url = URL("$gatewayUrl/register")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+
+                connection.outputStream.use { it.write(bodyJson.toString().toByteArray()) }
+
+                val responseCode = connection.responseCode
+                if (responseCode == 200) {
+                    logger.i("CloudGateway", "📇 Đã đăng ký lại ánh xạ Page ID với Cloud Gateway: $pageIds")
+                } else {
+                    logger.w("CloudGateway", "⚠️ Đăng ký ánh xạ Page ID thất bại, mã lỗi: $responseCode")
+                }
+                connection.disconnect()
+            } catch (e: Exception) {
+                logger.e("CloudGateway", "❌ Lỗi khi đăng ký ánh xạ Page ID: ${e.message}")
+            }
+        }
+    }
+
     // ===== 🔌 KÊNH 1: NHẬN TIN NHẮN TỪ HUGGING FACE QUA SSE =====
     private fun startCloudGatewaySSE() {
         serviceScope.launch(Dispatchers.IO) {
@@ -182,6 +229,10 @@ class WebhookGatewayService : Service() {
                     logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
                     updateNotification("Cổng đám mây: Đã kết nối")
 
+                    // ✅ ĐÃ THÊM: Mỗi khi SSE vừa kết nối (kể cả sau khi Space bị restart mất RAM),
+                    // tự "chào lại" server để phục hồi bảng ánh xạ page_id -> token
+                    registerPageMappings(gatewayUrl, gatewayToken)
+
                     while (isActive && reader.readLine().also { line = it } != null) {
                         val trimmedLine = line?.trim() ?: ""
                         if (trimmedLine.startsWith("data:")) {
@@ -198,11 +249,18 @@ class WebhookGatewayService : Service() {
                                         if (event == "token_sync") {
                                             val plat = jsonObj.optString("platform", "")
                                             val tokenValue = jsonObj.optString("pageAccessToken", "")
+                                            val pageIdValue = jsonObj.optString("pageId", "") // ✅ ĐÃ THÊM
                                             if (plat == "facebook" && tokenValue.isNotEmpty()) {
                                                 configProvider.set(AppConfigDefaults.FACEBOOK_PAGE_ACCESS_TOKEN, tokenValue)
+                                                if (pageIdValue.isNotEmpty()) {
+                                                    configProvider.set(AppConfigDefaults.FACEBOOK_PAGE_ID, pageIdValue)
+                                                }
                                                 logger.i("CloudGateway", "🔑 Đã đồng bộ động Facebook Page Access Token thành công!")
                                             } else if (plat == "instagram" && tokenValue.isNotEmpty()) {
                                                 configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ACCESS_TOKEN, tokenValue)
+                                                if (pageIdValue.isNotEmpty()) {
+                                                    configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ID, pageIdValue)
+                                                }
                                                 logger.i("CloudGateway", "🔑 Đã đồng bộ động Instagram Page Access Token thành công!")
                                             }
                                         } else {

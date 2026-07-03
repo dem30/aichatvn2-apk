@@ -49,7 +49,9 @@ object AppConfigDefaults {
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
     // ✅ ĐÃ THÊM: Seed sẵn toàn bộ biến cấu hình cho tất cả các kênh giao tiếp chính
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
+    const val FACEBOOK_PAGE_ID              = "facebook.page_id" // ✅ ĐÃ THÊM: lưu Page ID để tự /register lại khi Space restart
     const val INSTAGRAM_PAGE_ACCESS_TOKEN   = "instagram.page_access_token"
+    const val INSTAGRAM_PAGE_ID             = "instagram.page_id" // ✅ ĐÃ THÊM
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
     const val ZALO_ACCESS_TOKEN             = "zalo.access_token"
     const val ZALO_REFRESH_TOKEN            = "zalo.refresh_token"
@@ -86,6 +88,14 @@ object AppConfigDefaults {
             pluginId = "facebook",
             label = "Facebook Page Access Token",
             description = "Mã token kết nối của Fanpage Facebook dùng để gửi tin nhắn phản hồi cho người dùng."
+        ),
+        AppConfigEntity(
+            key = FACEBOOK_PAGE_ID,
+            value = "",
+            type = "string",
+            pluginId = "facebook",
+            label = "Facebook Page ID",
+            description = "ID Fanpage đã kết nối — dùng để tự đăng ký lại ánh xạ với Cloud Gateway sau khi Space restart."
         ),
 
         // ── INSTAGRAM MESSENGER ──
