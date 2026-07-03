@@ -32,6 +32,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Properties
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
 
@@ -176,7 +177,7 @@ class WebhookGatewayService : Service() {
                     connection.readTimeout = 0 // Giữ kết nối mở vô hạn không timeout
                     
                     val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                    var line: String?
+                    var line: String? = null // ✅ ĐÃ KHỞI TẠO GIÁ TRỊ ĐỂ KHẮC PHỤC LỖI BIÊN DỊCH GRADLE
                     
                     logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
                     updateNotification("Cổng đám mây: Đã kết nối")
@@ -217,7 +218,6 @@ class WebhookGatewayService : Service() {
                                                     )
                                                 }
                                                 "zalo" -> {
-                                                    // 📶 SẴN SÀNG CHO ZALO: Sẵn sàng cấu hình khi bạn viết Zalo Skill sau này
                                                     findPlugin("zalo")?.execute(
                                                         "send_message",
                                                         mapOf("recipient_id" to senderId, "message" to reply.responseText)
@@ -250,7 +250,6 @@ class WebhookGatewayService : Service() {
             delay(3000)
 
             while (isActive) {
-                // ✅ ĐÃ SỬA: Đọc trực tiếp biến telegram.bot_token từ hệ thống để đồng bộ tức thời
                 val botToken = configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim()
 
                 if (botToken.isBlank() || !isNetworkAvailable()) {
