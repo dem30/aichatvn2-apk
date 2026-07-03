@@ -4,7 +4,6 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-// ==================== CHAT MESSAGE ====================
 // ==================== TUYA DEVICE ====================
 
 @Entity(tableName = "tuya_devices")
@@ -18,6 +17,8 @@ data class TuyaDeviceEntity(
     val lastSeen: Long = System.currentTimeMillis()
 )
 
+// ==================== CHAT MESSAGE ====================
+
 @Entity(tableName = "chat_messages")
 data class ChatMessageEntity(
     @PrimaryKey
@@ -29,13 +30,7 @@ data class ChatMessageEntity(
     val type: String, // "text" or "image" or "file"
     val fileUrl: String? = null,
     val timestamp: Long,
-    // ✅ MỚI: nguồn gốc câu trả lời CỦA ASSISTANT.
-    // - null            -> chat thường (Groq trả lời tự do / QA)
-    // - "learn"         -> lệnh học Q&A ("Học:"/"Dạy:")
-    // - id của 1 plugin (vd "camera", "light", "email"...) -> đây là kết quả THỰC THI
-    //   1 lệnh điều khiển thiết bị qua AgentKernel.tryDeviceCommand()
-    // Dùng để UI gắn badge "⚡ lệnh" lên góc tin nhắn, giúp người dùng phân biệt được AI
-    // đang trả lời tự do hay vừa thực thi 1 lệnh thật sự. Tin nhắn role="user" luôn để null.
+    // Nguồn gốc câu trả lời của Assistant
     val sourcePlugin: String? = null
 )
 
@@ -137,19 +132,9 @@ data class ScheduleEntity(
     val lastRunAt: Long = 0L,
     val createdAt: Long
 )
+
 // ==================== APP CONFIG ====================
 
-/**
- * Bảng key-value lưu tất cả cấu hình của các plugin.
- *
- * key         : định danh duy nhất, dạng "pluginId.paramName" (vd "camera.cooldownMs")
- * value       : giá trị dưới dạng String (mọi kiểu đều serialise về String)
- * type        : "string" | "int" | "long" | "boolean" | "float"
- * pluginId    : plugin sở hữu tham số (dùng để nhóm trên UI, vd "camera", "groq")
- * label       : tên hiển thị ngắn gọn (vd "Cooldown (ms)")
- * description : mô tả mục đích, hiện bên dưới label trên UI Settings
- * updatedAt   : timestamp lần sửa gần nhất (millis)
- */
 @Entity(tableName = "app_config")
 data class AppConfigEntity(
     @PrimaryKey
@@ -159,5 +144,16 @@ data class AppConfigEntity(
     val pluginId: String = "global",
     val label: String = "",
     val description: String = "",
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+// ==================== MULTI FACEBOOK PAGES ====================
+
+@Entity(tableName = "facebook_pages")
+data class FacebookPageEntity(
+    @PrimaryKey
+    val id: String,                 // Page ID từ Facebook
+    val name: String,               // Tên Fanpage
+    val accessToken: String,        // Access Token dài hạn riêng của trang này
     val updatedAt: Long = System.currentTimeMillis()
 )
