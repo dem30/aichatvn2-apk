@@ -1,6 +1,8 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
@@ -20,11 +22,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// ✅ ĐÃ KHÔI PHỤC: Enum ChatMode bị thiếu
 enum class ChatMode {
     GROQ,
     QA,
@@ -35,6 +38,7 @@ enum class ChatMode {
 class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
+    private val configProvider: AppConfigProvider, // ✅ ĐÃ THÊM: Inject configProvider để lấy link Render Server
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
@@ -48,10 +52,11 @@ class ChatSkill @Inject constructor(
         actions = listOf(
             PluginAction(
                 name = "chat",
-                description = "Trò chuyện với AI",
+                description = "Trò chuyện với AI hoặc khách hàng ngoại tuyến",
                 parameters = listOf(
                     PluginParameter("message", "string", "Tin nhắn", true),
-                    PluginParameter("username", "string", "Tên người dùng", true)
+                    PluginParameter("username", "string", "Tên người dùng hoặc ID khách hàng", true),
+                    PluginParameter("extraContext", "string", "Ngữ cảnh bổ sung", false)
                 )
             ),
             PluginAction(
@@ -60,14 +65,6 @@ class ChatSkill @Inject constructor(
                 parameters = listOf(
                     PluginParameter("username", "string", "Tên người dùng", true)
                 )
-            ),
-            PluginAction(
-                name = "get_history",
-                description = "Lấy lịch sử chat",
-                parameters = listOf(
-                    PluginParameter("username", "string", "Tên người dùng", true),
-                    PluginParameter("limit", "int", "Số lượng tin nhắn tối đa", false)
-                )
             )
         )
     )
@@ -75,7 +72,7 @@ class ChatSkill @Inject constructor(
     private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
     val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()
 
-    private val _chatMode = MutableStateFlow(ChatMode.GROQ)
+    private val _chatMode = MutableStateFlow(ChatMode.COMBINED)
     val chatMode: StateFlow<ChatMode> = _chatMode.asStateFlow()
 
     private val database by lazy { AppDatabase.getDatabase(context) }
@@ -83,41 +80,31 @@ class ChatSkill @Inject constructor(
     private val messagesMutex = Mutex()
 
     override suspend fun initialize() {
-        val loaded = withContext(Dispatchers.IO) {
-            database.chatMessageDao().getMessages(currentUsername, 500)
-        }
-        _messages.value = loaded
-        logger.d("ChatSkill", "Initialized with ${loaded.size} messages for user '$currentUsername'")
+        reloadMessages(currentUsername)
     }
 
     override suspend fun shutdown() {}
 
+    private suspend fun reloadMessages(username: String) {
+        val loaded = withContext(Dispatchers.IO) {
+            database.chatMessageDao().getMessages(username, 500)
+        }
+        _messages.value = loaded
+    }
+
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
-        logger.d("ChatSkill", "execute: action=$action")
-        
         return when (action) {
             "chat" -> handleChat(params)
             "clear_history" -> handleClearHistory(params)
-            "get_history" -> handleGetHistory(params)
             else -> PluginResult.Failure("Action không xác định: $action")
         }
     }
 
     private suspend fun handleChat(params: Map<String, Any>): PluginResult {
-        val message = params["message"] as? String
-            ?: return PluginResult.Failure("Thiếu tham số message")
-        
+        val message = params["message"] as? String ?: return PluginResult.Failure("Thiếu tin nhắn")
         val username = params["username"] as? String ?: "default_user"
-        val fileUrl = params["fileUrl"] as? String
-        val imageBase64 = params["imageBase64"] as? String
         val extraContext = params["extraContext"] as? String ?: ""
-        
-        val result = processQuery(message, extraContext, username, fileUrl, imageBase64)
-        return when (result) {
-            is PluginResult.Success -> result
-            is PluginResult.Failure -> result
-            else -> PluginResult.Failure("Không thể xử lý")
-        }
+        return processQuery(message, extraContext, username)
     }
 
     private suspend fun handleClearHistory(params: Map<String, Any>): PluginResult {
@@ -125,35 +112,29 @@ class ChatSkill @Inject constructor(
         return clearHistory(username)
     }
 
-    private suspend fun handleGetHistory(params: Map<String, Any>): PluginResult {
-        val username = params["username"] as? String ?: "default_user"
-        val limit = (params["limit"] as? Number)?.toInt() ?: 100
-        return getChatHistory(username, limit)
-    }
-
-    fun setChatMode(mode: ChatMode) {
-        _chatMode.value = mode
-    }
-
-    suspend fun addAssistantMessage(response: String, username: String): ChatMessageEntity {
-        val assistantMessageId = UUID.randomUUID().toString()
-        val assistantMessage = ChatMessageEntity(
-            id = assistantMessageId,
+    // ✅ ĐÃ THÊM: Lưu tin nhắn khách hàng gửi từ Webhook vào SQLite (Không trả lời tự động)
+    suspend fun saveExternalUserMessage(message: String, username: String) {
+        val userMessage = ChatMessageEntity(
+            id = UUID.randomUUID().toString(),
             sessionToken = "session_$username",
             username = username,
-            content = response,
-            role = "assistant",
+            content = message,
+            role = "user",
             type = "text",
             timestamp = System.currentTimeMillis()
         )
         withContext(Dispatchers.IO) {
-            database.chatMessageDao().insertMessage(assistantMessage)
+            database.chatMessageDao().insertMessage(userMessage)
         }
-        
         messagesMutex.withLock {
-            _messages.value = _messages.value + assistantMessage
+            if (currentUsername == username) {
+                _messages.value = _messages.value + userMessage
+            }
         }
-        return assistantMessage
+    }
+
+    fun setChatMode(mode: ChatMode) {
+        _chatMode.value = mode
     }
 
     suspend fun processQuery(
@@ -167,75 +148,145 @@ class ChatSkill @Inject constructor(
             messagesMutex.withLock {
                 if (currentUsername != username) {
                     currentUsername = username
-                    val loaded = withContext(Dispatchers.IO) {
-                        database.chatMessageDao().getMessages(username, 500)
-                    }
-                    _messages.value = loaded
-                    logger.d("ChatSkill", "Username changed to '$username', reloaded ${loaded.size} messages")
+                    reloadMessages(username)
                 }
             }
 
-            val userMessageId = UUID.randomUUID().toString()
-            val userMessage = ChatMessageEntity(
-                id = userMessageId,
-                sessionToken = "session_$username",
-                username = username,
-                content = message,
-                role = "user",
-                type = if (!fileUrl.isNullOrEmpty() || !imageBase64.isNullOrEmpty()) "image" else "text",
-                fileUrl = fileUrl,
-                timestamp = System.currentTimeMillis()
-            )
-            withContext(Dispatchers.IO) {
-                database.chatMessageDao().insertMessage(userMessage)
-            }
+            // Kiểm tra xem đây có phải là tài khoản khách hàng từ Facebook/Telegram/Instagram không
+            val isExternal = username.startsWith("facebook_") || username.startsWith("telegram_") || username.startsWith("instagram_")
 
-            messagesMutex.withLock {
-                _messages.value = _messages.value + userMessage
-            }
-
-            // ✅ ĐÃ SỬA: Sửa tham chiếu ChatRequest thành đường dẫn đầy đủ
-            val response = agentKernel.chat(
-                com.aichatvn.agent.core.ChatRequest(
-                    message = message,
+            if (isExternal) {
+                // 👤 LUỒNG 1: NGƯỜI TRỰC CHAT THỦ CÔNG (CƯỚP QUYỀN CHAT / HUMAN TAKEOVER)
+                // Admin gõ tin nhắn trực tiếp từ màn hình điện thoại -> Lưu dưới vai trò Trợ lý (assistant) [1]
+                val adminMessageId = UUID.randomUUID().toString()
+                val adminMessage = ChatMessageEntity(
+                    id = adminMessageId,
+                    sessionToken = "session_$username",
                     username = username,
-                    imageBase64 = imageBase64,
+                    content = message,
+                    role = "assistant", // Lưu dạng assistant để giao diện hiểu người trực đang phản hồi [1]
+                    type = "text",
+                    timestamp = System.currentTimeMillis(),
+                    sourcePlugin = "human" // Đánh dấu đây là người thật trả lời thủ công
+                )
+                withContext(Dispatchers.IO) {
+                    database.chatMessageDao().insertMessage(adminMessage)
+                }
+                messagesMutex.withLock {
+                    if (currentUsername == username) {
+                        _messages.value = _messages.value + adminMessage
+                    }
+                }
+
+                // Tách lấy ID gốc của khách hàng để đẩy tin nhắn thật ra các kênh liên kết [1]
+                val rawSenderId = username.substringAfter("_")
+                if (username.startsWith("facebook_")) {
+                    val pageId = extraContext.removePrefix("page_id:") // Lấy page_id nếu có lưu trong extraContext
+                    agentKernel.executePluginAction(
+                        "facebook",
+                        "send_messenger",
+                        mapOf("recipient_id" to rawSenderId, "message" to message, "page_id" to pageId)
+                    )
+                } else if (username.startsWith("telegram_")) {
+                    val botToken = configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim()
+                    sendTelegramMessage(botToken, rawSenderId, message)
+                }
+
+                return PluginResult.Success(
+                    mapOf(
+                        "response" to message,
+                        "messageId" to adminMessageId,
+                        "mode" to "human_agent"
+                    )
+                )
+
+            } else {
+                // 🤖 LUỒNG 2: AI TỰ ĐỘNG TRẢ LỜI (MẶC ĐỊNH CHO DEFAULT_USER)
+                val userMessageId = UUID.randomUUID().toString()
+                val userMessage = ChatMessageEntity(
+                    id = userMessageId,
+                    sessionToken = "session_$username",
+                    username = username,
+                    content = message,
+                    role = "user",
+                    type = if (!fileUrl.isNullOrEmpty() || !imageBase64.isNullOrEmpty()) "image" else "text",
                     fileUrl = fileUrl,
-                    extraContext = extraContext,
-                    chatMode = _chatMode.value.name
+                    timestamp = System.currentTimeMillis()
                 )
-            )
+                withContext(Dispatchers.IO) {
+                    database.chatMessageDao().insertMessage(userMessage)
+                }
 
-            val assistantMessageId = UUID.randomUUID().toString()
-            val assistantMessage = ChatMessageEntity(
-                id = assistantMessageId,
-                sessionToken = "session_$username",
-                username = username,
-                content = response.responseText,
-                role = "assistant",
-                type = "text",
-                timestamp = System.currentTimeMillis(),
-                sourcePlugin = response.usedPluginId
-            )
-            withContext(Dispatchers.IO) {
-                database.chatMessageDao().insertMessage(assistantMessage)
-            }
+                messagesMutex.withLock {
+                    _messages.value = _messages.value + userMessage
+                }
 
-            messagesMutex.withLock {
-                _messages.value = _messages.value + assistantMessage
-            }
-
-            PluginResult.Success(
-                mapOf(
-                    "response" to response.responseText,
-                    "messageId" to assistantMessageId,
-                    "mode" to response.usedMode
+                val response = agentKernel.chat(
+                    com.aichatvn.agent.core.ChatRequest(
+                        message = message,
+                        username = username,
+                        imageBase64 = imageBase64,
+                        fileUrl = fileUrl,
+                        extraContext = extraContext,
+                        chatMode = _chatMode.value.name
+                    )
                 )
-            )
 
+                val assistantMessageId = UUID.randomUUID().toString()
+                val assistantMessage = ChatMessageEntity(
+                    id = assistantMessageId,
+                    sessionToken = "session_$username",
+                    username = username,
+                    content = response.responseText,
+                    role = "assistant",
+                    type = "text",
+                    timestamp = System.currentTimeMillis(),
+                    sourcePlugin = response.usedPluginId
+                )
+                withContext(Dispatchers.IO) {
+                    database.chatMessageDao().insertMessage(assistantMessage)
+                }
+
+                messagesMutex.withLock {
+                    _messages.value = _messages.value + assistantMessage
+                }
+
+                return PluginResult.Success(
+                    mapOf(
+                        "response" to response.responseText,
+                        "messageId" to assistantMessageId,
+                        "mode" to response.usedMode
+                    )
+                )
+            }
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
             PluginResult.Failure(e.message ?: "Failed to process query")
+        }
+    }
+
+    private suspend fun sendTelegramMessage(token: String, chatId: String, text: String) {
+        withContext(Dispatchers.IO) {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = URL("https://api.telegram.org/bot$token/sendMessage")
+                conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+
+                val payload = org.json.JSONObject().apply {
+                    put("chat_id", chatId)
+                    put("text", text)
+                }.toString()
+
+                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                conn.responseCode
+            } catch (e: Exception) {
+                logger.e("ChatSkill", "Gửi phản hồi về Telegram thất bại: ${e.message}")
+            } finally {
+                conn?.disconnect()
+            }
         }
     }
 
@@ -251,18 +302,6 @@ class ChatSkill @Inject constructor(
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
             PluginResult.Failure(e.message ?: "Lỗi khi xóa lịch sử")
-        }
-    }
-
-    suspend fun getChatHistory(username: String, limit: Int = 100): PluginResult {
-        return try {
-            val history = withContext(Dispatchers.IO) {
-                database.chatMessageDao().getMessages(username, limit)
-            }
-            PluginResult.Success(history)
-        } catch (e: Exception) {
-            logger.e("ChatSkill", "Error: ${e.message}", e)
-            PluginResult.Failure(e.message ?: "Lỗi khi lấy lịch sử chat")
         }
     }
 }

@@ -66,6 +66,18 @@ interface ChatMessageDao {
     
     @Query("DELETE FROM chat_messages WHERE id = :messageId")
     suspend fun deleteMessage(messageId: String)
+
+    // ✅ ĐÃ THÊM: Truy vấn quét Hộp thư đến (Inbox) - Lấy tin nhắn mới nhất của từng khách hàng để làm danh sách
+    @Query("""
+        SELECT m1.* FROM chat_messages m1
+        INNER JOIN (
+            SELECT username, MAX(timestamp) as max_ts
+            FROM chat_messages
+            GROUP BY username
+        ) m2 ON m1.username = m2.username AND m1.timestamp = m2.max_ts
+        ORDER BY m1.timestamp DESC
+    """)
+    fun getLatestChatThreadsFlow(): Flow<List<ChatMessageEntity>>
 }
 
 @Dao
@@ -312,9 +324,9 @@ interface FacebookPageDao {
         TuyaDeviceEntity::class,
         AppConfigEntity::class,
         CustomerEntity::class,
-        FacebookPageEntity::class // ✅ ĐÃ THÊM: Thực thể lưu trữ nhiều trang Facebook
+        FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
     ],
-    version = 10, // ✅ ĐÃ TĂNG: Phiên bản cấu trúc từ 9 lên 10
+    version = 10, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 9 lên 10
 
     exportSchema = false
 )
@@ -329,7 +341,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tuyaDeviceDao(): TuyaDeviceDao
     abstract fun customerDao(): CustomerDao
     abstract fun appConfigDao(): AppConfigDao
-    abstract fun facebookPageDao(): FacebookPageDao // ✅ ĐÃ THÊM: Truy xuất DAO của Facebook Pages
+    abstract fun facebookPageDao(): FacebookPageDao // ✅ ĐĂNG KÝ DAO của Facebook Pages
 
     companion object {
         @Volatile
@@ -434,7 +446,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ MIGRATION 9 -> 10: Tự động khởi tạo bảng 'facebook_pages' lưu nhiều trang không mất dữ liệu cũ
+        // ✅ MIGRATION 9 -> 10: Tự động khởi tạo bảng 'facebook_pages' lưu nhiều trang
         private val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -465,7 +477,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_6_7, 
                         MIGRATION_7_8,
                         MIGRATION_8_9,
-                        MIGRATION_9_10 // ✅ ĐÃ THÊM: Đăng ký bản di cư cấu hình mới
+                        MIGRATION_9_10 // ✅ ĐĂNG KÝ: Bản di cư cấu hình mới
                     )
                     .build()
                 INSTANCE = instance

@@ -7,12 +7,14 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import androidx.lifecycle.SavedStateHandle // ✅ Đmax THÊM: Đọc tham số chuyển màn hình động
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ChatMessageEntity
+import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.skills.ChatSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
@@ -23,6 +25,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,6 +46,7 @@ private const val MAX_CONSECUTIVE_ROUTER_FAILURES = 3
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle, // ✅ ĐÃ THÊM: SavedStateHandle tự lấy tham số từ NavController
     private val chatSkill: ChatSkill,
     private val agentKernel: AgentKernel,
     private val groqClient: GroqClientTool,
@@ -51,6 +55,9 @@ class ChatViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val logger: Logger
 ) : ViewModel() {
+
+    // ✅ TỰ ĐỘNG NHẬN DIỆN: Đọc tên người dùng từ tham số truyền sang (mặc định là default_user)
+    val username: String = savedStateHandle.get<String>("username") ?: "default_user"
 
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
     val chatMode: StateFlow<ChatMode> = chatSkill.chatMode
@@ -76,8 +83,14 @@ class ChatViewModel @Inject constructor(
     val lockedPluginName: StateFlow<String?> = _lockedPluginName.asStateFlow()
 
     private var consecutiveRouterFailures = 0
-
     private val isProcessingQuery = AtomicBoolean(false)
+
+    // ✅ ĐÃ THÊM: Luồng danh sách Hộp thư đến hiển thị ngoài InboxScreen
+    val latestChatThreads: Flow<List<ChatMessageEntity>> = database.chatMessageDao().getLatestChatThreadsFlow()
+
+    // ✅ ĐÃ THÊM: Quản lý biến gạt nút Cướp quyền ngầm (smartMode) của ID khách hiện tại
+    private val _isBotEnabled = MutableStateFlow(true)
+    val isBotEnabled: StateFlow<Boolean> = _isBotEnabled.asStateFlow()
 
     val quickCommandGroups: List<QuickCommandGroup> = agentKernel.getAvailablePluginsForUI().map { plugin ->
         QuickCommandGroup(
@@ -96,11 +109,49 @@ class ChatViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             voiceManager.reactivate() // Phòng hờ: gỡ khóa nếu destroy() từng bị gọi ở lần trước
-            chatSkill.initialize()
+            
+            // ✅ ĐÃ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
+            chatSkill.processQuery(message = "", username = username)
+            
+            loadBotSmartModeStatus() // ✅ ĐÃ THÊM: Tải cấu hình gạt nút cướp quyền của khách
+            
             observeVoiceManagerFlows()
             observeAndSpeak()
             startVoiceSession()
             updateLockedPluginStatus() // Khởi tạo nhãn điều khiển lúc khởi chạy
+        }
+    }
+
+    // ✅ ĐÃ THÊM: Tải trạng thái Cướp quyền hiện tại của khách từ SQLite
+    private fun loadBotSmartModeStatus() {
+        val rawId = username.substringAfter("_")
+        viewModelScope.launch(Dispatchers.IO) {
+            val setting = database.cameraDao().getCustomerSetting(rawId)
+            // smartMode == 1: Bật Bot (mặc định), smartMode == 0: Người trực (Cướp quyền)
+            _isBotEnabled.value = setting?.smartMode != 0
+        }
+    }
+
+    // ✅ ĐÃ THÊM: Lưu trạng thái bật/tắt Bot gạt Switch của khách vào SQLite
+    fun toggleBotSmartMode(targetUsername: String, isBotEnabled: Boolean) {
+        val rawId = targetUsername.substringAfter("_")
+        _isBotEnabled.value = isBotEnabled
+        viewModelScope.launch(Dispatchers.IO) {
+            val setting = database.cameraDao().getCustomerSetting(rawId)
+            if (setting == null) {
+                database.cameraDao().insertCustomerSetting(
+                    CustomerSettingEntity(
+                        customerId = rawId,
+                        smartMode = if (isBotEnabled) 1 else 0,
+                        isActive = 1,
+                        updatedAt = System.currentTimeMillis(),
+                        timestamp = System.currentTimeMillis()
+                    )
+                )
+            } else {
+                database.cameraDao().updateSmartMode(rawId, isBotEnabled, System.currentTimeMillis())
+            }
+            logger.i("ChatViewModel", "👤 Đã cập nhật chế độ Bot cho khách $targetUsername thành: $isBotEnabled")
         }
     }
 
@@ -136,8 +187,8 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val msg = ChatMessageEntity(
                 id = UUID.randomUUID().toString(),
-                sessionToken = "session_default_user",
-                username = "default_user",
+                sessionToken = "session_$username", // ✅ ĐÃ CẬP NHẬT: Gắn theo username động
+                username = username,                 // ✅ ĐÃ CẬP NHẬT: Gắn theo username động
                 content = content,
                 role = role,
                 type = "text",
@@ -244,10 +295,6 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    fun setChatMode(mode: ChatMode) {
-        chatSkill.setChatMode(mode)
-    }
-
     fun updateLockedPluginStatus() {
         viewModelScope.launch {
             _lockedPluginName.value = agentKernel.getLockedPluginName()
@@ -296,9 +343,10 @@ class ChatViewModel @Inject constructor(
                     else -> message
                 }
 
+                // ✅ ĐÃ CẬP NHẬT: Chuyển dữ liệu qua ChatSkill xử lý theo username động
                 val response = chatSkill.processQuery(
                     message = userMessageContent,
-                    username = "default_user",
+                    username = username,
                     fileUrl = fileUrl,
                     imageBase64 = base64Image
                 )
@@ -351,7 +399,7 @@ class ChatViewModel @Inject constructor(
 
     fun clearHistory() {
         viewModelScope.launch {
-            chatSkill.clearHistory("default_user")
+            chatSkill.clearHistory(username) // ✅ ĐÃ CẬP NHẬT: Gắn theo username động
             updateLockedPluginStatus()
         }
     }
@@ -378,15 +426,6 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // KHÔNG gọi voiceManager.destroy() ở đây: voiceManager là @Singleton (scope theo
-        // Application), còn ChatViewModel scope theo Activity/back-stack entry — hủy chu kỳ
-        // sống ngắn hơn nhiều. Gọi destroy() tại đây từng khiến cờ `destroyed` trong
-        // VoiceAssistantManager bị khóa vĩnh viễn cho cả phần đời còn lại của tiến trình:
-        // lần sau ChatViewModel được tạo lại (quay lại màn hình, mở lại app mà process
-        // chưa bị OS kill), speak() vẫn phát được lời chào (không kiểm tra cờ này) nhưng
-        // startListening() luôn no-op im lặng → "còn nghe được tiếng chào nhưng không nói
-        // chuyện được nữa". Chỉ dừng phiên nghe/nói tại đây; việc giải phóng tài nguyên
-        // native thật sự để hệ điều hành xử lý khi tiến trình bị kill.
         voiceManager.stopListening()
         voiceManager.ttsHelper.stop()
     }

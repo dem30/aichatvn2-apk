@@ -30,7 +30,7 @@ data class ChatMessageEntity(
     val type: String, // "text" or "image" or "file"
     val fileUrl: String? = null,
     val timestamp: Long,
-    // Nguồn gốc câu trả lời của Assistant
+    // Nguồn gốc câu trả lời của Assistant (human, learn, camera, v.v.)
     val sourcePlugin: String? = null
 )
 

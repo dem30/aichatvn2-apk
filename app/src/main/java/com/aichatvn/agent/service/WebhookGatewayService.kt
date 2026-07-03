@@ -20,6 +20,7 @@ import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
+import com.aichatvn.agent.skills.ChatSkill // ✅ ĐÃ THÊM: Import lớp ChatSkill để đồng bộ tin nhắn
 import dagger.hilt.android.AndroidEntryPoint
 import io.ktor.serialization.gson.*
 import io.ktor.server.application.*
@@ -44,13 +45,16 @@ class WebhookGatewayService : Service() {
     lateinit var agentKernel: AgentKernel
 
     @Inject
+    lateinit var chatSkill: ChatSkill // ✅ ĐÃ THÊM: Inject ChatSkill để quản lý bộ nhớ đệm tin nhắn đa kênh
+
+    @Inject
     lateinit var logger: Logger
 
     @Inject
     lateinit var configProvider: AppConfigProvider
 
     @Inject
-    lateinit var database: AppDatabase // ✅ ĐÃ THÊM: Inject database để thao tác lưu trữ SQLite nhiều trang
+    lateinit var database: AppDatabase
 
     @Inject
     lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
@@ -140,7 +144,6 @@ class WebhookGatewayService : Service() {
         return plugins.find { it.manifest.id == pluginId }
     }
 
-    // ✅ ĐÃ THÊM: Đồng bộ và "chào lại" máy chủ với danh sách tất cả các ID Fanpage có trong SQLite
     private fun registerPageMappings(gatewayUrl: String, gatewayToken: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -232,7 +235,6 @@ class WebhookGatewayService : Service() {
                     logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
                     updateNotification("Cổng đám mây: Đã kết nối")
 
-                    // Tự động đăng ký lại toàn bộ ánh xạ Page ID của SQLite với Render
                     registerPageMappings(gatewayUrl, gatewayToken)
 
                     while (isActive && reader.readLine().also { line = it } != null) {
@@ -247,7 +249,7 @@ class WebhookGatewayService : Service() {
                                         val jsonObj = org.json.JSONObject(rawData)
                                         val event = jsonObj.optString("event", "")
 
-                                        // ✅ ĐÃ CẬP NHẬT: Nhận và phân rã lưu trữ mảng danh sách nhiều trang
+                                        // Nhận và lưu mảng danh sách nhiều trang
                                         if (event == "token_sync") {
                                             val plat = jsonObj.optString("platform", "")
                                             
@@ -265,7 +267,6 @@ class WebhookGatewayService : Service() {
                                                             )
                                                         )
                                                     }
-                                                    // Lưu đè danh sách tất cả các trang vào SQLite
                                                     withContext(Dispatchers.IO) {
                                                         database.facebookPageDao().insertPages(pagesList)
                                                     }
@@ -283,42 +284,60 @@ class WebhookGatewayService : Service() {
                                                 }
                                             }
                                         } else {
-                                            // Xử lý tin nhắn chat thông thường
+                                            // Xử lý tin nhắn chat thông thường từ khách hàng đẩy về
                                             val platform = jsonObj.optString("platform", "web")
                                             val senderId = jsonObj.optString("senderId", "external_user")
                                             val text = jsonObj.optString("text", "")
-                                            val incomingPageId = jsonObj.optString("pageId", "") // ✅ ĐÃ THÊM: Đọc Page ID nhận tin nhắn gửi kèm từ Server
+                                            val incomingPageId = jsonObj.optString("pageId", "") // Đọc thêm ID page nhận tin nhắn gửi kèm từ Server
 
                                             if (text.isNotBlank()) {
-                                                val reply = agentKernel.chat(
-                                                    ChatRequest(message = text, username = senderId, chatMode = "COMBINED")
-                                                )
-                                                logger.i("CloudGateway", "🧠 Phản hồi của Agent: ${reply.responseText}")
+                                                // Đặt tiền tố phân loại kênh để tránh trùng ID giữa các nền tảng mạng xã hội khác nhau
+                                                val unifiedUsername = "${platform}_$senderId"
 
-                                                // Tự động gọi đúng Plugin Skill để gửi phản hồi đi
-                                                when (platform) {
-                                                    "facebook" -> {
-                                                        findPlugin("facebook")?.execute(
-                                                            "send_messenger",
-                                                            mapOf(
-                                                                "recipient_id" to senderId, 
-                                                                "message" to reply.responseText,
-                                                                "page_id" to incomingPageId // ✅ ĐÃ THÊM: Gửi thêm page_id để phản hồi đúng trang
-                                                            )
-                                                        )
+                                                // 🔍 KIỂM TRA: Đọc cấu hình xem khách hàng này có đang bị cướp quyền (người trực thủ công) hay không
+                                                val setting = withContext(Dispatchers.IO) {
+                                                    database.cameraDao().getCustomerSetting(senderId)
+                                                }
+                                                val isBotEnabled = setting?.smartMode != 0 // smartMode == 1: bật bot, smartMode == 0: tắt bot để người trực [1]
+
+                                                if (isBotEnabled) {
+                                                    // 🤖 LUỒNG TỰ ĐỘNG: AI tự động phân tích và sinh câu trả lời
+                                                    val result = chatSkill.processQuery(
+                                                        message = text,
+                                                        username = unifiedUsername,
+                                                        extraContext = "page_id:$incomingPageId"
+                                                    )
+
+                                                    // Lấy kết quả tự động trả về của Bot để đẩy ngược ra Messenger/Mạng xã hội
+                                                    if (result is AgentKernel.PluginResult.Success) {
+                                                        val replyMap = result.data as? Map<*, *>
+                                                        val replyText = replyMap?.get("response") as? String ?: ""
+                                                        if (replyText.isNotEmpty()) {
+                                                            when (platform) {
+                                                                "facebook" -> {
+                                                                    findPlugin("facebook")?.execute(
+                                                                        "send_messenger",
+                                                                        mapOf(
+                                                                            "recipient_id" to senderId,
+                                                                            "message" to replyText,
+                                                                            "page_id" to incomingPageId
+                                                                        )
+                                                                    )
+                                                                }
+                                                                "instagram" -> {
+                                                                    findPlugin("instagram")?.execute(
+                                                                        "send_messenger",
+                                                                        mapOf("recipient_id" to senderId, "message" to replyText)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
                                                     }
-                                                    "instagram" -> {
-                                                        findPlugin("instagram")?.execute(
-                                                            "send_messenger",
-                                                            mapOf("recipient_id" to senderId, "message" to reply.responseText)
-                                                        )
-                                                    }
-                                                    "zalo" -> {
-                                                        findPlugin("zalo")?.execute(
-                                                            "send_message",
-                                                            mapOf("recipient_id" to senderId, "message" to reply.responseText)
-                                                        )
-                                                    }
+                                                } else {
+                                                    // 👤 LUỒNG THỦ CÔNG (ĐÃ CƯỚP QUYỀN): Chỉ lưu tin nhắn của khách vào SQLite để hiển thị lên điện thoại
+                                                    // Bot tuyệt đối im lặng không trả lời, nhường quyền kiểm soát cho chủ điện thoại chat tay [1]
+                                                    chatSkill.saveExternalUserMessage(text, unifiedUsername)
+                                                    logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời.")
                                                 }
                                             }
                                         }
@@ -379,11 +398,32 @@ class WebhookGatewayService : Service() {
                             if (text.isNotBlank()) {
                                 logger.i("TelegramPoll", "📥 Nhận tin nhắn Telegram mới: '$text' từ ChatId: $chatId")
                                 
+                                val unifiedUsername = "telegram_$chatId"
+
+                                // 🔍 KIỂM TRA: Đọc cấu hình xem khách hàng Telegram này có bị cướp quyền trực tay không
+                                val setting = withContext(Dispatchers.IO) {
+                                    database.cameraDao().getCustomerSetting(chatId)
+                                }
+                                val isBotEnabled = setting?.smartMode != 0 [1]
+
                                 serviceScope.launch {
-                                    val reply = agentKernel.chat(
-                                        ChatRequest(message = text, username = chatId, chatMode = "COMBINED")
-                                    )
-                                    sendTelegramMessage(botToken, chatId, reply.responseText)
+                                    if (isBotEnabled) {
+                                        // Gửi qua chatSkill để ghi lịch sử và tự trả lời
+                                        val result = chatSkill.processQuery(
+                                            message = text,
+                                            username = unifiedUsername
+                                        )
+                                        if (result is AgentKernel.PluginResult.Success) {
+                                            val replyMap = result.data as? Map<*, *>
+                                            val replyText = replyMap?.get("response") as? String ?: ""
+                                            if (replyText.isNotEmpty()) {
+                                                sendTelegramMessage(botToken, chatId, replyText)
+                                            }
+                                        }
+                                    } else {
+                                        // Chỉ lưu tin nhắn lên UI, không tự trả lời [1]
+                                        chatSkill.saveExternalUserMessage(text, unifiedUsername)
+                                    }
                                 }
                             }
                         }
