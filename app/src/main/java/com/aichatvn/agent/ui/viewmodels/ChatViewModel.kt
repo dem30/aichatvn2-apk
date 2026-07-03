@@ -46,13 +46,13 @@ private const val MAX_CONSECUTIVE_ROUTER_FAILURES = 3
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    private val savedStateHandle: SavedStateHandle, // ✅ ĐÃ THÊM: SavedStateHandle tự lấy tham số từ NavController
     private val chatSkill: ChatSkill,
     private val agentKernel: AgentKernel,
     private val groqClient: GroqClientTool,
     private val database: AppDatabase,
-    val voiceManager: VoiceAssistantManager,
-    @ApplicationContext private val context: Context,
+    val voiceManager: VoiceAssistantManager, // ✅ ĐÃ KHÔI PHỤC: Giữ nguyên tham số gốc của bạn
+    @ApplicationContext private val context: Context, // ✅ ĐÃ KHÔI PHỤC: Giữ nguyên tham số gốc của bạn
+    private val savedStateHandle: SavedStateHandle, // ✅ ĐÃ THÊM: SavedStateHandle tự lấy tham số từ NavController
     private val logger: Logger
 ) : ViewModel() {
 
@@ -110,7 +110,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             voiceManager.reactivate() // Phòng hờ: gỡ khóa nếu destroy() từng bị gọi ở lần trước
             
-            // ✅ ĐÃ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
+            // ✅ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
             chatSkill.processQuery(message = "", username = username)
             
             loadBotSmartModeStatus() // ✅ ĐÃ THÊM: Tải cấu hình gạt nút cướp quyền của khách
@@ -187,8 +187,8 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val msg = ChatMessageEntity(
                 id = UUID.randomUUID().toString(),
-                sessionToken = "session_$username", // ✅ ĐÃ CẬP NHẬT: Gắn theo username động
-                username = username,                 // ✅ ĐÃ CẬP NHẬT: Gắn theo username động
+                sessionToken = "session_$username", // ✅ CẬP NHẬT: Gắn theo username động
+                username = username,                 // ✅ CẬP NHẬT: Gắn theo username động
                 content = content,
                 role = role,
                 type = "text",
@@ -295,6 +295,10 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun setChatMode(mode: ChatMode) {
+        chatSkill.setChatMode(mode)
+    }
+
     fun updateLockedPluginStatus() {
         viewModelScope.launch {
             _lockedPluginName.value = agentKernel.getLockedPluginName()
@@ -343,7 +347,7 @@ class ChatViewModel @Inject constructor(
                     else -> message
                 }
 
-                // ✅ ĐÃ CẬP NHẬT: Chuyển dữ liệu qua ChatSkill xử lý theo username động
+                // ✅ CẬP NHẬT: Chuyển dữ liệu qua ChatSkill xử lý theo username động
                 val response = chatSkill.processQuery(
                     message = userMessageContent,
                     username = username,
@@ -399,7 +403,7 @@ class ChatViewModel @Inject constructor(
 
     fun clearHistory() {
         viewModelScope.launch {
-            chatSkill.clearHistory(username) // ✅ ĐÃ CẬP NHẬT: Gắn theo username động
+            chatSkill.clearHistory(username) // ✅ CẬP NHẬT: Gắn theo username động
             updateLockedPluginStatus()
         }
     }
