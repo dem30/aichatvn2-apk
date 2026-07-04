@@ -572,13 +572,37 @@ class AgentKernel @Inject constructor(
                 
                 val activePending = pendings.first()
                 val resolvedResult = tryResolvePendingIntent(activePending, userMessage, devicePlugins, traceId, mode)
-                
+
+
                 if (resolvedResult != null) {
                     val r = resolvedResult.result
                     val finalResult = when (r) {
                         is PluginResult.Success -> {
                             chatHistoryManager.removePendingIntent(activePending.pluginId, activePending.action)
-                            r
+                            
+                            // KIỂM TRA CHỦ ĐỘNG: Xem còn lệnh dở dang nào tiếp theo trong hàng đợi không
+                            val remainingPendings = chatHistoryManager.getActivePendingIntents()
+                            if (remainingPendings.isNotEmpty()) {
+                                val nextPending = remainingPendings.first()
+                                val targetPlugin = plugins.find { it.manifest.id == nextPending.pluginId }
+                                val targetAction = targetPlugin?.manifest?.actions?.find { it.name == nextPending.action }
+                                val pluginName = targetPlugin?.manifest?.name ?: nextPending.pluginId
+                                val actionDesc = targetAction?.description ?: nextPending.action
+                                
+                                val successMsg = (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ Đã thực hiện thành công."
+                                val nextBanner = buildPendingBanner(nextPending, pluginName, actionDesc)
+                                
+                                val combinedMsg = if (remainingPendings.size > 1) {
+                                    "$successMsg\n\n$nextBanner\n*(Còn ${remainingPendings.size - 1} yêu cầu khác đã được xếp hàng chờ)*"
+                                } else {
+                                    "$successMsg\n\n$nextBanner"
+                                }
+                                
+                                // Trả về NeedMoreInfo của lệnh tiếp theo để giữ luồng thu thập tham số tiếp tục kích hoạt
+                                PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg)
+                            } else {
+                                r
+                            }
                         }
                         is PluginResult.NeedMoreInfo -> {
                             val targetPlugin = plugins.find { it.manifest.id == activePending.pluginId }
@@ -602,6 +626,7 @@ class AgentKernel @Inject constructor(
                         routerOutcome = RouterOutcome.Matched(DeviceCommandResult(activePending.pluginId, finalResult))
                     )
                 }
+                
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
