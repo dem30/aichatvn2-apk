@@ -72,8 +72,16 @@ class ChatViewModel @Inject constructor(
 
     val partialText: StateFlow<String> = voiceManager.partialText
 
-    private val _voiceModeActive = MutableStateFlow(true)
-    val voiceModeActive: StateFlow<Boolean> = _voiceModeActive.asStateFlow()
+    // ✅ ĐÃ SỬA: Trước đây là MutableStateFlow(true) riêng của ViewModel — luôn mặc định "bật"
+    // mỗi khi ViewModel được tạo mới, hoàn toàn không biết trạng thái mic THẬT (do notification/
+    // Service điều khiển qua VoiceAssistantManager). Giờ đọc thẳng từ nguồn sự thật duy nhất
+    // (voiceManager.micEnabled, đã lưu bền) — banner "Hands-free bật/tắt" trên ChatScreen sẽ luôn
+    // khớp với trạng thái thật, dù bật/tắt từ notification, từ ChatScreen, hay sau khi app/Service
+    // khởi động lại. Với thread của khách ngoại kênh (không phải personal chat), luôn hiện "tắt"
+    // vì banner này chỉ có ý nghĩa với chat cá nhân của chủ app.
+    val voiceModeActive: StateFlow<Boolean> =
+        if (username == "default_user") voiceManager.micEnabled
+        else MutableStateFlow(false).asStateFlow()
 
     private val _pausedDueToError = MutableStateFlow(false)
     val pausedDueToError: StateFlow<Boolean> = _pausedDueToError.asStateFlow()
@@ -112,10 +120,9 @@ class ChatViewModel @Inject constructor(
     private val isPersonalChat: Boolean = (username == "default_user")
 
     init {
-        if (!isPersonalChat) {
-            // Không phải chat cá nhân -> không có hands-free, không tự nói/tự nghe
-            _voiceModeActive.value = false
-        }
+        // ✅ ĐÃ XÓA: trước đây gán tay "_voiceModeActive.value = false" ở đây cho thread khách
+        // ngoại kênh — không cần nữa vì voiceModeActive giờ đã tự tính theo username (xem khai
+        // báo property phía trên), không phải biến mutable riêng nữa.
 
         viewModelScope.launch {
             // ✅ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
@@ -227,7 +234,7 @@ class ChatViewModel @Inject constructor(
             messages.drop(1).collect { msgs ->
                 val last = msgs.lastOrNull() ?: return@collect
                 if (last.role != "assistant") return@collect
-                if (!_voiceModeActive.value) return@collect
+                if (!voiceManager.micEnabled.value) return@collect
 
                 // Bỏ qua nếu tin nhắn đến từ cuộc thoại giọng nói tự động hoặc các plugin khác đã tự nói
                 if (last.sourcePlugin == "vision" || 
@@ -239,7 +246,7 @@ class ChatViewModel @Inject constructor(
 
                 if (!voiceManager.ttsHelper.isReady) {
                     logger.w("ChatViewModel", "TTS chưa sẵn sàng, kích hoạt nghe lại nhằm duy trì vòng lặp.")
-                    if (_voiceModeActive.value && isInForeground) {
+                    if (voiceManager.micEnabled.value && isInForeground) {
                         voiceManager.startListening()
                     }
                     return@collect
@@ -253,7 +260,10 @@ class ChatViewModel @Inject constructor(
 
                 if (consecutiveRouterFailures >= MAX_CONSECUTIVE_ROUTER_FAILURES) {
                     consecutiveRouterFailures = 0
-                    _voiceModeActive.value = false
+                    // ✅ ĐÃ SỬA: dùng setMicEnabled(false) thay vì gán cờ nội bộ — để trạng thái
+                    // "đã tắt do lỗi liên tiếp" cũng được lưu bền và đồng bộ ra notification luôn,
+                    // thay vì chỉ ẩn ở mỗi ViewModel này.
+                    voiceManager.setMicEnabled(false)
                     _pausedDueToError.value = true
                     voiceManager.speak(
                         "Tôi đang gặp lỗi kết nối mạng nhiều lần liên tiếp. " +
@@ -264,9 +274,9 @@ class ChatViewModel @Inject constructor(
                 }
 
                 voiceManager.speak(last.content) {
-                    if (_voiceModeActive.value && isInForeground) {
+                    if (voiceManager.micEnabled.value && isInForeground) {
                         Handler(Looper.getMainLooper()).postDelayed({
-                            if (_voiceModeActive.value && isInForeground) {
+                            if (voiceManager.micEnabled.value && isInForeground) {
                                 voiceManager.startListening()
                             }
                         }, 300L)
@@ -278,14 +288,15 @@ class ChatViewModel @Inject constructor(
 
     fun toggleVoiceMode() {
         if (!isPersonalChat) return // ✅ ĐÃ THÊM: không cho bật/tắt mic cá nhân khi đang xem thread khách ngoại kênh
-        val next = !_voiceModeActive.value
-        _voiceModeActive.value = next
+        val next = !voiceManager.micEnabled.value
         if (next) {
             _pausedDueToError.value = false
             consecutiveRouterFailures = 0
-            voiceManager.startListening()
-        } else {
-            voiceManager.stopListening()
+        }
+        // ✅ ĐÃ SỬA: đi qua setMicEnabled() duy nhất — cùng 1 đường với nút bấm trên notification,
+        // đảm bảo bật/tắt từ ChatScreen hay từ notification luôn nhất quán và được lưu bền.
+        voiceManager.setMicEnabled(next)
+        if (!next) {
             voiceManager.ttsHelper.stop()
         }
     }

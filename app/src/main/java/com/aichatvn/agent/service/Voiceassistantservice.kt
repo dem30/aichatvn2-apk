@@ -75,6 +75,12 @@ class VoiceAssistantService : Service() {
 
             // Phòng hờ: gỡ khóa destroyed nếu Singleton từng bị destroy() ở phiên trước
             voiceManager.reactivate()
+            // ✅ ĐÃ SỬA: trước đây gọi thẳng startListening() vô điều kiện mỗi khi Service được
+            // tạo (kể cả khi hệ điều hành tự hồi sinh Service do START_STICKY, không phải do
+            // người dùng mở app) — khiến mic tự bật lại dù người dùng đã tắt tay từ trước.
+            // Giờ startListening() tự bị chặn bên trong nếu voiceManager.micEnabled == false
+            // (xem VoiceAssistantManager.canStartListening()), nên gọi ở đây vẫn AN TOÀN và
+            // không cần if/else — chỉ còn tác dụng khi mic thực sự đang được phép bật.
             voiceManager.startListening()
             observeVoiceState()
 
@@ -171,13 +177,15 @@ class VoiceAssistantService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP_MIC -> {
-                voiceManager.stopListening()
+                // ✅ ĐÃ SỬA: dùng setMicEnabled(false) thay vì stopListening() trực tiếp — để lựa
+                // chọn này được LƯU BỀN, không bị quên khi Service/tiến trình bị hồi sinh sau đó.
+                voiceManager.setMicEnabled(false)
                 updateNotification("Mic đã tắt", listening = false)
                 logger.i("VoiceAssistantService", "🔇 Người dùng đã tắt mic từ thông báo.")
             }
             ACTION_START_MIC -> {
                 voiceManager.reactivate()
-                voiceManager.startListening()
+                voiceManager.setMicEnabled(true)
                 logger.i("VoiceAssistantService", "🎤 Người dùng đã bật lại mic từ thông báo.")
             }
         }

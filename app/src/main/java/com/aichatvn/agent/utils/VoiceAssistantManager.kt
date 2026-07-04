@@ -55,6 +55,17 @@ class VoiceAssistantManager @Inject constructor(
 
     @Volatile private var destroyed = false
 
+    // ✅ ĐÃ THÊM: Trước đây KHÔNG có nơi nào lưu lại việc người dùng đã chủ động tắt mic —
+    // stopListening() chỉ tạm dừng chu kỳ nghe hiện tại, không ngăn các đường tự động khác
+    // (scheduleRestart, timeout 12s, callback sau khi nói xong...) tự gọi lại startListening().
+    // Hậu quả: Service bị hệ điều hành hồi sinh (START_STICKY) hoặc app mở lại từ tiến trình mới
+    // sẽ VÔ ĐIỀU KIỆN bật mic lại, kể cả khi người dùng chưa hề bấm "Bật mic". Giờ có 1 cờ boolean
+    // LƯU BỀN (SharedPreferences) làm nguồn sự thật duy nhất — mọi đường tự động phải hỏi cờ này
+    // trước khi thực sự bật mic (xem canStartListening()).
+    private val prefs = context.getSharedPreferences("voice_assistant_prefs", Context.MODE_PRIVATE)
+    private val _micEnabled = MutableStateFlow(prefs.getBoolean(KEY_MIC_ENABLED, true))
+    val micEnabled = _micEnabled.asStateFlow()
+
     private val _voiceState = MutableStateFlow<VoiceState>(VoiceState.IDLE)
     val voiceState = _voiceState.asStateFlow()
 
@@ -87,7 +98,10 @@ class VoiceAssistantManager @Inject constructor(
 
     @Synchronized
     private fun canStartListening(): Boolean {
-        return !destroyed && _voiceState.value in setOf(VoiceState.IDLE, VoiceState.RESTARTING)
+        // ✅ ĐÃ THÊM: thêm điều kiện _micEnabled.value — mọi lệnh gọi startListening() dù đến từ
+        // đâu (UI, notification, hay các đường tự động: scheduleRestart/timeout/sau khi nói xong)
+        // đều phải đi qua đây, nên chỉ cần chặn ở 1 chỗ này là đủ chặn tất cả.
+        return !destroyed && _micEnabled.value && _voiceState.value in setOf(VoiceState.IDLE, VoiceState.RESTARTING)
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -282,6 +296,21 @@ speak(result.responseText) {
         abandonAudioFocus()
     }
 
+    // ✅ ĐÃ THÊM: Đây là hàm DUY NHẤT nên gọi khi người dùng chủ động bật/tắt mic (từ notification
+    // hoặc từ nút "Tắt mic"/"Bật mic" trong ChatScreen) — vừa lưu bền lựa chọn, vừa thực thi ngay.
+    // Các đường TỰ ĐỘNG (restart sau lỗi, sau timeout, sau khi nói xong...) KHÔNG được gọi hàm
+    // này — chúng chỉ gọi thẳng startListening(), và sẽ tự bị chặn bởi canStartListening() nếu
+    // người dùng đã tắt, không cần biết/nhớ logic tắt/bật ở đây.
+    fun setMicEnabled(enabled: Boolean) {
+        _micEnabled.value = enabled
+        prefs.edit().putBoolean(KEY_MIC_ENABLED, enabled).apply()
+        if (enabled) {
+            startListening()
+        } else {
+            stopListening()
+        }
+    }
+
     fun speak(text: String, onDone: (() -> Unit)? = null) {
         if (destroyed) return
         stopListening()
@@ -351,5 +380,6 @@ speak(result.responseText) {
 
     companion object {
         private const val LISTEN_TIMEOUT_MS = 12_000L
+        private const val KEY_MIC_ENABLED = "mic_enabled"
     }
 }
