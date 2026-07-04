@@ -57,6 +57,11 @@ object AppConfigDefaults {
     const val ZALO_ACCESS_TOKEN             = "zalo.access_token"
     const val ZALO_REFRESH_TOKEN            = "zalo.refresh_token"
     const val WEBSITE_ALLOWED_ORIGINS       = "website.allowed_origins"
+    // ✅ ĐÃ THÊM: widget_key công khai — an toàn để nhúng vào HTML website khách xem được, KHÁC
+    // với GLOBAL_GATEWAY_TOKEN (bí mật, không bao giờ lộ ra ngoài app). Được tự sinh và đăng ký lên
+    // Cloud Gateway ở WebhookGatewayService khi kết nối SSE lần đầu; để trống thì cứ để rỗng, hệ
+    // thống sẽ tự tạo.
+    const val WEBSITE_WIDGET_KEY            = "website.widget_key"
 
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
@@ -145,6 +150,16 @@ object AppConfigDefaults {
             pluginId = "website",
             label = "Allowed Origins (Tên miền được phép nhúng)",
             description = "Danh sách tên miền được phép nhúng khung chat (cách nhau bởi dấu phẩy, để dấu * là cho phép tất cả)."
+        ),
+        // ✅ ĐÃ THÊM: Mã widget công khai dùng cho <script src=".../widget.js?key=...">. Khác hoàn
+        // toàn với Gateway Token thật (bí mật) — mã này an toàn để lộ ra công khai trên website khách.
+        AppConfigEntity(
+            key = WEBSITE_WIDGET_KEY,
+            value = "",
+            type = "string",
+            pluginId = "website",
+            label = "Widget Key (Mã nhúng công khai)",
+            description = "Tự động sinh khi app kết nối Cloud Gateway lần đầu. An toàn để lộ công khai trên website — KHÁC với Gateway Token bí mật."
         ),
 
         // ── GROQ ──

@@ -9,6 +9,7 @@ import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.QAInitBuilder
 import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.service.WebhookGatewayService
+import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -54,6 +55,20 @@ class MainApplication : Application(), Configuration.Provider {
             logger.i("MainApplication", "🚀 WebhookGatewayService started successfully on App Launch")
         } catch (e: Exception) {
             logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
+        }
+
+        // ✅ ĐÃ THÊM: Khởi chạy vòng lặp hands-free (mic) ngầm, độc lập với ChatScreen/Inbox —
+        // để người dùng hạn chế vận động ra lệnh thoại được bất cứ lúc nào, kể cả màn hình tắt.
+        try {
+            val voiceServiceIntent = Intent(this, VoiceAssistantService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(voiceServiceIntent)
+            } else {
+                startService(voiceServiceIntent)
+            }
+            logger.i("MainApplication", "🎤 VoiceAssistantService started successfully on App Launch")
+        } catch (e: Exception) {
+            logger.e("MainApplication", "❌ Failed to start VoiceAssistantService on App Launch", e)
         }
     }
 

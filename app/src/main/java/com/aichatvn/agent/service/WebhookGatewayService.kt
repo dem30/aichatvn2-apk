@@ -190,6 +190,48 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    // ✅ ĐÃ THÊM: Tự sinh (nếu chưa có) và đăng ký widget_key công khai lên Gateway — ĐỘC LẬP HOÀN
+    // TOÀN với registerPageMappings() ở trên (không đụng gì tới ánh xạ Page ID Facebook/Instagram).
+    // widget_key này an toàn để lộ ra ngoài (nhúng trong HTML website khách), khác với gatewayToken
+    // thật vốn chỉ nằm trong app.
+    private fun registerWidgetKey(gatewayUrl: String, gatewayToken: String) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                var widgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
+                if (widgetKey.isEmpty()) {
+                    widgetKey = java.util.UUID.randomUUID().toString().replace("-", "")
+                    configProvider.set(AppConfigDefaults.WEBSITE_WIDGET_KEY, widgetKey)
+                    logger.i("CloudGateway", "🔑 Đã tự sinh widget_key mới cho Website widget.")
+                }
+
+                val bodyJson = org.json.JSONObject().apply {
+                    put("token", gatewayToken)
+                    put("widgetKey", widgetKey)
+                }
+
+                val url = URL("$gatewayUrl/register_widget_key")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "POST"
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+
+                connection.outputStream.use { it.write(bodyJson.toString().toByteArray()) }
+
+                val responseCode = connection.responseCode
+                if (responseCode == 200) {
+                    logger.i("CloudGateway", "📇 Đã đăng ký lại widget_key với Render.")
+                } else {
+                    logger.w("CloudGateway", "⚠️ Đăng ký widget_key thất bại, mã lỗi: $responseCode")
+                }
+                connection.disconnect()
+            } catch (e: Exception) {
+                logger.e("CloudGateway", "❌ Lỗi khi đăng ký widget_key: ${e.message}")
+            }
+        }
+    }
+
     // ===== 🔌 KÊNH 1: NHẬN TIN NHẮN TỪ RENDER QUA SSE =====
     private fun startCloudGatewaySSE() {
         serviceScope.launch(Dispatchers.IO) {
@@ -238,6 +280,8 @@ class WebhookGatewayService : Service() {
 
                     // Tự động đăng ký lại toàn bộ ánh xạ Page ID của SQLite với Render
                     registerPageMappings(gatewayUrl, gatewayToken)
+                    // ✅ ĐÃ THÊM: Đăng ký lại widget_key công khai (độc lập với Page ID Facebook ở trên)
+                    registerWidgetKey(gatewayUrl, gatewayToken)
 
                     while (isActive && reader.readLine().also { line = it } != null) {
                         val trimmedLine = line?.trim() ?: ""

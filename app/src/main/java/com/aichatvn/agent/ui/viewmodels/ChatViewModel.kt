@@ -106,18 +106,34 @@ class ChatViewModel @Inject constructor(
 
     @Volatile private var isInForeground = true
 
+    // ✅ ĐÃ THÊM: mic/TTS tự động chỉ có ý nghĩa với chat cá nhân của chủ app (default_user).
+    // Khi ChatScreen được mở chỉ để XEM/trả lời hội thoại của 1 khách ngoại kênh
+    // (Facebook/Telegram/Website), instance ViewModel này không được đụng gì tới voiceManager.
+    private val isPersonalChat: Boolean = (username == "default_user")
+
     init {
+        if (!isPersonalChat) {
+            // Không phải chat cá nhân -> không có hands-free, không tự nói/tự nghe
+            _voiceModeActive.value = false
+        }
+
         viewModelScope.launch {
-            voiceManager.reactivate() // Phòng hờ: gỡ khóa nếu destroy() từng bị gọi ở lần trước
-            
             // ✅ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
             chatSkill.processQuery(message = "", username = username)
-            
+
             loadBotSmartModeStatus() // ✅ ĐÃ THÊM: Tải cấu hình gạt nút cướp quyền của khách
-            
-            observeVoiceManagerFlows()
-            observeAndSpeak()
-            startVoiceSession()
+
+            if (isPersonalChat) {
+                // ✅ ĐÃ SỬA: Vòng lặp hands-free (nghe -> AI -> nói -> nghe lại) nay được
+                // VoiceAssistantService chạy ngầm ĐỘC LẬP với vòng đời ChatScreen/ViewModel
+                // này (xem VoiceAssistantService.kt, khởi chạy từ MainApplication.kt).
+                // ChatViewModel chỉ còn nhiệm vụ ĐỒNG BỘ HIỂN THỊ trạng thái mic hiện có lên
+                // UI và phát tiếng cho các câu trả lời phát sinh từ tin nhắn gõ tay khi màn
+                // hình đang mở — không tự khởi động/tắt vòng lặp nghe nữa.
+                observeVoiceManagerFlows()
+                observeAndSpeak()
+            }
+
             updateLockedPluginStatus() // Khởi tạo nhãn điều khiển lúc khởi chạy
         }
     }
@@ -203,30 +219,8 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun startVoiceSession() {
-        viewModelScope.launch(Dispatchers.Main) {
-            if (!_voiceModeActive.value || !isInForeground) return@launch
-
-            var waited = 0
-            while (!voiceManager.ttsHelper.isReady && waited < 5_000) {
-                delay(100)
-                waited += 100
-                if (!isInForeground || !_voiceModeActive.value) return@launch
-            }
-
-            if (!_voiceModeActive.value || !isInForeground) return@launch
-
-            if (voiceManager.ttsHelper.isReady) {
-                voiceManager.speak("Xin chào, tôi đang nghe. Bạn cần gì?") {
-                    if (_voiceModeActive.value && isInForeground) {
-                        voiceManager.startListening()
-                    }
-                }
-            } else {
-                voiceManager.startListening()
-            }
-        }
-    }
+    // ✅ ĐÃ XÓA startVoiceSession(): việc chào mừng + khởi động nghe lần đầu nay do
+    // VoiceAssistantService thực hiện khi app khởi chạy, độc lập với ChatScreen có mở hay không.
 
     private fun observeAndSpeak() {
         viewModelScope.launch(Dispatchers.Main) {
@@ -283,6 +277,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun toggleVoiceMode() {
+        if (!isPersonalChat) return // ✅ ĐÃ THÊM: không cho bật/tắt mic cá nhân khi đang xem thread khách ngoại kênh
         val next = !_voiceModeActive.value
         _voiceModeActive.value = next
         if (next) {
@@ -414,28 +409,23 @@ class ChatViewModel @Inject constructor(
     }
 
     fun onForeground() {
-        if (isInForeground) return
+        // ✅ ĐÃ SỬA: Không còn start/stop vòng lặp mic ở đây — VoiceAssistantService chạy
+        // vòng lặp hands-free độc lập với vòng đời màn hình. onForeground chỉ còn dùng để
+        // gạt cờ isInForeground, quyết định có phát tiếng trả lời cho tin nhắn gõ tay hay không.
         isInForeground = true
-        if (!_voiceModeActive.value) return
-
-        voiceManager.stopListening()
-        viewModelScope.launch(Dispatchers.Main) {
-            delay(400)
-            if (_voiceModeActive.value && isInForeground) {
-                voiceManager.startListening()
-            }
-        }
     }
 
     fun onBackground() {
+        // ✅ ĐÃ SỬA: Rời màn hình KHÔNG được tắt mic nữa — người dùng hands-free cần ra lệnh
+        // thoại được cả khi tắt màn hình/rời app. Vòng lặp nghe do VoiceAssistantService quản lý,
+        // không phụ thuộc ChatScreen có đang mở hay không.
         isInForeground = false
-        voiceManager.stopListening()
-        voiceManager.ttsHelper.stop()
     }
 
     override fun onCleared() {
         super.onCleared()
-        voiceManager.stopListening()
-        voiceManager.ttsHelper.stop()
+        // ✅ ĐÃ SỬA: Không gọi voiceManager.stopListening()/ttsHelper.stop() ở đây nữa —
+        // vòng lặp voice sống độc lập trong VoiceAssistantService, ViewModel bị clear
+        // (rời màn hình) không còn ảnh hưởng tới nó.
     }
 }

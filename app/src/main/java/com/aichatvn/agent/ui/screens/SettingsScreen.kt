@@ -367,8 +367,10 @@ private fun PluginGroupCard(
                 // ✅ ĐÃ THÊM: Nếu mở rộng thẻ cấu hình Website, tự động render mã nhúng HTML kèm nút Copy 1 chạm!
                 if (pluginId == "website") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
-                    val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
-                    val embedCode = "<script src=\"$gatewayUrl/widget.js?token=$gatewayToken\"></script>"
+                    // ✅ ĐÃ SỬA: Dùng widget_key CÔNG KHAI (an toàn để lộ ra ngoài website) thay vì
+                    // gatewayToken thật — trước đây nhúng thẳng gatewayToken ra HTML công khai là lộ
+                    // luôn "chìa khóa tổng" của cả Facebook/Telegram, không chỉ riêng Website.
+                    val widgetKey = allConfigs.firstOrNull { it.key == AppConfigDefaults.WEBSITE_WIDGET_KEY }?.value ?: ""
 
                     Card(
                         modifier = Modifier
@@ -379,27 +381,38 @@ private fun PluginGroupCard(
                         Column(modifier = Modifier.padding(10.dp)) {
                             Text("💻 Mã nhúng Website của bạn:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(4.dp))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
-                                    .padding(8.dp)
-                            ) {
+                            if (widgetKey.isBlank()) {
+                                // ✅ ĐÃ THÊM: widget_key được tự sinh khi app kết nối Cloud Gateway lần đầu —
+                                // nếu app chưa từng kết nối thành công thì tạm thời chưa có gì để hiển thị.
                                 Text(
-                                    text = embedCode,
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                                    text = "⏳ Đang chờ app kết nối Cloud Gateway lần đầu để tự sinh mã Widget Key an toàn... Hãy đảm bảo dịch vụ nền đang chạy rồi quay lại đây.",
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedButton(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(embedCode))
-                                    Toast.makeText(context, "📋 Đã sao chép mã nhúng Website vào khay nhớ tạm!", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
+                            } else {
+                                val embedCode = "<script src=\"$gatewayUrl/widget.js?key=$widgetKey\"></script>"
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Text(
+                                        text = embedCode,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(embedCode))
+                                        Toast.makeText(context, "📋 Đã sao chép mã nhúng Website vào khay nhớ tạm!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
                     }

@@ -15,6 +15,7 @@
     <!-- Quyền chạy ngầm tiền cảnh cho Android 14 (Target SDK 34) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -58,6 +59,14 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- ✅ ĐÃ THÊM: Service chạy ngầm riêng cho vòng lặp hands-free (mic), độc lập với
+             ChatScreen/Inbox — xem VoiceAssistantService.kt -->
+        <service
+            android:name=".service.VoiceAssistantService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
         
         <provider
             android:name="androidx.startup.InitializationProvider"

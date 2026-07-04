@@ -71,7 +71,7 @@ fun AppNavigator() {
     ) { paddingValues ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Inbox.route,  // ✅ ĐÃ THAY ĐỔI: Vào thẳng hộp thư để quản lý tất cả các kênh
+            startDestination = "chat_screen?username=default_user",  // ✅ ĐÃ SỬA: Mở thẳng màn hình trò chuyện/mic cá nhân (nơi nói chuyện được ngay) — Inbox chỉ là 1 tab quản lý hội thoại khách hàng, không phải cổng vào chính của app hands-free
             modifier = Modifier.padding(paddingValues)
         ) {
             composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
