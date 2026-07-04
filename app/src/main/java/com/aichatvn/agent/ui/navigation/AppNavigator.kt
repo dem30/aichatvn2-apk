@@ -71,7 +71,7 @@ fun AppNavigator() {
     ) { paddingValues ->
         NavHost(
             navController = navController,
-            startDestination = "chat_screen?username=default_user",  // ✅ ĐÃ SỬA: Mở thẳng màn hình trò chuyện/mic cá nhân (nơi nói chuyện được ngay) — Inbox chỉ là 1 tab quản lý hội thoại khách hàng, không phải cổng vào chính của app hands-free
+            startDestination = "chat_screen",  // ✅ ĐÃ SỬA: route KHÔNG tham số riêng cho màn hình mở đầu — tránh dùng giá trị đã điền sẵn ("...=default_user") làm startDestination cho 1 route có query-param kiểu {username}, vì Navigation Compose có thể không khớp graph đúng cách, gây crash khi back-stack bị đụng tới (bấm sang tab khác)
             modifier = Modifier.padding(paddingValues)
         ) {
             composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
@@ -82,6 +82,12 @@ fun AppNavigator() {
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
             composable(Screen.Tuya.route)        { TuyaScreen(navController) }
+
+            // ✅ ĐÃ THÊM: route KHÔNG tham số — dùng làm màn hình mở đầu app (luôn là default_user,
+            // ChatViewModel tự mặc định username = "default_user" khi SavedStateHandle không có
+            // key "username"). Route riêng biệt hoàn toàn với route có {username} bên dưới, nên
+            // không còn rủi ro Navigation Compose khớp nhầm/không khớp pattern lúc dựng NavHost.
+            composable("chat_screen") { ChatScreen(navController) }
 
             // ✅ ĐÃ THÊM: Cấu hình màn hình Chat chi tiết nhận tham số username động từ InboxScreen chuyển sang
             composable(
