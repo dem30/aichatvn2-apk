@@ -1,7 +1,7 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
-import android.database.Cursor // ✅ ĐÃ THÊM: Để xử lý các kiểu dữ liệu và con trỏ SQLite
+import android.database.Cursor // Để xử lý các kiểu dữ liệu và con trỏ SQLite
 import android.os.Environment
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -21,7 +21,7 @@ import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
+import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
@@ -308,8 +308,7 @@ class SettingsViewModel @Inject constructor(
                         "SELECT * FROM `$tableName`"
                     }
 
-                    // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu Array không null của Android
-                    val rowCursor = sdb.query(query, emptyArray<Any?>())
+                    val rowCursor = sdb.query(query, null)
                     val columnNames = rowCursor.columnNames
 
                     if (rowCursor.moveToFirst()) {
@@ -426,8 +425,7 @@ class SettingsViewModel @Inject constructor(
                             }
 
                             // Đọc cấu trúc cột thực tế trên thiết bị của bảng hiện tại
-                            // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu chữ ký phương thức
-                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", emptyArray<Any?>())
+                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", null)
                             val existingColumns = mutableSetOf<String>()
                             if (pragmaCursor.moveToFirst()) {
                                 val nameColIdx = pragmaCursor.getColumnIndex("name")
@@ -441,8 +439,12 @@ class SettingsViewModel @Inject constructor(
 
                             if (existingColumns.isEmpty()) continue
 
-                            // Dọn dẹp dữ liệu cũ
-                            sdb.execSQL("DELETE FROM `$tableName`")
+                            // ✅ ĐÃ SỬA: Nghiệp vụ đặc thù Q&A: Chỉ xóa những dòng KHÔNG thuộc loại "auto_init" để không làm hỏng dữ liệu khởi tạo mặc định của hệ thống
+                            if (tableName == "qa_data") {
+                                sdb.execSQL("DELETE FROM `$tableName` WHERE `category` != 'auto_init'")
+                            } else {
+                                sdb.execSQL("DELETE FROM `$tableName`")
+                            }
 
                             if (rowsArray.length() == 0) continue
 
@@ -486,20 +488,18 @@ class SettingsViewModel @Inject constructor(
 
                             // NGHIỆP VỤ ĐẶC THÙ (CAMERAS): Tự sinh cấu hình CustomerSetting mặc định nếu chưa tồn tại
                             if (tableName == "cameras") {
-                                // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu phương thức
-                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", emptyArray<Any?>())
+                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", null)
                                 if (cursor.moveToFirst()) {
                                     do {
                                         val customerId = cursor.getString(0)
-                                        // ✅ ĐÃ SỬA: Ép kiểu arrayOf<Any?> để tránh lỗi invariant array của Kotlin
-                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf<Any?>(customerId))
+                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf(customerId))
                                         val exists = checkCursor.count > 0
                                         checkCursor.close()
                                         if (!exists) {
                                             val now = System.currentTimeMillis()
                                             sdb.execSQL(
                                                 "INSERT OR REPLACE INTO `customer_settings` (`customerId`, `smartMode`, `isActive`, `updatedAt`, `timestamp`) VALUES (?, 0, 1, ?, ?)",
-                                                arrayOf<Any?>(customerId, now, now)
+                                                arrayOf(customerId, now, now)
                                             )
                                             restoredCount++
                                         }
