@@ -61,6 +61,22 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
                 tts?.setLanguage(Locale.getDefault())
             }
 
+            // ✅ ĐÃ THÊM: tách TTS ra khỏi STREAM_MUSIC bằng AudioAttributes riêng
+            // (USAGE_ASSISTANT). Trước đây TTS phát trên STREAM_MUSIC mặc định, cùng stream
+            // mà muteStartupBeep() trong VoiceAssistantManager dùng để tắt tiếng "tút" khởi
+            // động mic — nếu mic bật lại trong lúc TTS lỡ còn đang phát dở (do watchdog bắn
+            // sớm), lệnh mute vô tình cắt ngang tiếng TTS. Route riêng stream giúp hai luồng
+            // không giẫm chân nhau.
+            try {
+                val ttsAttributes = android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                tts?.setAudioAttributes(ttsAttributes)
+            } catch (e: Exception) {
+                // Bỏ qua nếu thiết bị/engine không hỗ trợ
+            }
+
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
                     _isSpeaking.set(true)
@@ -158,14 +174,43 @@ class TextToSpeechHelper(private val context: Context) : TextToSpeech.OnInitList
 
     private fun scheduleWatchdog(utteranceId: String, text: String) {
         cancelWatchdog()
-        // Tốc độ nói ước tính: 150ms/ký tự tiếng Việt + 4000ms sai số an toàn
-        val estimatedDurationMs = (text.length * 150L) + 4000L
-        val runnable = Runnable {
-            Log.w("TextToSpeechHelper", "TTS Watchdog được kích hoạt cho $utteranceId do quá thời gian phản hồi.")
-            completeCallback(utteranceId)
+        // ✅ ĐÃ SỬA (nghe lại chính nó): watchdog cũ ước lượng thời lượng theo độ dài text
+        // (150ms/ký tự + 4s) rồi TỰ ĐỘNG coi như đã nói xong đúng lúc đó. Nếu engine TTS đọc
+        // chậm hơn ước lượng (rất dễ xảy ra với câu tiếng Việt dài), watchdog bắn callback
+        // "đã xong" TRƯỚC KHI loa phát hết → mic bật lại quá sớm và tự nghe lại phần đuôi câu
+        // TTS đang phát dở.
+        //
+        // Giờ watchdog chỉ là lưới an toàn cuối cùng phòng callback OS bị treo thật sự: mỗi
+        // lần "hết giờ" nó kiểm tra tts?.isSpeaking — nếu LOA VẪN ĐANG PHÁT thì tự gia hạn
+        // thêm một nhịp ngắn thay vì cắt ngang, và chỉ thực sự completeCallback() khi loa đã
+        // im lặng hoặc đã vượt quá trần thời gian tuyệt đối (phòng trường hợp isSpeaking báo
+        // sai từ hệ điều hành).
+        val baseEstimateMs = (text.length * 150L) + 4000L
+        val hardCapMs = baseEstimateMs + 15_000L // trần tuyệt đối, không gia hạn vô hạn
+        val startedAt = System.currentTimeMillis()
+
+        fun check() {
+            val stillSpeaking = try {
+                tts?.isSpeaking == true
+            } catch (e: Exception) {
+                false
+            }
+            val elapsed = System.currentTimeMillis() - startedAt
+            if (stillSpeaking && elapsed < hardCapMs) {
+                val runnable = Runnable { check() }
+                watchdogRunnable = runnable
+                mainHandler.postDelayed(runnable, 1000L)
+            } else {
+                if (stillSpeaking) {
+                    Log.w("TextToSpeechHelper", "TTS Watchdog vượt trần an toàn cho $utteranceId, buộc kết thúc.")
+                }
+                completeCallback(utteranceId)
+            }
         }
+
+        val runnable = Runnable { check() }
         watchdogRunnable = runnable
-        mainHandler.postDelayed(runnable, estimatedDurationMs)
+        mainHandler.postDelayed(runnable, baseEstimateMs)
     }
 
     private fun cancelWatchdog() {

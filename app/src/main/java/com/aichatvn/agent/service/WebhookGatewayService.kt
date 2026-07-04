@@ -79,7 +79,11 @@ class WebhookGatewayService : Service() {
         .build()
 
     companion object {
-        private const val CHANNEL_ID = "WebhookGatewayServiceChannel"
+        // ✅ ĐÃ SỬA: đổi CHANNEL_ID sang "_v2" — Android KHÔNG cho phép đổi importance/sound
+        // của một channel đã tồn tại trên máy người dùng bằng code. Đổi ID buộc hệ thống tạo
+        // channel MỚI với cấu hình IMPORTANCE_LOW + tắt sound ngay từ đầu, không cần người
+        // dùng tự vào Cài đặt tắt tay. Channel cũ (có sound) sẽ không còn được dùng nữa.
+        private const val CHANNEL_ID = "WebhookGatewayServiceChannel_v2"
         private const val NOTIFICATION_ID = 1002
     }
 
@@ -584,11 +588,20 @@ class WebhookGatewayService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // ✅ ĐÃ SỬA (tút tút liên tục): IMPORTANCE_DEFAULT khiến hệ thống phát âm thanh
+            // mỗi lần notify() được gọi. Service này chạy 24/7 nền và updateNotification()
+            // được gọi rất thường xuyên theo trạng thái mạng/SSE (mất mạng, đang kết nối,
+            // đã kết nối, lỗi HTTP, mất kết nối rồi tự retry mỗi 5s...) — mỗi lần đổi text là
+            // một tiếng "tút". Đây chỉ là trạng thái nền, không phải cảnh báo cần âm thanh,
+            // nên dùng IMPORTANCE_LOW: vẫn hiển thị ongoing, không rung, không kêu.
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Webhook Gateway Service Channel",
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                setSound(null, null)
+                enableVibration(false)
+            }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(serviceChannel)
         }

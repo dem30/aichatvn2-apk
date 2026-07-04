@@ -273,9 +273,14 @@ speak(result.responseText) {
                 
             } catch (e: Exception) {
                 logger.e("VoiceAssistantManager", "Lỗi xử lý luồng giọng nói", e)
+                // ✅ ĐÃ SỬA (nghe lại chính nó): nhánh lỗi trước đây gọi startListening() NGAY
+                // lập tức trong onDone, không có khoảng đệm nào — trong khi nhánh thành công ở
+                // trên dùng scheduleRestart(800ms) để chờ loa ngoài xả hết dư âm trước khi bật
+                // mic lại. Thiếu đồng bộ này là một trong các đường dễ khiến mic tự bắt lại
+                // đúng câu TTS vừa nói. Giờ dùng chung scheduleRestart(800ms) cho cả hai nhánh.
                 speak("Xin lỗi, hệ thống gặp sự cố khi xử lý câu lệnh.") {
                     transitionTo(VoiceState.RESTARTING)
-                    startListening()
+                    scheduleRestart(delayMs = 800L)
                 }
             }
         }

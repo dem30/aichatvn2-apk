@@ -51,7 +51,11 @@ class VoiceAssistantService : Service() {
     private var lastNotificationText = ""
 
     companion object {
-        private const val CHANNEL_ID = "VoiceAssistantServiceChannel"
+        // ✅ ĐÃ SỬA: đổi CHANNEL_ID sang "_v2" — Android KHÔNG cho phép đổi importance/sound
+        // của một channel đã tồn tại trên máy người dùng bằng code. Đổi ID buộc hệ thống tạo
+        // channel MỚI với cấu hình IMPORTANCE_LOW + tắt sound ngay từ đầu, không cần người
+        // dùng tự vào Cài đặt tắt tay. Channel cũ (có sound) sẽ không còn được dùng nữa.
+        private const val CHANNEL_ID = "VoiceAssistantServiceChannel_v2"
         private const val NOTIFICATION_ID = 1003
         const val ACTION_STOP_MIC = "com.aichatvn.agent.action.STOP_MIC"
         const val ACTION_START_MIC = "com.aichatvn.agent.action.START_MIC"
@@ -164,11 +168,19 @@ class VoiceAssistantService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // ✅ ĐÃ SỬA (tút tút liên tục): IMPORTANCE_DEFAULT khiến HỆ THỐNG phát âm thanh
+            // báo mỗi lần notify() được gọi. Notification này chỉ là trạng thái nền
+            // (LISTENING/PROCESSING/SPEAKING/RESTARTING đổi liên tục mỗi vài giây), không
+            // phải một cảnh báo cần âm thanh — dùng IMPORTANCE_LOW: vẫn hiển thị ongoing,
+            // không rung, không kêu.
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Voice Assistant Service Channel",
-                NotificationManager.IMPORTANCE_DEFAULT
-            )
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                setSound(null, null)
+                enableVibration(false)
+            }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
         }
