@@ -1,6 +1,7 @@
 package com.aichatvn.agent
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -12,9 +13,11 @@ import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import com.aichatvn.agent.data.dataStore
+import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.map
@@ -59,6 +62,31 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 if (!permissionState.allPermissionsGranted) {
                     permissionState.launchMultiplePermissionRequest()
+                }
+            }
+
+            // ✅ ĐÃ THÊM: MainApplication.onCreate() chạy TRƯỚC màn hình xin quyền này — ở máy mới
+            // cài, RECORD_AUDIO lúc đó chưa được cấp nên VoiceAssistantService bị bỏ qua hoàn toàn
+            // (chỉ log cảnh báo), và không có gì gọi lại sau khi người dùng bấm "Cho phép" cả ->
+            // mic không bao giờ khởi động dù đã cấp quyền. Theo dõi kết quả xin quyền ở đây, hễ
+            // RECORD_AUDIO chuyển sang granted thì tự khởi động lại Service (Service cũ đã tự
+            // stopSelf() nên gọi lại sẽ chạy onCreate() mới, lần này pass permission check).
+            LaunchedEffect(permissionState.permissions) {
+                val recordAudioGranted = permissionState.permissions
+                    .find { it.permission == Manifest.permission.RECORD_AUDIO }
+                    ?.status?.isGranted == true
+                if (recordAudioGranted) {
+                    try {
+                        val voiceServiceIntent = Intent(this@MainActivity, VoiceAssistantService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(voiceServiceIntent)
+                        } else {
+                            startService(voiceServiceIntent)
+                        }
+                        logger.i("MainActivity", "🎤 RECORD_AUDIO vừa được cấp -> khởi động lại VoiceAssistantService")
+                    } catch (e: Exception) {
+                        logger.e("MainActivity", "❌ Không thể khởi động VoiceAssistantService sau khi cấp quyền", e)
+                    }
                 }
             }
 
