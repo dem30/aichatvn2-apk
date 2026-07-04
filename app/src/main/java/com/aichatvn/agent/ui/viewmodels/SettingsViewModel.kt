@@ -308,7 +308,8 @@ class SettingsViewModel @Inject constructor(
                         "SELECT * FROM `$tableName`"
                     }
 
-                    val rowCursor = sdb.query(query, null)
+                    // ✅ ĐÃ SỬA: Sử dụng emptyArray<Any?>() thay cho null để đáp ứng chữ ký phương thức nghiêm ngặt của Kotlin
+                    val rowCursor = sdb.query(query, emptyArray<Any?>())
                     val columnNames = rowCursor.columnNames
 
                     if (rowCursor.moveToFirst()) {
@@ -425,7 +426,8 @@ class SettingsViewModel @Inject constructor(
                             }
 
                             // Đọc cấu trúc cột thực tế trên thiết bị của bảng hiện tại
-                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", null)
+                            // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu chữ ký phương thức
+                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", emptyArray<Any?>())
                             val existingColumns = mutableSetOf<String>()
                             if (pragmaCursor.moveToFirst()) {
                                 val nameColIdx = pragmaCursor.getColumnIndex("name")
@@ -439,7 +441,7 @@ class SettingsViewModel @Inject constructor(
 
                             if (existingColumns.isEmpty()) continue
 
-                            // ✅ ĐÃ SỬA: Nghiệp vụ đặc thù Q&A: Chỉ xóa những dòng KHÔNG thuộc loại "auto_init" để không làm hỏng dữ liệu khởi tạo mặc định của hệ thống
+                            // Nghiệp vụ đặc thù Q&A: Chỉ xóa những dòng KHÔNG thuộc loại "auto_init" để không làm hỏng dữ liệu khởi tạo mặc định của hệ thống
                             if (tableName == "qa_data") {
                                 sdb.execSQL("DELETE FROM `$tableName` WHERE `category` != 'auto_init'")
                             } else {
@@ -488,18 +490,19 @@ class SettingsViewModel @Inject constructor(
 
                             // NGHIỆP VỤ ĐẶC THÙ (CAMERAS): Tự sinh cấu hình CustomerSetting mặc định nếu chưa tồn tại
                             if (tableName == "cameras") {
-                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", null)
+                                // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu phương thức
+                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", emptyArray<Any?>())
                                 if (cursor.moveToFirst()) {
                                     do {
                                         val customerId = cursor.getString(0)
-                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf(customerId))
+                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf<Any?>(customerId))
                                         val exists = checkCursor.count > 0
                                         checkCursor.close()
                                         if (!exists) {
                                             val now = System.currentTimeMillis()
                                             sdb.execSQL(
                                                 "INSERT OR REPLACE INTO `customer_settings` (`customerId`, `smartMode`, `isActive`, `updatedAt`, `timestamp`) VALUES (?, 0, 1, ?, ?)",
-                                                arrayOf(customerId, now, now)
+                                                arrayOf<Any?>(customerId, now, now)
                                             )
                                             restoredCount++
                                         }
