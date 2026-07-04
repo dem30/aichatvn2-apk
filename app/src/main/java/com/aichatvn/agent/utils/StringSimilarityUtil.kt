@@ -50,7 +50,11 @@ object StringSimilarityUtil {
             else -> false
         }
 
-        if (isWordMatch) {
+        val lenDiff = Math.abs(clean1.length - clean2.length)
+        val maxLen = maxOf(clean1.length, clean2.length)
+
+        // Chỉ cho phép chấm 0.95 nếu là khớp từ và độ lệch độ dài giữa 2 câu dưới 25%
+        if (isWordMatch && (lenDiff.toDouble() / maxLen < 0.25)) {
             return 0.95
         }
 

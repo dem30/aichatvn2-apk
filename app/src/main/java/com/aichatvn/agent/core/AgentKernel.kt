@@ -1133,8 +1133,8 @@ class AgentKernel @Inject constructor(
             if (clause.isEmpty()) continue
             val coverageRatio = totalMatchedLength.toDouble() / clause.length
 
-            if (coverageRatio < 0.80) {
-                logger.d("AgentKernel", "[$traceId] ⚠️ Tỷ lệ bao phủ mệnh đề '$clause' quá thấp (${String.format("%.2f", coverageRatio)} < 0.80). Bỏ qua Tầng 3.")
+            if (coverageRatio < 0.70) {
+                logger.d("AgentKernel", "[$traceId] ⚠️ Tỷ lệ bao phủ mệnh đề '$clause' quá thấp (${String.format("%.2f", coverageRatio)} < 0.70). Bỏ qua Tầng 3.")
                 continue
             }
 
@@ -1347,7 +1347,7 @@ class AgentKernel @Inject constructor(
             if (clause.isEmpty()) continue
             val coverageRatio = totalMatchedLength.toDouble() / clause.length
 
-            if (coverageRatio < 0.80) {
+            if (coverageRatio < 0.70) {
                 continue
             }
 
