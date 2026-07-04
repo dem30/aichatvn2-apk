@@ -1,3 +1,5 @@
+
+
 package com.aichatvn.agent.core
 
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -63,6 +65,12 @@ data class NormalizedActionMetadata(
     val normalizedTags: List<String>
 )
 
+data class PendingResultInfo(
+    val plugin: Plugin,
+    val actionName: String,
+    val result: AgentKernel.PluginResult.NeedMoreInfo
+)
+
 sealed class Layer3Result {
     data class Single(val plugin: Plugin, val intent: AgentKernel.Intent) : Layer3Result()
     data class Nested(val wrapper: Plugin, val intent: AgentKernel.Intent) : Layer3Result()
@@ -86,11 +94,6 @@ data class ChatRequest(
     val fileUrl: String? = null,
     val extraContext: String = "",
     val chatMode: String = "COMBINED",
-    // ✅ ĐÃ THÊM: Cờ bật/tắt khả năng điều khiển thiết bị (Tier trigger-prefix + tryDeviceCommand).
-    // Giá trị này do ChatSkill tính toán dựa trên công tắc Settings
-    // AppConfigDefaults.GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL kết hợp với kênh (isExternal).
-    // Khi false: tin nhắn KHÔNG được đưa qua bất kỳ tầng nhận diện lệnh điều khiển thiết bị nào,
-    // chỉ đi thẳng vào QA/Groq — dùng cho lúc bot đang trả lời khách hàng ngoại kênh.
     val allowDeviceControl: Boolean = true
 )
 
@@ -115,24 +118,70 @@ class AgentKernel @Inject constructor(
     companion object {
         private const val MAX_DEPTH = 3
 
-        // 🌐 DANH BẠ TỪ KHÓA CHỈ ĐỊNH LỆNH HÀNH ĐỘNG PHỔ BIẾN (dùng để gác cổng trước khi vào Tầng 5)
         private val COMMAND_TRIGGER_KEYWORDS = setOf(
             "bat", "tat", "mo", "dong", "chay", "quet", "gui", "len lich", "dat lich", "kiem tra", "setup",
             "den", "quat", "camera", "bom", "khoa", "thiet bi", "tuya", "canh bao", "email", "thu", "status",
             "huy", "xoa", "sua", "doi", "them", "xem", "hen gio", "bao thuc"
         )
 
-        // Số plugin tối đa được đưa vào prompt khi fallback theo điểm liên quan cục bộ (Tầng 5)
         private const val MAX_FALLBACK_PLUGINS = 3
     }
 
-    /**
-     * Kiểm tra cục bộ (không tốn API) xem câu nói của người dùng có tiềm năng là một câu lệnh
-     * điều khiển thiết bị hay không. Dùng để gác cổng trước khi gọi LLM Router (Tầng 5).
-     */
     private fun isPotentialCommand(message: String): Boolean {
         val norm = StringSimilarityUtil.normalizeVietnamese(message.lowercase().trim())
         return COMMAND_TRIGGER_KEYWORDS.any { keyword -> norm.contains(keyword) }
+    }
+
+    private fun detectScheduleAction(queryNormalized: String): String {
+        val cancelVerbs = setOf("huy", "xoa", "bo", "tat lich", "ngung", "tat hen gio", "dung lich")
+        val listVerbs = setOf("xem", "liet ke", "danh sach", "kiem tra", "hien thi")
+        val updateVerbs = setOf("sua", "doi", "cap nhat", "thay doi", "dat lai", "chinh sua")
+        
+        return when {
+            cancelVerbs.any { queryNormalized.contains(it) } -> "cancel"
+            listVerbs.any { queryNormalized.contains(it) } -> "list"
+            updateVerbs.any { queryNormalized.contains(it) } -> "update"
+            else -> "add"
+        }
+    }
+
+    private fun buildPendingBanner(pending: PendingIntent, pluginName: String, actionDesc: String): String {
+        val targetPlugin = plugins.find { it.manifest.id == pending.pluginId }
+        val targetAction = targetPlugin?.manifest?.actions?.find { it.name == pending.action }
+        
+        var validKnownCount = 0
+        pending.knownParams.filterKeys { !it.startsWith("_") }.forEach { (k, v) ->
+            if (k == "params" && v is Map<*, *>) {
+                val targetPluginId = pending.knownParams["plugin_id"]?.toString()
+                    ?: pending.knownParams["pluginId"]?.toString()
+                    ?: pending.knownParams["plugin"]?.toString() ?: ""
+                val targetActionName = pending.knownParams["action_id"]?.toString()
+                    ?: pending.knownParams["action"]?.toString()
+                    ?: pending.knownParams["actionId"]?.toString() ?: ""
+                val tPlugin = plugins.find { it.manifest.id == targetPluginId }
+                val tAction = tPlugin?.manifest?.actions?.find { it.name == targetActionName }
+
+                v.forEach { (subK, subV) ->
+                    val subParamMeta = tAction?.parameters?.find { it.name == subK.toString() }
+                    if (!ParameterResolver.isPlaceholder(subV, subParamMeta)) {
+                        validKnownCount++
+                    }
+                }
+            } else if (k != "params") {
+                val paramMeta = targetAction?.parameters?.find { it.name == k }
+                if (!ParameterResolver.isPlaceholder(v, paramMeta)) {
+                    validKnownCount++
+                }
+            }
+        }
+        
+        val totalCount = validKnownCount + pending.missingParams.size
+        return """
+            📋 [Đang thực hiện]: $pluginName -> $actionDesc
+            ⏳ Trạng thái: Đã thu thập $validKnownCount/$totalCount thông tin.
+            ────────────────────────
+            👉 ${pending.askedQuestion}
+        """.trimIndent()
     }
 
     private val actionCandidates: List<LocalCandidate> by lazy {
@@ -211,7 +260,6 @@ class AgentKernel @Inject constructor(
         return trainingSkill.fuzzyMatchQuestion(query, username, threshold)
     }
 
-
     suspend fun chat(request: ChatRequest): ChatResponse {
         val message = request.message
         val username = request.username
@@ -219,16 +267,12 @@ class AgentKernel @Inject constructor(
         val imageBase64 = request.imageBase64
         val fileUrl = request.fileUrl
 
-        // ✅ ĐÃ THÊM: lớp phòng hờ thứ 2 (sau ChatSkill.processQuery()) — nếu có nơi khác gọi
-        // thẳng agentKernel.chat() với message rỗng và không kèm ảnh/file (ví dụ STT trả về
-        // chuỗi rỗng, webhook gửi payload trống...), không cho bypass xuống Tầng 5/gọi Groq.
         if (message.isBlank() && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty()) {
             return ChatResponse("", "empty_message_guard", null)
         }
 
-        // ✅ ĐÃ SỬA: Chỉ chạy Tier trigger-prefix (điều khiển thiết bị nhanh) khi được phép.
-        // Trước đây khối này chạy cho MỌI username kể cả khách hàng ngoại kênh, khiến tin nhắn
-        // khách gửi vô tình khớp prefix lệnh và kích hoạt nhầm hành động điều khiển thiết bị thật.
+        val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(plugins)
+
         if (request.allowDeviceControl) {
             for (plugin in plugins) {
                 for (action in plugin.manifest.actions) {
@@ -244,13 +288,14 @@ class AgentKernel @Inject constructor(
                         )
                         val responseText = when (result) {
                             is PluginResult.Success -> {
-                                val data = result.data as? Map<*, *>
+                                val data = result.data as? Map<*, *>?
                                 data?.get("message") as? String ?: "✅ Đã thực hiện câu lệnh tự động."
                             }
                             is PluginResult.Failure -> result.error
                             else -> "❌ Có lỗi phát sinh khi xử lý câu lệnh hệ thống."
                         }
-                        return ChatResponse(responseText, action.name, plugin.manifest.id)
+                        val finalMsg = if (expiredNotification != null) "$expiredNotification\n\n$responseText" else responseText
+                        return ChatResponse(finalMsg, action.name, plugin.manifest.id)
                     }
                 }
             }
@@ -273,32 +318,31 @@ class AgentKernel @Inject constructor(
                 )
                 val responseText = when (visionResult) {
                     is PluginResult.Success -> {
-                        val data = visionResult.data as? Map<*, *>
+                        val data = visionResult.data as? Map<*, *>?
                         data?.get("response") as? String ?: "Không có phản hồi từ mô hình thị giác."
                     }
                     is PluginResult.Failure -> visionResult.error
                     else -> "❌ Gặp lỗi trong quá trình phân tích hình ảnh."
                 }
-                return ChatResponse(responseText, actionName, visionPlugin.manifest.id)
+                val finalMsg = if (expiredNotification != null) "$expiredNotification\n\n$responseText" else responseText
+                return ChatResponse(finalMsg, actionName, visionPlugin.manifest.id)
             } else {
                 return ChatResponse("⚠️ Thiết bị hiện không hỗ trợ phân tích hình ảnh (chưa cài đặt Vision Plugin).", "vision_error", null)
             }
         }
         
-        // ✅ ĐÃ SỬA: Toàn bộ pipeline điều khiển thiết bị (Tier 1→5 trong tryDeviceCommand) chỉ chạy
-        // khi allowDeviceControl = true. Khách hàng ngoại kênh chat với AI bán hàng/tư vấn thì bỏ qua
-        // hẳn bước "search từ khoá các tầng" này, tránh dính nhầm logic điều khiển thiết bị của chủ nhà.
         val outcome = if (request.allowDeviceControl) tryDeviceCommand(message, username) else null
         if (outcome is RouterOutcome.Matched) {
             val responseText = when (val result = outcome.result.result) {
                 is PluginResult.Success -> {
-                    val data = result.data as? Map<*, *>
+                    val data = result.data as? Map<*, *>?
                     data?.get("message") as? String ?: "✅ Đã thực hiện thành công."
                 }
                 is PluginResult.Failure -> result.error
                 is PluginResult.NeedMoreInfo -> result.question
             }
-            return ChatResponse(responseText, "device_control", outcome.result.pluginId)
+            val finalMsg = if (expiredNotification != null) "$expiredNotification\n\n$responseText" else responseText
+            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId)
         }
         
         val routerFailed = outcome is RouterOutcome.RouterFailed
@@ -317,17 +361,15 @@ class AgentKernel @Inject constructor(
             ANTI_HALLUCINATION_GUARD
         }
 
-        val responseText = try {
+        var responseText = try {
             withTimeout(30_000L) {
                 when (usedMode.lowercase()) {
-                    // 1. Chế độ QA: Chỉ tìm kiếm nội bộ, phản hồi nhanh và không gọi mạng
                     "qa" -> {
                         val matches = search(message, username, 0.6f)
                         val qa = matches.firstOrNull()?.qa
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
                     }
 
-                    // 2. Chế độ GROQ: AI thuần túy, loại bỏ qaContext để Prompt sạch và giảm truy cập DB vô ích
                     "groq" -> {
                         val historySnapshot = try {
                             database.chatMessageDao().getMessages(username, 6)
@@ -350,17 +392,13 @@ class AgentKernel @Inject constructor(
                         )
                     }
 
-                    // 3. Chế độ COMBINED (Mặc định): Tối ưu hóa tuyệt đối cho chatbot bán hàng / tư vấn
                     else -> {
-                        // Bước 1: Kiểm tra xem có khớp cứng trong DB tĩnh với độ tin cậy cao không (>= 0.85f)
                         val matches = search(message, username, 0.85f)
                         val perfectMatch = matches.firstOrNull()?.qa
 
                         if (perfectMatch != null) {
-                            // Trả về trực tiếp câu trả lời tĩnh ngay lập tức (<50ms), không cần gọi Groq API
                             perfectMatch.answer
                         } else {
-                            // Bước 2: Chỉ khi không khớp cứng, mới tiến hành truy vấn DB mờ và RAG
                             val historySnapshot = try {
                                 database.chatMessageDao().getMessages(username, 6)
                                     .reversed()
@@ -390,14 +428,12 @@ class AgentKernel @Inject constructor(
             "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
         }
         
+        if (expiredNotification != null) {
+            responseText = "$expiredNotification\n\n$responseText"
+        }
         return ChatResponse(responseText, usedMode, usedPluginId)
-    } // <-- Dấu ngoặc nhọn đóng của hàm chat() đã được bổ sung đầy đủ tại đây
+    }
 
-
-    
-
-
-    
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
         val matches = search(message, username, 0.7f)
         if (matches.isEmpty()) return ""
@@ -413,12 +449,34 @@ class AgentKernel @Inject constructor(
         val traceId = generateTraceId()
         logger.d("AgentKernel", "[$traceId] 🚀 Bắt đầu tiếp nhận thông điệp: '$userMessage'")
 
-        // ── KHÓA ĐIỀU KHIỂN: (a) Đang trong hàng đợi chờ xác nhận Có/Không ──
+        val normMsg = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
+        val isAskingPending = normMsg.contains("dang cho gi") || 
+            normMsg.contains("kiem tra yeu cau") || 
+            (normMsg.contains("cho") && normMsg.contains("gi") && normMsg.contains("pending")) ||
+            normMsg.contains("dang bi ket")
+
+        if (isAskingPending) {
+            val active = chatHistoryManager.getActivePendingIntents()
+            if (active.isEmpty()) {
+                return RouterOutcome.Matched(
+                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Hiện tại không có yêu cầu điều khiển thiết bị nào đang chờ xử lý.")))
+                )
+            }
+            val first = active.first()
+            val targetPlugin = plugins.find { it.manifest.id == first.pluginId }
+            val targetAction = targetPlugin?.manifest?.actions?.find { it.name == first.action }
+            val pluginName = targetPlugin?.manifest?.name ?: first.pluginId
+            val actionDesc = targetAction?.description ?: first.action
+            val banner = buildPendingBanner(first, pluginName, actionDesc)
+            return RouterOutcome.Matched(
+                DeviceCommandResult(first.pluginId, PluginResult.NeedMoreInfo(first.missingParams, banner))
+            )
+        }
+
         chatHistoryManager.pendingLockRequest?.let { pluginId ->
             return handleLockConfirmation(userMessage, pluginId)
         }
 
-        // ── KHÓA ĐIỀU KHIỂN: (b) Đang khóa cứng điều khiển 1 plugin duy nhất ──
         chatHistoryManager.getLockedPlugin()?.let { lockedId ->
             if (isExitLockPhrase(userMessage)) {
                 chatHistoryManager.unlockPlugin()
@@ -428,7 +486,6 @@ class AgentKernel @Inject constructor(
                     DeviceCommandResult(lockedId, PluginResult.Success(mapOf("message" to "✅ Đã thoát chế độ điều khiển riêng cho \"$displayName\".")))
                 )
             }
-            // Gọi chạy pipeline và ép buộc chỉ cho phép Plugin đang bị khóa hoạt động
             val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId, forcedPluginIds = listOf(lockedId))
             val outcome = result.routerOutcome
             return if (outcome == null || outcome is RouterOutcome.NotACommand) {
@@ -440,7 +497,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── KHÓA ĐIỀU KHIỂN: (c) Phát hiện câu lệnh kích hoạt khóa điều khiển ──
         detectLockTrigger(userMessage)?.let { targetPluginId ->
             chatHistoryManager.setPendingLockRequest(targetPluginId)
             val matchedPlugin = plugins.find { it.manifest.id == targetPluginId }
@@ -450,7 +506,6 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ── Luồng xử lý bình thường thông thường khi không có khóa điều khiển ──
         val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId)
         return result.routerOutcome ?: RouterOutcome.RouterFailed("Pipeline execution error")
     }
@@ -460,10 +515,10 @@ class AgentKernel @Inject constructor(
         username: String,
         mode: PipelineMode,
         traceId: String,
-        forcedPluginIds: List<String>? = null // THÊM: Cho phép ép buộc danh sách plugin cụ thể
+        forcedPluginIds: List<String>? = null
     ): PipelineResult {
         val devicePlugins = plugins.filter { 
-            it.manifest.routable && (forcedPluginIds == null || it.manifest.id in forcedPluginIds) // SỬA: Lọc theo danh sách ép buộc nếu có
+            it.manifest.routable && (forcedPluginIds == null || it.manifest.id in forcedPluginIds)
         }
         if (devicePlugins.isEmpty()) {
             return PipelineResult(routerOutcome = RouterOutcome.NotACommand)
@@ -475,7 +530,6 @@ class AgentKernel @Inject constructor(
         val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
 
-        // ── TẦNG 0a: CANCEL RESOLVER ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -503,70 +557,54 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── TẦNG 0b: PRONOUN RESOLVER ──
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
         if (pronounResult.wasResolved) {
             logger.d("AgentKernel", "[$traceId] [Tầng 0] Pronoun Resolver: \"${pronounResult.resolvedFrom}\" -> \"${pronounResult.resolvedTo}\". Câu sau khi viết lại: \"$resolvedMessage\"")
         }
 
-        // ── TẦNG 1: PENDING RESOLVER ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
 
         if (mode == PipelineMode.EXECUTE) {
             if (pendings.isNotEmpty()) {
-                logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện ${pendings.size} tiến trình dở dang Pending Intents")
-                val results = mutableListOf<String>()
-                var allSucceeded = true
-
-                // CHỈ XỬ LÝ LỆNH DỞ DANG ĐẦU TIÊN để thực hiện tuần tự hóa (Sequential Slot-Filling)
+                logger.d("AgentKernel", "[$traceId] [Tầng 1] Phát hiện lệnh dở dang. Tiến hành giải quyết tuần tự.")
+                
                 val activePending = pendings.first()
                 val resolvedResult = tryResolvePendingIntent(activePending, userMessage, devicePlugins, traceId, mode)
+                
                 if (resolvedResult != null) {
                     val r = resolvedResult.result
-                    val msg = when (r) {
+                    val finalResult = when (r) {
                         is PluginResult.Success -> {
                             chatHistoryManager.removePendingIntent(activePending.pluginId, activePending.action)
-                            (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ Thực hiện thành công"
+                            r
+                        }
+                        is PluginResult.NeedMoreInfo -> {
+                            val targetPlugin = plugins.find { it.manifest.id == activePending.pluginId }
+                            val targetAction = targetPlugin?.manifest?.actions?.find { it.name == activePending.action }
+                            val pluginName = targetPlugin?.manifest?.name ?: activePending.pluginId
+                            val actionDesc = targetAction?.description ?: activePending.action
+                            
+                            val banner = buildPendingBanner(
+                                activePending.copy(missingParams = r.missingParams, askedQuestion = r.question),
+                                pluginName,
+                                actionDesc
+                            )
+                            PluginResult.NeedMoreInfo(r.missingParams, banner)
                         }
                         is PluginResult.Failure -> {
                             chatHistoryManager.removePendingIntent(activePending.pluginId, activePending.action)
-                            "❌ Lỗi: ${r.error}"
+                            r
                         }
-                        is PluginResult.NeedMoreInfo -> {
-                            allSucceeded = false
-                            r.question
-                        }
-                    }
-                    results.add(msg)
-                }
-
-                if (results.isNotEmpty()) {
-                    val combined = results.distinct().joinToString("\n")
-                    val finalResult = if (allSucceeded) {
-                        // Nếu lệnh dở dang hiện tại đã xử lý xong, kiểm tra xem trong hàng đợi còn lệnh dở dang tiếp theo nào không
-                        val remainingPendings = chatHistoryManager.getActivePendingIntents()
-                        if (remainingPendings.isNotEmpty()) {
-                            // Lấy lệnh dở dang tiếp theo và lập tức hỏi người dùng thay vì kết thúc luồng chat
-                            val nextPending = remainingPendings.first()
-                            val combinedMsg = "$combined\n\n⚠️ Tiếp theo: ${nextPending.askedQuestion}"
-                            PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg)
-                        } else {
-                            PluginResult.Success(mapOf("message" to combined))
-                        }
-                    } else {
-                        val remainingPending = chatHistoryManager.getActivePendingIntents()
-                        PluginResult.NeedMoreInfo(remainingPending.flatMap { it.missingParams }, combined)
                     }
                     return PipelineResult(
-                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi_pending", finalResult))
+                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult(activePending.pluginId, finalResult))
                     )
                 }
             }
         } else {
             if (isT1Matched && finalOutcome == null) {
-                // Đã tối ưu truyền biến 'mode' ở dạng DIAGNOSTIC xuống bộ Pending Resolver kiểm thử đầu tiên
                 val pendingResult = tryResolvePendingIntent(pendings.first(), userMessage, devicePlugins, traceId, mode)
                 finalOutcome = if (pendingResult != null) {
                     when (val r = pendingResult.result) {
@@ -603,12 +641,11 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT VỚI ALIAS THRESHOLD ĐỘNG)
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage, 
             username, 
             intentThreshold = intentThreshold,
-            aliasThreshold = aliasThreshold // Sửa đổi: Áp dụng aliasThreshold cấu hình động thay vì 0.0f cứng
+            aliasThreshold = aliasThreshold
         )
 
         val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
@@ -628,7 +665,6 @@ class AgentKernel @Inject constructor(
             localEntities = localEntities
         )
 
-        // ── TẦNG 2A: MÀNG LỌC PHỦ ĐỊNH CỤC BỘ ──
         val lowerMsg = resolvedMessage.lowercase().trim()
         val negationWords = setOf("không", "chưa", "đừng", "hủy", "huỷ", "không muốn", "đừng có")
         val hasNegation = negationWords.any { word -> 
@@ -659,7 +695,6 @@ class AgentKernel @Inject constructor(
             }
         }
 
-        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH ──
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
 
@@ -711,7 +746,6 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING ──
         val layer3Result = if (mode == PipelineMode.EXECUTE || !isT2Matched) {
             processLayer3ClauseEntitySpotter(context, devicePlugins, traceId)
         } else {
@@ -738,25 +772,65 @@ class AgentKernel @Inject constructor(
                 }
                 is Layer3Result.Multi -> {
                     logger.d("AgentKernel", "[$traceId] ✅ [Tầng 3 Multi] ${layer3Result.intents.size} actions")
-                    val results = mutableListOf<String>()
+                    val completedMsgs = mutableListOf<String>()
+                    val pendingResults = mutableListOf<PendingResultInfo>()
+
                     layer3Result.intents.forEach { (plugin, intent) ->
-                        try {
-                            val r = executeIntent(plugin, intent, context, traceId)
-                            val msg = when (r) {
-                                is PluginResult.Success -> (r.data as? Map<*, *>)?.get("message") as? String ?: "✅ ${intent.pluginId}.${intent.action}"
-                                is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action}: ${r.error}"
-                                is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action}: ${r.question}"
+                        val res = executeIntent(plugin, intent, context, traceId)
+                        when (res) {
+                            is PluginResult.Success -> {
+                                val msg = (res.data as? Map<*, *>? )?.get("message") as? String ?: "✅ Đã thực hiện ${plugin.manifest.name}."
+                                completedMsgs.add(msg)
                             }
-                            results.add(msg)
-                        } catch (e: Exception) {
-                            results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
+                            is PluginResult.Failure -> {
+                                completedMsgs.add("❌ ${plugin.manifest.name} thất bại: ${res.error}")
+                            }
+                            is PluginResult.NeedMoreInfo -> {
+                                pendingResults.add(PendingResultInfo(plugin, intent.action, res))
+                            }
                         }
                     }
-                    val combined = results.joinToString("\n")
-                    return PipelineResult(
-                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined)))),
-                        matchResult = matchResult
-                    )
+
+                    val completedText = completedMsgs.joinToString("\n")
+
+                    return if (pendingResults.isNotEmpty()) {
+                        val (firstPlugin, firstActionName, firstPendingRes) = pendingResults.first()
+                        val activePending = chatHistoryManager.getActivePendingIntents()
+                            .firstOrNull { it.pluginId == firstPlugin.manifest.id && it.action == firstActionName }
+
+                        val actionDesc = firstPlugin.manifest.actions.find { it.name == firstActionName }?.description ?: firstActionName
+                        
+                        val banner = if (activePending != null) {
+                            val baseBanner = buildPendingBanner(activePending, firstPlugin.manifest.name, actionDesc)
+                            if (pendingResults.size > 1) {
+                                "$baseBanner\n*(Còn ${pendingResults.size - 1} yêu cầu khác đã được xếp hàng chờ)*"
+                            } else {
+                                baseBanner
+                            }
+                        } else {
+                            firstPendingRes.question
+                        }
+
+                        val combinedMsg = if (completedText.isNotEmpty()) {
+                            "$completedText\n\n$banner"
+                        } else {
+                            banner
+                        }
+
+                        PipelineResult(
+                            routerOutcome = RouterOutcome.Matched(
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg))
+                            ),
+                            matchResult = matchResult
+                        )
+                    } else {
+                        PipelineResult(
+                            routerOutcome = RouterOutcome.Matched(
+                                DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to completedText)))
+                            ),
+                            matchResult = matchResult
+                        )
+                    }
                 }
                 is Layer3Result.NoMatch -> { }
             }
@@ -818,7 +892,6 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN ──
         val layer4Result = if (mode == PipelineMode.EXECUTE || (!isT2Matched && layer3Result is Layer3Result.NoMatch)) {
             tryTier2_5ActionMetadataMatcher(context, devicePlugins)
         } else {
@@ -845,31 +918,69 @@ class AgentKernel @Inject constructor(
                 }
                 is Layer3Result.Multi -> {
                     logger.d("AgentKernel", "[$traceId] ✅ [Tầng 4 Multi] ${layer4Result.intents.size} actions")
-                    val results = mutableListOf<String>()
+                    val completedMsgs = mutableListOf<String>()
+                    val pendingResults = mutableListOf<PendingResultInfo>()
+
                     layer4Result.intents.forEach { (plugin, intent) ->
-                        try {
-                            val r = executeIntent(plugin, intent, context, traceId)
-                            val msg = when (r) {
-                                is PluginResult.Success -> "✅ ${intent.pluginId}.${intent.action} thành công."
-                                is PluginResult.Failure -> "❌ ${intent.pluginId}.${intent.action} thất bại: ${r.error}"
-                                is PluginResult.NeedMoreInfo -> "⚠️ ${intent.pluginId}.${intent.action} thiếu: ${r.question}"
+                        val res = executeIntent(plugin, intent, context, traceId)
+                        when (res) {
+                            is PluginResult.Success -> {
+                                val msg = (res.data as? Map<*, *>? )?.get("message") as? String ?: "✅ Đã thực hiện ${plugin.manifest.name}."
+                                completedMsgs.add(msg)
                             }
-                            results.add(msg)
-                        } catch (e: Exception) {
-                            results.add("❌ ${intent.pluginId}.${intent.action}: ${e.message}")
+                            is PluginResult.Failure -> {
+                                completedMsgs.add("❌ ${plugin.manifest.name} thất bại: ${res.error}")
+                            }
+                            is PluginResult.NeedMoreInfo -> {
+                                pendingResults.add(PendingResultInfo(plugin, intent.action, res))
+                            }
                         }
                     }
-                    val combined = results.joinToString("\n")
-                    return PipelineResult(
-                        routerOutcome = RouterOutcome.Matched(DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to combined)))),
-                        matchResult = matchResult
-                    )
+
+                    val completedText = completedMsgs.joinToString("\n")
+
+                    return if (pendingResults.isNotEmpty()) {
+                        val (firstPlugin, firstActionName, firstPendingRes) = pendingResults.first()
+                        val activePending = chatHistoryManager.getActivePendingIntents()
+                            .firstOrNull { it.pluginId == firstPlugin.manifest.id && it.action == firstActionName }
+
+                        val actionDesc = firstPlugin.manifest.actions.find { it.name == firstActionName }?.description ?: firstActionName
+                        
+                        val banner = if (activePending != null) {
+                            val baseBanner = buildPendingBanner(activePending, firstPlugin.manifest.name, actionDesc)
+                            if (pendingResults.size > 1) {
+                                "$baseBanner\n*(Còn ${pendingResults.size - 1} yêu cầu khác đã được xếp hàng chờ)*"
+                            } else {
+                                baseBanner
+                            }
+                        } else {
+                            firstPendingRes.question
+                        }
+
+                        val combinedMsg = if (completedText.isNotEmpty()) {
+                            "$completedText\n\n$banner"
+                        } else {
+                            banner
+                        }
+
+                        PipelineResult(
+                            routerOutcome = RouterOutcome.Matched(
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg))
+                            ),
+                            matchResult = matchResult
+                        )
+                    } else {
+                        PipelineResult(
+                            routerOutcome = RouterOutcome.Matched(
+                                DeviceCommandResult("multi", PluginResult.Success(mapOf("message" to completedText)))
+                            ),
+                            matchResult = matchResult
+                        )
+                    }
                 }
                 is Layer3Result.NoMatch -> { }
             }
 
-            // 🚀 TỐI ƯU HÓA: Nếu câu nói không chứa bất kỳ từ khóa chỉ định lệnh nào,
-            // bypass thẳng xuống chat thường, không gọi LLM Router (tiết kiệm 1 lệnh gọi Groq).
             if (!isPotentialCommand(resolvedMessage)) {
                 logger.d("AgentKernel", "[$traceId] 🍃 [Tầng 4 Miss] Không chứa từ khóa chỉ định lệnh -> Bypass thẳng xuống Chat (bỏ qua Tầng 5)")
                 return PipelineResult(
@@ -922,7 +1033,7 @@ class AgentKernel @Inject constructor(
                 is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
                 is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
                 is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-                else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
+                else -> "• Không khớp với mô tả action hoặc nhãn ví dẫn trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
             }
             simulatedTiers.add(
                 DiagnosticTier(
@@ -933,7 +1044,6 @@ class AgentKernel @Inject constructor(
                 )
             )
 
-            // ── TẦNG 5: KHÔNG GỌI THẬT TRONG DIAGNOSTIC ──
             val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
             if (isT5Matched && finalOutcome == null) {
                 finalOutcome = "🔵 [Bypass Tầng 5] Đã chuyển xuống Tầng 5 để LLM phân giải tự do. Hệ thống không tự động chạy thật ở tầng này nhằm tiết kiệm token API Groq."
@@ -975,13 +1085,11 @@ class AgentKernel @Inject constructor(
         for (clause in context.clauses) {
             val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
             
-            // 1. Trích xuất tất cả Alias xuất hiện trong mệnh đề này
             val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
                 val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
                 clauseNorm.contains(aliasNorm) 
             }
             
-            // 2. Trích xuất tất cả Intent không gối lên nhau trong mệnh đề này
             val matchedIntents = mutableListOf<QAEntity>()
             var tempClause = clauseNorm
             val sortedIntents = intentQAs.sortedByDescending { it.question.length }
@@ -994,7 +1102,6 @@ class AgentKernel @Inject constructor(
                 }
             }
 
-            // 3. Tính toán tỷ lệ bao phủ của Heuristic tĩnh
             val totalMatchedLength = matchedIntents.sumOf { it.question.length } + 
                                      matchedAliases.sumOf { it.first.question.length }
             
@@ -1102,30 +1209,22 @@ class AgentKernel @Inject constructor(
         return original.copy(bestAliasMatches = updatedBest)
     }
 
-
-    
-
     private suspend fun tryTier2SemanticSlotResolver(
-    context: RoutingContext,
-    devicePlugins: List<Plugin>
-): Layer2Result? {
-    // ĐÃ SỬA: Loại bỏ dòng đọc cấu hình thừa để tối ưu hóa hiệu năng đọc DB
-
-    val wrapperIntentPair = context.globalMatchResult.intentMatches
-        .find { 
-            try {
-                JSONObject(it.first.answer).optString("plugin") == "schedule"
-            } catch (_: Exception) {
-                false
+        context: RoutingContext,
+        devicePlugins: List<Plugin>
+    ): Layer2Result? {
+        val wrapperIntentPair = context.globalMatchResult.intentMatches
+            .find { 
+                try {
+                    JSONObject(it.first.answer).optString("plugin") == "schedule"
+                } catch (_: Exception) {
+                    false
+                }
             }
-        }
 
-    val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
-        .firstOrNull() ?: return null
+        val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
+            .firstOrNull() ?: return null
 
-
-
-      
         val bestIntentQA = bestIntentPair.first
         val confidence = bestIntentPair.second
 
@@ -1156,6 +1255,37 @@ class AgentKernel @Inject constructor(
         devicePlugins: List<Plugin>
     ): Layer3Result {
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
+        val queryNormalized = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
+
+        val hasScheduleSignal = context.localEntities.containsKey("cron") || 
+            queryNormalized.contains("lich", ignoreCase = true) ||
+            queryNormalized.contains("hen gio", ignoreCase = true) ||
+            queryNormalized.contains("setup", ignoreCase = true)
+
+        if (hasScheduleSignal) {
+            val schedulePlugin = devicePlugins.find { it.manifest.id == "schedule" }
+            val targetActionName = detectScheduleAction(queryNormalized)
+            val targetAction = schedulePlugin?.manifest?.actions?.find { it.name == targetActionName }
+
+            if (schedulePlugin != null && targetAction != null) {
+                logger.d("AgentKernel", "🎯 [Tầng 4 Wrapper] Phát hiện tín hiệu lập lịch. Xác định action phù hợp: '$targetActionName'")
+                
+                val schemaParams = mutableMapOf<String, Any>()
+                targetAction.parameters.forEach { param ->
+                    schemaParams[param.name] = param.defaultValue ?: ""
+                }
+                
+                val resolvedParams = resolveParametersWithMeta(
+                    parameters = targetAction.parameters,
+                    inputParams = schemaParams,
+                    context = context,
+                    excludeIntentId = null,
+                    depth = 0
+                )
+                
+                return Layer3Result.Single(schedulePlugin, Intent(schedulePlugin.manifest.id, targetAction.name, resolvedParams))
+            }
+        }
 
         for (clause in context.clauses) {
             val clauseNormalized = StringSimilarityUtil.normalizeVietnamese(clause)
@@ -1403,6 +1533,17 @@ class AgentKernel @Inject constructor(
         val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
         val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
         val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
+        val semanticType = paramMeta?.semanticType?.lowercase() ?: ""
+
+        val isCronField = semanticType == "time" || actualKey == "cron" || actualKey == "time"
+        if (isCronField) {
+            return "Bạn muốn thiết lập hẹn giờ/lên lịch vào lúc mấy giờ, ngày nào? (Ví dụ: 8h sáng mai, hoặc mỗi ngày lúc 18h)"
+        }
+        
+        val isIntervalField = semanticType == "interval" || actualKey == "interval" || actualKey == "intervalMinutes"
+        if (isIntervalField) {
+            return "Bạn muốn hoạt động này được lặp lại định kỳ sau mỗi bao nhiêu phút? (Ví dụ: mỗi 10 phút)"
+        }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
             return "Bạn vui lòng cung cấp thông tin cho ${paramMeta.description} nhé?"
@@ -1485,7 +1626,7 @@ class AgentKernel @Inject constructor(
 
         val replyForHistory = when (executionResult) {
             is PluginResult.Success ->
-                (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
+                (executionResult.data as? Map<*, *>? )?.get("message") as? String ?: "Đã thực hiện."
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
@@ -1493,9 +1634,6 @@ class AgentKernel @Inject constructor(
 
         return executionResult
     }
-
-
-    
 
     private suspend fun tryResolvePendingIntent(
         pending: PendingIntent,
@@ -1513,19 +1651,25 @@ class AgentKernel @Inject constructor(
             return null
         }
 
+
         val noProgressCount = pending.knownParams["_noProgressCount"]?.toString()?.toIntOrNull() ?: 0
         if (noProgressCount >= 2) {
-            logger.w("AgentKernel", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> clear pending")
-            chatHistoryManager.clearPendingIntent()
+            logger.w("AgentKernel", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> xóa pending")
+            
+            // CHỈ thay đổi trạng thái hệ thống khi chạy thực tế (EXECUTE), không chạy trong DIAGNOSTIC
+            if (mode == PipelineMode.EXECUTE) {
+                chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+                val failedPending = pending.copy(
+                    knownParams = pending.knownParams + mapOf("_cancelReason" to "no_progress")
+                )
+                chatHistoryManager.addExpiredNotification(failedPending)
+            }
             return null
         }
 
-        // ĐÃ SỬA: Bộ lọc cancelWords xung đột đã được loại bỏ hoàn toàn khỏi đây.
 
         val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
 
-
-        
         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
 
         val localEntities = mutableMapOf<String, Any>()
@@ -1584,10 +1728,21 @@ class AgentKernel @Inject constructor(
                     }
                 }
                 "time" -> {
-                    localEntities["cron"]?.let { heuristicFilled[param] = if (localEntities.containsKey("intervalMinutes")) "" else it }
+                    val parsedCron = DateTimeParser.parseVietnameseTime(userMessage)
+                    if (parsedCron != null) {
+                        heuristicFilled[param] = parsedCron
+                    }
                 }
                 "interval" -> {
-                    localEntities["intervalMinutes"]?.let { heuristicFilled[param] = it }
+                    val parsedInterval = DateTimeParser.parseVietnameseInterval(userMessage)
+                    if (parsedInterval != null) {
+                        heuristicFilled[param] = parsedInterval
+                    } else {
+                        val numericVal = userMessage.trim().toIntOrNull()
+                        if (numericVal != null) {
+                            heuristicFilled[param] = numericVal
+                        }
+                    }
                 }
                 else -> {
                     val matchedAliasVal = aliasMatchesForType(matchResult, paramMeta.semanticType)
@@ -1684,7 +1839,7 @@ class AgentKernel @Inject constructor(
             if (key.startsWith("params.")) {
                 val nestedKey = key.removePrefix("params.")
                 @Suppress("UNCHECKED_CAST")
-                val nested = normalizedMergedParams["params"] as? Map<String, Any>
+                val nested = normalizedMergedParams["params"] as? Map<String, Any>?
                 val v = nested?.get(nestedKey)
 
                 val targetPluginId = normalizedMergedParams["plugin_id"]?.toString()
@@ -1733,7 +1888,7 @@ class AgentKernel @Inject constructor(
         }
 
         val replyForHistory = when (executionResult) {
-            is PluginResult.Success -> (executionResult.data as? Map<*, *>)?.get("message") as? String ?: "Đã thực hiện."
+            is PluginResult.Success -> (executionResult.data as? Map<*, *>? )?.get("message") as? String ?: "Đã thực hiện."
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
@@ -1742,18 +1897,22 @@ class AgentKernel @Inject constructor(
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
 
-    /**
-     * Chấm điểm mức độ liên quan của từng plugin đối với câu nói, dựa trên độ chồng lấp token
-     * giữa câu nói và (description/examples/tags) các action của plugin đó. Chạy hoàn toàn cục bộ,
-     * KHÔNG gọi thêm API nào — dùng để thu hẹp candidate list trước khi gửi lên LLM Router,
-     * tránh phải dump toàn bộ danh sách plugin/action (rất tốn token) khi bộ so khớp substring
-     * ở `matchedActions` không tìm được kết quả nào.
-     */
     private fun rankRelevantPlugins(queryNormalized: String, devicePlugins: List<Plugin>): List<Plugin> {
+        val hasScheduleSignal = queryNormalized.contains("cron") || 
+            queryNormalized.contains("lich") || 
+            queryNormalized.contains("hen gio") || 
+            queryNormalized.contains("dat lich") || 
+            queryNormalized.contains("setup")
+
         val queryTokens = queryNormalized.split(" ", "\t", "\n").filter { it.length >= 2 }.toSet()
-        if (queryTokens.isEmpty()) return emptyList()
+        if (queryTokens.isEmpty() && !hasScheduleSignal) return emptyList()
 
         val scoreByPluginId = mutableMapOf<String, Int>()
+
+        if (hasScheduleSignal) {
+            scoreByPluginId["schedule"] = 999
+        }
+
         normalizedActionMetadataList.forEach { meta ->
             if (!meta.plugin.manifest.routable || !meta.action.enabled) return@forEach
             val haystack = (listOf(meta.normalizedDescription) + meta.normalizedExamples + meta.normalizedTags)
@@ -1801,8 +1960,6 @@ class AgentKernel @Inject constructor(
                 "  - ${meta.plugin.manifest.id}.${meta.action.name}: ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
             }
         } else {
-            // 🚀 TỐI ƯU HÓA: Thay vì dump TOÀN BỘ action của TOÀN BỘ plugin routable (rất tốn token),
-            // chỉ lấy top plugin có liên quan nhất theo điểm chồng lấp token cục bộ.
             val relevantPlugins = rankRelevantPlugins(queryNormalized, devicePlugins)
 
             if (relevantPlugins.isNotEmpty()) {
@@ -1810,23 +1967,24 @@ class AgentKernel @Inject constructor(
                 actionCandidates
                     .filter { c -> relevantPlugins.any { it.manifest.id == c.pluginId } }
                     .joinToString("\n") { c ->
-                        "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
+                        "  - ${c.pluginId}.${c.action}: ${c.description} (tham số: ${c.parameters.joinToString(",")})"
                     }
             } else {
-                // Phương án cuối cùng: không plugin nào có điểm liên quan -> vẫn gửi toàn bộ để tránh
-                // bỏ sót lệnh hợp lệ, nhưng log cảnh báo để theo dõi tần suất (nên hiếm khi xảy ra
-                // vì đã có bộ lọc từ khóa isPotentialCommand gác cổng trước khi vào Tầng 5).
-                logger.d("AgentKernel", "[$traceId] ⚠️ [Tầng 5 Fallback] Không tìm được plugin liên quan cục bộ -> gửi toàn bộ danh sách (cần xem lại COMMAND_TRIGGER_KEYWORDS/tags)")
+                logger.d("AgentKernel", "[$traceId] ⚠️ [Tầng 5 Fallback] Không tìm được plugin liên quan cục bộ -> gửi toàn bộ danh sách")
                 actionCandidates
                     .filter { c -> devicePlugins.any { it.manifest.id == c.pluginId } }
                     .joinToString("\n") { c ->
-                        "  - ${c.pluginId}.${c.action}(${c.parameters.joinToString(",")})"
+                        "  - ${c.pluginId}.${c.action}: ${c.description} (tham số: ${c.parameters.joinToString(",")})"
                     }
             }
         }
 
         val shortHistory = chatHistoryManager.getRecentTurnsAsText()
         val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
+
+        val activePendingInfo = chatHistoryManager.getActivePendingIntents().firstOrNull()?.let {
+            "⚠️ Lệnh đang chờ hoàn thành: ${it.pluginId}.${it.action}, Các trường chưa điền: ${it.missingParams.joinToString()}"
+        } ?: "Không có lệnh dở dang"
 
         val routerPrompt = buildString {
             append("<sys>Intent Formatter. Chỉ xuất JSON: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
@@ -1836,7 +1994,7 @@ class AgentKernel @Inject constructor(
             append("- Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.</sys>\n")
             append("<candidates>\n$candidateLines\n</candidates>\n")
             if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
-            append("<context>last_device: \"$lastDevice\"</context>\n")
+            append("<context>last_device: \"$lastDevice\", pending_status: \"$activePendingInfo\"</context>\n")
             append("<history>\n$shortHistory\n</history>\n")
             append("<input>${context.resolvedQuery}</input>\n")
             append("<output>")
@@ -1944,7 +2102,6 @@ class AgentKernel @Inject constructor(
         val simulatedTiers = mutableListOf<DiagnosticTier>()
         var finalOutcome: String? = null
 
-        // ── TẦNG 0: DIALOG MANAGER (CANCEL / PRONOUN RESOLUTION) ──
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
@@ -1958,7 +2115,6 @@ class AgentKernel @Inject constructor(
             finalOutcome = "✅ Đã huỷ lệnh trước đó của \"$cancelledPluginId.$cancelledAction\" thành công."
         }
 
-        // ── TẦNG 1: PENDING RESOLVER ──
         val pendings = chatHistoryManager.getActivePendingIntents()
         val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
         
@@ -2006,7 +2162,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // KHỞI TẠO ROUTING CONTEXT (TÍNH TOÁN 1 LẦN DUY NHẤT VỚI ALIAS THRESHOLD 0.0)
         val devicePlugins = plugins.filter { it.manifest.routable }
         val matchResult = trainingSkill.fuzzyMatchCategorized(
             resolvedMessage,
@@ -2032,7 +2187,6 @@ class AgentKernel @Inject constructor(
             localEntities = localEntities
         )
 
-        // ── TẦNG 2A: MÀNG LỌC PHỦ ĐỊNH CỤC BỘ ──
         val lowerMsg = resolvedMessage.lowercase().trim()
         val negationWords = setOf("không", "chưa", "đừng", "hủy", "huỷ", "không muốn", "đừng có")
         val hasNegation = negationWords.any { word -> Regex("(?<!\\p{L})$word(?!\\p{L})").containsMatchIn(lowerMsg) }
@@ -2058,7 +2212,6 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ── TẦNG 2: SO KHỚP Ý ĐỊNH TĨNH ──
         val layer2Result = tryTier2SemanticSlotResolver(context, devicePlugins)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
 
@@ -2086,7 +2239,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── TẦNG 3: TÁCH MỆNH ĐỀ ĐA LỆNH & SLOT-FILLING ──
         val layer3Result = if (!isT2Matched) {
             processLayer3ClauseEntitySpotter(context, devicePlugins, "DIAGNOSTIC-TRACE")
         } else {
@@ -2150,7 +2302,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── TẦNG 4: SO KHỚP MÔ TẢ & NHÃN PLUGIN ──
         val isT4Checkable = !isT2Matched && layer3Result is Layer3Result.NoMatch
         val layer4Result = if (isT4Checkable) {
             tryTier2_5ActionMetadataMatcher(context, devicePlugins)
@@ -2208,7 +2359,6 @@ class AgentKernel @Inject constructor(
             )
         )
 
-        // ── TẦNG 5: PHÂN LOẠI THÔNG MINH BẰNG AI ──
         val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
         if (isT5Matched && finalOutcome == null) {
             finalOutcome = "🔵 [Bypass Tầng 5] Đã chuyển xuống Tầng 5 để LLM phân giải tự do. Hệ thống không tự động chạy thật ở tầng này nhằm tiết kiệm token API Groq."
@@ -2243,8 +2393,6 @@ class AgentKernel @Inject constructor(
             executionOutcome = finalOutcome
         )
     }
-
-    // ── TIỆN ÍCH HỖ TRỢ CHẾ ĐỘ KHÓA ĐIỀU KHIỂN CỨNG ──
 
     private fun isExitLockPhrase(msg: String): Boolean {
         val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
@@ -2301,7 +2449,6 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    // Các hàm Getter cung cấp trạng thái hiển thị cho ViewModel và UI Screen
     fun getLockedPluginId(): String? = chatHistoryManager.getLockedPlugin()
 
     fun getLockedPluginName(): String? {

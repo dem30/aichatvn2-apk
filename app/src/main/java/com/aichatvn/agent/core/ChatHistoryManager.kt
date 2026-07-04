@@ -28,6 +28,9 @@ class ChatHistoryManager @Inject constructor() {
 
     // Bộ đệm danh sách đa lệnh dở dang song song
     private val pendingIntents = mutableListOf<PendingIntent>()
+    
+    // Hàng đợi lưu giữ các lệnh vừa bị hủy/hết hạn để hiển thị thông báo cho người dùng
+    private val expiredIntents = mutableListOf<PendingIntent>()
 
     // Quản lý trạng thái khóa cứng điều khiển 1 plugin (Không dùng timeout)
     data class LockedControl(val pluginId: String)
@@ -92,12 +95,59 @@ class ChatHistoryManager @Inject constructor() {
         pendingIntents.removeAll { it.pluginId == pluginId && it.action == action }
     }
 
-    // Trả về toàn bộ danh sách lệnh dở dang còn hiệu lực
+    /**
+     * Hàm dùng chung thực hiện lọc dọn dẹp các lệnh đã quá thời gian chờ (TTL 3 phút)
+     */
+    @Synchronized
+    private fun performTtlCleanup(now: Long) {
+        val (expired, active) = pendingIntents.partition { now - it.createdAt > PENDING_INTENT_TTL_MS }
+        if (expired.isNotEmpty()) {
+            pendingIntents.removeAll(expired)
+            expiredIntents.addAll(expired)
+        }
+    }
+
     @Synchronized
     fun getActivePendingIntents(): List<PendingIntent> {
-        val now = System.currentTimeMillis()
-        pendingIntents.removeAll { now - it.createdAt > PENDING_INTENT_TTL_MS }
+        performTtlCleanup(System.currentTimeMillis())
         return pendingIntents.toList()
+    }
+
+    @Synchronized
+    fun addExpiredNotification(pending: PendingIntent) {
+        expiredIntents.add(pending)
+    }
+
+    @Synchronized
+    fun popExpiredNotifications(): List<PendingIntent> {
+        val expired = expiredIntents.toList()
+        expiredIntents.clear()
+        return expired
+    }
+
+    /**
+     * Trả về thông báo lý do hủy tiến trình dở dang (Nếu có) cho người dùng cuối
+     */
+    @Synchronized
+    fun popExpiredNotificationMessage(plugins: Set<com.aichatvn.agent.core.plugin.Plugin>): String? {
+        // Thực hiện cleanup trước khi lấy danh sách thông báo
+        performTtlCleanup(System.currentTimeMillis())
+
+        if (expiredIntents.isEmpty()) return null
+
+        val msg = expiredIntents.joinToString("\n") { expired ->
+            val targetPlugin = plugins.find { it.manifest.id == expired.pluginId }
+            val displayName = targetPlugin?.manifest?.name ?: expired.pluginId
+            
+            // Sửa Bug 1: Phân biệt chính xác lý do thông qua cờ cancelReason thay vì so sánh chuỗi
+            if (expired.knownParams["_cancelReason"] == "no_progress") {
+                "⚠️ Đã hủy yêu cầu \"$displayName\" do không nhận diện được câu trả lời liên tiếp."
+            } else {
+                "⚠️ Đã tự động hủy yêu cầu \"$displayName\" do quá thời gian phản hồi (3 phút)."
+            }
+        }
+        expiredIntents.clear()
+        return msg
     }
 
     // Cầu nối tương thích ngược cho các lời gọi cũ lẻ tẻ
@@ -123,5 +173,6 @@ class ChatHistoryManager @Inject constructor() {
         pendingIntents.clear()
         lockedControl = null
         pendingLockRequest = null
+        expiredIntents.clear()
     }
 }
