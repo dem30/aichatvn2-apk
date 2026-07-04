@@ -35,6 +35,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
+import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -61,6 +62,7 @@ fun SettingsScreen(
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
     val configSaveResult by viewModel.configSaveResult.collectAsState()
+    val facebookPages    by viewModel.facebookPages.collectAsState() // ✅ ĐÃ THÊM: Quan sát danh sách trang từ DB
 
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
@@ -188,6 +190,7 @@ fun SettingsScreen(
             PluginConfigSection(
                 configs = allConfigs,
                 configSaveResult = configSaveResult,
+                facebookPages = facebookPages, // ✅ ĐÃ SỬA: Chuyển tiếp danh sách trang xuống
                 onSave = { key, value -> viewModel.saveConfig(key, value) },
                 onReset = { key -> viewModel.resetConfig(key) }
             )
@@ -264,6 +267,7 @@ fun SettingsScreen(
 private fun PluginConfigSection(
     configs: List<AppConfigEntity>,
     configSaveResult: String?,
+    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận danh sách trang
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -312,6 +316,7 @@ private fun PluginConfigSection(
             pluginId = pluginId,
             items = items,
             allConfigs = configs,
+            facebookPages = facebookPages, // ✅ ĐÃ SỬA: Truyền tiếp danh sách trang xuống dưới
             onSave = onSave,
             onReset = onReset
         )
@@ -323,6 +328,7 @@ private fun PluginGroupCard(
     pluginId: String,
     items: List<AppConfigEntity>,
     allConfigs: List<AppConfigEntity>,
+    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận tham số trang facebook
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -367,9 +373,6 @@ private fun PluginGroupCard(
                 // ✅ ĐÃ THÊM: Nếu mở rộng thẻ cấu hình Website, tự động render mã nhúng HTML kèm nút Copy 1 chạm!
                 if (pluginId == "website") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
-                    // ✅ ĐÃ SỬA: Dùng widget_key CÔNG KHAI (an toàn để lộ ra ngoài website) thay vì
-                    // gatewayToken thật — trước đây nhúng thẳng gatewayToken ra HTML công khai là lộ
-                    // luôn "chìa khóa tổng" của cả Facebook/Telegram, không chỉ riêng Website.
                     val widgetKey = allConfigs.firstOrNull { it.key == AppConfigDefaults.WEBSITE_WIDGET_KEY }?.value ?: ""
 
                     Card(
@@ -382,8 +385,6 @@ private fun PluginGroupCard(
                             Text("💻 Mã nhúng Website của bạn:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(4.dp))
                             if (widgetKey.isBlank()) {
-                                // ✅ ĐÃ THÊM: widget_key được tự sinh khi app kết nối Cloud Gateway lần đầu —
-                                // nếu app chưa từng kết nối thành công thì tạm thời chưa có gì để hiển thị.
                                 Text(
                                     text = "⏳ Đang chờ app kết nối Cloud Gateway lần đầu để tự sinh mã Widget Key an toàn... Hãy đảm bảo dịch vụ nền đang chạy rồi quay lại đây.",
                                     style = MaterialTheme.typography.bodySmall,
@@ -418,11 +419,72 @@ private fun PluginGroupCard(
                     }
                 }
 
-                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Facebook
+                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Facebook kèm danh sách Fanpage thực tế
                 if (pluginId == "facebook") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
                     val authUrl = "$gatewayUrl/auth/facebook?token=$gatewayToken"
+
+                    // --- VẼ DANH SÁCH FANPAGE ĐÃ KẾT NỐI ---
+                    if (facebookPages.isNotEmpty()) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    "💬 Fanpage đã liên kết (${facebookPages.size}):",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                facebookPages.forEach { page ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                page.name,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                            Text(
+                                                "ID: ${page.id}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                            )
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                        ) {
+                                            Text(
+                                                "Đang chạy",
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "⚠️ Chưa có Fanpage nào kết nối. Hãy nhấp nút bên dưới để liên kết nhanh.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
 
                     Button(
                         onClick = {
@@ -506,7 +568,6 @@ private fun ConfigItemRow(
         Spacer(Modifier.height(4.dp))
 
         if (isBool) {
-            // 🔘 Kiểu bool: hiển thị Switch bật/tắt, lưu ngay khi gạt (không cần nút Lưu riêng)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
