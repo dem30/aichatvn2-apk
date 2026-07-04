@@ -153,6 +153,21 @@ class ChatSkill @Inject constructor(
                 }
             }
 
+            // ✅ ĐÃ THÊM: message rỗng + không kèm ảnh/file nghĩa là lệnh gọi này chỉ dùng để
+            // NẠP LẠI LỊCH SỬ (ví dụ ChatViewModel.init() gọi processQuery(message = "", ...)
+            // mỗi khi mở 1 màn hình chat) — KHÔNG phải câu hỏi thật của người dùng. Trước đây
+            // thiếu guard này nên chuỗi rỗng bị lưu thành 1 tin nhắn "user" trong DB rồi bypass
+            // thẳng xuống gọi Groq — tốn quota vô ích và gây lỗi ngay khi vừa mở app, trước khi
+            // người dùng kịp gõ gì cả (đây chính là log "Bắt đầu tiếp nhận thông điệp: ''").
+            if (message.isBlank() && fileUrl.isNullOrEmpty() && imageBase64.isNullOrEmpty()) {
+                return PluginResult.Success(
+                    mapOf(
+                        "response" to "",
+                        "mode" to "history_reload_only"
+                    )
+                )
+            }
+
             // ✅ ĐÃ SỬA: Thêm "website_" — khách chat qua widget Website cũng là khách ngoại kênh,
             // không phải chủ app, nên không được phép chạm vào logic điều khiển thiết bị.
             val isExternal = username.startsWith("facebook_") || username.startsWith("telegram_") ||

@@ -2,7 +2,9 @@ package com.aichatvn.agent
 
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.aichatvn.agent.core.plugin.Plugin
@@ -59,16 +61,30 @@ class MainApplication : Application(), Configuration.Provider {
 
         // ✅ ĐÃ THÊM: Khởi chạy vòng lặp hands-free (mic) ngầm, độc lập với ChatScreen/Inbox —
         // để người dùng hạn chế vận động ra lệnh thoại được bất cứ lúc nào, kể cả màn hình tắt.
-        try {
-            val voiceServiceIntent = Intent(this, VoiceAssistantService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(voiceServiceIntent)
-            } else {
-                startService(voiceServiceIntent)
+        // ✅ ĐÃ SỬA: kiểm tra quyền RECORD_AUDIO trước — máy mới cài chưa cấp quyền này, gọi
+        // thẳng startForegroundService(type=microphone) sẽ bị hệ thống crash cả app (Android 14+).
+        // Service tự nó cũng tự kiểm tra lại quyền này (double-check), nhưng chặn sớm ở đây để
+        // tránh tốn 1 lượt gọi service vô ích khi biết chắc sẽ bị từ chối.
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            try {
+                val voiceServiceIntent = Intent(this, VoiceAssistantService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(voiceServiceIntent)
+                } else {
+                    startService(voiceServiceIntent)
+                }
+                logger.i("MainApplication", "🎤 VoiceAssistantService started successfully on App Launch")
+            } catch (e: Exception) {
+                logger.e("MainApplication", "❌ Failed to start VoiceAssistantService on App Launch", e)
             }
-            logger.i("MainApplication", "🎤 VoiceAssistantService started successfully on App Launch")
-        } catch (e: Exception) {
-            logger.e("MainApplication", "❌ Failed to start VoiceAssistantService on App Launch", e)
+        } else {
+            logger.w(
+                "MainApplication",
+                "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này. " +
+                    "Cần gọi lại startForegroundService(VoiceAssistantService) sau khi người dùng cấp quyền mic."
+            )
         }
     }
 

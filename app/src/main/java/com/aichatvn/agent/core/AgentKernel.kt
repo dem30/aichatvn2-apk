@@ -218,7 +218,14 @@ class AgentKernel @Inject constructor(
         val extraContext = request.extraContext
         val imageBase64 = request.imageBase64
         val fileUrl = request.fileUrl
-        
+
+        // ✅ ĐÃ THÊM: lớp phòng hờ thứ 2 (sau ChatSkill.processQuery()) — nếu có nơi khác gọi
+        // thẳng agentKernel.chat() với message rỗng và không kèm ảnh/file (ví dụ STT trả về
+        // chuỗi rỗng, webhook gửi payload trống...), không cho bypass xuống Tầng 5/gọi Groq.
+        if (message.isBlank() && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty()) {
+            return ChatResponse("", "empty_message_guard", null)
+        }
+
         // ✅ ĐÃ SỬA: Chỉ chạy Tier trigger-prefix (điều khiển thiết bị nhanh) khi được phép.
         // Trước đây khối này chạy cho MỌI username kể cả khách hàng ngoại kênh, khiến tin nhắn
         // khách gửi vô tình khớp prefix lệnh và kích hoạt nhầm hành động điều khiển thiết bị thật.
