@@ -13,28 +13,25 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.core.ChatRequest
+
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
-import com.aichatvn.agent.skills.ChatSkill // Import ChatSkill để lưu trữ tin nhắn đa kênh
+import com.aichatvn.agent.skills.ChatSkill
 import dagger.hilt.android.AndroidEntryPoint
-import io.ktor.serialization.gson.*
-import io.ktor.server.application.*
-import io.ktor.server.engine.*
-import io.ktor.server.netty.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.request.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
 import kotlinx.coroutines.*
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
+
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
 
@@ -45,7 +42,7 @@ class WebhookGatewayService : Service() {
     lateinit var agentKernel: AgentKernel
 
     @Inject
-    lateinit var chatSkill: ChatSkill // Inject ChatSkill để quản lý lưu trữ tin nhắn đa kênh
+    lateinit var chatSkill: ChatSkill
 
     @Inject
     lateinit var logger: Logger
@@ -60,36 +57,73 @@ class WebhookGatewayService : Service() {
     lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var server: NettyApplicationEngine? = null
     private var wakeLock: PowerManager.WakeLock? = null
-
     private var lastNotificationText = ""
+
+    // OkHttp Client chuyên dụng để tái sử dụng Connection Pool và Keep-Alive
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS) // Giữ vô hạn cho luồng kéo tin SSE không bị ngắt
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    // Client OkHttp cho các tác vụ API thông thường (Register, Heartbeat, Send)
+    private val apiClient = okHttpClient.newBuilder()
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    // Client OkHttp chuyên dụng cho Long Polling Telegram
+    private val pollingClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .build()
 
     companion object {
         private const val CHANNEL_ID = "WebhookGatewayServiceChannel"
         private const val NOTIFICATION_ID = 1002
-        private const val VERIFY_TOKEN = "YOUR_VERIFY_TOKEN_HERE"
     }
 
     override fun onCreate() {
         super.onCreate()
-
-        try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AIChatVN2::WebhookWakeLock").apply {
-                acquire()
-            }
-        } catch (e: Exception) {
-            logger.e("WebhookGateway", "Lỗi khởi tạo WakeLock", e)
-        }
+        acquireWakeLock() // ✅ ĐÃ SỬA: Giữ WakeLock an toàn ngay khi khởi tạo dịch vụ
 
         createNotificationChannel()
         startForegroundService()
-        startKtorServer()
         
         startCloudGatewaySSE()       // Lắng nghe kết nối hầm SSE từ Render
         startTelegramLongPolling()   // Tự nhận tin nhắn Telegram trực tiếp (Long Polling)
         startHeartbeatLoop()         // Giữ thức Render Gateway (Heartbeat)
+    }
+
+    // ✅ ĐÃ THÊM: Hàm bổ trợ quản lý WakeLock an toàn chống crash và tránh hao pin khi thoát dịch vụ
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AIChatVN2::WebhookWakeLock")
+            }
+            wakeLock?.let {
+                if (!it.isHeld) {
+                    it.acquire()
+                    logger.i("WebhookGateway", "🔒 Đã kích hoạt WakeLock giữ thức CPU 24/7 an toàn.")
+                }
+            }
+        } catch (e: Exception) {
+            logger.e("WebhookGateway", "Không thể acquire WakeLock", e)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    logger.i("WebhookGateway", "🔓 Đã giải phóng WakeLock.")
+                }
+            }
+        } catch (e: Exception) {
+            logger.e("WebhookGateway", "Không thể release WakeLock", e)
+        }
     }
 
     private fun startForegroundService() {
@@ -144,22 +178,16 @@ class WebhookGatewayService : Service() {
         return plugins.find { it.manifest.id == pluginId }
     }
 
-    // Đồng bộ và "chào lại" máy chủ với danh sách tất cả các ID Fanpage có trong SQLite
     private fun registerPageMappings(gatewayUrl: String, gatewayToken: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
-                // Đọc tất cả Page ID của Facebook từ bảng facebook_pages mới
                 val dbPages = database.facebookPageDao().getAllPages()
                 val dbPageIds = dbPages.map { it.id }
 
                 val igPageId = configProvider.getString(AppConfigDefaults.INSTAGRAM_PAGE_ID).trim()
-
-                // Gộp danh sách các Page ID (Facebook Pages + Instagram Page)
                 val pageIds = dbPageIds + listOfNotNull(igPageId.takeIf { it.isNotEmpty() })
 
-                if (pageIds.isEmpty()) {
-                    return@launch
-                }
+                if (pageIds.isEmpty()) return@launch
 
                 val jsonArray = org.json.JSONArray(pageIds)
                 val bodyJson = org.json.JSONObject().apply {
@@ -167,33 +195,26 @@ class WebhookGatewayService : Service() {
                     put("pageIds", jsonArray)
                 }
 
-                val url = URL("$gatewayUrl/register")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.requestMethod = "POST"
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = bodyJson.toString().toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("$gatewayUrl/register")
+                    .post(requestBody)
+                    .build()
 
-                connection.outputStream.use { it.write(bodyJson.toString().toByteArray()) }
-
-                val responseCode = connection.responseCode
-                if (responseCode == 200) {
-                    logger.i("CloudGateway", "📇 Đã đăng ký lại ánh xạ ${pageIds.size} Page ID với Render: $pageIds")
-                } else {
-                    logger.w("CloudGateway", "⚠️ Đăng ký ánh xạ Page ID thất bại, mã lỗi: $responseCode")
+                apiClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        logger.i("CloudGateway", "📇 Đã đăng ký lại ánh xạ ${pageIds.size} Page ID với Render: $pageIds")
+                    } else {
+                        logger.w("CloudGateway", "⚠️ Đăng ký ánh xạ Page ID thất bại, mã lỗi: ${response.code}")
+                    }
                 }
-                connection.disconnect()
             } catch (e: Exception) {
                 logger.e("CloudGateway", "❌ Lỗi khi đăng ký ánh xạ Page ID: ${e.message}")
             }
         }
     }
 
-    // ✅ ĐÃ THÊM: Tự sinh (nếu chưa có) và đăng ký widget_key công khai lên Gateway — ĐỘC LẬP HOÀN
-    // TOÀN với registerPageMappings() ở trên (không đụng gì tới ánh xạ Page ID Facebook/Instagram).
-    // widget_key này an toàn để lộ ra ngoài (nhúng trong HTML website khách), khác với gatewayToken
-    // thật vốn chỉ nằm trong app.
     private fun registerWidgetKey(gatewayUrl: String, gatewayToken: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
@@ -209,23 +230,20 @@ class WebhookGatewayService : Service() {
                     put("widgetKey", widgetKey)
                 }
 
-                val url = URL("$gatewayUrl/register_widget_key")
-                val connection = url.openConnection() as HttpURLConnection
-                connection.requestMethod = "POST"
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.connectTimeout = 10000
-                connection.readTimeout = 10000
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = bodyJson.toString().toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("$gatewayUrl/register_widget_key")
+                    .post(requestBody)
+                    .build()
 
-                connection.outputStream.use { it.write(bodyJson.toString().toByteArray()) }
-
-                val responseCode = connection.responseCode
-                if (responseCode == 200) {
-                    logger.i("CloudGateway", "📇 Đã đăng ký lại widget_key với Render.")
-                } else {
-                    logger.w("CloudGateway", "⚠️ Đăng ký widget_key thất bại, mã lỗi: $responseCode")
+                apiClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        logger.i("CloudGateway", "📇 Đã đăng ký lại widget_key với Render.")
+                    } else {
+                        logger.w("CloudGateway", "⚠️ Đăng ký widget_key thất bại, mã lỗi: ${response.code}")
+                    }
                 }
-                connection.disconnect()
             } catch (e: Exception) {
                 logger.e("CloudGateway", "❌ Lỗi khi đăng ký widget_key: ${e.message}")
             }
@@ -261,152 +279,145 @@ class WebhookGatewayService : Service() {
                 }
 
                 isOfflineLogged = false
-                var connection: HttpURLConnection? = null
 
                 try {
                     logger.i("CloudGateway", "🔌 Đang thiết lập đường ống SSE đến Render Gateway...")
                     updateNotification("Đang kết nối Cloud Gateway...")
                     
-                    val url = URL("$gatewayUrl/stream/$gatewayToken")
-                    connection = url.openConnection() as HttpURLConnection
-                    connection.setRequestProperty("Accept", "text/event-stream")
-                    connection.readTimeout = 0 // Giữ kết nối mở vô hạn không timeout
-                    
-                    val reader = BufferedReader(InputStreamReader(connection.inputStream))
-                    var line: String? = null
-                    
-                    logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
-                    updateNotification("Cổng đám mây: Đã kết nối")
+                    val request = Request.Builder()
+                        .url("$gatewayUrl/stream/$gatewayToken")
+                        .header("Accept", "text/event-stream")
+                        .build()
 
-                    // Tự động đăng ký lại toàn bộ ánh xạ Page ID của SQLite với Render
-                    registerPageMappings(gatewayUrl, gatewayToken)
-                    // ✅ ĐÃ THÊM: Đăng ký lại widget_key công khai (độc lập với Page ID Facebook ở trên)
-                    registerWidgetKey(gatewayUrl, gatewayToken)
+                    okHttpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            logger.w("CloudGateway", "⚠️ Kết nối SSE thất bại với mã lỗi HTTP: ${response.code}")
+                            updateNotification("Lỗi kết nối SSE (${response.code})")
+                            delay(5000)
+                            return@use
+                        }
 
-                    while (isActive && reader.readLine().also { line = it } != null) {
-                        val trimmedLine = line?.trim() ?: ""
-                        if (trimmedLine.startsWith("data:")) {
-                            val rawData = trimmedLine.substring(5).trim()
-                            if (rawData.isNotEmpty()) {
-                                logger.i("CloudGateway", "📥 Nhận dữ liệu Webhook mới từ Cloud: $rawData")
-                                
-                                serviceScope.launch {
-                                    try {
-                                        val jsonObj = org.json.JSONObject(rawData)
-                                        val event = jsonObj.optString("event", "")
+                        // ✅ ĐÃ SỬA: Kiểm tra an toàn khác null để tránh lỗi sập NullPointerException trên response.body
+                        val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
+                        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                        var line: String? = null
+                        
+                        logger.i("CloudGateway", "🟢 Đường ống SSE đã mở! Sẵn sàng nhận Webhook.")
+                        updateNotification("Cổng đám mây: Đã kết nối")
 
-                                        // Nhận và lưu mảng danh sách nhiều trang
-                                        if (event == "token_sync") {
-                                            val plat = jsonObj.optString("platform", "")
-                                            
-                                            if (plat == "facebook") {
-                                                val pagesArray = jsonObj.optJSONArray("pages")
-                                                if (pagesArray != null) {
-                                                    val pagesList = mutableListOf<FacebookPageEntity>()
-                                                    for (i in 0 until pagesArray.length()) {
-                                                        val pObj = pagesArray.getJSONObject(i)
-                                                        pagesList.add(
-                                                            FacebookPageEntity(
-                                                                id = pObj.getString("id"),
-                                                                name = pObj.getString("name"),
-                                                                accessToken = pObj.getString("accessToken")
+                        registerPageMappings(gatewayUrl, gatewayToken)
+                        registerWidgetKey(gatewayUrl, gatewayToken)
+
+                        while (isActive && reader.readLine().also { line = it } != null) {
+                            val trimmedLine = line?.trim() ?: ""
+                            if (trimmedLine.startsWith("data:")) {
+                                val rawData = trimmedLine.substring(5).trim()
+                                if (rawData.isNotEmpty()) {
+                                    logger.i("CloudGateway", "📥 Nhận dữ liệu Webhook mới từ Cloud: $rawData")
+                                    
+                                    serviceScope.launch {
+                                        try {
+                                            val jsonObj = org.json.JSONObject(rawData)
+                                            val event = jsonObj.optString("event", "")
+
+                                            if (event == "token_sync") {
+                                                val plat = jsonObj.optString("platform", "")
+                                                
+                                                if (plat == "facebook") {
+                                                    val pagesArray = jsonObj.optJSONArray("pages")
+                                                    if (pagesArray != null) {
+                                                        val pagesList = mutableListOf<FacebookPageEntity>()
+                                                        for (i in 0 until pagesArray.length()) {
+                                                            val pObj = pagesArray.getJSONObject(i)
+                                                            pagesList.add(
+                                                                FacebookPageEntity(
+                                                                    id = pObj.getString("id"),
+                                                                    name = pObj.getString("name"),
+                                                                    accessToken = pObj.getString("accessToken")
+                                                                )
                                                             )
+                                                        }
+                                                        withContext(Dispatchers.IO) {
+                                                            database.facebookPageDao().insertPages(pagesList)
+                                                        }
+                                                        logger.i("CloudGateway", "🔑 Đã lưu ${pagesList.size} Facebook Pages vào cơ sở dữ liệu thành công!")
+                                                    }
+                                                } else if (plat == "instagram") {
+                                                    val tokenValue = jsonObj.optString("pageAccessToken", "")
+                                                    val pageIdValue = jsonObj.optString("pageId", "")
+                                                    if (tokenValue.isNotEmpty()) {
+                                                        configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ACCESS_TOKEN, tokenValue)
+                                                        if (pageIdValue.isNotEmpty()) {
+                                                            configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ID, pageIdValue)
+                                                        }
+                                                        logger.i("CloudGateway", "🔑 Đã đồng bộ động Instagram Page Access Token thành công!")
+                                                    }
+                                                }
+                                            } else {
+                                                val platform = jsonObj.optString("platform", "web")
+                                                val senderId = jsonObj.optString("senderId", "external_user")
+                                                val text = jsonObj.optString("text", "")
+                                                val incomingPageId = jsonObj.optString("pageId", "")
+
+                                                if (text.isNotBlank()) {
+                                                    val unifiedUsername = "${platform}_$senderId"
+                                                    val setting = withContext(Dispatchers.IO) {
+                                                        database.cameraDao().getCustomerSetting(senderId)
+                                                    }
+                                                    val isBotEnabled = setting?.smartMode != 0
+
+                                                    if (isBotEnabled) {
+                                                        val result = chatSkill.processQuery(
+                                                            message = text,
+                                                            username = unifiedUsername,
+                                                            extraContext = "page_id:$incomingPageId"
                                                         )
-                                                    }
-                                                    // Lưu đè danh sách tất cả các trang vào SQLite
-                                                    withContext(Dispatchers.IO) {
-                                                        database.facebookPageDao().insertPages(pagesList)
-                                                    }
-                                                    logger.i("CloudGateway", "🔑 Đã lưu ${pagesList.size} Facebook Pages vào cơ sở dữ liệu thành công!")
-                                                }
-                                            } else if (plat == "instagram") {
-                                                val tokenValue = jsonObj.optString("pageAccessToken", "")
-                                                val pageIdValue = jsonObj.optString("pageId", "")
-                                                if (tokenValue.isNotEmpty()) {
-                                                    configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ACCESS_TOKEN, tokenValue)
-                                                    if (pageIdValue.isNotEmpty()) {
-                                                        configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ID, pageIdValue)
-                                                    }
-                                                    logger.i("CloudGateway", "🔑 Đã đồng bộ động Instagram Page Access Token thành công!")
-                                                }
-                                            }
-                                        } else {
-                                            // Xử lý tin nhắn chat thông thường từ khách hàng đẩy về
-                                            val platform = jsonObj.optString("platform", "web")
-                                            val senderId = jsonObj.optString("senderId", "external_user")
-                                            val text = jsonObj.optString("text", "")
-                                            val incomingPageId = jsonObj.optString("pageId", "")
 
-                                            if (text.isNotBlank()) {
-                                                // Đặt tiền tố phân loại kênh để tránh trùng ID giữa các nền tảng mạng xã hội khác nhau
-                                                val unifiedUsername = "${platform}_$senderId"
-
-                                                // 🔍 KIỂM TRA: Đọc cấu hình xem khách hàng này có đang bị cướp quyền (người trực thủ công) hay không
-                                                val setting = withContext(Dispatchers.IO) {
-                                                    database.cameraDao().getCustomerSetting(senderId)
-                                                }
-                                                val isBotEnabled = setting?.smartMode != 0 // smartMode == 1: bật bot, smartMode == 0: tắt bot để người trực [1]
-
-                                                if (isBotEnabled) {
-                                                    // 🤖 LUỒNG TỰ ĐỘNG: AI tự động phân tích và sinh câu trả lời
-                                                    val result = chatSkill.processQuery(
-                                                        message = text,
-                                                        username = unifiedUsername,
-                                                        extraContext = "page_id:$incomingPageId"
-                                                    )
-
-                                                    // Lấy kết quả tự động trả về của Bot để đẩy ngược ra Messenger/Mạng xã hội
-                                                    if (result is AgentKernel.PluginResult.Success) {
-                                                        val replyMap = result.data as? Map<*, *>
-                                                        val replyText = (replyMap?.get("response") as? String) ?: ""
-                                                        if (replyText.isNotEmpty()) {
-                                                            when (platform) {
-                                                                "facebook" -> {
-                                                                    findPlugin("facebook")?.execute(
-                                                                        "send_messenger",
-                                                                        mapOf(
-                                                                            "recipient_id" to senderId,
-                                                                            "message" to replyText,
-                                                                            "page_id" to incomingPageId
+                                                        if (result is AgentKernel.PluginResult.Success) {
+                                                            val replyMap = result.data as? Map<*, *>
+                                                            val replyText = (replyMap?.get("response") as? String) ?: ""
+                                                            if (replyText.isNotEmpty()) {
+                                                                when (platform) {
+                                                                    "facebook" -> {
+                                                                        findPlugin("facebook")?.execute(
+                                                                            "send_messenger",
+                                                                            mapOf(
+                                                                                "recipient_id" to senderId,
+                                                                                "message" to replyText,
+                                                                                "page_id" to incomingPageId
+                                                                            )
                                                                         )
-                                                                    )
-                                                                }
-                                                                "instagram" -> {
-                                                                    findPlugin("instagram")?.execute(
-                                                                        "send_messenger",
-                                                                        mapOf("recipient_id" to senderId, "message" to replyText)
-                                                                    )
-                                                                }
-                                                                // ✅ ĐÃ THÊM: Trước đây platform "website" không rơi vào case nào cả,
-                                                                // nên câu trả lời của bot chỉ được lưu vào lịch sử local, KHÔNG BAO GIỜ
-                                                                // được gửi ngược lại cho khách đang đứng chờ trên widget Website.
-                                                                "website" -> {
-                                                                    sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText)
+                                                                    }
+                                                                    "instagram" -> {
+                                                                        findPlugin("instagram")?.execute(
+                                                                            "send_messenger",
+                                                                            mapOf("recipient_id" to senderId, "message" to replyText)
+                                                                        )
+                                                                    }
+                                                                    "website" -> {
+                                                                        sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText)
+                                                                    }
                                                                 }
                                                             }
                                                         }
+                                                    } else {
+                                                        chatSkill.saveExternalUserMessage(text, unifiedUsername)
+                                                        logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời.")
                                                     }
-                                                } else {
-                                                    // 👤 LUỒNG THỦ CÔNG (ĐÃ CƯỚP QUYỀN): Chỉ lưu tin nhắn của khách vào SQLite để hiển thị lên điện thoại
-                                                    // Bot tuyệt đối im lặng không trả lời, nhường quyền kiểm soát cho chủ điện thoại chat tay [1]
-                                                    chatSkill.saveExternalUserMessage(text, unifiedUsername)
-                                                    logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời.")
                                                 }
                                             }
+                                        } catch (e: Exception) {
+                                            logger.e("CloudGateway", "Lỗi giải mã gói tin webhook: ${e.message}")
                                         }
-                                    } catch (e: Exception) {
-                                        logger.e("CloudGateway", "Lỗi giải mã gói tin webhook: ${e.message}")
                                     }
                                 }
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    logger.e("CloudGateway", "❌ Mất đường ống SSE: ${e.message}. Đang thử kết nối lại sau 15 giây...")
+                    logger.e("CloudGateway", "❌ Mất đường ống SSE: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     updateNotification("Mất kết nối Gateway, đang kết nối lại...")
-                    delay(15000)
-                } finally {
-                    connection?.disconnect()
+                    delay(5000)
                 }
             }
         }
@@ -426,56 +437,55 @@ class WebhookGatewayService : Service() {
                     continue
                 }
 
-                var conn: HttpURLConnection? = null
                 try {
-                    val url = URL("https://api.telegram.org/bot$botToken/getUpdates?offset=$lastUpdateId&timeout=15")
-                    conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "GET"
-                    conn.readTimeout = 20000
-                    
-                    val response = conn.inputStream.bufferedReader().use { it.readText() }
-                    val json = org.json.JSONObject(response)
-                    val ok = json.optBoolean("ok", false)
-                    
-                    if (ok) {
-                        val result = json.optJSONArray("result") ?: org.json.JSONArray()
-                        for (i in 0 until result.length()) {
-                            val update = result.getJSONObject(i)
-                            val updateId = update.getInt("update_id")
-                            lastUpdateId = updateId + 1
+                    val request = Request.Builder()
+                        .url("https://api.telegram.org/bot$botToken/getUpdates?offset=$lastUpdateId&timeout=15")
+                        .get()
+                        .build()
 
-                            val message = update.optJSONObject("message") ?: continue
-                            val text = message.optString("text", "")
-                            val chatId = message.getJSONObject("chat").getLong("id").toString()
+                    pollingClient.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) {
+                            val responseBody = response.body?.string() ?: ""
+                            val json = org.json.JSONObject(responseBody)
+                            val ok = json.optBoolean("ok", false)
+                            
+                            if (ok) {
+                                val result = json.optJSONArray("result") ?: org.json.JSONArray()
+                                for (i in 0 until result.length()) {
+                                    val update = result.getJSONObject(i)
+                                    val updateId = update.getInt("update_id")
+                                    lastUpdateId = updateId + 1
 
-                            if (text.isNotBlank()) {
-                                logger.i("TelegramPoll", "📥 Nhận tin nhắn Telegram mới: '$text' từ ChatId: $chatId")
-                                
-                                val unifiedUsername = "telegram_$chatId"
+                                    val message = update.optJSONObject("message") ?: continue
+                                    val text = message.optString("text", "")
+                                    val chatId = message.getJSONObject("chat").getLong("id").toString()
 
-                                // 🔍 KIỂM TRA: Đọc cấu hình xem khách hàng Telegram này có bị cướp quyền trực tay không
-                                val setting = withContext(Dispatchers.IO) {
-                                    database.cameraDao().getCustomerSetting(chatId)
-                                }
-                                val isBotEnabled = setting?.smartMode != 0 // smartMode == 1: bật bot, smartMode == 0: người trực [1]
+                                    if (text.isNotBlank()) {
+                                        logger.i("TelegramPoll", "📥 Nhận tin nhắn Telegram mới: '$text' từ ChatId: $chatId")
+                                        val unifiedUsername = "telegram_$chatId"
 
-                                serviceScope.launch {
-                                    if (isBotEnabled) {
-                                        // Gửi qua chatSkill để ghi lịch sử và tự trả lời
-                                        val result = chatSkill.processQuery(
-                                            message = text,
-                                            username = unifiedUsername
-                                        )
-                                        if (result is AgentKernel.PluginResult.Success) {
-                                            val replyMap = result.data as? Map<*, *>
-                                            val replyText = (replyMap?.get("response") as? String) ?: ""
-                                            if (replyText.isNotEmpty()) {
-                                                sendTelegramMessage(botToken, chatId, replyText)
+                                        val setting = withContext(Dispatchers.IO) {
+                                            database.cameraDao().getCustomerSetting(chatId)
+                                        }
+                                        val isBotEnabled = setting?.smartMode != 0
+
+                                        serviceScope.launch {
+                                            if (isBotEnabled) {
+                                                val result = chatSkill.processQuery(
+                                                    message = text,
+                                                    username = unifiedUsername
+                                                )
+                                                if (result is AgentKernel.PluginResult.Success) {
+                                                    val replyMap = result.data as? Map<*, *>
+                                                    val replyText = (replyMap?.get("response") as? String) ?: ""
+                                                    if (replyText.isNotEmpty()) {
+                                                        sendTelegramMessage(botToken, chatId, replyText)
+                                                    }
+                                                }
+                                            } else {
+                                                chatSkill.saveExternalUserMessage(text, unifiedUsername)
                                             }
                                         }
-                                    } else {
-                                        // Chỉ lưu tin nhắn lên UI, không tự trả lời [1]
-                                        chatSkill.saveExternalUserMessage(text, unifiedUsername)
                                     }
                                 }
                             }
@@ -484,65 +494,60 @@ class WebhookGatewayService : Service() {
                 } catch (e: Exception) {
                     logger.e("TelegramPoll", "Lỗi thăm dò tin nhắn Telegram: ${e.message}")
                     delay(10000)
-                } finally {
-                    conn?.disconnect()
                 }
             }
         }
     }
 
-    // ✅ ĐÃ THÊM: Website không có Graph API để "đẩy" tin nhắn như Facebook/Instagram — Gateway phải
-    // giữ 1 hàng đợi SSE riêng cho từng khách widget. Hàm này chỉ đơn giản POST câu trả lời lên
-    // /send/{token} kèm platform=website để Gateway bỏ vào đúng hàng đợi của khách đó.
     private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, message: String) {
         withContext(Dispatchers.IO) {
-            var conn: HttpURLConnection? = null
             try {
-                val url = URL("$gatewayUrl/send/$gatewayToken")
-                conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.connectTimeout = 10000
-                conn.readTimeout = 10000
-
                 val payload = org.json.JSONObject().apply {
                     put("platform", "website")
                     put("recipientId", senderId)
                     put("message", message)
                 }.toString()
 
-                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                conn.responseCode
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = payload.toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("$gatewayUrl/send/$gatewayToken")
+                    .post(requestBody)
+                    .build()
+
+                apiClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("CloudGateway", "⚠️ Gửi phản hồi website thất bại, HTTP: ${response.code}")
+                    }
+                }
             } catch (e: Exception) {
                 logger.e("CloudGateway", "Gửi phản hồi cho khách Website thất bại: ${e.message}")
-            } finally {
-                conn?.disconnect()
             }
         }
     }
 
     private suspend fun sendTelegramMessage(token: String, chatId: String, text: String) {
         withContext(Dispatchers.IO) {
-            var conn: HttpURLConnection? = null
             try {
-                val url = URL("https://api.telegram.org/bot$token/sendMessage")
-                conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-
                 val payload = org.json.JSONObject().apply {
                     put("chat_id", chatId)
                     put("text", text)
                 }.toString()
 
-                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                conn.responseCode
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = payload.toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("https://api.telegram.org/bot$token/sendMessage")
+                    .post(requestBody)
+                    .build()
+
+                apiClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("TelegramPoll", "⚠️ Gửi phản hồi telegram thất bại, HTTP: ${response.code}")
+                    }
+                }
             } catch (e: Exception) {
                 logger.e("TelegramPoll", "Gửi phản hồi về Telegram thất bại: ${e.message}")
-            } finally {
-                conn?.disconnect()
             }
         }
     }
@@ -555,71 +560,24 @@ class WebhookGatewayService : Service() {
             while (isActive) {
                 val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
                 if (gatewayUrl.isNotBlank() && isNetworkAvailable()) {
-                    var conn: HttpURLConnection? = null
                     try {
                         logger.d("Heartbeat", "💓 Đang gửi nhịp tim giữ thức Gateway...")
-                        val url = URL("$gatewayUrl/health")
-                        conn = url.openConnection() as HttpURLConnection
-                        conn.requestMethod = "GET"
-                        conn.connectTimeout = 10000
-                        conn.readTimeout = 10000
                         
-                        val responseCode = conn.responseCode
-                        if (responseCode == 200) {
-                            logger.d("Heartbeat", "✅ Nhịp tim phản hồi tốt. Gateway đang thức!")
+                        val request = Request.Builder()
+                            .url("$gatewayUrl/health")
+                            .get()
+                            .build()
+
+                        apiClient.newCall(request).execute().use { response ->
+                            if (response.isSuccessful) {
+                                logger.d("Heartbeat", "✅ Nhịp tim phản hồi tốt. Gateway đang thức!")
+                            }
                         }
                     } catch (e: Exception) {
                         logger.e("Heartbeat", "❌ Gửi nhịp tim giữ thức thất bại: ${e.message}")
-                    } finally {
-                        conn?.disconnect()
                     }
                 }
-                delay(10 * 60 * 1000L) // Đã chuyển thành 10 phút để giữ thức Render 24/7
-            }
-        }
-    }
-
-    private fun startKtorServer() {
-        serviceScope.launch {
-            try {
-                server = embeddedServer(Netty, port = 8080) {
-                    install(ContentNegotiation) {
-                        gson()
-                    }
-                    routing {
-                        route("/webhook") {
-                            route("/facebook") {
-                                get {
-                                    // ✅ ĐÃ SỬA: Sửa cú pháp [] thành .get() để tránh lỗi biên dịch nạp nạp chồng toán tử
-                                    val mode = call.request.queryParameters.get("hub.mode")
-                                    val token = call.request.queryParameters.get("hub.verify_token")
-                                    val challenge = call.request.queryParameters.get("hub.challenge")
-
-                                    if (mode == "subscribe" && token == VERIFY_TOKEN) {
-                                        call.respondText(challenge ?: "")
-                                    } else {
-                                        call.respond(io.ktor.http.HttpStatusCode.Forbidden, "Verification failed")
-                                    }
-                                }
-                                post {
-                                    val body = call.receiveText()
-                                    serviceScope.launch {
-                                        val fbText = "Tin nhắn test từ FB"
-                                        val fbPsid = "fb_sender_id_placeholder"
-
-                                        val reply = agentKernel.chat(ChatRequest(message = fbText, username = fbPsid, chatMode = "COMBINED"))
-                                        findPlugin("facebook")?.execute("send_messenger", mapOf("recipient_id" to fbPsid, "message" to reply.responseText))
-                                    }
-                                    call.respond(io.ktor.http.HttpStatusCode.OK, "EVENT_RECEIVED")
-                                }
-                            }
-                        }
-                    }
-                }
-                server?.start(wait = true)
-                logger.i("WebhookGateway", "Ktor Gateway Server khởi chạy tại cổng 8080")
-            } catch (e: Exception) {
-                logger.e("WebhookGateway", "Khởi chạy Ktor Gateway Server thất bại", e)
+                delay(10 * 60 * 1000L)
             }
         }
     }
@@ -637,17 +595,33 @@ class WebhookGatewayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        acquireWakeLock() // Củng cố khóa giữ thức CPU bất cứ khi nào service được kích hoạt chạy
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Cơ chế tự khởi chạy lại Service khi bị người dùng vuốt đóng ứng dụng khỏi đa nhiệm (Task Swiped)
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        logger.i("WebhookGateway", "Task removed - restarting service")
+        val restartServiceIntent = Intent(applicationContext, this.javaClass).apply {
+            setPackage(packageName)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartServiceIntent)
+            } else {
+                startService(restartServiceIntent)
+            }
+        } catch (e: Exception) {
+            logger.e("WebhookGateway", "Không thể tự khởi động lại service", e)
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        server?.stop(1000, 5000)
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
-        }
+        releaseWakeLock() // ✅ ĐÃ SỬA: Giải phóng khóa giữ thức CPU triệt để khi hủy dịch vụ
         serviceScope.cancel()
         logger.i("WebhookGateway", "Dịch vụ đã tắt hoàn toàn.")
     }

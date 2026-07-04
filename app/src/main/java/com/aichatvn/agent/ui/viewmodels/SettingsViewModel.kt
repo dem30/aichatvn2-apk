@@ -1,6 +1,7 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
+import android.database.Cursor
 import android.os.Environment
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -20,7 +21,7 @@ import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
+import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
@@ -65,6 +66,18 @@ class SettingsViewModel @Inject constructor(
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
         val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
         val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
+
+        // ✅ ĐÃ SỬA: Đổi từ setOf sang listOf để cố định tuần tự nạp khóa ngoại an toàn
+        private val BACKUP_TABLES = listOf(
+            "customers",
+            "customer_settings",
+            "cameras",
+            "tuya_devices",
+            "facebook_pages",
+            "qa_data",
+            "schedules",
+            "app_config"
+        )
     }
 
     private val httpClient = OkHttpClient.Builder()
@@ -109,7 +122,7 @@ class SettingsViewModel @Inject constructor(
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
 
-    // ✅ ĐÃ THÊM: Theo dõi và cập nhật luồng các Fanpage đã lưu trong DB
+    // Theo dõi và cập nhật luồng các Fanpage đã lưu trong DB
     val facebookPages: StateFlow<List<FacebookPageEntity>> = database.facebookPageDao().getAllPagesFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -269,7 +282,6 @@ class SettingsViewModel @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val prefs = context.dataStore.data.first()
-                val gson = Gson()
 
                 val settingsJson = JSONObject().apply {
                     put("groq_api_key",      prefs[GROQ_API_KEY] ?: "")
@@ -280,31 +292,57 @@ class SettingsViewModel @Inject constructor(
                     put("dark_mode",         prefs[DARK_MODE] ?: false)
                 }
 
-                val schedules       = database.scheduleDao().getAllSchedules()
-                val cameras         = database.cameraDao().getAllCameras()
-                val customers       = database.customerDao().getAllCustomers()
-                val tuyaDevices     = database.tuyaDeviceDao().getAllDevices()
+                val dataJson = JSONObject()
+                val sdb = database.openHelper.writableDatabase
                 
-                val qaList          = database.qaDao().getAllQAs(username = "default_user")
-                    .filter { it.category != "auto_init" }
-                
-                val customerSettings = customers.mapNotNull { c ->
-                    database.cameraDao().getCustomerSetting(c.id)
-                }
-                val appConfigs = configProvider.getAll()
+                var totalRecords = 0
 
-                val dataJson = JSONObject().apply {
-                    put("schedules",         JSONArray(gson.toJson(schedules)))
-                    put("cameras",           JSONArray(gson.toJson(cameras)))
-                    put("customer_settings", JSONArray(gson.toJson(customerSettings)))
-                    put("customers",         JSONArray(gson.toJson(customers)))
-                    put("tuya_devices",      JSONArray(gson.toJson(tuyaDevices)))
-                    put("qa_data",           JSONArray(gson.toJson(qaList)))
-                    put("app_config",        JSONArray(gson.toJson(appConfigs)))
+                // Quét qua danh sách các bảng cần sao lưu thuộc Whitelist
+                for (tableName in BACKUP_TABLES) {
+                    val rowsArray = JSONArray()
+                    
+                    // Lọc bỏ dữ liệu khởi tạo mặc định "auto_init" ở tầng truy vấn
+                    val query = if (tableName == "qa_data") {
+                        "SELECT * FROM `$tableName` WHERE `category` != 'auto_init'"
+                    } else {
+                        "SELECT * FROM `$tableName`"
+                    }
+
+                    val rowCursor = sdb.query(query, null)
+                    val columnNames = rowCursor.columnNames
+
+                    if (rowCursor.moveToFirst()) {
+                        do {
+                            val rowObj = JSONObject()
+                            for (i in columnNames.indices) {
+                                val colName = columnNames[i]
+                                when (rowCursor.getType(i)) {
+                                    Cursor.FIELD_TYPE_NULL -> rowObj.put(colName, JSONObject.NULL)
+                                    Cursor.FIELD_TYPE_INTEGER -> rowObj.put(colName, rowCursor.getLong(i))
+                                    Cursor.FIELD_TYPE_FLOAT -> rowObj.put(colName, rowCursor.getDouble(i))
+                                    Cursor.FIELD_TYPE_STRING -> rowObj.put(colName, rowCursor.getString(i))
+                                    Cursor.FIELD_TYPE_BLOB -> {
+                                        // Mã hóa Base64 và đánh dấu cấu trúc nhận dạng kiểu BLOB khi nạp lại
+                                        val bytes = rowCursor.getBlob(i)
+                                        val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                        val blobObj = JSONObject().apply {
+                                            put("_type", "blob")
+                                            put("data", base64)
+                                        }
+                                        rowObj.put(colName, blobObj)
+                                    }
+                                }
+                            }
+                            rowsArray.put(rowObj)
+                            totalRecords++
+                        } while (rowCursor.moveToNext())
+                    }
+                    rowCursor.close()
+                    dataJson.put(tableName, rowsArray)
                 }
 
                 val json = JSONObject().apply {
-                    put("export_version", 3)
+                    put("export_version", 4) // Định dạng cấu trúc danh sách trắng v4
                     put("exported_at", System.currentTimeMillis())
                     put("settings", settingsJson)
                     put("data", dataJson)
@@ -315,8 +353,7 @@ class SettingsViewModel @Inject constructor(
                 val file = File(dir, "aichatvn_settings_${System.currentTimeMillis()}.json")
                 file.writeText(json.toString(2))
 
-                val total = schedules.size + cameras.size + customers.size + tuyaDevices.size + qaList.size + appConfigs.size
-                _exportResult.value = "✅ Đã lưu ($total bản ghi): ${file.absolutePath}"
+                _exportResult.value = "✅ Đã lưu ($totalRecords bản ghi cốt lõi): ${file.absolutePath}"
                 file.absolutePath
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Export error: ${e.message}", e)
@@ -331,8 +368,18 @@ class SettingsViewModel @Inject constructor(
             try {
                 val json = JSONObject(jsonString)
                 val gson = Gson()
+
+                // ✅ ĐÃ SỬA: Kiểm tra tính tương thích của export_version trước khi ghi đè
+                val exportVersion = json.optInt("export_version", 1)
+                if (exportVersion > 4) {
+                    val errMsg = "❌ Lỗi: Bản sao lưu (v$exportVersion) mới hơn phiên bản ứng dụng hiện tại. Vui lòng cập nhật ứng dụng."
+                    _importResult.value = errMsg
+                    return@withContext errMsg
+                }
+
                 val settingsJson = json.optJSONObject("settings") ?: json
 
+                // 1. Phục hồi cấu hình Preferences
                 val groqKey         = settingsJson.optString("groq_api_key", "")
                 val resendKey       = settingsJson.optString("resend_api_key", "")
                 val resendSenderVal = settingsJson.optString("resend_sender", "")
@@ -353,66 +400,122 @@ class SettingsViewModel @Inject constructor(
 
                 var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
+                
                 if (dataJson != null) {
-                    dataJson.optJSONArray("customers")?.let { arr ->
-                        val list: List<CustomerEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CustomerEntity>>() {}.type)
-                        list.forEach { database.customerDao().insertCustomer(it) }
-                        restoredCount += list.size
-                    }
-                    dataJson.optJSONArray("cameras")?.let { arr ->
-                        val list: List<CameraConfigEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CameraConfigEntity>>() {}.type)
-                        list.forEach { camera -> 
-                            database.cameraDao().insertCamera(camera)
-                            
-                            val setting = database.cameraDao().getCustomerSetting(camera.customerId)
-                            if (setting == null && camera.customerId.isNotEmpty()) {
-                                database.cameraDao().insertCustomerSetting(
-                                    CustomerSettingEntity(
-                                        customerId = camera.customerId,
-                                        smartMode = 0,
-                                        isActive = 1,
-                                        updatedAt = System.currentTimeMillis(),
-                                        timestamp = System.currentTimeMillis()
-                                    )
+                    val sdb = database.openHelper.writableDatabase
+                    
+                    // Khởi động Transaction để bảo đảm an toàn dữ liệu, tự động Rollback nếu lỗi giữa chừng
+                    sdb.beginTransaction()
+                    try {
+                        // Tắt ràng buộc khóa ngoại tạm thời để tránh lỗi xung đột thứ tự xóa bảng
+                        sdb.execSQL("PRAGMA foreign_keys=OFF;")
+
+                        for (tableName in BACKUP_TABLES) {
+                            val rowsArray = dataJson.optJSONArray(tableName) ?: continue
+
+                            // NGHIỆP VỤ ĐẶC THÙ (APP_CONFIG): Sử dụng upsert của Provider để xóa cache và gửi tín hiệu notify
+                            if (tableName == "app_config") {
+                                val list: List<AppConfigEntity> = gson.fromJson(
+                                    rowsArray.toString(), 
+                                    object : TypeToken<List<AppConfigEntity>>() {}.type
                                 )
+                                list.forEach { configProvider.upsert(it) }
+                                restoredCount += list.size
+                                continue
+                            }
+
+                            // Đọc cấu trúc cột thực tế trên thiết bị của bảng hiện tại
+                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", null)
+                            val existingColumns = mutableSetOf<String>()
+                            if (pragmaCursor.moveToFirst()) {
+                                val nameColIdx = pragmaCursor.getColumnIndex("name")
+                                if (nameColIdx >= 0) {
+                                    do {
+                                        existingColumns.add(pragmaCursor.getString(nameColIdx))
+                                    } while (pragmaCursor.moveToNext())
+                                }
+                            }
+                            pragmaCursor.close()
+
+                            if (existingColumns.isEmpty()) continue
+
+                            // Dọn dẹp dữ liệu cũ
+                            sdb.execSQL("DELETE FROM `$tableName`")
+
+                            if (rowsArray.length() == 0) continue
+
+                            val firstRow = rowsArray.getJSONObject(0)
+                            val columnsToInsert = mutableListOf<String>()
+                            val colKeys = firstRow.keys()
+                            while (colKeys.hasNext()) {
+                                val colName = colKeys.next()
+                                // Lọc chống thừa cột (chỉ insert cột thực tế đang tồn tại ở Schema vật lý hiện hành)
+                                if (colName in existingColumns) {
+                                    columnsToInsert.add(colName)
+                                }
+                            }
+
+                            if (columnsToInsert.isEmpty()) continue
+
+                            val columnsStr = columnsToInsert.joinToString(",") { "`$it`" }
+                            val placeholdersStr = columnsToInsert.joinToString(",") { "?" }
+                            val sql = "INSERT OR REPLACE INTO `$tableName` ($columnsStr) VALUES ($placeholdersStr)"
+
+                            for (rowIndex in 0 until rowsArray.length()) {
+                                val rowObj = rowsArray.getJSONObject(rowIndex)
+                                val bindArgs = arrayOfNulls<Any>(columnsToInsert.size)
+                                for (colIndex in columnsToInsert.indices) {
+                                    val colName = columnsToInsert[colIndex]
+                                    val value = rowObj.opt(colName)
+
+                                    bindArgs[colIndex] = when {
+                                        value == JSONObject.NULL -> null
+                                        // GIẢI MÃ BLOB: Đọc nhãn định dạng để giải mã Base64 sang mảng byte chuẩn
+                                        value is JSONObject && value.optString("_type") == "blob" -> {
+                                            val base64Data = value.getString("data")
+                                            android.util.Base64.decode(base64Data, android.util.Base64.NO_WRAP)
+                                        }
+                                        else -> value
+                                    }
+                                }
+                                sdb.execSQL(sql, bindArgs)
+                                restoredCount++
+                            }
+
+                            // NGHIỆP VỤ ĐẶC THÙ (CAMERAS): Tự sinh cấu hình CustomerSetting mặc định nếu chưa tồn tại
+                            if (tableName == "cameras") {
+                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", null)
+                                if (cursor.moveToFirst()) {
+                                    do {
+                                        val customerId = cursor.getString(0)
+                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf(customerId))
+                                        val exists = checkCursor.count > 0
+                                        checkCursor.close()
+                                        if (!exists) {
+                                            val now = System.currentTimeMillis()
+                                            sdb.execSQL(
+                                                "INSERT OR REPLACE INTO `customer_settings` (`customerId`, `smartMode`, `isActive`, `updatedAt`, `timestamp`) VALUES (?, 0, 1, ?, ?)",
+                                                arrayOf(customerId, now, now)
+                                            )
+                                            restoredCount++
+                                        }
+                                    } while (cursor.moveToNext())
+                                }
+                                cursor.close()
                             }
                         }
-                        restoredCount += list.size
-                    }
-                    dataJson.optJSONArray("customer_settings")?.let { arr ->
-                        val list: List<CustomerSettingEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<CustomerSettingEntity>>() {}.type)
-                        list.forEach { database.cameraDao().insertCustomerSetting(it) }
-                        restoredCount += list.size
-                    }
-                    dataJson.optJSONArray("schedules")?.let { arr ->
-                        val list: List<ScheduleEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<ScheduleEntity>>() {}.type)
-                        list.forEach { database.scheduleDao().insertSchedule(it) }
-                        restoredCount += list.size
-                    }
-                    dataJson.optJSONArray("tuya_devices")?.let { arr ->
-                        val list: List<TuyaDeviceEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<TuyaDeviceEntity>>() {}.type)
-                        database.tuyaDeviceDao().insertAllDevices(list)
-                        restoredCount += list.size
-                    }
-                    
-                    dataJson.optJSONArray("qa_data")?.let { arr ->
-                        val list: List<QAEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<QAEntity>>() {}.type)
-                        val filteredList = list.filter { it.category != "auto_init" }
-                        filteredList.forEach { database.qaDao().insertQA(it) }
-                        restoredCount += filteredList.size
-                    }
-                    
-                    dataJson.optJSONArray("app_config")?.let { arr ->
-                        val list: List<AppConfigEntity> = gson.fromJson(arr.toString(), object : TypeToken<List<AppConfigEntity>>() {}.type)
-                        list.forEach { configProvider.upsert(it) }
-                        restoredCount += list.size
+                        
+                        sdb.execSQL("PRAGMA foreign_keys=ON;")
+                        sdb.setTransactionSuccessful()
+                    } finally {
+                        sdb.endTransaction()
                     }
                 }
 
                 // Đồng bộ hóa RAM Cache của TrainingSkill được cập nhật tức thời ngay sau khi Import dữ liệu thành công
                 trainingSkill.refreshQAList("default_user")
 
-                // ✅ TỰ ĐỘNG ĐỒNG BỘ BẢN SAO SỐ LÊN DASHBOARD: Cập nhật sơ đồ thiết bị ngay lập tức sau khi import
+                // TỰ ĐỘNG ĐỒNG BỘ BẢN SAO SỐ LÊN DASHBOARD: Cập nhật sơ đồ thiết bị ngay lập tức sau khi import
                 try {
                     cameraSkill.initialize()
                     tuyaManager.loadDevicesFromDB()
@@ -420,12 +523,13 @@ class SettingsViewModel @Inject constructor(
                     logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya sau khi import thất bại", e)
                 }
 
-                if (dataJson?.has("schedules") == true) {
+                // Kích hoạt lại lịch trình tự động hóa
+                if (dataJson?.has("schedules") == true || dataJson?.has("ScheduleEntity") == true) {
                     com.aichatvn.agent.scheduler.TaskScheduler.runNow(context)
                 }
 
                 val message = if (restoredCount > 0)
-                    "✅ Import thành công! Đã khôi phục $restoredCount bản ghi."
+                    "✅ Import thành công! Đã phục hồi $restoredCount bản ghi cấu trúc Whitelist an toàn."
                 else
                     "✅ Import thành công! (chỉ có settings, không có dữ liệu DB)"
                 _importResult.value = message
