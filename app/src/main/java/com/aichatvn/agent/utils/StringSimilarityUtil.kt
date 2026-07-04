@@ -20,6 +20,7 @@ object StringSimilarityUtil {
         if (clean1.isEmpty() || clean2.isEmpty()) return 0.0
         if (clean1 == clean2) return 1.0
 
+        // Khai báo ban đầu cho độ lệch và độ dài tối đa
         val lenDiff = Math.abs(clean1.length - clean2.length)
         val maxLen = maxOf(clean1.length, clean2.length)
         if (maxLen > 10 && lenDiff.toDouble() / maxLen > 0.7) {
@@ -50,10 +51,7 @@ object StringSimilarityUtil {
             else -> false
         }
 
-        val lenDiff = Math.abs(clean1.length - clean2.length)
-        val maxLen = maxOf(clean1.length, clean2.length)
-
-        // Chỉ cho phép chấm 0.95 nếu là khớp từ và độ lệch độ dài giữa 2 câu dưới 25%
+        // Tái sử dụng trực tiếp các biến lenDiff và maxLen đã khai báo ở đầu hàm
         if (isWordMatch && (lenDiff.toDouble() / maxLen < 0.25)) {
             return 0.95
         }
@@ -84,4 +82,3 @@ object StringSimilarityUtil {
         return dp[s1.length][s2.length]
     }
 }
-
