@@ -21,13 +21,21 @@ import com.aichatvn.agent.ui.screens.*
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
-    object Inbox      : Screen("inbox",       R.string.tab_chat,        Icons.Default.Chat) // ✅ ĐÃ SỬA: Đưa Inbox lên thanh Bottom Navigation chính [1]
+    // ✅ ĐÃ SỬA: Tab "Trò chuyện" trỏ THẲNG vào route "chat_screen" (màn chat AI mặc định),
+    // trùng với startDestination của NavHost bên dưới — đây là root thật của tab, không đăng ký
+    // composable trùng lặp. Inbox không còn là tab chính, xem INBOX_ROUTE.
+    object Chat       : Screen("chat_screen", R.string.tab_chat,        Icons.Default.Chat)
     object Customer   : Screen("customer",    R.string.tab_camera,      Icons.Default.People)
     object Training   : Screen("training",    R.string.tab_training,    Icons.Default.School)
     object Schedule   : Screen("schedule",    R.string.tab_schedule,    Icons.Default.Schedule)
     object Logs       : Screen("logs",        R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",    R.string.tab_settings,    Icons.Default.Settings)
     object Tuya       : Screen("tuya",        R.string.tab_settings,    Icons.Default.Devices)
+
+    companion object {
+        // Inbox giờ chỉ là màn con, mở từ icon trong ChatScreen — không nằm trong Bottom Navigation.
+        const val INBOX_ROUTE = "inbox"
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,7 +48,7 @@ fun AppNavigator() {
     // Danh sách các tab chính hiển thị dưới thanh Bottom Navigation (Đã loại bỏ Diagnostics)
     val screens = listOf(
         Screen.Dashboard,
-        Screen.Inbox, // ✅ ĐÃ THÊM: Hiện màn hình danh sách hộp thư ra làm tab chính [1]
+        Screen.Chat, // ✅ ĐÃ SỬA: Tab "Trò chuyện" giờ là màn chat AI mặc định, không phải Inbox nữa
         Screen.Customer,
         Screen.Training,
         Screen.Schedule,
@@ -56,12 +64,20 @@ fun AppNavigator() {
                         label = { Text(stringResource(screen.titleRes)) },
                         selected = currentRoute == screen.route,
                         onClick = {
-                            navController.navigate(screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+                            // ✅ ĐÃ THÊM: Nếu đang đứng ở màn con của chính tab này (vd: đang xem
+                            // "inbox" hoặc "chat_screen?username=X" bên trong tab Trò chuyện, hoặc
+                            // "logs" đẩy lên từ Chat) thì bấm lại icon tab phải rớt hết các màn con
+                            // đó và quay thẳng về root của tab — không cần người dùng tự bấm back.
+                            if (currentRoute == screen.route) {
+                                navController.popBackStack(screen.route, inclusive = false)
+                            } else {
+                                navController.navigate(screen.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
                             }
                         }
                     )
@@ -71,11 +87,10 @@ fun AppNavigator() {
     ) { paddingValues ->
         NavHost(
             navController = navController,
-            startDestination = "chat_screen",  // ✅ ĐÃ SỬA: route KHÔNG tham số riêng cho màn hình mở đầu — tránh dùng giá trị đã điền sẵn ("...=default_user") làm startDestination cho 1 route có query-param kiểu {username}, vì Navigation Compose có thể không khớp graph đúng cách, gây crash khi back-stack bị đụng tới (bấm sang tab khác)
+            startDestination = Screen.Chat.route,  // "chat_screen" — route KHÔNG tham số riêng cho màn hình mở đầu — tránh dùng giá trị đã điền sẵn ("...=default_user") làm startDestination cho 1 route có query-param kiểu {username}, vì Navigation Compose có thể không khớp graph đúng cách, gây crash khi back-stack bị đụng tới (bấm sang tab khác)
             modifier = Modifier.padding(paddingValues)
         ) {
             composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
-            composable(Screen.Inbox.route)       { InboxScreen(navController) } // ✅ ĐÃ ĐĂNG KÝ: Màn hình danh sách hội thoại Inbox
             composable(Screen.Customer.route)    { CustomerScreen(navController) }
             composable(Screen.Training.route)    { TrainingScreen(navController) }
             composable(Screen.Schedule.route)    { ScheduleScreen(navController) }
@@ -83,11 +98,16 @@ fun AppNavigator() {
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
             composable(Screen.Tuya.route)        { TuyaScreen(navController) }
 
-            // ✅ ĐÃ THÊM: route KHÔNG tham số — dùng làm màn hình mở đầu app (luôn là default_user,
-            // ChatViewModel tự mặc định username = "default_user" khi SavedStateHandle không có
-            // key "username"). Route riêng biệt hoàn toàn với route có {username} bên dưới, nên
-            // không còn rủi ro Navigation Compose khớp nhầm/không khớp pattern lúc dựng NavHost.
-            composable("chat_screen") { ChatScreen(navController) }
+            // ✅ ĐÃ SỬA: route KHÔNG tham số — vừa là màn hình mở đầu app (default_user, xem
+            // ChatViewModel.username mặc định), VỪA là root của tab "Trò chuyện" (Screen.Chat).
+            // Dùng chung 1 route duy nhất, KHÔNG đăng ký 2 lần, tránh 2 khái niệm "chat" tách rời
+            // như trước (chat_screen vs inbox). Route riêng biệt hoàn toàn với route có {username}
+            // bên dưới, nên không rủi ro Navigation Compose khớp nhầm pattern lúc dựng NavHost.
+            composable(Screen.Chat.route) { ChatScreen(navController) }
+
+            // ✅ ĐÃ SỬA: Inbox (danh sách hội thoại đa kênh) không còn là tab chính — giờ là màn
+            // con, mở từ icon trong TopAppBar của ChatScreen. Có back button riêng (xem InboxScreen.kt).
+            composable(Screen.INBOX_ROUTE) { InboxScreen(navController) }
 
             // ✅ ĐÃ THÊM: Cấu hình màn hình Chat chi tiết nhận tham số username động từ InboxScreen chuyển sang
             composable(

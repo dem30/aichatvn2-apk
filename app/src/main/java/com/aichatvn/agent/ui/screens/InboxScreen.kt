@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -37,7 +38,15 @@ fun InboxScreen(
     Scaffold(
         topBar = { 
             TopAppBar(
-                title = { Text("Hộp thư đa kênh", style = MaterialTheme.typography.titleLarge) }
+                title = { Text("Hộp thư đa kênh", style = MaterialTheme.typography.titleLarge) },
+                // ✅ ĐÃ THÊM: Inbox giờ là màn con mở từ ChatScreen, không còn là root của tab
+                // "Trò chuyện" nữa nên bắt buộc phải có nút back — trước đây thiếu nên bấm vào
+                // đây là kẹt, không quay lại ChatScreen được.
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
+                    }
+                }
             ) 
         }
     ) { padding ->

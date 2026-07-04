@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.compose.ui.draw.alpha
+import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.ui.viewmodels.ChatViewModel
@@ -168,16 +169,29 @@ fun ChatScreen(
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
+            // ✅ ĐÃ SỬA: chat_screen giờ vừa là root của tab "Trò chuyện" vừa là startDestination
+            // của NavHost. Nếu luôn hiện mũi tên back và gọi popBackStack() vô điều kiện, lúc đứng
+            // ở root (không có gì phía sau để quay về) sẽ pop mất luôn destination duy nhất trên
+            // stack — có thể gây crash/màn trắng. Chỉ hiện back khi thực sự có màn trước đó
+            // (vd: mở từ Inbox → chat_screen?username=X).
+            val canGoBack = navController.previousBackStackEntry != null
             TopAppBar(
                 title = { Text(chatScreenTitle(username)) },
                 navigationIcon = {
-                    // ✅ ĐÃ THÊM: Nút quay lại Inbox — trước đây thiếu nên bấm vào 1 hội thoại là kẹt luôn trong ChatScreen
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
+                    if (canGoBack) {
+                        IconButton(onClick = { navController.popBackStack() }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
+                        }
                     }
                 },
                 actions = {
                     GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
+
+                    // ✅ ĐÃ THÊM: Lối vào Hộp thư đa kênh (Inbox) — trước đây Inbox chiếm luôn tab
+                    // "Trò chuyện" nên xung đột với màn chat mặc định. Giờ Inbox là màn con, mở từ đây.
+                    IconButton(onClick = { navController.navigate(Screen.INBOX_ROUTE) }) {
+                        Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
+                    }
 
                     IconButton(onClick = { navController.navigate("logs") }) {
                         Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
