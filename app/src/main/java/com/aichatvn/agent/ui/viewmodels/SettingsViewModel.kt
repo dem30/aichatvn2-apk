@@ -1,7 +1,7 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
-import android.database.Cursor
+import android.database.Cursor // ✅ ĐÃ THÊM: Để xử lý các kiểu dữ liệu và con trỏ SQLite
 import android.os.Environment
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -21,7 +21,7 @@ import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.model.FacebookPageEntity
+import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
@@ -67,7 +67,7 @@ class SettingsViewModel @Inject constructor(
         val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
         val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
 
-        // ✅ ĐÃ SỬA: Đổi từ setOf sang listOf để cố định tuần tự nạp khóa ngoại an toàn
+        // DANH SÁCH TRẮNG: Các bảng dữ liệu nghiệp vụ quan trọng cần sao lưu
         private val BACKUP_TABLES = listOf(
             "customers",
             "customer_settings",
@@ -308,7 +308,8 @@ class SettingsViewModel @Inject constructor(
                         "SELECT * FROM `$tableName`"
                     }
 
-                    val rowCursor = sdb.query(query, null)
+                    // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu Array không null của Android
+                    val rowCursor = sdb.query(query, emptyArray<Any?>())
                     val columnNames = rowCursor.columnNames
 
                     if (rowCursor.moveToFirst()) {
@@ -369,7 +370,7 @@ class SettingsViewModel @Inject constructor(
                 val json = JSONObject(jsonString)
                 val gson = Gson()
 
-                // ✅ ĐÃ SỬA: Kiểm tra tính tương thích của export_version trước khi ghi đè
+                // Kiểm tra tính tương thích của export_version trước khi ghi đè
                 val exportVersion = json.optInt("export_version", 1)
                 if (exportVersion > 4) {
                     val errMsg = "❌ Lỗi: Bản sao lưu (v$exportVersion) mới hơn phiên bản ứng dụng hiện tại. Vui lòng cập nhật ứng dụng."
@@ -425,7 +426,8 @@ class SettingsViewModel @Inject constructor(
                             }
 
                             // Đọc cấu trúc cột thực tế trên thiết bị của bảng hiện tại
-                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", null)
+                            // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu chữ ký phương thức
+                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", emptyArray<Any?>())
                             val existingColumns = mutableSetOf<String>()
                             if (pragmaCursor.moveToFirst()) {
                                 val nameColIdx = pragmaCursor.getColumnIndex("name")
@@ -484,18 +486,20 @@ class SettingsViewModel @Inject constructor(
 
                             // NGHIỆP VỤ ĐẶC THÙ (CAMERAS): Tự sinh cấu hình CustomerSetting mặc định nếu chưa tồn tại
                             if (tableName == "cameras") {
-                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", null)
+                                // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu phương thức
+                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", emptyArray<Any?>())
                                 if (cursor.moveToFirst()) {
                                     do {
                                         val customerId = cursor.getString(0)
-                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf(customerId))
+                                        // ✅ ĐÃ SỬA: Ép kiểu arrayOf<Any?> để tránh lỗi invariant array của Kotlin
+                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf<Any?>(customerId))
                                         val exists = checkCursor.count > 0
                                         checkCursor.close()
                                         if (!exists) {
                                             val now = System.currentTimeMillis()
                                             sdb.execSQL(
                                                 "INSERT OR REPLACE INTO `customer_settings` (`customerId`, `smartMode`, `isActive`, `updatedAt`, `timestamp`) VALUES (?, 0, 1, ?, ?)",
-                                                arrayOf(customerId, now, now)
+                                                arrayOf<Any?>(customerId, now, now)
                                             )
                                             restoredCount++
                                         }
