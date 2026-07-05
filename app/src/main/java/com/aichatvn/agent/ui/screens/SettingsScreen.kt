@@ -414,6 +414,42 @@ private fun PluginGroupCard(
                                 ) {
                                     Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
                                 }
+
+                                // ✅ ĐÃ THÊM: URL nhúng riêng cho kiểu "Embed by URL" (Google Sites và các trình
+                                // dựng web kéo-thả khác chặn localStorage khi dùng "Embed code" do bọc iframe
+                                // sandbox không allow-same-origin — mỗi lần refresh trang sẽ mất senderId/lịch sử).
+                                // Trỏ thẳng iframe tới URL này (origin thật) thì localStorage lưu bền qua các lần
+                                // refresh. Xem route /widget-frame trên app.py (Render).
+                                Spacer(Modifier.height(16.dp))
+                                Text(
+                                    "🔗 URL nhúng (kiểu \"Nhúng URL\" — dùng cho Google Sites hoặc web kéo-thả):",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                val embedFrameUrl = "${gatewayUrl.trimEnd('/')}/widget-frame?key=$widgetKey"
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                                        .padding(8.dp)
+                                ) {
+                                    Text(
+                                        text = embedFrameUrl,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(embedFrameUrl))
+                                        Toast.makeText(context, "📋 Đã sao chép URL nhúng vào khay nhớ tạm!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("📋 Sao chép URL nhúng (Nhúng URL)", style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
                     }
