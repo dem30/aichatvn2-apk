@@ -72,7 +72,7 @@ class CameraSkill @Inject constructor(
                 description = "Quét camera để phát hiện thay đổi và phân tích AI",
                 examples = listOf("quét camera", "chụp ảnh camera"),
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", false, "camera")
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera") // Sửa thành true để kích hoạt tính năng hỏi bù tham số
                 )
             ),
             PluginAction(
@@ -425,7 +425,7 @@ class CameraSkill @Inject constructor(
         val cameraName: String
 
         val cameraId = (params["cameraId"] as? String)?.trim()
-        if (cameraId != null) {
+        if (!cameraId.isNullOrBlank() && cameraId != "null") {
             val cam = database.cameraDao().getCameraById(cameraId)
                 ?: return@withContext PluginResult.Failure("Không tìm thấy camera id=$cameraId. Dùng list_cameras để xem danh sách đúng.")
             resolvedCustomerId = cam.customerId.trim()
@@ -712,7 +712,7 @@ class CameraSkill @Inject constructor(
     
     suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): PluginResult {
         return try {
-            val cameras = if (cameraId != null) {
+            val cameras = if (!cameraId.isNullOrBlank() && cameraId != "null") {
                 withContext(Dispatchers.IO) {
                     listOfNotNull(database.cameraDao().getCameraById(cameraId.trim()))
                 }
