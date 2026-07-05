@@ -850,7 +850,9 @@ class AgentKernel @Inject constructor(
 
                         PipelineResult(
                             routerOutcome = RouterOutcome.Matched(
-                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.result.options))
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.options))
+
+                                
                             ),
                             matchResult = matchResult
                         )
@@ -996,7 +998,7 @@ class AgentKernel @Inject constructor(
 
                         PipelineResult(
                             routerOutcome = RouterOutcome.Matched(
-                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.result.options))
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.options))
                             ),
                             matchResult = matchResult
                         )
