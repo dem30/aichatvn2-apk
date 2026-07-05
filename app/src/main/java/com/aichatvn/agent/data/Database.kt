@@ -78,7 +78,28 @@ interface ChatMessageDao {
         ORDER BY m1.timestamp DESC
     """)
     fun getLatestChatThreadsFlow(): Flow<List<ChatMessageEntity>>
+
+    // ✅ MỚI: Đếm số tin nhắn khách CHƯA ĐỌC theo từng thread — dùng để hiện badge trên InboxScreen.
+    // Chỉ đếm role="user" vì tin "assistant" (AI tự trả lời hoặc admin gõ tay) không cần badge.
+    @Query("""
+        SELECT username, COUNT(*) as unreadCount
+        FROM chat_messages
+        WHERE role = 'user' AND isRead = 0
+        GROUP BY username
+    """)
+    fun getUnreadCountsFlow(): Flow<List<ThreadUnreadCount>>
+
+    // ✅ MỚI: Đánh dấu toàn bộ tin nhắn khách của 1 thread là đã đọc — gọi khi Admin mở
+    // ChatScreen của khách đó (xem ChatViewModel.init()).
+    @Query("UPDATE chat_messages SET isRead = 1 WHERE username = :username AND role = 'user' AND isRead = 0")
+    suspend fun markThreadAsRead(username: String)
 }
+
+// ✅ MỚI: Kết quả gộp nhóm cho getUnreadCountsFlow()
+data class ThreadUnreadCount(
+    val username: String,
+    val unreadCount: Int
+)
 
 @Dao
 interface QADao {
@@ -330,7 +351,7 @@ interface FacebookPageDao {
         CustomerEntity::class,
         FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
     ],
-    version = 11, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 10 lên 11 (thêm lastFacebookPageId)
+    version = 12, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 11 lên 12 (thêm isRead cho chat_messages)
 
     exportSchema = false
 )
@@ -473,6 +494,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // ✅ MIGRATION 11 -> 12: Thêm cột isRead cho chat_messages, phục vụ badge tin nhắn
+        // chưa đọc trên InboxScreen. DEFAULT 1 (đã đọc) để không đánh dấu nhầm toàn bộ lịch sử
+        // cũ thành "chưa đọc" — chỉ tin nhắn khách MỚI gửi tới sau bản cập nhật này mới được
+        // insert với isRead = 0 (xem ChatSkill.saveExternalUserMessage() và processQuery()).
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN isRead INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -490,7 +521,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_7_8,
                         MIGRATION_8_9,
                         MIGRATION_9_10,
-                        MIGRATION_10_11 // ✅ ĐĂNG KÝ: Bản di cư lastFacebookPageId mới
+                        MIGRATION_10_11,
+                        MIGRATION_11_12 // ✅ ĐĂNG KÝ: Bản di cư isRead mới cho chat_messages
                     )
                     .build()
                 INSTANCE = instance

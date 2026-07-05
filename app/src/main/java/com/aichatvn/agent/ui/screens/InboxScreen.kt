@@ -33,6 +33,9 @@ fun InboxScreen(
 ) {
     // Thu thập danh sách tin nhắn cuối cùng của từng khách hàng từ DB thông qua ViewModel
     val latestThreads by viewModel.latestChatThreads.collectAsState(initial = emptyList())
+    // ✅ MỚI: username -> số tin nhắn chưa đọc, dùng để vẽ badge đỏ trên từng dòng Inbox
+    val unreadCounts by viewModel.unreadCounts.collectAsState(initial = emptyList())
+    val unreadByUsername = remember(unreadCounts) { unreadCounts.associate { it.username to it.unreadCount } }
     var selectedChannel by remember { mutableStateOf("all") } // "all", "facebook", "telegram", "website"
 
     Scaffold(
@@ -120,7 +123,10 @@ fun InboxScreen(
                     contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
                     items(filteredThreads, key = { it.id }) { thread ->
-                        InboxItemRow(thread = thread) {
+                        InboxItemRow(
+                            thread = thread,
+                            unreadCount = unreadByUsername[thread.username] ?: 0
+                        ) {
                             // Khi bấm chọn, chuyển hướng sang khung chat của ID khách tương ứng
                             navController.navigate("chat_screen?username=${thread.username}")
                         }
@@ -134,8 +140,10 @@ fun InboxScreen(
 @Composable
 private fun InboxItemRow(
     thread: ChatMessageEntity,
+    unreadCount: Int = 0,
     onClick: () -> Unit
 ) {
+    val hasUnread = unreadCount > 0
     val platform = thread.username.substringBefore("_")
     val rawId = thread.username.substringAfter("_")
 
@@ -185,13 +193,40 @@ private fun InboxItemRow(
                 )
             }
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = if (thread.role == "user") "Khách: ${thread.content}" else "Trợ lý: ${thread.content}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (thread.role == "user") "Khách: ${thread.content}" else "Trợ lý: ${thread.content}",
+                    style = MaterialTheme.typography.bodySmall,
+                    // ✅ MỚI: Tô đậm + đổi màu nổi bật khi thread còn tin nhắn khách chưa đọc
+                    fontWeight = if (hasUnread) FontWeight.Bold else FontWeight.Normal,
+                    color = if (hasUnread) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                // ✅ MỚI: Badge số lượng tin nhắn khách chưa đọc của thread này
+                if (hasUnread) {
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error)
+                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = if (unreadCount > 99) "99+" else unreadCount.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onError,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
     }
 }

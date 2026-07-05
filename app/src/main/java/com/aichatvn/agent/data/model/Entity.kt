@@ -31,7 +31,12 @@ data class ChatMessageEntity(
     val fileUrl: String? = null,
     val timestamp: Long,
     // Nguồn gốc câu trả lời của Assistant (human, learn, camera, v.v.)
-    val sourcePlugin: String? = null
+    val sourcePlugin: String? = null,
+    // ✅ MỚI: Trạng thái đã đọc — CHỈ có ý nghĩa với tin nhắn role="user" của khách ngoại kênh
+    // (Facebook/Telegram/Website). Mặc định true để không phá dữ liệu cũ/tin nhắn assistant/tin
+    // nhắn của default_user (những tin này không cần badge chưa đọc). Các nơi insert tin nhắn
+    // KHÁCH GỬI TỚI từ webhook sẽ set false tường minh — xem ChatSkill.saveExternalUserMessage().
+    val isRead: Boolean = true
 )
 
 // ==================== Q&A ====================

@@ -121,7 +121,11 @@ class ChatSkill @Inject constructor(
             content = message,
             role = "user", // ✅ SỬA: Đảm bảo lưu đúng vai trò khách gửi là "user" chứ không phải "assistant"
             type = "text",
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            // ✅ MỚI: Tin nhắn khách gửi tới từ Webhook luôn bắt đầu ở trạng thái CHƯA ĐỌC —
+            // sẽ được đánh dấu đã đọc khi Admin thực sự mở ChatScreen của khách này
+            // (xem ChatViewModel.init() -> markThreadAsRead()).
+            isRead = false
         )
         withContext(Dispatchers.IO) {
             database.chatMessageDao().insertMessage(userMessage)
@@ -241,7 +245,11 @@ class ChatSkill @Inject constructor(
                     role = "user", // Lưu dạng tin khách hỏi
                     type = if (!fileUrl.isNullOrEmpty() || !imageBase64.isNullOrEmpty()) "image" else "text",
                     fileUrl = fileUrl,
-                    timestamp = System.currentTimeMillis()
+                    timestamp = System.currentTimeMillis(),
+                    // ✅ MỚI: Tin nhắn khách ngoại kênh gửi tới (kể cả khi AI tự động trả lời ngay)
+                    // vẫn tính là "chưa đọc" cho tới khi Admin thực sự mở thread — default_user
+                    // (chat cá nhân của chủ app) thì không cần nên vẫn giữ true.
+                    isRead = !isExternal
                 )
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(userMessage)

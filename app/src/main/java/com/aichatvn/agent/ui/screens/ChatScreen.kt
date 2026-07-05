@@ -189,11 +189,20 @@ fun ChatScreen(
 
                     // ✅ ĐÃ THÊM: Lối vào Hộp thư đa kênh (Inbox) — trước đây Inbox chiếm luôn tab
                     // "Trò chuyện" nên xung đột với màn chat mặc định. Giờ Inbox là màn con, mở từ đây.
-                    IconButton(onClick = { navController.navigate(Screen.INBOX_ROUTE) }) {
+                    // ✅ ĐÃ SỬA: Thêm launchSingleTop = true — trước đây thiếu nên mỗi lần bấm icon
+                    // Inbox lại đẩy thêm 1 bản sao "inbox" mới chồng lên back stack (bấm 3 lần =
+                    // 3 tầng Inbox lồng nhau). Hậu quả: nút back của tab "Trò chuyện" ở AppNavigator
+                    // (popUpTo(Screen.Chat.route)) phải pop qua nhiều tầng trùng lặp mới về được
+                    // màn chat mặc định, tạo cảm giác "bấm tab không quay về màn mặc định".
+                    IconButton(onClick = {
+                        navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
+                    }) {
                         Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
                     }
 
-                    IconButton(onClick = { navController.navigate("logs") }) {
+                    IconButton(onClick = {
+                        navController.navigate("logs") { launchSingleTop = true }
+                    }) {
                         Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
                     }
                     IconButton(onClick = { viewModel.clearHistory() }) {

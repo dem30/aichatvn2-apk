@@ -96,6 +96,11 @@ class ChatViewModel @Inject constructor(
     // ✅ ĐÃ THÊM: Luồng danh sách Hộp thư đến hiển thị ngoài InboxScreen
     val latestChatThreads: Flow<List<ChatMessageEntity>> = database.chatMessageDao().getLatestChatThreadsFlow()
 
+    // ✅ MỚI: Luồng số tin nhắn chưa đọc theo từng thread — InboxScreen dùng để vẽ badge đỏ
+    // và in đậm dòng có tin chưa đọc.
+    val unreadCounts: Flow<List<com.aichatvn.agent.data.ThreadUnreadCount>> =
+        database.chatMessageDao().getUnreadCountsFlow()
+
     // ✅ ĐÃ THÊM: Quản lý biến gạt nút Cướp quyền ngầm (smartMode) của ID khách hiện tại
     private val _isBotEnabled = MutableStateFlow(true)
     val isBotEnabled: StateFlow<Boolean> = _isBotEnabled.asStateFlow()
@@ -125,6 +130,11 @@ class ChatViewModel @Inject constructor(
         // báo property phía trên), không phải biến mutable riêng nữa.
 
         viewModelScope.launch {
+            // ✅ MỚI: Mở ChatScreen của 1 khách = coi như Admin đã xem thread này —
+            // đánh dấu hết các tin nhắn khách CHƯA ĐỌC của username này thành đã đọc.
+            // Với default_user thì đây là no-op (không có tin nào bị đánh dấu unread).
+            database.chatMessageDao().markThreadAsRead(username)
+
             // ✅ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
             chatSkill.processQuery(message = "", username = username)
 
