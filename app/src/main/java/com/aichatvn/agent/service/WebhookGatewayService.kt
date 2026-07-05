@@ -63,7 +63,11 @@ class WebhookGatewayService : Service() {
     // OkHttp Client chuyên dụng để tái sử dụng Connection Pool và Keep-Alive
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS) // Giữ vô hạn cho luồng kéo tin SSE không bị ngắt
+        // ✅ ĐÃ SỬA: readTimeout(0) = vô hạn khiến coroutine treo mãi nếu server chết mà
+        // không có FIN/RST tới máy (mất mạng, Render restart, NAT rớt gói...).
+        // Đặt 45s: nếu 45s không có byte nào (kể cả dòng ping giữ kết nối từ server)
+        // thì coi như đứt, ném IOException để rơi vào catch -> tự reconnect + re-register.
+        .readTimeout(45, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
