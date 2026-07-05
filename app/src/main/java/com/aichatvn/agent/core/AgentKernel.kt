@@ -435,13 +435,14 @@ class AgentKernel @Inject constructor(
     }
 
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
-        val matches = search(message, username, 0.7f)
+        // Chỉ lấy các dữ liệu huấn luyện có loại là "qa" hoặc "chat"
+        val matches = search(message, username, 0.7f).filter { it.qa.type == "qa" || it.qa.type == "chat" }
         if (matches.isEmpty()) return ""
         return matches.joinToString("\n") { match ->
             "📚 Q: ${match.qa.question}\n   A: ${match.qa.answer} (độ tương tự: ${String.format("%.2f", match.similarity)})"
         }
     }
-
+    
     suspend fun tryDeviceCommand(
         userMessage: String,
         username: String = "default_user"
@@ -468,8 +469,11 @@ class AgentKernel @Inject constructor(
             val pluginName = targetPlugin?.manifest?.name ?: first.pluginId
             val actionDesc = targetAction?.description ?: first.action
             val banner = buildPendingBanner(first, pluginName, actionDesc)
+            
+            @Suppress("UNCHECKED_CAST")
+            val currentOptions = first.knownParams["_options"] as? Map<String, String> ?: emptyMap()
             return RouterOutcome.Matched(
-                DeviceCommandResult(first.pluginId, PluginResult.NeedMoreInfo(first.missingParams, banner))
+                DeviceCommandResult(first.pluginId, PluginResult.NeedMoreInfo(first.missingParams, banner, currentOptions))
             )
         }
 
@@ -599,7 +603,9 @@ class AgentKernel @Inject constructor(
                                 }
                                 
                                 // Trả về NeedMoreInfo của lệnh tiếp theo để giữ luồng thu thập tham số tiếp tục kích hoạt
-                                PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg)
+                                @Suppress("UNCHECKED_CAST")
+                                val nextOptions = nextPending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
+                                PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg, nextOptions)
                             } else {
                                 r
                             }
@@ -615,7 +621,7 @@ class AgentKernel @Inject constructor(
                                 pluginName,
                                 actionDesc
                             )
-                            PluginResult.NeedMoreInfo(r.missingParams, banner)
+                            PluginResult.NeedMoreInfo(r.missingParams, banner, r.options)
                         }
                         is PluginResult.Failure -> {
                             chatHistoryManager.removePendingIntent(activePending.pluginId, activePending.action)
@@ -844,7 +850,7 @@ class AgentKernel @Inject constructor(
 
                         PipelineResult(
                             routerOutcome = RouterOutcome.Matched(
-                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg))
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.result.options))
                             ),
                             matchResult = matchResult
                         )
@@ -898,7 +904,7 @@ class AgentKernel @Inject constructor(
                 is Layer3Result.Single -> {
                     val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
                     if (missing.isNotEmpty()) {
-                        "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParam(it, layer3Result.plugin, layer3Result.intent.action) }}]"
+                        "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParamDiagnostic(it, layer3Result.plugin, layer3Result.intent.action) }}]"
                     } else {
                         "• Tách thành công câu lệnh đơn và điền đủ tham số: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
                     }
@@ -990,7 +996,7 @@ class AgentKernel @Inject constructor(
 
                         PipelineResult(
                             routerOutcome = RouterOutcome.Matched(
-                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg))
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.result.options))
                             ),
                             matchResult = matchResult
                         )
@@ -1550,7 +1556,7 @@ class AgentKernel @Inject constructor(
         return matchResult.bestAliasMatches[semanticType]?.first?.answer
     }
 
-    private fun getQuestionForMissingParam(
+    private fun getQuestionForMissingParamDiagnostic(
         param: String, 
         plugin: Plugin? = null, 
         actionName: String? = null
@@ -1587,6 +1593,74 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    private suspend fun getQuestionForMissingParam(
+        param: String, 
+        plugin: Plugin? = null, 
+        actionName: String? = null
+    ): Pair<String, Map<String, String>> {
+        val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
+        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
+        val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
+        val semanticType = paramMeta?.semanticType?.lowercase() ?: ""
+
+        // ── Các trường có danh sách hữu hạn -> hỏi bằng số ──
+        if (actualKey in setOf("camera", "camera_id", "cameraId")) {
+            val cameras = database.cameraDao().getActiveCameras()
+            if (cameras.isNotEmpty()) {
+                return buildNumberedQuestion(
+                    "Bạn muốn thao tác với camera nào?",
+                    cameras.map { (it.customername.ifBlank { it.id }) to it.id }
+                )
+            }
+        }
+        if (actualKey in setOf("device", "device_id", "deviceId")) {
+            val devices = database.tuyaDeviceDao().getAllDevices()
+            if (devices.isNotEmpty()) {
+                return buildNumberedQuestion("Bạn muốn điều khiển thiết bị nào?", devices.map { it.name to it.id })
+            }
+        }
+        if (actualKey == "id" && plugin?.manifest?.id == "schedule") {
+            val schedules = database.scheduleDao().getAllSchedules()
+            if (schedules.isNotEmpty()) {
+                return buildNumberedQuestion(
+                    "Bạn muốn thao tác với lịch trình nào?",
+                    schedules.map { "${it.pluginId}.${it.action} (${if (it.cron.isNotEmpty()) it.cron else "${it.intervalMinutes} phút"})" to it.id }
+                )
+            }
+        }
+
+        val isCronField = semanticType == "time" || actualKey == "cron" || actualKey == "time"
+        if (isCronField) {
+            return ("Bạn muốn thiết lập hẹn giờ/lên lịch vào lúc mấy giờ, ngày nào? (Ví dụ: 8h sáng mai, hoặc mỗi ngày lúc 18h)" to emptyMap())
+        }
+        
+        val isIntervalField = semanticType == "interval" || actualKey == "interval" || actualKey == "intervalMinutes"
+        if (isIntervalField) {
+            return ("Bạn muốn hoạt động này được lặp lại định kỳ sau mỗi bao nhiêu phút? (Ví dụ: mỗi 10 phút)" to emptyMap())
+        }
+
+        if (paramMeta != null && paramMeta.description.isNotBlank()) {
+            return ("Bạn vui lòng cung cấp thông tin cho ${paramMeta.description} nhé?" to emptyMap())
+        }
+
+        val text = when (actualKey) {
+            "to", "email", "recipient"                 -> "Bạn muốn gửi đến email nào?"
+            "subject"                                  -> "Tiêu đề email là gì thế bạn?"
+            "body"                                     -> "Nội dung email bạn muốn viết gì?"
+            "title"                                    -> "Tiêu đề thông báo là gì vậy bạn?"
+            "message"                                  -> "Nội dung thông báo bạn muốn gửi là gì?"
+            "pluginId", "plugin_id"                    -> "Bạn muốn lên lịch cho chức năng nào?"
+            else                                       -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
+        }
+        return (text to emptyMap())
+    }
+
+    private fun buildNumberedQuestion(prompt: String, candidates: List<Pair<String, String>>): Pair<String, Map<String, String>> {
+        val listText = candidates.mapIndexed { i, (label, _) -> "Số ${i + 1}. $label" }.joinToString("\n")
+        val options = candidates.mapIndexed { i, (_, value) -> (i + 1).toString() to value }.toMap()
+        return "$prompt\n$listText" to options
+    }
+
     private suspend fun executeIntent(
         plugin: Plugin,
         intent: Intent,
@@ -1602,8 +1676,8 @@ class AgentKernel @Inject constructor(
         val missing = ParameterResolver.getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action, plugins)
 
         val executionResult = if (missing.isNotEmpty()) {
-            val question = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
-            PluginResult.NeedMoreInfo(missing, question)
+            val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
+            PluginResult.NeedMoreInfo(missing, question, options)
         } else {
             try {
                 logger.d("AgentKernel", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}")
@@ -1619,7 +1693,10 @@ class AgentKernel @Inject constructor(
                 PendingIntent(
                     pluginId = plugin.manifest.id,
                     action = normalizedIntent.action,
-                    knownParams = normalizedIntent.params + mapOf("_noProgressCount" to 0),
+                    knownParams = normalizedIntent.params + mapOf(
+                        "_noProgressCount" to 0,
+                        "_options" to executionResult.options
+                    ),
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question,
                     createdAt = System.currentTimeMillis()
@@ -1790,6 +1867,36 @@ class AgentKernel @Inject constructor(
             }
         }
 
+        // ── Nhận diện câu trả lời theo chỉ mục số hiển thị ──
+        
+      
+      // ── Nhận diện câu trả lời theo chỉ mục số hiển thị ──
+@Suppress("UNCHECKED_CAST")
+val activeOptions = pending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
+val askedParamNow = pending.missingParams.firstOrNull()
+
+if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
+    val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.lowercase().trim())
+    // Tìm số đứng riêng lẻ hoặc kèm các cụm tiền tố thông dụng như "so 1", "chon 1", "thu 1"
+    val chosenNumber = Regex("\\b(?:so|chon|cau|thu|\\s+)?\\s*(\\d+)\\b").find(norm)?.groupValues?.get(1)
+        ?: Regex("\\b(\\d+)\\b").find(norm)?.value
+        ?: Regex("(?<!\\w)(\\d+)(?!\\w)").find(norm)?.value
+    
+    // ✅ Đã sửa: Sử dụng ?.let để mở khóa chosenNumber thành biến "num" non-null trước khi tra cứu
+    chosenNumber?.let { num ->
+        activeOptions[num]?.let { resolvedValue ->
+            heuristicFilled[askedParamNow] = resolvedValue
+            logger.d("AgentKernel", "[$traceId] Người dùng chọn số $num -> \"$resolvedValue\" (bypass LLM)")
+        }
+    }
+}
+
+
+
+            
+            
+        }
+
         val currentAskedParam = pending.missingParams.firstOrNull()
         
         val fill = if (currentAskedParam != null && heuristicFilled.containsKey(currentAskedParam)) {
@@ -1888,11 +1995,14 @@ class AgentKernel @Inject constructor(
         if (stillMissing.isNotEmpty()) {
             val madeProgress = stillMissing.size < pending.missingParams.size
             val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
-            val question = getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action)
+            val (question, options) = getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action)
 
             chatHistoryManager.addPendingIntent(
                 pending.copy(
-                    knownParams = normalizedMergedParams + mapOf("_noProgressCount" to newNoProgressCount),
+                    knownParams = normalizedMergedParams + mapOf(
+                        "_noProgressCount" to newNoProgressCount,
+                        "_options" to options
+                    ),
                     missingParams = stillMissing,
                     askedQuestion = question,
                     createdAt = System.currentTimeMillis()
@@ -1901,7 +2011,7 @@ class AgentKernel @Inject constructor(
             chatHistoryManager.addTurn(userMessage, question)
             return DeviceCommandResult(
                 pluginId = targetPlugin.manifest.id,
-                result = PluginResult.NeedMoreInfo(stillMissing, question)
+                result = PluginResult.NeedMoreInfo(stillMissing, question, options)
             )
         }
 
@@ -2048,7 +2158,7 @@ class AgentKernel @Inject constructor(
         val intent = rawIntent.copy(params = finalParams)
         val result = executeIntent(targetPlugin, intent, context, traceId)
 
-        return RouterOutcome.Matched(DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = result))
+        return RouterOutcome.Matched(DeviceCommandResult(targetPlugin.manifest.id, result))
     }
 
     private fun parseIntentResponse(response: String): Intent? {
@@ -2309,7 +2419,7 @@ class AgentKernel @Inject constructor(
             is Layer3Result.Single -> {
                 val missing = ParameterResolver.getUnresolvedParams(layer3Result.intent.params, layer3Result.plugin, layer3Result.intent.action, plugins)
                 if (missing.isNotEmpty()) {
-                    "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParam(it, layer3Result.plugin, layer3Result.intent.action) }}]"
+                    "• Tách thành công câu lệnh đơn '${layer3Result.intent.pluginId}.${layer3Result.intent.action}'. Phát hiện thiếu thông tin: [${missing.joinToString { getQuestionForMissingParamDiagnostic(it, layer3Result.plugin, layer3Result.intent.action) }}]"
                 } else {
                     "• Tách thành công câu lệnh đơn và điền đủ tham số: ${layer3Result.intent.pluginId}.${layer3Result.intent.action}"
                 }
@@ -2501,6 +2611,10 @@ class AgentKernel @Inject constructor(
     sealed class PluginResult {
         data class Success(val data: Any) : PluginResult()
         data class Failure(val error: String) : PluginResult()
-        data class NeedMoreInfo(val missingParams: List<String>, val question: String) : PluginResult()
+        data class NeedMoreInfo(
+            val missingParams: List<String>, 
+            val question: String,
+            val options: Map<String, String> = emptyMap()
+        ) : PluginResult()
     }
 }

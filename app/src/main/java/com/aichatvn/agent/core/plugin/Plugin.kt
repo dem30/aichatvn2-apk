@@ -89,8 +89,13 @@ data class PluginParameter(
             "boolean" -> {
                 if (value is Boolean) return value
                 val lower = strVal.lowercase()
-                val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "enable")
-                val falseWords = setOf("false", "tắt", "no", "off", "0", "dừng", "vô hiệu", "disable")
+
+                
+                // Sau:
+val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "enable", "có", "đồng ý", "xác nhận", "ok", "chuẩn", "đúng")
+val falseWords = setOf("false", "tắt", "no", "off", "0", "dừng", "vô hiệu", "disable", "không", "hủy", "huỷ", "thôi")
+
+                
                 when (lower) {
                     in trueWords -> true
                     in falseWords -> false
