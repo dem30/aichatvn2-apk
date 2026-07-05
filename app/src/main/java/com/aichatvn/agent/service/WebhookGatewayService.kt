@@ -557,35 +557,43 @@ class WebhookGatewayService : Service() {
     }
 
     // ===== 🔌 KÊNH 3: NHỊP TIM GIỮ THỨC RENDER GATEWAY (HEARTBEAT LOOP) =====
-    private fun startHeartbeatLoop() {
+   
+  private fun startHeartbeatLoop() {
         serviceScope.launch(Dispatchers.IO) {
             delay(10000)
             
             while (isActive) {
                 val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-                if (gatewayUrl.isNotBlank() && isNetworkAvailable()) {
+                // Đọc thêm mã token bảo mật của Gateway
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                
+                if (gatewayUrl.isNotBlank() && gatewayToken.isNotBlank() && isNetworkAvailable()) {
                     try {
-                        logger.d("Heartbeat", "💓 Đang gửi nhịp tim giữ thức Gateway...")
+                        logger.d("Heartbeat", "💓 Đang gửi nhịp tim gia hạn cổng kết nối...")
                         
                         val request = Request.Builder()
-                            .url("$gatewayUrl/health")
+                            .url("$gatewayUrl/ping/$gatewayToken") // Thay đổi từ /health sang cổng /ping/{token} chuyên dụng
                             .get()
                             .build()
 
                         apiClient.newCall(request).execute().use { response ->
                             if (response.isSuccessful) {
-                                logger.d("Heartbeat", "✅ Nhịp tim phản hồi tốt. Gateway đang thức!")
+                                logger.d("Heartbeat", "✅ Nhịp tim phản hồi tốt. Các cấu hình ánh xạ đã được gia hạn!")
                             }
                         }
                     } catch (e: Exception) {
                         logger.e("Heartbeat", "❌ Gửi nhịp tim giữ thức thất bại: ${e.message}")
                     }
                 }
-                delay(10 * 60 * 1000L)
+                delay(10 * 60 * 1000L) // Nhịp tim chu kỳ 10 phút/lần (an toàn trước mốc 30 phút dọn dẹp của server)
             }
         }
     }
 
+
+
+
+  
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // ✅ ĐÃ SỬA (tút tút liên tục): IMPORTANCE_DEFAULT khiến hệ thống phát âm thanh
