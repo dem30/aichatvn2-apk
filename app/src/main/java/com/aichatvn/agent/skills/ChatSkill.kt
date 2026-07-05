@@ -198,7 +198,14 @@ class ChatSkill @Inject constructor(
                 // Đẩy tin nhắn thật ra các cổng liên kết mạng xã hội [1]
                 val rawSenderId = username.substringAfter("_")
                 if (username.startsWith("facebook_")) {
-                    val pageId = extraContext.removePrefix("page_id:")
+                    // ✅ ĐÃ SỬA: Trước đây chỉ đọc page_id từ extraContext, nhưng ChatViewModel.
+                    // sendMessageWithImage() không truyền tham số này nên luôn rỗng -> gửi thất bại
+                    // âm thầm khi có nhiều Fanpage liên kết. Giờ đọc lại Page ID đã được
+                    // WebhookGatewayService lưu vào customer_settings ngay lúc tin nhắn đến,
+                    // giữ extraContext làm phương án dự phòng cho các nơi gọi khác (nếu có).
+                    val pageId = withContext(Dispatchers.IO) {
+                        database.cameraDao().getCustomerSetting(rawSenderId)?.lastFacebookPageId
+                    } ?: extraContext.removePrefix("page_id:")
                     agentKernel.executePluginAction(
                         "facebook",
                         "send_messenger",

@@ -20,6 +20,7 @@ import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
+import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatSkill
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -369,6 +370,31 @@ class WebhookGatewayService : Service() {
 
                                                 if (text.isNotBlank()) {
                                                     val unifiedUsername = "${platform}_$senderId"
+
+                                                    // ✅ MỚI: Luôn ghi nhận Page ID Facebook mới nhất mà khách vừa nhắn tới
+                                                    // (bất kể bot đang bật hay tắt), để ChatSkill dùng lại đúng Page ID này
+                                                    // khi Admin gõ tay trả lời thủ công sau đó — trước đây thông tin này
+                                                    // bị vứt bỏ hoàn toàn ở nhánh "Người Trực" (isBotEnabled = false).
+                                                    if (platform == "facebook" && incomingPageId.isNotBlank()) {
+                                                        withContext(Dispatchers.IO) {
+                                                            val existingForPage = database.cameraDao().getCustomerSetting(senderId)
+                                                            if (existingForPage == null) {
+                                                                database.cameraDao().insertCustomerSetting(
+                                                                    CustomerSettingEntity(
+                                                                        customerId = senderId,
+                                                                        smartMode = 1,
+                                                                        isActive = 1,
+                                                                        updatedAt = System.currentTimeMillis(),
+                                                                        timestamp = System.currentTimeMillis(),
+                                                                        lastFacebookPageId = incomingPageId
+                                                                    )
+                                                                )
+                                                            } else {
+                                                                database.cameraDao().updateLastFacebookPageId(senderId, incomingPageId)
+                                                            }
+                                                        }
+                                                    }
+
                                                     val setting = withContext(Dispatchers.IO) {
                                                         database.cameraDao().getCustomerSetting(senderId)
                                                     }

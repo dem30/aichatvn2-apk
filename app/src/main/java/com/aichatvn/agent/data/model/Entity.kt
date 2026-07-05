@@ -91,7 +91,11 @@ data class CustomerSettingEntity(
     val smartMode: Int = 0,
     val isActive: Int = 1,
     val updatedAt: Long,
-    val timestamp: Long
+    val timestamp: Long,
+    // ✅ MỚI: Page ID Facebook gần nhất mà khách (customerId = PSID) đã nhắn tới.
+    // Dùng để trả lời thủ công đúng Fanpage khi có nhiều Fanpage liên kết cùng lúc,
+    // thay vì phụ thuộc extraContext (thường rỗng khi Admin gõ tay từ ChatScreen).
+    val lastFacebookPageId: String? = null
 )
 
 // ==================== ALERT ====================

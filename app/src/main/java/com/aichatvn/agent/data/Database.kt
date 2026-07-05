@@ -182,6 +182,10 @@ interface CameraDao {
     
     @Query("UPDATE customer_settings SET smartMode = :enabled, updatedAt = :timestamp WHERE customerId = :customerId")
     suspend fun updateSmartMode(customerId: String, enabled: Boolean, timestamp: Long)
+
+    // ✅ MỚI: Ghi lại Page ID Facebook gần nhất mà khách (customerId = PSID) vừa nhắn tới
+    @Query("UPDATE customer_settings SET lastFacebookPageId = :pageId WHERE customerId = :customerId")
+    suspend fun updateLastFacebookPageId(customerId: String, pageId: String)
     
     @Query("UPDATE customer_settings SET isActive = :active, updatedAt = :timestamp WHERE customerId = :customerId")
     suspend fun updateActiveStatus(customerId: String, active: Boolean, timestamp: Long)
@@ -326,7 +330,7 @@ interface FacebookPageDao {
         CustomerEntity::class,
         FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
     ],
-    version = 10, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 9 lên 10
+    version = 11, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 10 lên 11 (thêm lastFacebookPageId)
 
     exportSchema = false
 )
@@ -461,6 +465,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // ✅ MIGRATION 10 -> 11: Thêm cột lưu Page ID Facebook gần nhất của từng khách (PSID),
+        // phục vụ trả lời thủ công đúng Fanpage khi chủ app liên kết nhiều Fanpage cùng lúc.
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE customer_settings ADD COLUMN lastFacebookPageId TEXT")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -477,7 +489,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_6_7, 
                         MIGRATION_7_8,
                         MIGRATION_8_9,
-                        MIGRATION_9_10 // ✅ ĐĂNG KÝ: Bản di cư cấu hình mới
+                        MIGRATION_9_10,
+                        MIGRATION_10_11 // ✅ ĐĂNG KÝ: Bản di cư lastFacebookPageId mới
                     )
                     .build()
                 INSTANCE = instance
