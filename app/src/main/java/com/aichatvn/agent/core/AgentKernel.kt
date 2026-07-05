@@ -1870,7 +1870,8 @@ class AgentKernel @Inject constructor(
         // ── Nhận diện câu trả lời theo chỉ mục số hiển thị ──
         
       
-      // ── Nhận diện câu trả lời theo chỉ mục số hiển thị ──
+      
+      
 @Suppress("UNCHECKED_CAST")
 val activeOptions = pending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
 val askedParamNow = pending.missingParams.firstOrNull()
@@ -1895,7 +1896,7 @@ if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.cont
 
             
             
-        }
+        
 
         val currentAskedParam = pending.missingParams.firstOrNull()
         
