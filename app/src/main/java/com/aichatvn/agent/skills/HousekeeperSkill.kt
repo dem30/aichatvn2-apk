@@ -2,6 +2,7 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
@@ -35,10 +36,29 @@ class HousekeeperSkill @Inject constructor(
     private val scheduleSkill: ScheduleSkill,
     private val appConfigSkill: AppConfigSkill,
     logger: Logger
-) : BaseSkill("housekeeper", "Quản gia tự động", logger) {
+) : BaseSkill("housekeeper", "Quản gia tự động", logger), Plugin {
+    // ✅ ĐÃ SỬA — ĐÂY LÀ BUG GỐC: Class này thiếu ", Plugin" trong khai báo kế thừa.
+    // AgentKernel nhận danh sách plugin qua Hilt multibinding `Set<Plugin>` (xem
+    // `private val plugins: Set<@JvmSuppressWildcards Plugin>` trong AgentKernel.kt).
+    // Vì HousekeeperSkill trước đây KHÔNG implement interface Plugin, Hilt không bao giờ đưa
+    // nó vào tập hợp đó — AgentKernel hoàn toàn không biết tới HousekeeperSkill, dù đã khai
+    // báo đầy đủ PluginManifest với routable=true/autoGenerateQA=true. Hậu quả dây chuyền:
+    //   1) Không lệnh nào (kể cả set_auto_mode) có thể route tới được HousekeeperSkill.
+    //   2) set_auto_mode không bao giờ chạy -> không bao giờ upsert key "auto_mode" (pluginId=
+    //      "housekeeper") vào bảng app_config.
+    //   3) SettingsScreen nhóm hiển thị theo configs.groupBy { it.pluginId } lấy trực tiếp từ
+    //      DB (xem PluginConfigSection trong SettingsScreen.kt) -> vì không có dòng nào với
+    //      pluginId="housekeeper" trong DB nên KHÔNG BAO GIỜ có mục "Quản gia" hiện ra trong Cài đặt.
+    // Thêm ", Plugin" là đã đủ sửa toàn bộ chuỗi lỗi trên.
 
     companion object {
-        private const val CONFIG_KEY = "auto_mode"
+        // ✅ ĐÃ SỬA: Dùng constant chung từ AppConfigDefaults (namespace "housekeeper.auto_mode")
+        // thay vì hằng số cục bộ "auto_mode" không tiền tố — bảng app_config dùng "key" làm
+        // PRIMARY KEY toàn cục (không phân biệt theo pluginId), nên key trần dễ đụng độ với
+        // plugin khác trong tương lai. Đồng thời đây cũng là key đã được seed sẵn trong
+        // AppConfigDefaults.all() để mục "Quản gia" hiện ngay trong Cài đặt kể cả khi chưa
+        // ai từng bật/tắt qua lệnh.
+        private val CONFIG_KEY = com.aichatvn.agent.config.AppConfigDefaults.HOUSEKEEPER_AUTO_MODE
 
         // Các "op" của manage_schedule bị coi là phá hủy/khó hoàn tác -> luôn cần confirm
         private val DESTRUCTIVE_SCHEDULE_OPS = setOf("delete")
@@ -115,6 +135,11 @@ class HousekeeperSkill @Inject constructor(
     )
 
     private val database by lazy { AppDatabase.getDatabase(context) }
+
+    // ✅ ĐÃ THÊM: Plugin interface bắt buộc initialize()/shutdown() (giống mọi Plugin khác như
+    // AppConfigSkill, NotificationSkill...) — trước đây không cần vì class chưa implement Plugin.
+    override suspend fun initialize() {}
+    override suspend fun shutdown() {}
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         logger.d("HousekeeperSkill", "execute: action=$action params=$params")

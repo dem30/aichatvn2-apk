@@ -341,6 +341,7 @@ private fun PluginGroupCard(
         "camera"    -> Pair("📷", "Camera giám sát thửa đất")
         "email"     -> Pair("📧", "Email thông báo cảnh báo")
         "schedule"  -> Pair("⏰", "Lịch trình tự động hóa")
+        "housekeeper" -> Pair("🏠", "Quản gia tự động")
         "facebook"  -> Pair("📘", "Facebook Messenger")
         "instagram" -> Pair("📸", "Instagram Assistant")
         "telegram"  -> Pair("✈️", "Telegram Assistant")
