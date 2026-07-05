@@ -1606,15 +1606,27 @@ class AgentKernel @Inject constructor(
         val semanticType = paramMeta?.semanticType?.lowercase() ?: ""
 
         // ── Các trường có danh sách hữu hạn -> hỏi bằng số ──
-        if (actualKey in setOf("camera", "camera_id", "cameraId")) {
+
+
+      if (actualKey in setOf("camera", "camera_id", "cameraId")) {
             val cameras = database.cameraDao().getActiveCameras()
             if (cameras.isNotEmpty()) {
                 return buildNumberedQuestion(
                     "Bạn muốn thao tác với camera nào?",
-                    cameras.map { (it.customername.ifBlank { it.id }) to it.id }
+                    cameras.map { 
+                        // Ưu tiên hiển thị: Vị trí (Mã camera), nếu trống vị trí thì hiển thị Mã camera
+                        val displayName = if (!it.landinfo.isNullOrBlank()) {
+                            "${it.landinfo} (${it.id})"
+                        } else {
+                            it.id
+                        }
+                        displayName to it.id 
+                    }
                 )
             }
         }
+
+
         if (actualKey in setOf("device", "device_id", "deviceId")) {
             val devices = database.tuyaDeviceDao().getAllDevices()
             if (devices.isNotEmpty()) {
