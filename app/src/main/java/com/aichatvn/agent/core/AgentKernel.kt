@@ -1868,35 +1868,24 @@ class AgentKernel @Inject constructor(
         }
 
         // ── Nhận diện câu trả lời theo chỉ mục số hiển thị ──
-        
-      
-      
-      
-@Suppress("UNCHECKED_CAST")
-val activeOptions = pending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
-val askedParamNow = pending.missingParams.firstOrNull()
+        @Suppress("UNCHECKED_CAST")
+        val activeOptions = pending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
+        val askedParamNow = pending.missingParams.firstOrNull()
 
-if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
-    val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.lowercase().trim())
-    // Tìm số đứng riêng lẻ hoặc kèm các cụm tiền tố thông dụng như "so 1", "chon 1", "thu 1"
-    val chosenNumber = Regex("\\b(?:so|chon|cau|thu|\\s+)?\\s*(\\d+)\\b").find(norm)?.groupValues?.get(1)
-        ?: Regex("\\b(\\d+)\\b").find(norm)?.value
-        ?: Regex("(?<!\\w)(\\d+)(?!\\w)").find(norm)?.value
-    
-    // ✅ Đã sửa: Sử dụng ?.let để mở khóa chosenNumber thành biến "num" non-null trước khi tra cứu
-    chosenNumber?.let { num ->
-        activeOptions[num]?.let { resolvedValue ->
-            heuristicFilled[askedParamNow] = resolvedValue
-            logger.d("AgentKernel", "[$traceId] Người dùng chọn số $num -> \"$resolvedValue\" (bypass LLM)")
+        if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
+            val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.lowercase().trim())
+            // Tìm số đứng riêng lẻ hoặc kèm các cụm tiền tố thông dụng như "so 1", "chon 1", "thu 1"
+            val chosenNumber = Regex("\\b(?:so|chon|cau|thu|\\s+)?\\s*(\\d+)\\b").find(norm)?.groupValues?.get(1)
+                ?: Regex("\\b(\\d+)\\b").find(norm)?.value
+                ?: Regex("(?<!\\w)(\\d+)(?!\\w)").find(norm)?.value
+            
+            chosenNumber?.let { num ->
+                activeOptions[num]?.let { resolvedValue ->
+                    heuristicFilled[askedParamNow] = resolvedValue
+                    logger.d("AgentKernel", "[$traceId] Người dùng chọn số $num -> \"$resolvedValue\" (bypass LLM)")
+                }
+            }
         }
-    }
-}
-
-
-
-            
-            
-        
 
         val currentAskedParam = pending.missingParams.firstOrNull()
         
