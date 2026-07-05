@@ -2126,12 +2126,16 @@ class AgentKernel @Inject constructor(
         } ?: "Không có lệnh dở dang"
 
         val routerPrompt = buildString {
-            append("<sys>Intent Formatter. Chỉ xuất JSON: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
-            append("- Khớp thông điệp người dùng vào một trong các ứng viên (candidates) được tìm thấy bên dưới.\n")
-            append("- Nếu là hội thoại thông thường, xuất: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
-            append("- Dựa vào danh bạ aliases được tìm thấy gửi kèm để gán chính xác tham số ID.\n")
-            append("- Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.</sys>\n")
-            append("<candidates>\n$candidateLines\n</candidates>\n")
+            append("<sys>Bạn là bộ định tuyến ý định (Intent Router) thông minh cho hệ thống Smarthome.\n")
+            append("Nhiệm vụ: Phân tích câu nói của người dùng và chuyển đổi thành JSON thô chính xác: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n\n")
+            append("🚨 QUY TẮC CHỐNG GÁN LỆNH NHẦM (ANTI-TOOL-USE BIAS):\n")
+            append("1. Chỉ định tuyến sang một ứng viên (candidate) bên dưới KHI VÀ CHỈ KHI người dùng đưa ra một YÊU CẦU HÀNH ĐỘNG RÕ RÀNG (ví dụ: bật, tắt, đóng, mở, quét, gửi email cụ thể, thiết lập lịch hẹn giờ thực tế, kiểm tra trạng thái thiết bị).\n")
+            append("2. Nếu câu nói là CÂU HỎI THÔNG TIN, GIẢI THÍCH LÝ THUYẾT, ĐỊNH NGHĨA, CHÀO HỎI, TÁN GẪU (ví dụ: 'camera có bao nhiêu loại', 'email hoạt động thế nào', 'tại sao đèn không sáng', 'thời tiết thế nào'...): Bạn TUYỆT ĐỐI KHÔNG ĐƯỢC gán vào bất kỳ lệnh thiết bị nào, cho dù câu nói có chứa từ khóa 'camera', 'email' hay 'đèn'. Hãy xuất chính xác: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
+            append("3. Không tự ý suy diễn câu hỏi lý thuyết, câu hỏi khảo sát hoặc thắc mắc chung của người dùng thành một hành động điều khiển thực tế.\n")
+            append("4. Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.</sys>\n")
+            
+          
+          append("<candidates>\n$candidateLines\n</candidates>\n")
             if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
             append("<context>last_device: \"$lastDevice\", pending_status: \"$activePendingInfo\"</context>\n")
             append("<history>\n$shortHistory\n</history>\n")
