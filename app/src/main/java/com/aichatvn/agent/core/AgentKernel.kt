@@ -1777,55 +1777,82 @@ class AgentKernel @Inject constructor(
         return executionResult
     }
 
-    private suspend fun tryResolvePendingIntent(
-        pending: PendingIntent,
-        userMessage: String,
-        devicePlugins: List<Plugin>,
-        traceId: String,
-        mode: PipelineMode = PipelineMode.EXECUTE
-    ): DeviceCommandResult? {
-        val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
-            chatHistoryManager.clearPendingIntent()
-            return null
+
+
+
+
+
+
+    
+    // Trong AgentKernel.kt - Tìm đến hàm tryResolvePendingIntent và cập nhật đoạn đầu hàm:
+
+private suspend fun tryResolvePendingIntent(
+    pending: PendingIntent,
+    userMessage: String,
+    devicePlugins: List<Plugin>,
+    traceId: String,
+    mode: PipelineMode = PipelineMode.EXECUTE
+): DeviceCommandResult? {
+    val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
+        chatHistoryManager.clearPendingIntent()
+        return null
+    }
+    val targetAction = targetPlugin.manifest.actions.find { it.name == pending.action } ?: run {
+        chatHistoryManager.clearPendingIntent()
+        return null
+    }
+
+    val noProgressCount = pending.knownParams["_noProgressCount"]?.toString()?.toIntOrNull() ?: 0
+    if (noProgressCount >= 2) {
+        logger.w("AgentKernel", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> xóa pending")
+        if (mode == PipelineMode.EXECUTE) {
+            chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+            val failedPending = pending.copy(
+                knownParams = pending.knownParams + mapOf("_cancelReason" to "no_progress")
+            )
+            chatHistoryManager.addExpiredNotification(failedPending)
         }
-        val targetAction = targetPlugin.manifest.actions.find { it.name == pending.action } ?: run {
-            chatHistoryManager.clearPendingIntent()
-            return null
+        return null
+    }
+
+    val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
+    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
+
+    val localEntities = mutableMapOf<String, Any>()
+    EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
+    DateTimeParser.parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
+    DateTimeParser.parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
+
+    val heuristicFilled = mutableMapOf<String, Any>()
+
+    // ── ✅ ĐOẠN VÁ LỖI LOGIC VÒNG LẶP GOAL TEXT (THÊM MỚI Ở ĐÂY) ──
+    // Nếu đang hỏi bù thông tin cho lệnh tạo việc của Quản gia, lấy câu trả lời mới ghép dồn vào câu lệnh cũ
+    if (pending.pluginId == "housekeeper" && pending.action == "create_goal") {
+        val oldGoalText = pending.knownParams["goalText"]?.toString() ?: ""
+        if (oldGoalText.isNotBlank() && !userMessage.equals(oldGoalText, ignoreCase = true)) {
+            val combined = "$oldGoalText $userMessage"
+            heuristicFilled["goalText"] = combined
+            logger.d("AgentKernel", "[$traceId] 🤵 Ghép dồn câu trả lời mới vào goalText cũ để tạo câu lệnh đầy đủ: '$combined'")
         }
+    }
+    // ─────────────────────────────────────────────────────────────
 
-
-        val noProgressCount = pending.knownParams["_noProgressCount"]?.toString()?.toIntOrNull() ?: 0
-        if (noProgressCount >= 2) {
-            logger.w("AgentKernel", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> xóa pending")
-            
-            // CHỈ thay đổi trạng thái hệ thống khi chạy thực tế (EXECUTE), không chạy trong DIAGNOSTIC
-            if (mode == PipelineMode.EXECUTE) {
-                chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
-                val failedPending = pending.copy(
-                    knownParams = pending.knownParams + mapOf("_cancelReason" to "no_progress")
-                )
-                chatHistoryManager.addExpiredNotification(failedPending)
-            }
-            return null
-        }
-
-
-        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
-
-        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
-
-        val localEntities = mutableMapOf<String, Any>()
-        EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
-        DateTimeParser.parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
-        DateTimeParser.parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
-
-        val heuristicFilled = mutableMapOf<String, Any>()
-        for (param in pending.missingParams) {
-            val trimmed = userMessage.trim()
-            val isNested = param.startsWith("params.")
-            val actualKey = if (isNested) param.removePrefix("params.") else param
-
-            val paramMeta = if (isNested) {
+    for (param in pending.missingParams) {
+        val trimmed = userMessage.trim()
+        val isNested = param.startsWith("params.")
+        val actualKey = if (isNested) param.removePrefix("params.") else param
+        
+        // ... (giữ nguyên toàn bộ logic vòng lặp for phía dưới của hàm tryResolvePendingIntent cũ)
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          val paramMeta = if (isNested) {
                 val targetPluginId = pending.knownParams["plugin_id"]?.toString()
                     ?: pending.knownParams["pluginId"]?.toString()
                     ?: pending.knownParams["plugin"]?.toString() ?: ""
