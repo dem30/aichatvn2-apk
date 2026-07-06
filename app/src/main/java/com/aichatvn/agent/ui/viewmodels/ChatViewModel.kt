@@ -129,20 +129,9 @@ class ChatViewModel @Inject constructor(
         // ngoại kênh — không cần nữa vì voiceModeActive giờ đã tự tính theo username (xem khai
         // báo property phía trên), không phải biến mutable riêng nữa.
 
+        activateThread() // Lần đầu tiên màn hình được tạo (mở khách này lần đầu)
+
         viewModelScope.launch {
-            // ✅ MỚI: Mở ChatScreen của 1 khách = coi như Admin đã xem thread này —
-            // đánh dấu hết các tin nhắn khách CHƯA ĐỌC của username này thành đã đọc.
-            // Với default_user thì đây là no-op (không có tin nào bị đánh dấu unread).
-            database.chatMessageDao().markThreadAsRead(username)
-
-            // ✅ ĐÃ SỬA: Trước đây gọi chatSkill.processQuery(message = "", username = username)
-            // để "nạp lịch sử" — nhưng processQuery() cũng là hàm mà Webhook/SSE dùng để xử lý
-            // tin nhắn tự động của MỌI khách khác ở nền, và trước đây cả hai trường hợp cùng
-            // chạy chung 1 đoạn code đổi currentUsername/nạp lại _messages -> gây lẫn lộn tin
-            // nhắn giữa các khách (xem ChatSkill.openThread()). Giờ dùng hẳn 1 hàm riêng
-            // openThread() chỉ có ý nghĩa "đây là thread Admin đang thực sự mở lên xem".
-            chatSkill.openThread(username)
-
             loadBotSmartModeStatus() // ✅ ĐÃ THÊM: Tải cấu hình gạt nút cướp quyền của khách
 
             if (isPersonalChat) {
@@ -157,6 +146,37 @@ class ChatViewModel @Inject constructor(
             }
 
             updateLockedPluginStatus() // Khởi tạo nhãn điều khiển lúc khởi chạy
+        }
+    }
+
+    // ✅ MỚI: Hàm RIÊNG "kích hoạt thread hiện tại lên hiển thị" — tách khỏi init{} để có thể
+    // gọi lại NHIỀU LẦN trong vòng đời của cùng 1 màn hình, không chỉ lúc tạo mới.
+    //
+    // Lý do cần tách: hiltViewModel() được scope theo NavBackStackEntry, nên khi Admin bấm
+    // nút back rời màn hình chat riêng (username=B) để quay lại màn chat admin (default_user),
+    // rồi bấm back/điều hướng trở lại chính route "chat_screen" (default_user) — đây là backstack
+    // entry ĐàTỒN TẠI TỪ TRƯỚC, ViewModel instance được TÁI SỬ DỤNG (không tạo mới), nên init{}
+    // KHÔNG chạy lại. Trong khi đó ChatSkill là Singleton dùng chung 1 _messages cho toàn app —
+    // nếu không có ai gọi lại openThread(default_user) lúc quay về, _messages vẫn còn giữ
+    // nguyên nội dung của khách B (do lần cuối openThread(B) chạy khi Admin mở thread B) ->
+    // đúng hiện tượng "quay về chat admin thì nội dung chat riêng vẫn còn nguyên".
+    //
+    // Cách gọi: ChatScreen.kt gọi hàm này trong 1 LaunchedEffect(Unit) đặt NGAY TRONG THÂN
+    // composable (không phải trong remember/derivedState) — Navigation Compose sẽ dispose và
+    // tái tạo composition của destination mỗi khi nó bị rời đi rồi quay lại (kể cả qua nút
+    // back hệ thống lẫn qua chuyển tab dưới cùng), nên LaunchedEffect(Unit) sẽ tự chạy lại
+    // đúng lúc màn hình thực sự hiện ra lại trên UI — bất kể ViewModel có bị tái sử dụng hay không.
+    fun activateThread() {
+        viewModelScope.launch {
+            // Mở lại/mở lần đầu ChatScreen của 1 khách = coi như Admin đã xem thread này —
+            // đánh dấu hết các tin nhắn khách CHƯA ĐỌC của username này thành đã đọc.
+            // Với default_user thì đây là no-op (không có tin nào bị đánh dấu unread).
+            database.chatMessageDao().markThreadAsRead(username)
+
+            // ✅ Dùng openThread() thay vì processQuery(message = "", ...) — processQuery() còn
+            // được Webhook/SSE dùng để xử lý tin nhắn tự động của MỌI khách khác ở nền, dùng
+            // chung sẽ gây lẫn lộn tin nhắn giữa các khách (xem ChatSkill.openThread()).
+            chatSkill.openThread(username)
         }
     }
 

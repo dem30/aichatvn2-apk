@@ -18,6 +18,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.aichatvn.agent.R
 import com.aichatvn.agent.ui.screens.*
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.aichatvn.agent.ui.viewmodels.NavBadgeViewModel
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
@@ -45,6 +47,14 @@ fun AppNavigator() {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
+    // ✅ MỚI: Gọi hiltViewModel() NGAY TẠI ĐÂY — bên ngoài mọi composable(route) { ... } của
+    // NavHost — nên nó được scope theo Activity/NavGraph, KHÔNG theo từng NavBackStackEntry
+    // như ChatViewModel. Nhờ đó totalUnreadCount phản ánh đúng tổng số tin nhắn chưa đọc trên
+    // TOÀN APP mọi lúc, kể cả khi Admin đang đứng ở tab Dashboard/Khách hàng chứ không mở
+    // ChatScreen nào — dùng để hiện badge đỏ lên icon tab "Trò chuyện" bên dưới.
+    val navBadgeViewModel: NavBadgeViewModel = hiltViewModel()
+    val totalUnreadCount by navBadgeViewModel.totalUnreadCount.collectAsState()
+
     // Danh sách các tab chính hiển thị dưới thanh Bottom Navigation (Đã loại bỏ Diagnostics)
     val screens = listOf(
         Screen.Dashboard,
@@ -60,7 +70,26 @@ fun AppNavigator() {
             NavigationBar {
                 screens.forEach { screen ->
                     NavigationBarItem(
-                        icon = { Icon(screen.icon, contentDescription = null) },
+                        icon = {
+                            // ✅ MỚI: Riêng icon tab "Trò chuyện" (Screen.Chat) được bọc trong
+                            // BadgedBox — hiện chấm đỏ kèm số lượng khi có tin nhắn khách chưa
+                            // đọc, để Admin biết có khách mới nhắn tới ngay cả khi đang đứng ở
+                            // tab khác (Dashboard, Khách hàng...) — trước đây hoàn toàn không có
+                            // dấu hiệu gì trên thanh điều hướng.
+                            if (screen == Screen.Chat && totalUnreadCount > 0) {
+                                BadgedBox(
+                                    badge = {
+                                        Badge {
+                                            Text(if (totalUnreadCount > 99) "99+" else totalUnreadCount.toString())
+                                        }
+                                    }
+                                ) {
+                                    Icon(screen.icon, contentDescription = null)
+                                }
+                            } else {
+                                Icon(screen.icon, contentDescription = null)
+                            }
+                        },
                         label = { Text(stringResource(screen.titleRes)) },
                         selected = currentRoute == screen.route,
                         onClick = {

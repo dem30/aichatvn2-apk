@@ -129,6 +129,19 @@ fun ChatScreen(
         viewModel.updateLockedPluginStatus()
     }
 
+    // ✅ MỚI: Kích hoạt lại ĐÚNG thread của màn hình này (đổi currentUsername + nạp lại
+    // _messages của ChatSkill) MỖI KHI composable này thực sự hiện ra lại trên UI — không chỉ
+    // lúc ViewModel được tạo lần đầu. Cần thiết vì ViewModel scope theo NavBackStackEntry: khi
+    // Admin bấm back từ chat khách B quay lại route "chat_screen" (default_user) — đây là
+    // backstack entry CŨ, ViewModel bị TÁI SỬ DỤNG nên init{} không chạy lại — nếu không có dòng
+    // này, _messages (biến dùng chung toàn app trong ChatSkill) vẫn còn giữ nội dung của khách B.
+    // Composable này bị Navigation Compose dispose/tái tạo mỗi lần rời đi rồi quay lại (kể cả
+    // qua back hệ thống lẫn chuyển tab dưới cùng), nên LaunchedEffect(Unit) ở đây tự chạy lại
+    // đúng lúc cần, bất kể ViewModel có mới hay cũ.
+    LaunchedEffect(Unit) {
+        viewModel.activateThread()
+    }
+
     // QUẢN LÝ LẦN ĐẦU KHỞI ĐỘNG (COLD START)
     LaunchedEffect(Unit) {
         delay(300) // Chờ 300ms đảm bảo preferences/database đã load xong dữ liệu cũ
