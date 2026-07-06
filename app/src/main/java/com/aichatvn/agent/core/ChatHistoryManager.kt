@@ -33,34 +33,66 @@ class ChatHistoryManager @Inject constructor() {
     // Hàng đợi lưu giữ các lệnh vừa bị hủy/hết hạn để hiển thị thông báo cho người dùng
     private val expiredIntents = mutableListOf<PendingIntent>()
 
-    // ✅ MỚI: Quản lý trạng thái khóa cứng và yêu cầu khóa theo từng USERNAME độc lập, tránh ảnh hưởng toàn cục [1]
+    // ✅ Quản lý trạng thái khóa cứng điều khiển theo từng USERNAME để tránh rò rỉ toàn cục [1]
     data class LockedControl(val pluginId: String)
     private val lockedControls = ConcurrentHashMap<String, LockedControl>()
     private val pendingLockRequests = ConcurrentHashMap<String, String>()
+
+    // ✅ TƯƠNG THÍCH NGƯỢC: Khôi phục thuộc tính pendingLockRequest dạng Getter để AgentKernel cũ truy cập không bị lỗi [1]
+    val pendingLockRequest: String?
+        get() = getPendingLockRequest("default_user")
+
+    // ─── CÁC PHƯƠNG THỨC NẠP CHỒNG (OVERLOADS) ĐỂ KHỚP CẢ HAI PHIÊN BẢN CODE ───
+
+    fun setPendingLockRequest(pluginId: String) { 
+        setPendingLockRequest("default_user", pluginId) 
+    }
 
     fun setPendingLockRequest(username: String, pluginId: String) { 
         pendingLockRequests[username] = pluginId 
     }
 
-    fun getPendingLockRequest(username: String): String? {
-        return pendingLockRequests[username]
+    fun clearLockRequest() { 
+        clearLockRequest("default_user") 
     }
 
     fun clearLockRequest(username: String) { 
         pendingLockRequests.remove(username) 
     }
 
+    fun lockPlugin(pluginId: String) {
+        lockPlugin("default_user", pluginId)
+    }
+
     fun lockPlugin(username: String, pluginId: String) {
         lockedControls[username] = LockedControl(pluginId)
+    }
+
+    fun getLockedPlugin(): String? {
+        return getLockedPlugin("default_user")
     }
 
     fun getLockedPlugin(username: String): String? {
         return lockedControls[username]?.pluginId
     }
 
+    fun unlockPlugin() { 
+        unlockPlugin("default_user") 
+    }
+
     fun unlockPlugin(username: String) { 
         lockedControls.remove(username) 
     }
+
+    fun getPendingLockRequest(): String? {
+        return getPendingLockRequest("default_user")
+    }
+
+    fun getPendingLockRequest(username: String): String? {
+        return pendingLockRequests[username]
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     @Synchronized
     fun addTurn(userMessage: String, aiResponse: String) {
@@ -170,11 +202,8 @@ class ChatHistoryManager @Inject constructor() {
         history.clear()
         lastMentionedDeviceId = null
         pendingIntents.clear()
-        
-        // ✅ Dọn dẹp an toàn các tệp tin lưu cache khóa khi reset hệ thống [1]
         lockedControls.clear()
         pendingLockRequests.clear()
-        
         expiredIntents.clear()
     }
 }
