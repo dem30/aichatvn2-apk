@@ -1,5 +1,6 @@
 package com.aichatvn.agent.core
 
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,35 +33,33 @@ class ChatHistoryManager @Inject constructor() {
     // Hàng đợi lưu giữ các lệnh vừa bị hủy/hết hạn để hiển thị thông báo cho người dùng
     private val expiredIntents = mutableListOf<PendingIntent>()
 
-    // Quản lý trạng thái khóa cứng điều khiển 1 plugin (Không dùng timeout)
+    // ✅ MỚI: Quản lý trạng thái khóa cứng và yêu cầu khóa theo từng USERNAME độc lập, tránh ảnh hưởng toàn cục [1]
     data class LockedControl(val pluginId: String)
-    private var lockedControl: LockedControl? = null
-    var pendingLockRequest: String? = null
-        private set
+    private val lockedControls = ConcurrentHashMap<String, LockedControl>()
+    private val pendingLockRequests = ConcurrentHashMap<String, String>()
 
-    @Synchronized
-    fun setPendingLockRequest(pluginId: String) { 
-        pendingLockRequest = pluginId 
+    fun setPendingLockRequest(username: String, pluginId: String) { 
+        pendingLockRequests[username] = pluginId 
     }
 
-    @Synchronized
-    fun clearLockRequest() { 
-        pendingLockRequest = null 
+    fun getPendingLockRequest(username: String): String? {
+        return pendingLockRequests[username]
     }
 
-    @Synchronized
-    fun lockPlugin(pluginId: String) {
-        lockedControl = LockedControl(pluginId)
+    fun clearLockRequest(username: String) { 
+        pendingLockRequests.remove(username) 
     }
 
-    @Synchronized
-    fun getLockedPlugin(): String? {
-        return lockedControl?.pluginId
+    fun lockPlugin(username: String, pluginId: String) {
+        lockedControls[username] = LockedControl(pluginId)
     }
 
-    @Synchronized
-    fun unlockPlugin() { 
-        lockedControl = null 
+    fun getLockedPlugin(username: String): String? {
+        return lockedControls[username]?.pluginId
+    }
+
+    fun unlockPlugin(username: String) { 
+        lockedControls.remove(username) 
     }
 
     @Synchronized
@@ -171,8 +170,11 @@ class ChatHistoryManager @Inject constructor() {
         history.clear()
         lastMentionedDeviceId = null
         pendingIntents.clear()
-        lockedControl = null
-        pendingLockRequest = null
+        
+        // ✅ Dọn dẹp an toàn các tệp tin lưu cache khóa khi reset hệ thống [1]
+        lockedControls.clear()
+        pendingLockRequests.clear()
+        
         expiredIntents.clear()
     }
 }
