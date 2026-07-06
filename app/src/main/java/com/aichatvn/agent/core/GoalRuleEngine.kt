@@ -7,6 +7,7 @@ import com.aichatvn.agent.data.model.GoalRunLogEntity
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
 import java.util.UUID
@@ -65,7 +66,12 @@ class GoalRuleEngine @Inject constructor(
         }
     }
 
-    suspend fun fireEvent(eventName: String): GoalEventOutcome = withContext(Dispatchers.IO) {
+    /**
+     * @param eventPayload ngữ cảnh sự kiện (vd text/senderId/platform của tin nhắn khách) —
+     * được đưa thẳng vào checkData để conditionExpr có thể tham chiếu (vd "text contains 'abc'")
+     * ngay cả khi rule không có bước checkAction riêng.
+     */
+    suspend fun fireEvent(eventName: String, eventPayload: Map<String, Any> = emptyMap()): GoalEventOutcome = withContext(Dispatchers.IO) {
         val rules = try {
             database.goalRuleDao().getEnabledEventRules(eventName)
         } catch (e: Exception) {
@@ -74,21 +80,30 @@ class GoalRuleEngine @Inject constructor(
         }
         val rule = rules.firstOrNull() ?: return@withContext GoalEventOutcome(handled = false)
 
-        val conditionAndThenOk = runRule(rule)
+        val conditionAndThenOk = runRule(rule, eventPayload)
         database.goalRuleDao().updateLastRun(rule.id, System.currentTimeMillis())
 
-        if (rule.thenPluginId == "__system__" && rule.thenAction == "reply_fixed") {
-            val replyText = safeJson(rule.thenParams).optString("replyText").ifBlank { null }
+        // Quy ước: rule EVENT dùng cho trả lời cố định chỉ nên có 1 phần tử duy nhất trong
+        // thenActions (xem ràng buộc ở prompt của GoalPlanner) -> chỉ cần đọc phần tử đầu.
+        val actionsArray = safeJsonArray(rule.thenActions)
+        val firstAction = if (actionsArray.length() > 0) actionsArray.optJSONObject(0) else null
+
+        return@withContext if (firstAction != null &&
+            firstAction.optString("pluginId") == "__system__" &&
+            firstAction.optString("action") == "reply_fixed"
+        ) {
+            val replyText = firstAction.optJSONObject("params")?.optString("replyText")?.ifBlank { null }
             GoalEventOutcome(handled = true, replyText = replyText)
         } else {
             GoalEventOutcome(handled = conditionAndThenOk)
         }
     }
 
-    /** Chạy 1 rule: check (nếu có) -> đánh giá điều kiện -> then (nếu đúng) -> ghi log.
-     *  Trả về true nếu điều kiện đúng VÀ (không có thenAction thật hoặc thenAction thành công). */
-    private suspend fun runRule(rule: GoalRuleEntity): Boolean {
-        var checkData: Map<*, *> = emptyMap<String, Any>()
+    /** Chạy 1 rule: check (nếu có) -> đánh giá điều kiện -> chạy TUẦN TỰ từng phần tử trong
+     *  thenActions (dừng ở bước lỗi đầu tiên) -> ghi log.
+     *  Trả về true nếu điều kiện đúng VÀ toàn bộ chuỗi thenActions chạy thành công. */
+    private suspend fun runRule(rule: GoalRuleEntity, eventPayload: Map<String, Any> = emptyMap()): Boolean {
+        var checkData: Map<*, *> = eventPayload
 
         if (rule.checkPluginId.isNotBlank()) {
             val checkPlugin = plugins.find { it.manifest.id == rule.checkPluginId }
@@ -103,7 +118,8 @@ class GoalRuleEngine @Inject constructor(
                 return false
             }
             when (result) {
-                is AgentKernel.PluginResult.Success -> checkData = (result.data as? Map<*, *>) ?: emptyMap<String, Any>()
+                // Ghép kết quả check ĐÈ LÊN eventPayload (ưu tiên dữ liệu check mới hơn nếu trùng field)
+                is AgentKernel.PluginResult.Success -> checkData = checkData + ((result.data as? Map<*, *>) ?: emptyMap<String, Any>())
                 is AgentKernel.PluginResult.Failure -> {
                     logAndSkip(rule, "Bước kiểm tra thất bại: ${result.error}")
                     return false
@@ -124,32 +140,68 @@ class GoalRuleEngine @Inject constructor(
             return false
         }
 
-        // __system__ không đi qua Plugin.execute thật — caller (fireEvent) tự lo phần phản hồi
-        if (rule.thenPluginId == "__system__") {
-            insertLog(rule.id, conditionMet = true, success = true, summary = "Đã áp dụng: \"${rule.rawGoalText}\".")
+        val actionsJson = try {
+            safeJsonArray(rule.thenActions)
+        } catch (e: Exception) {
+            logAndSkip(rule, "Lỗi cú pháp chuỗi hành động thenActions: ${e.message}")
+            return false
+        }
+
+        if (actionsJson.length() == 0) {
+            insertLog(rule.id, conditionMet = true, success = true, summary = "Không có hành động nào để thực hiện.")
             return true
         }
 
-        val thenPlugin = plugins.find { it.manifest.id == rule.thenPluginId }
-        if (thenPlugin == null) {
-            logAndSkip(rule, "Không tìm thấy plugin hành động \"${rule.thenPluginId}\" (có thể đã gỡ cài đặt).")
-            return false
-        }
-        val thenResult = try {
-            thenPlugin.execute(rule.thenAction, safeJson(rule.thenParams).toParamMap())
-        } catch (e: Exception) {
-            logAndSkip(rule, "Lỗi khi thực hiện hành động: ${e.message}")
-            return false
+        var allSuccess = true
+        val completedSteps = mutableListOf<String>()
+
+        // Chạy TUẦN TỰ từng hành động; dừng ngay khi gặp bước lỗi (không chạy tiếp các bước sau).
+        for (i in 0 until actionsJson.length()) {
+            val actObj = actionsJson.optJSONObject(i) ?: continue
+            val pluginId = actObj.optString("pluginId")
+            val action = actObj.optString("action")
+            val actionParams = actObj.optJSONObject("params")?.toParamMap() ?: emptyMap()
+
+            // __system__ không đi qua Plugin.execute thật — caller (fireEvent) tự lo phần phản hồi
+            if (pluginId == "__system__") {
+                completedSteps.add("Trả lời tự động")
+                continue
+            }
+
+            val thenPlugin = plugins.find { it.manifest.id == pluginId }
+            if (thenPlugin == null) {
+                completedSteps.add("Lỗi: không tìm thấy plugin \"$pluginId\" (có thể đã gỡ cài đặt)")
+                allSuccess = false
+                break
+            }
+
+            val thenResult = try {
+                thenPlugin.execute(action, actionParams)
+            } catch (e: Exception) {
+                AgentKernel.PluginResult.Failure("Ngoại lệ: ${e.message}")
+            }
+
+            when (thenResult) {
+                is AgentKernel.PluginResult.Success -> completedSteps.add("$pluginId.$action thành công")
+                is AgentKernel.PluginResult.Failure -> {
+                    completedSteps.add("$pluginId.$action thất bại: ${thenResult.error}")
+                    allSuccess = false
+                }
+                is AgentKernel.PluginResult.NeedMoreInfo -> {
+                    completedSteps.add("$pluginId.$action thiếu thông tin: ${thenResult.question}")
+                    allSuccess = false
+                }
+            }
+            if (!allSuccess) break // gặp lỗi giữa chuỗi -> dừng ngay, không chạy các bước còn lại
         }
 
-        val success = thenResult is AgentKernel.PluginResult.Success
-        val summary = when (thenResult) {
-            is AgentKernel.PluginResult.Success -> "Đã thực hiện: \"${rule.rawGoalText}\"."
-            is AgentKernel.PluginResult.Failure -> "Thực hiện thất bại: \"${rule.rawGoalText}\" — ${thenResult.error}"
-            is AgentKernel.PluginResult.NeedMoreInfo -> "Thiếu thông tin để thực hiện: \"${rule.rawGoalText}\" — ${thenResult.question}"
+        val summary = if (allSuccess) {
+            "Đã thực hiện: \"${rule.rawGoalText}\"."
+        } else {
+            "Tiến trình bị gián đoạn khi thực hiện \"${rule.rawGoalText}\": " + completedSteps.joinToString(" -> ")
         }
-        insertLog(rule.id, conditionMet = true, success = success, summary = summary)
-        return success
+        insertLog(rule.id, conditionMet = true, success = allSuccess, summary = summary)
+        return allSuccess
     }
 
     private suspend fun logAndSkip(rule: GoalRuleEntity, reason: String) {
@@ -184,6 +236,8 @@ class GoalRuleEngine @Inject constructor(
     }
 
     private fun safeJson(raw: String): JSONObject = try { JSONObject(raw) } catch (e: Exception) { JSONObject() }
+
+    private fun safeJsonArray(raw: String): JSONArray = try { JSONArray(raw) } catch (e: Exception) { JSONArray() }
 
     private fun JSONObject.toParamMap(): Map<String, Any> {
         val map = mutableMapOf<String, Any>()

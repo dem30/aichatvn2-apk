@@ -18,6 +18,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import java.util.Calendar
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -162,7 +163,7 @@ class HousekeeperSkill @Inject constructor(
                 ),
                 parameters = listOf(
                     PluginParameter("op", "string", "list|toggle|delete", true),
-                    PluginParameter("id", "string", "ID việc khi op=toggle/delete", false),
+                    PluginParameter("id", "string", "ID việc hoặc từ khóa mô tả việc khi op=toggle/delete", false),
                     PluginParameter("enabled", "boolean", "Bật/tắt khi op=toggle", false, "boolean"),
                     PluginParameter("confirm", "boolean", "Xác nhận thao tác xoá (bắt buộc=true)", false, "boolean", defaultValue = false)
                 )
@@ -341,23 +342,25 @@ class HousekeeperSkill @Inject constructor(
                 success("📋 Các việc đã giao cho quản gia:\n\n$listing")
             }
             "toggle" -> {
-                val id = params["id"] as? String ?: return@withContext failure("Thiếu tham số id")
+                val idOrKeyword = params["id"] as? String ?: return@withContext failure("Thiếu tham số id")
                 val enabled = params["enabled"] as? Boolean ?: return@withContext failure("Thiếu tham số enabled")
-                val rule = database.goalRuleDao().getRuleById(id) ?: return@withContext failure("Không tìm thấy việc với id \"$id\"")
-                database.goalRuleDao().toggleRule(id, if (enabled) 1 else 0)
+                val rule = resolveGoalRule(idOrKeyword)
+                    ?: return@withContext failure("Quản gia không tìm thấy việc nào khớp với \"$idOrKeyword\". Gõ \"xem quản gia đang lo việc gì\" để kiểm tra danh sách.")
+                database.goalRuleDao().toggleRule(rule.id, if (enabled) 1 else 0)
                 success("✅ Đã ${if (enabled) "BẬT LẠI" else "TẠM DỪNG"} việc: \"${rule.rawGoalText}\".")
             }
             "delete" -> {
-                val id = params["id"] as? String ?: return@withContext failure("Thiếu tham số id")
+                val idOrKeyword = params["id"] as? String ?: return@withContext failure("Thiếu tham số id")
                 val confirmed = params["confirm"] as? Boolean ?: false
-                val rule = database.goalRuleDao().getRuleById(id) ?: return@withContext failure("Không tìm thấy việc với id \"$id\"")
+                val rule = resolveGoalRule(idOrKeyword)
+                    ?: return@withContext failure("Quản gia không tìm thấy việc nào khớp với \"$idOrKeyword\". Gõ \"xem quản gia đang lo việc gì\" để kiểm tra danh sách.")
                 if (!confirmed) {
                     return@withContext needMoreInfo(
                         listOf("confirm"),
                         "⚠️ Bạn có chắc muốn XOÁ hẳn việc \"${rule.rawGoalText}\" không? Trả lời \"có\" để xác nhận."
                     )
                 }
-                database.goalRuleDao().deleteRule(id)
+                database.goalRuleDao().deleteRule(rule.id)
                 success("🗑️ Đã xoá việc: \"${rule.rawGoalText}\".")
             }
             else -> failure("op không hợp lệ, cần là list|toggle|delete")
@@ -387,6 +390,19 @@ class HousekeeperSkill @Inject constructor(
         success(report, data = mapOf("totalChecks" to logs.size, "actionsTaken" to actionsTaken))
     }
 
+    /**
+     * Phân giải "id" người dùng nói/gõ sang đúng rule trong DB.
+     * Ưu tiên khớp UUID chính xác (id thật); nếu không thấy, coi tham số như 1 TỪ KHOÁ
+     * và tìm rule có rawGoalText chứa từ khoá đó — vì người dùng bình thường không biết
+     * và không nên phải nhớ id dạng "goal_3ca9...".
+     */
+    private suspend fun resolveGoalRule(idOrKeyword: String): GoalRuleEntity? {
+        database.goalRuleDao().getRuleById(idOrKeyword)?.let { return it }
+        val keyword = idOrKeyword.trim().lowercase()
+        if (keyword.isBlank()) return null
+        return database.goalRuleDao().getAllRules().find { it.rawGoalText.lowercase().contains(keyword) }
+    }
+
     /** Mô tả ngắn gọn 1 rule bằng tiếng Việt dễ hiểu, dùng khi tạo mới hoặc liệt kê. */
     private fun describeRule(rule: GoalRuleEntity): String {
         val schedulePart = when {
@@ -396,7 +412,21 @@ class HousekeeperSkill @Inject constructor(
             else -> "Không xác định lịch"
         }
         val checkPart = if (rule.checkPluginId.isNotBlank()) " → kiểm tra ${rule.checkPluginId}.${rule.checkAction}" else ""
-        val thenPart = if (rule.thenPluginId == "__system__") " → tự trả lời" else " → thực hiện ${rule.thenPluginId}.${rule.thenAction}"
+
+        val thenSteps = mutableListOf<String>()
+        try {
+            val arr = JSONArray(rule.thenActions)
+            for (i in 0 until arr.length()) {
+                val act = arr.optJSONObject(i) ?: continue
+                val pId = act.optString("pluginId")
+                val aName = act.optString("action")
+                thenSteps.add(if (pId == "__system__") "tự trả lời" else "$pId.$aName")
+            }
+        } catch (e: Exception) {
+            thenSteps.add("(chuỗi hành động lỗi định dạng)")
+        }
+        val thenPart = if (thenSteps.isEmpty()) "" else " → " + thenSteps.joinToString(" → ")
+
         return "$schedulePart$checkPart$thenPart"
     }
 

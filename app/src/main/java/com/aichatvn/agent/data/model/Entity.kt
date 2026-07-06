@@ -155,11 +155,16 @@ data class ScheduleEntity(
  *                           sự kiện (WebhookGatewayService, ChatSkill...) tự gọi trực tiếp.
  *
  * checkPluginId/checkAction để trống nếu rule không cần bước kiểm tra riêng (vd rule
- * "khách nhắn thì bảo bận" chạy thenAction ngay, không cần check gì trước).
+ * "khách nhắn thì bảo bận" chạy thenActions ngay, không cần check gì trước).
  *
- * conditionExpr để trống nghĩa là luôn coi điều kiện là ĐÚNG (chạy thenAction mỗi lần
+ * conditionExpr để trống nghĩa là luôn coi điều kiện là ĐÚNG (chạy thenActions mỗi lần
  * trigger). Có giá trị thì RuleConditionEvaluator sẽ so khớp với data trả về từ checkAction
- * (vd: "onlineDevices < totalDevices", "unreadAlerts > 0").
+ * (vd: "onlineDevices < totalDevices", "unreadAlerts > 0", "text contains 'abc'").
+ *
+ * ✅ thenActions: thay cho bộ 3 cột thenPluginId/thenAction/thenParams cũ (chỉ chạy được
+ * 1 hành động). Lưu 1 mảng JSON các hành động chạy TUẦN TỰ, dạng:
+ * [{"pluginId":"...","action":"...","params":{...}}, {"pluginId":"__system__","action":"reply_fixed","params":{"replyText":"..."}}]
+ * Cho phép 1 goal thực hiện nhiều bước nối tiếp (vd: bật đèn rồi gửi email xác nhận).
  */
 @Entity(
     tableName = "goal_rules",
@@ -177,9 +182,7 @@ data class GoalRuleEntity(
     val checkAction: String = "",
     val checkParams: String = "{}",
     val conditionExpr: String = "",   // rỗng = luôn đúng
-    val thenPluginId: String,
-    val thenAction: String,
-    val thenParams: String = "{}",
+    val thenActions: String,          // ✅ MỚI: mảng JSON các hành động chạy tuần tự (xem doc phía trên)
     val enabled: Int = 1,
     val lastRunAt: Long = 0L,
     val createdAt: Long,
@@ -199,8 +202,8 @@ data class GoalRunLogEntity(
     val id: String,
     val goalId: String,
     val timestamp: Long,
-    val conditionMet: Int,   // 0/1 — điều kiện có đúng để chạy thenAction hay không
-    val success: Int,        // 0/1 — thenAction (nếu chạy) có thành công hay không
+    val conditionMet: Int,   // 0/1 — điều kiện có đúng để chạy thenActions hay không
+    val success: Int,        // 0/1 — TOÀN BỘ chuỗi thenActions có chạy thành công hay không (dừng ở bước lỗi đầu tiên)
     val summary: String      // câu tóm tắt dễ hiểu, vd "Phát hiện 1 thiết bị mất kết nối, đã gửi email"
 )
 

@@ -411,7 +411,7 @@ interface FacebookPageDao {
         GoalRuleEntity::class,     // ✅ MỚI: Quy tắc quản gia "GOD mode" (housekeeper)
         GoalRunLogEntity::class    // ✅ MỚI: Log thực thi của GoalRuleEntity
     ],
-    version = 13, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 12 lên 13 (thêm goal_rules, goal_run_logs)
+    version = 14, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 13 lên 14 (gộp thenPluginId/thenAction/thenParams -> thenActions)
 
     exportSchema = false
 )
@@ -616,6 +616,58 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        // ✅ MIGRATION 13 -> 14: Gộp 3 cột thenPluginId/thenAction/thenParams thành 1 cột
+        // thenActions (mảng JSON), cho phép 1 goal_rule chạy nhiều hành động nối tiếp.
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `goal_rules_new` (
+                        `id` TEXT NOT NULL,
+                        `rawGoalText` TEXT NOT NULL,
+                        `triggerType` TEXT NOT NULL,
+                        `cron` TEXT NOT NULL DEFAULT '',
+                        `intervalMinutes` INTEGER NOT NULL DEFAULT 0,
+                        `eventName` TEXT NOT NULL DEFAULT '',
+                        `checkPluginId` TEXT NOT NULL DEFAULT '',
+                        `checkAction` TEXT NOT NULL DEFAULT '',
+                        `checkParams` TEXT NOT NULL DEFAULT '{}',
+                        `conditionExpr` TEXT NOT NULL DEFAULT '',
+                        `thenActions` TEXT NOT NULL,
+                        `enabled` INTEGER NOT NULL DEFAULT 1,
+                        `lastRunAt` INTEGER NOT NULL DEFAULT 0,
+                        `createdAt` INTEGER NOT NULL,
+                        `createdBy` TEXT NOT NULL DEFAULT 'default_user',
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+
+                // Đóng gói dữ liệu goal_rules cũ (1 hành động/rule) thành mảng JSON 1 phần tử.
+                // An toàn vì thenPluginId/thenAction ở schema v13 là NOT NULL (không có row nào null).
+                db.execSQL(
+                    """
+                    INSERT INTO `goal_rules_new` (
+                        id, rawGoalText, triggerType, cron, intervalMinutes, eventName,
+                        checkPluginId, checkAction, checkParams, conditionExpr, thenActions,
+                        enabled, lastRunAt, createdAt, createdBy
+                    )
+                    SELECT
+                        id, rawGoalText, triggerType, cron, intervalMinutes, eventName,
+                        checkPluginId, checkAction, checkParams, conditionExpr,
+                        '[{"pluginId":"' || thenPluginId || '","action":"' || thenAction || '","params":' || thenParams || '}]',
+                        enabled, lastRunAt, createdAt, createdBy
+                    FROM `goal_rules`
+                    """.trimIndent()
+                )
+
+                db.execSQL("DROP TABLE `goal_rules`")
+                db.execSQL("ALTER TABLE `goal_rules_new` RENAME TO `goal_rules`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_rules_enabled` ON `goal_rules` (`enabled`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_rules_triggerType` ON `goal_rules` (`triggerType`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -635,7 +687,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_9_10,
                         MIGRATION_10_11,
                         MIGRATION_11_12, // ✅ ĐĂNG KÝ: Bản di cư isRead mới cho chat_messages
-                        MIGRATION_12_13  // ✅ ĐĂNG KÝ: Bản di cư goal_rules + goal_run_logs mới
+                        MIGRATION_12_13, // ✅ ĐĂNG KÝ: Bản di cư goal_rules + goal_run_logs mới
+                        MIGRATION_13_14  // ✅ ĐĂNG KÝ: Bản di cư gộp thenPluginId/thenAction/thenParams -> thenActions
                     )
                     .build()
                 INSTANCE = instance

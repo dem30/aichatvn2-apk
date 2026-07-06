@@ -6,6 +6,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
@@ -74,20 +75,26 @@ class GoalPlanner @Inject constructor(
             append("  \"checkPluginId\": \"\" (để trống nếu không cần bước kiểm tra riêng trước khi hành động),\n")
             append("  \"checkAction\": \"\",\n")
             append("  \"checkParams\": {},\n")
-            append("  \"conditionExpr\": \"\" (để trống nếu luôn hành động mỗi lần trigger; nếu có, viết dạng đơn giản \\\"truong_du_lieu > gia_tri\\\" dựa trên field mà checkAction trả về, vd \\\"onlineDevices < totalDevices\\\"),\n")
-            append("  \"thenPluginId\": \"...\",\n")
-            append("  \"thenAction\": \"...\",\n")
-            append("  \"thenParams\": {},\n")
+            append("  \"conditionExpr\": \"\" (để trống nếu luôn hành động mỗi lần trigger; hỗ trợ so sánh số \\\"truong > gia_tri\\\" như \\\"onlineDevices < totalDevices\\\", hoặc so khớp chuỗi \\\"truong contains 'abc'\\\" / \\\"truong matches_regex '\\\\\\\\d{9,11}'\\\"),\n")
+            append("  \"thenActions\": [\n")
+            append("     {\"pluginId\": \"...\", \"action\": \"...\", \"params\": {}}\n")
+            append("  ] (mảng các hành động chạy TUẦN TỰ, theo đúng thứ tự người dùng muốn; luôn có ÍT NHẤT 1 phần tử),\n")
             append("  \"needClarification\": false,\n")
             append("  \"clarificationQuestion\": \"\"\n")
             append("}\n\n")
             append("QUY TẮC:\n")
+            append("🚨 QUY TẮC PHÂN TÁCH QUAN TRỌNG (ANTI-TIMEOUT BIAS):\n")
+            append("0. Với câu dạng lọc/tìm kiếm trong TIN NHẮN LỊCH SỬ (vd: \"nếu tin nhắn có số điện thoại/chốt đơn thì báo cáo\"):\n")
+            append("   - Bạn PHẢI dùng triggerType=\"SCHEDULE\" (vd: chạy hàng giờ hoặc cuối ngày), KHÔNG dùng triggerType=\"EVENT\".\n")
+            append("   - Đặt checkPluginId=\"chat\", checkAction=\"list\" hoặc checkAction=\"search\" để quét lịch sử tin nhắn cục bộ từ SQLite.\n")
+            append("   - Lý do: EVENT chạy đồng bộ ngay khi khách nhắn tin tới, dùng EVENT để quét/lọc nội dung sẽ chặn luồng nhận tin nhắn thời gian thực và gây nghẽn mạng.\n")
             append("1. Yêu cầu LẶP LẠI THEO THỜI GIAN (hàng ngày, mỗi giờ, mỗi X phút...) -> triggerType=\"SCHEDULE\".\n")
-            append("2. Yêu cầu liên quan TIN NHẮN KHÁCH GỬI TỚI (vd \"khách nhắn thì bảo đang bận\") -> triggerType=\"EVENT\", eventName=\"incoming_message\", thenPluginId=\"__system__\", thenAction=\"reply_fixed\", thenParams={\"replyText\": \"nội dung trả lời cố định\"}.\n")
-            append("3. Câu dạng 'kiểm tra X, nếu có vấn đề thì Y' -> checkPluginId/checkAction là bước X, thenPluginId/thenAction là hành động Y (thường là gửi email/thông báo).\n")
-            append("4. Câu dạng 'làm Z hàng ngày/định kỳ' KHÔNG có điều kiện kiểm tra -> để checkPluginId/checkAction/conditionExpr rỗng, thenPluginId/thenAction chính là hành động Z.\n")
-            append("5. Nếu KHÔNG chắc chọn đúng plugin/action nào, hoặc thiếu thông tin bắt buộc (email người nhận, tên/khu vực thiết bị...) -> needClarification=true kèm câu hỏi lại bằng tiếng Việt, các trường còn lại để rỗng.\n")
-            append("6. Không giải thích gì thêm, chỉ xuất JSON thô.</sys>\n\n")
+            append("2. Yêu cầu liên quan TIN NHẮN KHÁCH GỬI TỚI dạng phản hồi cố định tức thời (vd \"khách nhắn thì bảo đang bận\") -> triggerType=\"EVENT\", eventName=\"incoming_message\", thenActions=[{\"pluginId\":\"__system__\",\"action\":\"reply_fixed\",\"params\":{\"replyText\":\"nội dung trả lời cố định\"}}] (CHỈ 1 phần tử, không kèm hành động khác).\n")
+            append("3. Câu dạng 'kiểm tra X, nếu có vấn đề thì Y' -> checkPluginId/checkAction là bước X, thenActions là (các) hành động Y (thường là gửi email/thông báo).\n")
+            append("4. Câu dạng 'làm Z hàng ngày/định kỳ' KHÔNG có điều kiện kiểm tra -> để checkPluginId/checkAction/conditionExpr rỗng, thenActions chính là hành động Z.\n")
+            append("5. Nếu người dùng yêu cầu NHIỀU việc nối tiếp trong 1 câu (vd \"bật đèn rồi gửi email báo tôi\") -> phân rã thành nhiều phần tử trong thenActions theo đúng thứ tự.\n")
+            append("6. Nếu KHÔNG chắc chọn đúng plugin/action nào, hoặc thiếu thông tin bắt buộc (email người nhận, tên/khu vực thiết bị...) -> needClarification=true kèm câu hỏi lại bằng tiếng Việt, các trường còn lại để rỗng.\n")
+            append("7. Không giải thích gì thêm, chỉ xuất JSON thô.</sys>\n\n")
             append("<candidates>\n$candidateLines\n</candidates>\n")
             append("<goal>$goalText</goal>\n")
             append("<output>")
@@ -116,9 +123,7 @@ class GoalPlanner @Inject constructor(
         val checkAction = json.optString("checkAction", "")
         val checkParams = json.optJSONObject("checkParams")?.toString() ?: "{}"
         val conditionExpr = json.optString("conditionExpr", "")
-        val thenPluginId = json.optString("thenPluginId", "")
-        val thenAction = json.optString("thenAction", "")
-        val thenParams = json.optJSONObject("thenParams")?.toString() ?: "{}"
+        val thenActionsArray = json.optJSONArray("thenActions") ?: JSONArray()
 
         if (triggerType != "SCHEDULE" && triggerType != "EVENT") {
             return GoalPlanResult.Failed("AI trả về triggerType không hợp lệ: \"$triggerType\".")
@@ -129,15 +134,25 @@ class GoalPlanner @Inject constructor(
             )
         }
 
-        // Chống hallucination: validate pluginId/action phải tồn tại thật trong manifest
-        if (thenPluginId.isBlank() || thenAction.isBlank()) {
+        // Chống hallucination: mảng thenActions phải có ít nhất 1 phần tử, và MỖI phần tử
+        // phải trỏ tới pluginId/action CÓ THẬT trong manifest (trừ "__system__").
+        if (thenActionsArray.length() == 0) {
             return GoalPlanResult.Failed("AI không xác định được hành động cần thực hiện. Vui lòng mô tả rõ hơn.")
         }
-        if (thenPluginId != "__system__") {
-            val plugin = routablePlugins.find { it.manifest.id == thenPluginId }
-                ?: return GoalPlanResult.Failed("AI chọn plugin \"$thenPluginId\" không tồn tại. Vui lòng mô tả yêu cầu rõ hơn.")
-            plugin.manifest.actions.find { it.name == thenAction }
-                ?: return GoalPlanResult.Failed("AI chọn hành động \"$thenAction\" không tồn tại trong plugin \"$thenPluginId\".")
+        for (i in 0 until thenActionsArray.length()) {
+            val act = thenActionsArray.optJSONObject(i)
+                ?: return GoalPlanResult.Failed("Cấu trúc hành động thứ ${i + 1} trong thenActions không hợp lệ.")
+            val pId = act.optString("pluginId")
+            val aName = act.optString("action")
+            if (pId.isBlank() || aName.isBlank()) {
+                return GoalPlanResult.Failed("Hành động thứ ${i + 1} trong chuỗi bị thiếu pluginId/action.")
+            }
+            if (pId != "__system__") {
+                val plugin = routablePlugins.find { it.manifest.id == pId }
+                    ?: return GoalPlanResult.Failed("AI chọn plugin \"$pId\" không tồn tại. Vui lòng mô tả yêu cầu rõ hơn.")
+                plugin.manifest.actions.find { it.name == aName }
+                    ?: return GoalPlanResult.Failed("AI chọn hành động \"$aName\" không tồn tại trong plugin \"$pId\".")
+            }
         }
         if (checkPluginId.isNotBlank()) {
             val checkPlugin = routablePlugins.find { it.manifest.id == checkPluginId }
@@ -172,9 +187,7 @@ class GoalPlanner @Inject constructor(
             checkAction = checkAction,
             checkParams = checkParams,
             conditionExpr = conditionExpr,
-            thenPluginId = thenPluginId,
-            thenAction = thenAction,
-            thenParams = thenParams,
+            thenActions = thenActionsArray.toString(),
             enabled = 1,
             lastRunAt = 0L,
             createdAt = System.currentTimeMillis(),

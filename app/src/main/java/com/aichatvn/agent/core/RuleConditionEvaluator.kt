@@ -9,10 +9,15 @@ package com.aichatvn.agent.core
  * Hỗ trợ: >=, <=, ==, !=, >, < (so sánh số) và ==, != (so sánh chuỗi/bool).
  * conditionExpr rỗng hoặc chỉ có tên field (không toán tử) -> coi field đó là boolean/truthy.
  */
+import java.util.regex.Pattern
+
 object RuleConditionEvaluator {
 
-    // Thứ tự dài trước để tránh match nhầm ">=" thành ">"
-    private val OPERATORS = listOf(">=", "<=", "==", "!=", ">", "<")
+    // ✅ QUAN TRỌNG VỀ THỨ TỰ: "contains"/"matches_regex" phải được kiểm tra TRƯỚC các toán tử
+    // ký hiệu (>, <, ...). Lý do: vế phải của "contains"/"matches_regex" là literal tự do
+    // (vd text contains '>10k'), nếu ưu tiên ">" trước sẽ cắt nhầm chuỗi tại ký tự đó.
+    // Trong nhóm ký hiệu, thứ tự dài trước để tránh match nhầm ">=" thành ">".
+    private val OPERATORS = listOf("matches_regex", "contains", ">=", "<=", "==", "!=", ">", "<")
 
     fun evaluate(expr: String, data: Map<*, *>): Boolean {
         val trimmed = expr.trim()
@@ -50,6 +55,18 @@ object RuleConditionEvaluator {
     }
 
     private fun compare(left: Any?, right: Any?, op: String): Boolean {
+        val leftStr = left?.toString() ?: ""
+        val rightStr = right?.toString() ?: ""
+
+        when (op) {
+            "contains" -> return leftStr.lowercase().contains(rightStr.lowercase())
+            "matches_regex" -> return try {
+                Pattern.compile(rightStr).matcher(leftStr).find()
+            } catch (e: Exception) {
+                false // regex sai cú pháp do LLM sinh lỗi -> coi như không khớp, không crash rule engine
+            }
+        }
+
         if (left is Number && right is Number) {
             val l = left.toDouble()
             val r = right.toDouble()
@@ -64,8 +81,8 @@ object RuleConditionEvaluator {
             }
         }
         return when (op) {
-            "==" -> left?.toString() == right?.toString()
-            "!=" -> left?.toString() != right?.toString()
+            "==" -> leftStr.equals(rightStr, ignoreCase = true)
+            "!=" -> !leftStr.equals(rightStr, ignoreCase = true)
             else -> false // so sánh lớn/bé chỉ hỗ trợ số, tránh kết quả sai lệch khó lường
         }
     }
