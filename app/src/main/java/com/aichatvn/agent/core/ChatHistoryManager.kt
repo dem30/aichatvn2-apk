@@ -1,6 +1,5 @@
 package com.aichatvn.agent.core
 
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,69 +32,36 @@ class ChatHistoryManager @Inject constructor() {
     // Hàng đợi lưu giữ các lệnh vừa bị hủy/hết hạn để hiển thị thông báo cho người dùng
     private val expiredIntents = mutableListOf<PendingIntent>()
 
-    // ✅ Quản lý trạng thái khóa cứng điều khiển theo từng USERNAME để tránh rò rỉ toàn cục [1]
+    // Quản lý trạng thái khóa cứng điều khiển 1 plugin (Không dùng timeout)
     data class LockedControl(val pluginId: String)
-    private val lockedControls = ConcurrentHashMap<String, LockedControl>()
-    private val pendingLockRequests = ConcurrentHashMap<String, String>()
+    private var lockedControl: LockedControl? = null
+    var pendingLockRequest: String? = null
+        private set
 
-    // ✅ ĐÃ SỬA — LỖI BIÊN DỊCH GỐC: property `val pendingLockRequest` ở đây sinh ra hàm JVM
-    // `getPendingLockRequest()` (theo quy ước getter của Kotlin), TRÙNG chữ ký JVM với hàm
-    // `fun getPendingLockRequest(): String?` khai báo tường minh bên dưới (dòng ~87) ->
-    // "Platform declaration clash". Không có nơi nào trong code gọi property này qua cú pháp
-    // `.pendingLockRequest` (chỉ có `getPendingLockRequest(username)` được dùng ở AgentKernel),
-    // nên xoá thẳng property dư thừa này, giữ lại hàm tường minh làm nguồn chân lý duy nhất.
-
-    // ─── CÁC PHƯƠNG THỨC NẠP CHỒNG (OVERLOADS) ĐỂ KHỚP CẢ HAI PHIÊN BẢN CODE ───
-
+    @Synchronized
     fun setPendingLockRequest(pluginId: String) { 
-        setPendingLockRequest("default_user", pluginId) 
+        pendingLockRequest = pluginId 
     }
 
-    fun setPendingLockRequest(username: String, pluginId: String) { 
-        pendingLockRequests[username] = pluginId 
-    }
-
+    @Synchronized
     fun clearLockRequest() { 
-        clearLockRequest("default_user") 
+        pendingLockRequest = null 
     }
 
-    fun clearLockRequest(username: String) { 
-        pendingLockRequests.remove(username) 
-    }
-
+    @Synchronized
     fun lockPlugin(pluginId: String) {
-        lockPlugin("default_user", pluginId)
+        lockedControl = LockedControl(pluginId)
     }
 
-    fun lockPlugin(username: String, pluginId: String) {
-        lockedControls[username] = LockedControl(pluginId)
-    }
-
+    @Synchronized
     fun getLockedPlugin(): String? {
-        return getLockedPlugin("default_user")
+        return lockedControl?.pluginId
     }
 
-    fun getLockedPlugin(username: String): String? {
-        return lockedControls[username]?.pluginId
-    }
-
+    @Synchronized
     fun unlockPlugin() { 
-        unlockPlugin("default_user") 
+        lockedControl = null 
     }
-
-    fun unlockPlugin(username: String) { 
-        lockedControls.remove(username) 
-    }
-
-    fun getPendingLockRequest(): String? {
-        return getPendingLockRequest("default_user")
-    }
-
-    fun getPendingLockRequest(username: String): String? {
-        return pendingLockRequests[username]
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
 
     @Synchronized
     fun addTurn(userMessage: String, aiResponse: String) {
@@ -205,8 +171,8 @@ class ChatHistoryManager @Inject constructor() {
         history.clear()
         lastMentionedDeviceId = null
         pendingIntents.clear()
-        lockedControls.clear()
-        pendingLockRequests.clear()
+        lockedControl = null
+        pendingLockRequest = null
         expiredIntents.clear()
     }
 }

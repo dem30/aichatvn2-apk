@@ -442,13 +442,7 @@ class AgentKernel @Inject constructor(
             "📚 Q: ${match.qa.question}\n   A: ${match.qa.answer} (độ tương tự: ${String.format("%.2f", match.similarity)})"
         }
     }
-
-
-
-    // Trong AgentKernel.kt — Cập nhật hàm tryDeviceCommand:
-
-
-
+    
     suspend fun tryDeviceCommand(
         userMessage: String,
         username: String = "default_user"
@@ -483,15 +477,13 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        // ✅ ĐÃ SỬA: Truyền username để kiểm tra yêu cầu khóa biệt lập theo phiên [1]
-        chatHistoryManager.getPendingLockRequest(username)?.let { pluginId ->
-            return handleLockConfirmation(userMessage, pluginId, username)
+        chatHistoryManager.pendingLockRequest?.let { pluginId ->
+            return handleLockConfirmation(userMessage, pluginId)
         }
 
-        // ✅ ĐÃ SỬA: Lấy trạng thái khóa riêng biệt của riêng user này [1]
-        chatHistoryManager.getLockedPlugin(username)?.let { lockedId ->
+        chatHistoryManager.getLockedPlugin()?.let { lockedId ->
             if (isExitLockPhrase(userMessage)) {
-                chatHistoryManager.unlockPlugin(username) // Mở khóa riêng biệt cho user này [1]
+                chatHistoryManager.unlockPlugin()
                 val matchedPlugin = plugins.find { it.manifest.id == lockedId }
                 val displayName = matchedPlugin?.manifest?.name ?: lockedId
                 return RouterOutcome.Matched(
@@ -510,8 +502,7 @@ class AgentKernel @Inject constructor(
         }
 
         detectLockTrigger(userMessage)?.let { targetPluginId ->
-            // ✅ ĐÃ SỬA: Truyền username để ghi nhận yêu cầu khóa riêng biệt [1]
-            chatHistoryManager.setPendingLockRequest(username, targetPluginId)
+            chatHistoryManager.setPendingLockRequest(targetPluginId)
             val matchedPlugin = plugins.find { it.manifest.id == targetPluginId }
             val displayName = matchedPlugin?.manifest?.name ?: targetPluginId
             return RouterOutcome.Matched(
@@ -522,34 +513,6 @@ class AgentKernel @Inject constructor(
         val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId)
         return result.routerOutcome ?: RouterOutcome.RouterFailed("Pipeline execution error")
     }
-
-// Cập nhật thêm tham số username cho hàm handleLockConfirmation:
-
-private fun handleLockConfirmation(userMessage: String, pluginId: String, username: String): RouterOutcome {
-        val matchedPlugin = plugins.find { it.manifest.id == pluginId }
-        val displayName = matchedPlugin?.manifest?.name ?: pluginId
-        return when (parseYesNo(userMessage)) {
-            true -> {
-                chatHistoryManager.lockPlugin(username, pluginId) // Khóa riêng biệt cho user này [1]
-                chatHistoryManager.clearLockRequest(username)
-                RouterOutcome.Matched(
-                    DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
-                )
-            }
-            false -> {
-                chatHistoryManager.clearLockRequest(username)
-                RouterOutcome.Matched(
-                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
-                )
-            }
-            null -> RouterOutcome.Matched(
-                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Xác nhận vào chế độ điều khiển riêng cho \"$displayName\" chứ? (có/không)")))
-            )
-        }
-    }
-
-
-    
 
     private suspend fun runPipeline(
         userMessage: String,
@@ -1463,28 +1426,7 @@ private fun handleLockConfirmation(userMessage: String, pluginId: String, userna
         }
 
         return when {
-            resolvedIntents.isEmpty() -> {
-                // ✅ ĐẶC THÙ CHO GOAL: Nếu đang điều khiển riêng Quản gia ("housekeeper") và nói câu ra lệnh tự nhiên,
-                // tự động fallback chuyển sang create_goal luôn mà không đẩy xuống Chat thường.
-                val lockedId = chatHistoryManager.getLockedPlugin(context.username)
-                if (lockedId == "housekeeper") {
-                    val housekeeperPlugin = devicePlugins.find { it.manifest.id == "housekeeper" }
-                    if (housekeeperPlugin != null) {
-                        val createGoalAction = housekeeperPlugin.manifest.actions.find { it.name == "create_goal" }
-                        if (createGoalAction != null) {
-                            val resolvedParams = resolveParametersWithMeta(
-                                parameters = createGoalAction.parameters,
-                                inputParams = mapOf("goalText" to context.resolvedQuery),
-                                context = context,
-                                excludeIntentId = null,
-                                depth = 0
-                            )
-                            return Layer3Result.Single(housekeeperPlugin, Intent("housekeeper", "create_goal", resolvedParams))
-                        }
-                    }
-                }
-                Layer3Result.NoMatch
-            }
+            resolvedIntents.isEmpty() -> Layer3Result.NoMatch
             resolvedIntents.size == 1 -> {
                 val (plugin, intent) = resolvedIntents.first()
                 Layer3Result.Single(plugin, intent)
@@ -1605,11 +1547,6 @@ private fun handleLockConfirmation(userMessage: String, pluginId: String, userna
 
         val localMatch = context.localEntities[param.semanticType]
         if (localMatch != null) return localMatch
-
-        // ✅ ĐẶC THÙ CHO GOAL TEXT: Tự động bơm nguyên văn câu lệnh (sau xử lý đại từ) vào tham số goalText
-        if (param.name == "goalText" && (currentValue == null || isPlh)) {
-            return context.resolvedQuery
-        }
 
         return currentValue ?: ""
     }
@@ -1814,110 +1751,55 @@ private fun handleLockConfirmation(userMessage: String, pluginId: String, userna
         return executionResult
     }
 
-
-
-
-
-
-
-
-    // Trong AgentKernel.kt — Hàm tryResolvePendingIntent:
-
-private suspend fun tryResolvePendingIntent(
-    pending: PendingIntent,
-    userMessage: String,
-    devicePlugins: List<Plugin>,
-    traceId: String,
-    mode: PipelineMode = PipelineMode.EXECUTE
-): DeviceCommandResult? {
-    val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
-        chatHistoryManager.clearPendingIntent()
-        return null
-    }
-    val targetAction = targetPlugin.manifest.actions.find { it.name == pending.action } ?: run {
-        chatHistoryManager.clearPendingIntent()
-        return null
-    }
-
-    val noProgressCount = pending.knownParams["_noProgressCount"]?.toString()?.toIntOrNull() ?: 0
-    if (noProgressCount >= 2) {
-        logger.w("AgentKernel", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> xóa pending")
-        if (mode == PipelineMode.EXECUTE) {
-            chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
-            val failedPending = pending.copy(
-                knownParams = pending.knownParams + mapOf("_cancelReason" to "no_progress")
-            )
-            chatHistoryManager.addExpiredNotification(failedPending)
+    private suspend fun tryResolvePendingIntent(
+        pending: PendingIntent,
+        userMessage: String,
+        devicePlugins: List<Plugin>,
+        traceId: String,
+        mode: PipelineMode = PipelineMode.EXECUTE
+    ): DeviceCommandResult? {
+        val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
+            chatHistoryManager.clearPendingIntent()
+            return null
         }
-        return null
-    }
+        val targetAction = targetPlugin.manifest.actions.find { it.name == pending.action } ?: run {
+            chatHistoryManager.clearPendingIntent()
+            return null
+        }
 
-    val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
-    val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
 
-    val localEntities = mutableMapOf<String, Any>()
-    EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
-    DateTimeParser.parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
-    DateTimeParser.parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
-
-    val heuristicFilled = mutableMapOf<String, Any>()
-
-    // ── ✅ BẢN SỬA ĐỔI: Giải mã số chọn lọc và ghép dồn cho Quản gia ──
-    if (pending.pluginId == "housekeeper" && pending.action == "create_goal") {
-        val oldGoalText = pending.knownParams["goalText"]?.toString() ?: ""
-        if (oldGoalText.isNotBlank()) {
-            val userReply = userMessage.trim()
-            val asked = pending.askedQuestion
-            var resolvedValue = userReply
+        val noProgressCount = pending.knownParams["_noProgressCount"]?.toString()?.toIntOrNull() ?: 0
+        if (noProgressCount >= 2) {
+            logger.w("AgentKernel", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> xóa pending")
             
-            // Trích xuất số chỉ mục người dùng chọn (ví dụ: "1", "chọn 1")
-            val numberRegex = Regex("\\b(\\d+)\\b")
-            val match = numberRegex.find(userReply)
-            if (match != null) {
-                val num = match.groupValues[1]
-                // Tìm dòng khớp dạng "Số 1. <tên>" hoặc "1. <tên>" trong câu hỏi trước
-                val optionRegex = Regex("(?i)\\b(?:số\\s+)?$num\\.\\s*([^\\n]+)")
-                val optionMatch = optionRegex.find(asked)
-                if (optionMatch != null) {
-                    resolvedValue = optionMatch.groupValues[1].trim()
-                    // Nếu giá trị có chứa ID trong ngoặc đơn, bóc tách lấy ID
-                    val bracketRegex = Regex("\\(([^)]+)\\)")
-                    val bracketMatch = bracketRegex.find(resolvedValue)
-                    if (bracketMatch != null) {
-                        resolvedValue = bracketMatch.groupValues[1].trim()
-                    }
-                }
+            // CHỈ thay đổi trạng thái hệ thống khi chạy thực tế (EXECUTE), không chạy trong DIAGNOSTIC
+            if (mode == PipelineMode.EXECUTE) {
+                chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+                val failedPending = pending.copy(
+                    knownParams = pending.knownParams + mapOf("_cancelReason" to "no_progress")
+                )
+                chatHistoryManager.addExpiredNotification(failedPending)
             }
-            
-            val combined = "$oldGoalText $resolvedValue"
-            heuristicFilled["goalText"] = combined
-            logger.d("AgentKernel", "[$traceId] 🤵 Giải mã số chọn lọc và ghép dồn vào goalText: '$combined'")
+            return null
         }
-    }
-    // ───────────────────────────────────────────────────────────────
-
-    
 
 
-    
-    // ─────────────────────────────────────────────────────────────
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
 
-    for (param in pending.missingParams) {
-        val trimmed = userMessage.trim()
-        val isNested = param.startsWith("params.")
-        val actualKey = if (isNested) param.removePrefix("params.") else param
-        
-        // ... (giữ nguyên toàn bộ logic vòng lặp for phía dưới của hàm tryResolvePendingIntent cũ)
-          
-          
-          
-          
-          
-          
-          
-          
-          
-          val paramMeta = if (isNested) {
+        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
+
+        val localEntities = mutableMapOf<String, Any>()
+        EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
+        DateTimeParser.parseVietnameseTime(userMessage)?.let { localEntities["cron"] = it }
+        DateTimeParser.parseVietnameseInterval(userMessage)?.let { localEntities["intervalMinutes"] = it }
+
+        val heuristicFilled = mutableMapOf<String, Any>()
+        for (param in pending.missingParams) {
+            val trimmed = userMessage.trim()
+            val isNested = param.startsWith("params.")
+            val actualKey = if (isNested) param.removePrefix("params.") else param
+
+            val paramMeta = if (isNested) {
                 val targetPluginId = pending.knownParams["plugin_id"]?.toString()
                     ?: pending.knownParams["pluginId"]?.toString()
                     ?: pending.knownParams["plugin"]?.toString() ?: ""
@@ -2245,9 +2127,7 @@ private suspend fun tryResolvePendingIntent(
 
         val routerPrompt = buildString {
             append("<sys>Bạn là bộ định tuyến ý định (Intent Router) thông minh cho hệ thống Smarthome.\n")
-            append("Nhiệm vụ: Phân tích câu nói của người dùng và chuyển đổi thành JSON thô chính xác: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
-            append("🚨 LƯU Ý QUAN TRỌNG: Các ứng viên có định dạng \"pluginId.actionName\" (ví dụ: \"housekeeper.create_goal\"). ")
-            append("Khi gán, trường \"plugin\" phải là \"pluginId\" đứng trước dấu chấm (ví dụ: \"housekeeper\"), và \"action\" là \"actionName\" đứng sau dấu chấm (ví dụ: \"create_goal\"). Tuyệt đối không viết dồn cả cụm vào \"plugin\".\n\n")
+            append("Nhiệm vụ: Phân tích câu nói của người dùng và chuyển đổi thành JSON thô chính xác: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n\n")
             append("🚨 QUY TẮC CHỐNG GÁN LỆNH NHẦM (ANTI-TOOL-USE BIAS):\n")
             append("1. Chỉ định tuyến sang một ứng viên (candidate) bên dưới KHI VÀ CHỈ KHI người dùng đưa ra một YÊU CẦU HÀNH ĐỘNG RÕ RÀNG (ví dụ: bật, tắt, đóng, mở, quét, gửi email cụ thể, thiết lập lịch hẹn giờ thực tế, kiểm tra trạng thái thiết bị).\n")
             append("2. Nếu câu nói là CÂU HỎI THÔNG TIN, GIẢI THÍCH LÝ THUYẾT, ĐỊNH NGHĨA, CHÀO HỎI, TÁN GẪU (ví dụ: 'camera có bao nhiêu loại', 'email hoạt động thế nào', 'tại sao đèn không sáng', 'thời tiết thế nào'...): Bạn TUYỆT ĐỐI KHÔNG ĐƯỢC gán vào bất kỳ lệnh thiết bị nào, cho dù câu nói có chứa từ khóa 'camera', 'email' hay 'đèn'. Hãy xuất chính xác: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
@@ -2293,21 +2173,9 @@ private suspend fun tryResolvePendingIntent(
         return try {
             val cleaned = response.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
             val json = JSONObject(cleaned)
-
-            var pluginId = json.getString("plugin")
-            val action = json.getString("action")
-
-            // ✅ SỬA LỖI AI GÁN NHẦM: Nếu LLM viết cả cụm "housekeeper.create_goal" vào ô "plugin"
-            if (pluginId.contains(".") && action.isNotBlank()) {
-                val parts = pluginId.split(".")
-                if (parts.size == 2 && parts[1] == action) {
-                    pluginId = parts[0]
-                }
-            }
-
             Intent(
-                pluginId = pluginId,
-                action = action,
+                pluginId = json.getString("plugin"),
+                action = json.getString("action"),
                 params = json.optJSONObject("params")?.toMap() ?: emptyMap()
             )
         } catch (e: Exception) {
@@ -2724,11 +2592,10 @@ private suspend fun tryResolvePendingIntent(
         }
     }
 
-    // ✅ ĐÃ SỬA: Chuyển đổi sang lấy trạng thái khóa biệt lập theo từng username [1]
-    fun getLockedPluginId(username: String = "default_user"): String? = chatHistoryManager.getLockedPlugin(username)
+    fun getLockedPluginId(): String? = chatHistoryManager.getLockedPlugin()
 
-    fun getLockedPluginName(username: String = "default_user"): String? {
-        val id = getLockedPluginId(username) ?: return null
+    fun getLockedPluginName(): String? {
+        val id = getLockedPluginId() ?: return null
         return plugins.find { it.manifest.id == id }?.manifest?.name ?: id
     }
 

@@ -286,64 +286,6 @@ interface ScheduleDao {
     suspend fun toggleSchedule(id: String, enabled: Int)
 }
 
-// ==================== GOAL RULE DAO (Housekeeper "GOD mode") ====================
-
-@Dao
-interface GoalRuleDao {
-    @Query("SELECT * FROM goal_rules ORDER BY createdAt DESC")
-    fun getAllRulesFlow(): Flow<List<GoalRuleEntity>>
-
-    @Query("SELECT * FROM goal_rules ORDER BY createdAt DESC")
-    suspend fun getAllRules(): List<GoalRuleEntity>
-
-    @Query("SELECT * FROM goal_rules WHERE id = :id")
-    suspend fun getRuleById(id: String): GoalRuleEntity?
-
-    // Dùng bởi RuleEngine polling loop: chỉ lấy rule SCHEDULE đang bật
-    @Query("SELECT * FROM goal_rules WHERE triggerType = 'SCHEDULE' AND enabled = 1")
-    suspend fun getEnabledScheduleRules(): List<GoalRuleEntity>
-
-    // Dùng bởi nơi phát sinh sự kiện (vd WebhookGatewayService khi nhận tin nhắn khách)
-    @Query("SELECT * FROM goal_rules WHERE triggerType = 'EVENT' AND eventName = :eventName AND enabled = 1")
-    suspend fun getEnabledEventRules(eventName: String): List<GoalRuleEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertRule(rule: GoalRuleEntity)
-
-    @Update
-    suspend fun updateRule(rule: GoalRuleEntity)
-
-    @Query("UPDATE goal_rules SET lastRunAt = :timestamp WHERE id = :id")
-    suspend fun updateLastRun(id: String, timestamp: Long)
-
-    @Query("UPDATE goal_rules SET enabled = :enabled WHERE id = :id")
-    suspend fun toggleRule(id: String, enabled: Int)
-
-    @Query("DELETE FROM goal_rules WHERE id = :id")
-    suspend fun deleteRule(id: String)
-}
-
-@Dao
-interface GoalRunLogDao {
-    @Query("SELECT * FROM goal_run_logs ORDER BY timestamp DESC LIMIT :limit")
-    fun getRecentLogsFlow(limit: Int = 50): Flow<List<GoalRunLogEntity>>
-
-    @Query("SELECT * FROM goal_run_logs WHERE goalId = :goalId ORDER BY timestamp DESC")
-    suspend fun getLogsForGoal(goalId: String): List<GoalRunLogEntity>
-
-    // Dùng bởi Housekeeper.check_status để show "đã tự làm N việc hôm nay"
-    @Query("SELECT * FROM goal_run_logs WHERE timestamp >= :sinceMidnight ORDER BY timestamp DESC")
-    suspend fun getLogsSince(sinceMidnight: Long): List<GoalRunLogEntity>
-
-    @Query("SELECT COUNT(*) FROM goal_run_logs WHERE timestamp >= :sinceMidnight AND conditionMet = 1")
-    suspend fun countActionsTakenSince(sinceMidnight: Long): Int
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertLog(log: GoalRunLogEntity)
-
-    @Query("DELETE FROM goal_run_logs WHERE timestamp < :beforeTimestamp")
-    suspend fun deleteLogsOlderThan(beforeTimestamp: Long)
-}
 
 // ==================== APP CONFIG DAO ====================
 
@@ -407,11 +349,9 @@ interface FacebookPageDao {
         TuyaDeviceEntity::class,
         AppConfigEntity::class,
         CustomerEntity::class,
-        FacebookPageEntity::class, // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
-        GoalRuleEntity::class,     // ✅ MỚI: Quy tắc quản gia "GOD mode" (housekeeper)
-        GoalRunLogEntity::class    // ✅ MỚI: Log thực thi của GoalRuleEntity
+        FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
     ],
-    version = 14, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 13 lên 14 (gộp thenPluginId/thenAction/thenParams -> thenActions)
+    version = 12, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 11 lên 12 (thêm isRead cho chat_messages)
 
     exportSchema = false
 )
@@ -427,8 +367,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun customerDao(): CustomerDao
     abstract fun appConfigDao(): AppConfigDao
     abstract fun facebookPageDao(): FacebookPageDao // ✅ ĐĂNG KÝ DAO của Facebook Pages
-    abstract fun goalRuleDao(): GoalRuleDao         // ✅ MỚI
-    abstract fun goalRunLogDao(): GoalRunLogDao     // ✅ MỚI
 
     companion object {
         @Volatile
@@ -566,108 +504,6 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ MIGRATION 12 -> 13: Thêm bảng goal_rules + goal_run_logs cho tính năng
-        // "Quản gia GOD mode" — quy tắc có điều kiện (check -> condition -> then) và
-        // trigger theo sự kiện, khác với schedules (luôn chạy thẳng 1 action theo lịch).
-        private val MIGRATION_12_13 = object : Migration(12, 13) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `goal_rules` (
-                        `id` TEXT NOT NULL,
-                        `rawGoalText` TEXT NOT NULL,
-                        `triggerType` TEXT NOT NULL,
-                        `cron` TEXT NOT NULL DEFAULT '',
-                        `intervalMinutes` INTEGER NOT NULL DEFAULT 0,
-                        `eventName` TEXT NOT NULL DEFAULT '',
-                        `checkPluginId` TEXT NOT NULL DEFAULT '',
-                        `checkAction` TEXT NOT NULL DEFAULT '',
-                        `checkParams` TEXT NOT NULL DEFAULT '{}',
-                        `conditionExpr` TEXT NOT NULL DEFAULT '',
-                        `thenPluginId` TEXT NOT NULL,
-                        `thenAction` TEXT NOT NULL,
-                        `thenParams` TEXT NOT NULL DEFAULT '{}',
-                        `enabled` INTEGER NOT NULL DEFAULT 1,
-                        `lastRunAt` INTEGER NOT NULL DEFAULT 0,
-                        `createdAt` INTEGER NOT NULL,
-                        `createdBy` TEXT NOT NULL DEFAULT 'default_user',
-                        PRIMARY KEY(`id`)
-                    )
-                    """.trimIndent()
-                )
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_rules_enabled` ON `goal_rules` (`enabled`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_rules_triggerType` ON `goal_rules` (`triggerType`)")
-
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `goal_run_logs` (
-                        `id` TEXT NOT NULL,
-                        `goalId` TEXT NOT NULL,
-                        `timestamp` INTEGER NOT NULL,
-                        `conditionMet` INTEGER NOT NULL,
-                        `success` INTEGER NOT NULL,
-                        `summary` TEXT NOT NULL,
-                        PRIMARY KEY(`id`)
-                    )
-                    """.trimIndent()
-                )
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_run_logs_goalId` ON `goal_run_logs` (`goalId`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_run_logs_timestamp` ON `goal_run_logs` (`timestamp`)")
-            }
-        }
-
-        // ✅ MIGRATION 13 -> 14: Gộp 3 cột thenPluginId/thenAction/thenParams thành 1 cột
-        // thenActions (mảng JSON), cho phép 1 goal_rule chạy nhiều hành động nối tiếp.
-        private val MIGRATION_13_14 = object : Migration(13, 14) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `goal_rules_new` (
-                        `id` TEXT NOT NULL,
-                        `rawGoalText` TEXT NOT NULL,
-                        `triggerType` TEXT NOT NULL,
-                        `cron` TEXT NOT NULL DEFAULT '',
-                        `intervalMinutes` INTEGER NOT NULL DEFAULT 0,
-                        `eventName` TEXT NOT NULL DEFAULT '',
-                        `checkPluginId` TEXT NOT NULL DEFAULT '',
-                        `checkAction` TEXT NOT NULL DEFAULT '',
-                        `checkParams` TEXT NOT NULL DEFAULT '{}',
-                        `conditionExpr` TEXT NOT NULL DEFAULT '',
-                        `thenActions` TEXT NOT NULL,
-                        `enabled` INTEGER NOT NULL DEFAULT 1,
-                        `lastRunAt` INTEGER NOT NULL DEFAULT 0,
-                        `createdAt` INTEGER NOT NULL,
-                        `createdBy` TEXT NOT NULL DEFAULT 'default_user',
-                        PRIMARY KEY(`id`)
-                    )
-                    """.trimIndent()
-                )
-
-                // Đóng gói dữ liệu goal_rules cũ (1 hành động/rule) thành mảng JSON 1 phần tử.
-                // An toàn vì thenPluginId/thenAction ở schema v13 là NOT NULL (không có row nào null).
-                db.execSQL(
-                    """
-                    INSERT INTO `goal_rules_new` (
-                        id, rawGoalText, triggerType, cron, intervalMinutes, eventName,
-                        checkPluginId, checkAction, checkParams, conditionExpr, thenActions,
-                        enabled, lastRunAt, createdAt, createdBy
-                    )
-                    SELECT
-                        id, rawGoalText, triggerType, cron, intervalMinutes, eventName,
-                        checkPluginId, checkAction, checkParams, conditionExpr,
-                        '[{"pluginId":"' || thenPluginId || '","action":"' || thenAction || '","params":' || thenParams || '}]',
-                        enabled, lastRunAt, createdAt, createdBy
-                    FROM `goal_rules`
-                    """.trimIndent()
-                )
-
-                db.execSQL("DROP TABLE `goal_rules`")
-                db.execSQL("ALTER TABLE `goal_rules_new` RENAME TO `goal_rules`")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_rules_enabled` ON `goal_rules` (`enabled`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_goal_rules_triggerType` ON `goal_rules` (`triggerType`)")
-            }
-        }
-
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -686,9 +522,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_8_9,
                         MIGRATION_9_10,
                         MIGRATION_10_11,
-                        MIGRATION_11_12, // ✅ ĐĂNG KÝ: Bản di cư isRead mới cho chat_messages
-                        MIGRATION_12_13, // ✅ ĐĂNG KÝ: Bản di cư goal_rules + goal_run_logs mới
-                        MIGRATION_13_14  // ✅ ĐĂNG KÝ: Bản di cư gộp thenPluginId/thenAction/thenParams -> thenActions
+                        MIGRATION_11_12 // ✅ ĐĂNG KÝ: Bản di cư isRead mới cho chat_messages
                     )
                     .build()
                 INSTANCE = instance

@@ -2,8 +2,6 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.core.GoalPlanResult
-import com.aichatvn.agent.core.GoalPlanner
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
@@ -11,15 +9,12 @@ import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AppConfigEntity
-import com.aichatvn.agent.data.model.GoalRuleEntity
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import java.util.Calendar
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -40,7 +35,6 @@ class HousekeeperSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val scheduleSkill: ScheduleSkill,
     private val appConfigSkill: AppConfigSkill,
-    private val goalPlanner: GoalPlanner,
     logger: Logger
 ) : BaseSkill("housekeeper", "Quản gia tự động", logger), Plugin {
     // ✅ ĐÃ SỬA — ĐÂY LÀ BUG GỐC: Class này thiếu ", Plugin" trong khai báo kế thừa.
@@ -136,45 +130,6 @@ class HousekeeperSkill @Inject constructor(
                     PluginParameter("pluginId", "string", "Lọc theo plugin khi op=list", false),
                     PluginParameter("confirm", "boolean", "Xác nhận thao tác reset (bắt buộc=true)", false, "boolean", defaultValue = false)
                 )
-            ),
-            PluginAction(
-                name = "create_goal",
-                description = "Giao một việc phức tạp cho quản gia tự lo liệu lâu dài (không phải lệnh chạy 1 lần), " +
-                    "quản gia sẽ tự phân tích và lặp lại theo lịch hoặc theo sự kiện, không cần nhắc lại mỗi lần. " +
-                    "Dùng cho các câu như 'kiểm tra X, có gì thì Y', 'nhớ làm Z hàng ngày', 'nếu khách nhắn thì trả lời...'.",
-                examples = listOf(
-                    "kiểm tra điện an toàn, tôi ra ngoài, có gì thì email cho tôi",
-                    "nhớ tưới cây hàng ngày",
-                    "nếu có khách nhắn tin tới thì bảo là tôi đang bận",
-                    "quản gia giúp tôi trông nhà"
-                ),
-                parameters = listOf(
-                    PluginParameter("goalText", "string", "Nguyên văn yêu cầu người dùng muốn giao cho quản gia", true)
-                )
-            ),
-            PluginAction(
-                name = "manage_goal",
-                description = "Quản lý các việc đã giao cho quản gia (tạo bởi create_goal): op=list|toggle|delete. " +
-                    "Với op=delete BẮT BUỘC kèm confirm=true, nếu không sẽ bị từ chối và hỏi lại để xác nhận.",
-                examples = listOf(
-                    "xem quản gia đang lo những việc gì",
-                    "tạm dừng việc tưới cây",
-                    "xoá việc kiểm tra điện"
-                ),
-                parameters = listOf(
-                    PluginParameter("op", "string", "list|toggle|delete", true),
-                    PluginParameter("id", "string", "ID việc hoặc từ khóa mô tả việc khi op=toggle/delete", false),
-                    PluginParameter("enabled", "boolean", "Bật/tắt khi op=toggle", false, "boolean"),
-                    PluginParameter("confirm", "boolean", "Xác nhận thao tác xoá (bắt buộc=true)", false, "boolean", defaultValue = false)
-                )
-            ),
-            PluginAction(
-                name = "goal_report",
-                description = "Báo cáo lại những việc quản gia đã TỰ LÀM hôm nay để người dùng kiểm tra lại",
-                examples = listOf(
-                    "quản gia đã làm gì hôm nay",
-                    "báo cáo công việc tự động hôm nay"
-                )
             )
         )
     )
@@ -193,9 +148,6 @@ class HousekeeperSkill @Inject constructor(
             "set_auto_mode" -> handleSetAutoMode(params)
             "manage_schedule" -> handleManageSchedule(params)
             "manage_config" -> handleManageConfig(params)
-            "create_goal" -> handleCreateGoal(params)
-            "manage_goal" -> handleManageGoal(params)
-            "goal_report" -> handleGoalReport()
             else -> failure("Không tìm thấy hành động: $action")
         }
     }
@@ -305,129 +257,6 @@ class HousekeeperSkill @Inject constructor(
 
         logger.i("HousekeeperSkill", "manage_config op=$op confirmed=$confirmed params=$params")
         return appConfigSkill.execute(op, params)
-    }
-
-    // ───────────────────────── create_goal ─────────────────────────
-
-    private suspend fun handleCreateGoal(params: Map<String, Any>): AgentKernel.PluginResult {
-        val goalText = (params["goalText"] as? String)?.trim()
-            ?: return failure("Thiếu tham số goalText (nội dung việc muốn giao)")
-        if (goalText.isBlank()) return failure("goalText không được để trống")
-
-        return when (val plan = goalPlanner.plan(goalText)) {
-            is GoalPlanResult.NeedsInfo -> needMoreInfo(listOf("goalText"), plan.question)
-            is GoalPlanResult.Failed -> failure("Không thể nhận việc này: ${plan.reason}")
-            is GoalPlanResult.Ready -> {
-                withContext(Dispatchers.IO) { database.goalRuleDao().insertRule(plan.rule) }
-                success(
-                    message = "✅ Đã nhận việc: \"$goalText\".\n${describeRule(plan.rule)}",
-                    data = mapOf("goalId" to plan.rule.id)
-                )
-            }
-        }
-    }
-
-    // ───────────────────────── manage_goal ─────────────────────────
-
-    private suspend fun handleManageGoal(params: Map<String, Any>): AgentKernel.PluginResult = withContext(Dispatchers.IO) {
-        val op = params["op"] as? String ?: return@withContext failure("Thiếu tham số op (list|toggle|delete)")
-
-        when (op) {
-            "list" -> {
-                val rules = database.goalRuleDao().getAllRules()
-                if (rules.isEmpty()) return@withContext success("Quản gia hiện chưa được giao việc gì.")
-                val listing = rules.joinToString("\n\n") { r ->
-                    "• [${if (r.enabled == 1) "ĐANG BẬT" else "ĐÃ TẠM DỪNG"}] \"${r.rawGoalText}\" (id: ${r.id})\n  ${describeRule(r)}"
-                }
-                success("📋 Các việc đã giao cho quản gia:\n\n$listing")
-            }
-            "toggle" -> {
-                val idOrKeyword = params["id"] as? String ?: return@withContext failure("Thiếu tham số id")
-                val enabled = params["enabled"] as? Boolean ?: return@withContext failure("Thiếu tham số enabled")
-                val rule = resolveGoalRule(idOrKeyword)
-                    ?: return@withContext failure("Quản gia không tìm thấy việc nào khớp với \"$idOrKeyword\". Gõ \"xem quản gia đang lo việc gì\" để kiểm tra danh sách.")
-                database.goalRuleDao().toggleRule(rule.id, if (enabled) 1 else 0)
-                success("✅ Đã ${if (enabled) "BẬT LẠI" else "TẠM DỪNG"} việc: \"${rule.rawGoalText}\".")
-            }
-            "delete" -> {
-                val idOrKeyword = params["id"] as? String ?: return@withContext failure("Thiếu tham số id")
-                val confirmed = params["confirm"] as? Boolean ?: false
-                val rule = resolveGoalRule(idOrKeyword)
-                    ?: return@withContext failure("Quản gia không tìm thấy việc nào khớp với \"$idOrKeyword\". Gõ \"xem quản gia đang lo việc gì\" để kiểm tra danh sách.")
-                if (!confirmed) {
-                    return@withContext needMoreInfo(
-                        listOf("confirm"),
-                        "⚠️ Bạn có chắc muốn XOÁ hẳn việc \"${rule.rawGoalText}\" không? Trả lời \"có\" để xác nhận."
-                    )
-                }
-                database.goalRuleDao().deleteRule(rule.id)
-                success("🗑️ Đã xoá việc: \"${rule.rawGoalText}\".")
-            }
-            else -> failure("op không hợp lệ, cần là list|toggle|delete")
-        }
-    }
-
-    // ───────────────────────── goal_report ─────────────────────────
-
-    private suspend fun handleGoalReport(): AgentKernel.PluginResult = withContext(Dispatchers.IO) {
-        val midnight = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-        }.timeInMillis
-
-        val logs = database.goalRunLogDao().getLogsSince(midnight)
-        if (logs.isEmpty()) {
-            return@withContext success("📋 Hôm nay quản gia chưa tự làm việc gì (chưa tới hạn, hoặc chưa giao việc nào).")
-        }
-
-        val actionsTaken = logs.count { it.conditionMet == 1 }
-        val report = buildString {
-            append("📋 Báo cáo việc quản gia đã tự làm hôm nay (${logs.size} lượt kiểm tra, $actionsTaken lần thực sự hành động):\n\n")
-            logs.take(20).forEach { log ->
-                val icon = if (log.success == 1) "✅" else "❌"
-                append("$icon ${log.summary}\n")
-            }
-        }
-        success(report, data = mapOf("totalChecks" to logs.size, "actionsTaken" to actionsTaken))
-    }
-
-    /**
-     * Phân giải "id" người dùng nói/gõ sang đúng rule trong DB.
-     * Ưu tiên khớp UUID chính xác (id thật); nếu không thấy, coi tham số như 1 TỪ KHOÁ
-     * và tìm rule có rawGoalText chứa từ khoá đó — vì người dùng bình thường không biết
-     * và không nên phải nhớ id dạng "goal_3ca9...".
-     */
-    private suspend fun resolveGoalRule(idOrKeyword: String): GoalRuleEntity? {
-        database.goalRuleDao().getRuleById(idOrKeyword)?.let { return it }
-        val keyword = idOrKeyword.trim().lowercase()
-        if (keyword.isBlank()) return null
-        return database.goalRuleDao().getAllRules().find { it.rawGoalText.lowercase().contains(keyword) }
-    }
-
-    /** Mô tả ngắn gọn 1 rule bằng tiếng Việt dễ hiểu, dùng khi tạo mới hoặc liệt kê. */
-    private fun describeRule(rule: GoalRuleEntity): String {
-        val schedulePart = when {
-            rule.triggerType == "EVENT" -> "Khi có sự kiện: ${rule.eventName}"
-            rule.intervalMinutes > 0 -> "Lặp lại mỗi ${rule.intervalMinutes} phút"
-            rule.cron.isNotBlank() -> "Theo lịch: ${rule.cron}"
-            else -> "Không xác định lịch"
-        }
-        val checkPart = if (rule.checkPluginId.isNotBlank()) " → kiểm tra ${rule.checkPluginId}.${rule.checkAction}" else ""
-
-        val thenSteps = mutableListOf<String>()
-        try {
-            val arr = JSONArray(rule.thenActions)
-            for (i in 0 until arr.length()) {
-                val act = arr.optJSONObject(i) ?: continue
-                val pId = act.optString("pluginId")
-                val aName = act.optString("action")
-                thenSteps.add(if (pId == "__system__") "tự trả lời" else "$pId.$aName")
-            }
-        } catch (e: Exception) {
-            thenSteps.add("(chuỗi hành động lỗi định dạng)")
-        }
-        val thenPart = if (thenSteps.isEmpty()) "" else " → " + thenSteps.joinToString(" → ")
-
-        return "$schedulePart$checkPart$thenPart"
     }
 
     // ───────────────────────── helpers ─────────────────────────
