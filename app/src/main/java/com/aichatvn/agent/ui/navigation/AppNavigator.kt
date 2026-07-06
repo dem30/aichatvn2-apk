@@ -93,11 +93,34 @@ fun AppNavigator() {
                         label = { Text(stringResource(screen.titleRes)) },
                         selected = currentRoute == screen.route,
                         onClick = {
-                            // ✅ ĐÃ THÊM: Nếu đang đứng ở màn con của chính tab này (vd: đang xem
-                            // "inbox" hoặc "chat_screen?username=X" bên trong tab Trò chuyện, hoặc
-                            // "logs" đẩy lên từ Chat) thì bấm lại icon tab phải rớt hết các màn con
-                            // đó và quay thẳng về root của tab — không cần người dùng tự bấm back.
-                            if (currentRoute == screen.route) {
+                            // ✅ ĐÃ THÊM (các tab khác Chat): Nếu đang đứng ở màn con của chính
+                            // tab đó thì bấm lại icon tab phải rớt hết màn con và về root của tab —
+                            // không cần người dùng tự bấm back. Riêng tab "Trò chuyện" xử lý khác,
+                            // xem nhánh `if (screen == Screen.Chat)` ngay bên dưới.
+                            // ✅ ĐÃ SỬA — SỬA DỨT ĐIỂM: Tab "Trò chuyện" giờ được xử lý RIÊNG,
+                            // tường minh, không còn dựa vào cơ chế popUpTo(startDestinationId)
+                            // {saveState=true} + restoreState=true như các tab khác. Cơ chế đó
+                            // vốn được thiết kế để BẢO TỒN trạng thái khi CHUYỂN SANG TAB KHÁC
+                            // rồi quay lại — nó KHÔNG đảm bảo ép về đúng root khi đang đứng sâu
+                            // trong các màn con CỦA CHÍNH tab đó (Inbox, chat khách X, Logs...),
+                            // nhất là khi "chat_screen" (route root) và "chat_screen?username=..."
+                            // (route có tham số) là 2 composable riêng biệt dễ khiến NavController
+                            // khớp/so sánh route không như kỳ vọng (xem comment ở NavHost bên dưới)
+                            // — đây là lý do bấm tab "Trò chuyện" từ trước tới giờ không quay về
+                            // đúng màn chat admin. Giờ ép pop TOÀN BỘ back stack của tab này (kể
+                            // cả entry root cũ, dùng inclusive=true) rồi tạo lại root "chat_screen"
+                            // hoàn toàn mới — đảm bảo LUÔN về đúng chat admin bất kể trước đó đang
+                            // đứng ở màn con nào, không phụ thuộc vào việc so khớp route đúng/sai.
+                            if (screen == Screen.Chat) {
+                                if (currentRoute != Screen.Chat.route) {
+                                    navController.navigate(Screen.Chat.route) {
+                                        popUpTo(Screen.Chat.route) { inclusive = true }
+                                        launchSingleTop = true
+                                    }
+                                }
+                                // Nếu đã đúng ở root rồi thì không cần làm gì thêm — tránh tạo
+                                // lại ViewModel/mất vị trí cuộn một cách không cần thiết.
+                            } else if (currentRoute == screen.route) {
                                 navController.popBackStack(screen.route, inclusive = false)
                             } else {
                                 navController.navigate(screen.route) {
