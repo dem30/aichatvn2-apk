@@ -9,6 +9,7 @@ import com.aichatvn.agent.utils.StringSimilarityUtil
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
+import javax.inject.Provider // ✅ THÊM IMPORT: Provider để trì hoãn việc nạp Set<Plugin>
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
@@ -27,20 +28,11 @@ sealed class GoalPlanResult {
  * Nhiệm vụ: nhận 1 câu lệnh tự nhiên phức tạp (vd "kiểm tra điện, có gì thì email cho tôi",
  * "nhớ tưới cây hàng ngày", "khách nhắn thì bảo tôi đang bận") và chuyển thành 1 GoalRuleEntity
  * có thể lưu vào DB rồi để GoalRuleEngine thực thi lặp lại.
- *
- * Nguyên tắc CHỐNG HALLUCINATION (giống Tier 4/5 của AgentKernel): LLM chỉ được CHỌN
- * pluginId/action trong danh sách plugin ROUTABLE đang có tại runtime (kể cả plugin mới
- * thêm sau này như đèn/bơm/drone — không cần sửa code ở đây). Mọi lựa chọn của LLM đều
- * được validate lại với manifest thật trước khi cho phép lưu thành rule. Nếu LLM chọn sai
- * hoặc không tồn tại -> trả Failed, KHÔNG bao giờ lưu rule với plugin/action bịa.
- *
- * Phần thời gian (cron/interval) KHÔNG giao cho LLM tự bịa cú pháp cron — tái dùng
- * DateTimeParser (utils) vốn đã được AgentKernel dùng ở Tier 1/5, đảm bảo nhất quán và
- * đúng cú pháp cron thực sự chạy được.
  */
 @Singleton
 class GoalPlanner @Inject constructor(
-    private val plugins: Set<@JvmSuppressWildcards Plugin>,
+    // ✅ ĐÃ SỬA: Bọc Set<Plugin> trong Provider để phá vỡ vòng lặp phụ thuộc của Hilt
+    private val pluginsProvider: Provider<Set<@JvmSuppressWildcards Plugin>>,
     private val groqClient: GroqClientTool,
     private val logger: Logger
 ) {
@@ -51,12 +43,14 @@ class GoalPlanner @Inject constructor(
         private val DAILY_KEYWORDS = setOf("hang ngay", "moi ngay", "moi buoi sang", "moi sang", "hang buoi")
 
         // Hiện chỉ hỗ trợ 1 loại sự kiện — mở rộng thêm khi có nhu cầu thực tế
-        // (vd "khi camera phát hiện chuyển động" sẽ là "camera_motion_detected" sau này).
         private val SUPPORTED_EVENTS = setOf("incoming_message")
     }
 
     suspend fun plan(goalText: String, createdBy: String = "default_user"): GoalPlanResult {
+        // ✅ ĐÃ SỬA: Lấy tập hợp plugin thực tế tại thời điểm thực thi
+        val plugins = pluginsProvider.get()
         val routablePlugins = plugins.filter { it.manifest.routable }
+        
         if (routablePlugins.isEmpty()) {
             return GoalPlanResult.Failed("Chưa có plugin nào khả dụng để giao việc.")
         }
@@ -89,7 +83,7 @@ class GoalPlanner @Inject constructor(
             append("}\n\n")
             append("QUY TẮC:\n")
             append("1. Yêu cầu LẶP LẠI THEO THỜI GIAN (hàng ngày, mỗi giờ, mỗi X phút...) -> triggerType=\"SCHEDULE\".\n")
-            append("2. Yêu cầu liên quan TIN NHẮN KHÁCH GỬI TỚI (vd \"khách nhắn thì báo đang bận\") -> triggerType=\"EVENT\", eventName=\"incoming_message\", thenPluginId=\"__system__\", thenAction=\"reply_fixed\", thenParams={\"replyText\": \"nội dung trả lời cố định\"}.\n")
+            append("2. Yêu cầu liên quan TIN NHẮN KHÁCH GỬI TỚI (vd \"khách nhắn thì bảo đang bận\") -> triggerType=\"EVENT\", eventName=\"incoming_message\", thenPluginId=\"__system__\", thenAction=\"reply_fixed\", thenParams={\"replyText\": \"nội dung trả lời cố định\"}.\n")
             append("3. Câu dạng 'kiểm tra X, nếu có vấn đề thì Y' -> checkPluginId/checkAction là bước X, thenPluginId/thenAction là hành động Y (thường là gửi email/thông báo).\n")
             append("4. Câu dạng 'làm Z hàng ngày/định kỳ' KHÔNG có điều kiện kiểm tra -> để checkPluginId/checkAction/conditionExpr rỗng, thenPluginId/thenAction chính là hành động Z.\n")
             append("5. Nếu KHÔNG chắc chọn đúng plugin/action nào, hoặc thiếu thông tin bắt buộc (email người nhận, tên/khu vực thiết bị...) -> needClarification=true kèm câu hỏi lại bằng tiếng Việt, các trường còn lại để rỗng.\n")
@@ -135,8 +129,7 @@ class GoalPlanner @Inject constructor(
             )
         }
 
-        // ✅ Chống hallucination: validate pluginId/action phải tồn tại thật trong manifest,
-        // TRỪ pseudo-plugin "__system__" (chỉ dùng cho reply_fixed, không đi qua Plugin.execute thật)
+        // Chống hallucination: validate pluginId/action phải tồn tại thật trong manifest
         if (thenPluginId.isBlank() || thenAction.isBlank()) {
             return GoalPlanResult.Failed("AI không xác định được hành động cần thực hiện. Vui lòng mô tả rõ hơn.")
         }
