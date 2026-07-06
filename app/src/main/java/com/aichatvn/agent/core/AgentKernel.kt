@@ -1466,7 +1466,7 @@ private fun handleLockConfirmation(userMessage: String, pluginId: String, userna
             resolvedIntents.isEmpty() -> {
                 // ✅ ĐẶC THÙ CHO GOAL: Nếu đang điều khiển riêng Quản gia ("housekeeper") và nói câu ra lệnh tự nhiên,
                 // tự động fallback chuyển sang create_goal luôn mà không đẩy xuống Chat thường.
-                val lockedId = chatHistoryManager.getLockedPlugin()
+                val lockedId = chatHistoryManager.getLockedPlugin(context.username)
                 if (lockedId == "housekeeper") {
                     val housekeeperPlugin = devicePlugins.find { it.manifest.id == "housekeeper" }
                     if (housekeeperPlugin != null) {

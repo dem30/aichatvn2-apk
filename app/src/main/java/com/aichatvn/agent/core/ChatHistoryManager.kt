@@ -38,9 +38,12 @@ class ChatHistoryManager @Inject constructor() {
     private val lockedControls = ConcurrentHashMap<String, LockedControl>()
     private val pendingLockRequests = ConcurrentHashMap<String, String>()
 
-    // ✅ TƯƠNG THÍCH NGƯỢC: Khôi phục thuộc tính pendingLockRequest dạng Getter để AgentKernel cũ truy cập không bị lỗi [1]
-    val pendingLockRequest: String?
-        get() = getPendingLockRequest("default_user")
+    // ✅ ĐÃ SỬA — LỖI BIÊN DỊCH GỐC: property `val pendingLockRequest` ở đây sinh ra hàm JVM
+    // `getPendingLockRequest()` (theo quy ước getter của Kotlin), TRÙNG chữ ký JVM với hàm
+    // `fun getPendingLockRequest(): String?` khai báo tường minh bên dưới (dòng ~87) ->
+    // "Platform declaration clash". Không có nơi nào trong code gọi property này qua cú pháp
+    // `.pendingLockRequest` (chỉ có `getPendingLockRequest(username)` được dùng ở AgentKernel),
+    // nên xoá thẳng property dư thừa này, giữ lại hàm tường minh làm nguồn chân lý duy nhất.
 
     // ─── CÁC PHƯƠNG THỨC NẠP CHỒNG (OVERLOADS) ĐỂ KHỚP CẢ HAI PHIÊN BẢN CODE ───
 
