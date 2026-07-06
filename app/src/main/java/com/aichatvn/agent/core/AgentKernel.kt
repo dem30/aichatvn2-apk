@@ -447,104 +447,106 @@ class AgentKernel @Inject constructor(
 
     // Trong AgentKernel.kt — Cập nhật hàm tryDeviceCommand:
 
-suspend fun tryDeviceCommand(
-    userMessage: String,
-    username: String = "default_user"
-): RouterOutcome {
-    val traceId = generateTraceId()
-    logger.d("AgentKernel", "[$traceId] 🚀 Bắt đầu tiếp nhận thông điệp: '$userMessage'")
 
-    val normMsg = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
-    val isAskingPending = normMsg.contains("dang cho gi") || 
-        normMsg.contains("kiem tra yeu cau") || 
-        (normMsg.contains("cho") && normMsg.contains("gi") && normMsg.contains("pending")) ||
-        normMsg.contains("dang bi ket")
 
-    if (isAskingPending) {
-        val active = chatHistoryManager.getActivePendingIntents()
-        if (active.isEmpty()) {
+    suspend fun tryDeviceCommand(
+        userMessage: String,
+        username: String = "default_user"
+    ): RouterOutcome {
+        val traceId = generateTraceId()
+        logger.d("AgentKernel", "[$traceId] 🚀 Bắt đầu tiếp nhận thông điệp: '$userMessage'")
+
+        val normMsg = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
+        val isAskingPending = normMsg.contains("dang cho gi") || 
+            normMsg.contains("kiem tra yeu cau") || 
+            (normMsg.contains("cho") && normMsg.contains("gi") && normMsg.contains("pending")) ||
+            normMsg.contains("dang bi ket")
+
+        if (isAskingPending) {
+            val active = chatHistoryManager.getActivePendingIntents()
+            if (active.isEmpty()) {
+                return RouterOutcome.Matched(
+                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Hiện tại không có yêu cầu điều khiển thiết bị nào đang chờ xử lý.")))
+                )
+            }
+            val first = active.first()
+            val targetPlugin = plugins.find { it.manifest.id == first.pluginId }
+            val targetAction = targetPlugin?.manifest?.actions?.find { it.name == first.action }
+            val pluginName = targetPlugin?.manifest?.name ?: first.pluginId
+            val actionDesc = targetAction?.description ?: first.action
+            val banner = buildPendingBanner(first, pluginName, actionDesc)
+            
+            @Suppress("UNCHECKED_CAST")
+            val currentOptions = first.knownParams["_options"] as? Map<String, String> ?: emptyMap()
             return RouterOutcome.Matched(
-                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Hiện tại không có yêu cầu điều khiển thiết bị nào đang chờ xử lý.")))
+                DeviceCommandResult(first.pluginId, PluginResult.NeedMoreInfo(first.missingParams, banner, currentOptions))
             )
         }
-        val first = active.first()
-        val targetPlugin = plugins.find { it.manifest.id == first.pluginId }
-        val targetAction = targetPlugin?.manifest?.actions?.find { it.name == first.action }
-        val pluginName = targetPlugin?.manifest?.name ?: first.pluginId
-        val actionDesc = targetAction?.description ?: first.action
-        val banner = buildPendingBanner(first, pluginName, actionDesc)
-        
-        @Suppress("UNCHECKED_CAST")
-        val currentOptions = first.knownParams["_options"] as? Map<String, String> ?: emptyMap()
-        return RouterOutcome.Matched(
-            DeviceCommandResult(first.pluginId, PluginResult.NeedMoreInfo(first.missingParams, banner, currentOptions))
-        )
-    }
 
-    // ✅ ĐÃ SỬA: Truyền username vào để kiểm tra yêu cầu khóa biệt lập
-    chatHistoryManager.getPendingLockRequest(username)?.let { pluginId ->
-        return handleLockConfirmation(userMessage, pluginId, username)
-    }
+        // ✅ ĐÃ SỬA: Truyền username để kiểm tra yêu cầu khóa biệt lập theo phiên [1]
+        chatHistoryManager.getPendingLockRequest(username)?.let { pluginId ->
+            return handleLockConfirmation(userMessage, pluginId, username)
+        }
 
-    // ✅ ĐÃ SỬA: Truyền username vào để lấy trạng thái khóa của riêng user này
-    chatHistoryManager.getLockedPlugin(username)?.let { lockedId ->
-        if (isExitLockPhrase(userMessage)) {
-            chatHistoryManager.unlockPlugin(username)
-            val matchedPlugin = plugins.find { it.manifest.id == lockedId }
-            val displayName = matchedPlugin?.manifest?.name ?: lockedId
+        // ✅ ĐÃ SỬA: Lấy trạng thái khóa riêng biệt của riêng user này [1]
+        chatHistoryManager.getLockedPlugin(username)?.let { lockedId ->
+            if (isExitLockPhrase(userMessage)) {
+                chatHistoryManager.unlockPlugin(username) // Mở khóa riêng biệt cho user này [1]
+                val matchedPlugin = plugins.find { it.manifest.id == lockedId }
+                val displayName = matchedPlugin?.manifest?.name ?: lockedId
+                return RouterOutcome.Matched(
+                    DeviceCommandResult(lockedId, PluginResult.Success(mapOf("message" to "✅ Đã thoát chế độ điều khiển riêng cho \"$displayName\".")))
+                )
+            }
+            val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId, forcedPluginIds = listOf(lockedId))
+            val outcome = result.routerOutcome
+            return if (outcome == null || outcome is RouterOutcome.NotACommand) {
+                RouterOutcome.Matched(
+                    DeviceCommandResult(lockedId, PluginResult.Failure("⚠️ Tôi không hiểu lệnh điều khiển riêng cho \"$lockedId\". Vui lòng nói lại, hoặc gõ \"thoát\" để quay lại chat thường."))
+                )
+            } else {
+                outcome
+            }
+        }
+
+        detectLockTrigger(userMessage)?.let { targetPluginId ->
+            // ✅ ĐÃ SỬA: Truyền username để ghi nhận yêu cầu khóa riêng biệt [1]
+            chatHistoryManager.setPendingLockRequest(username, targetPluginId)
+            val matchedPlugin = plugins.find { it.manifest.id == targetPluginId }
+            val displayName = matchedPlugin?.manifest?.name ?: targetPluginId
             return RouterOutcome.Matched(
-                DeviceCommandResult(lockedId, PluginResult.Success(mapOf("message" to "✅ Đã thoát chế độ điều khiển riêng cho \"$displayName\".")))
+                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Bạn muốn vào chế độ điều khiển riêng biệt cho \"$displayName\", đúng không?")))
             )
         }
-        val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId, forcedPluginIds = listOf(lockedId))
-        val outcome = result.routerOutcome
-        return if (outcome == null || outcome is RouterOutcome.NotACommand) {
-            RouterOutcome.Matched(
-                DeviceCommandResult(lockedId, PluginResult.Failure("⚠️ Tôi không hiểu lệnh điều khiển riêng cho \"$lockedId\". Vui lòng nói lại, hoặc gõ \"thoát\" để quay lại chat thường."))
-            )
-        } else {
-            outcome
-        }
-    }
 
-    // ✅ ĐÃ SỬA: Truyền username vào để ghi nhận yêu cầu khóa
-    detectLockTrigger(userMessage)?.let { targetPluginId ->
-        chatHistoryManager.setPendingLockRequest(username, targetPluginId)
-        val matchedPlugin = plugins.find { it.manifest.id == targetPluginId }
-        val displayName = matchedPlugin?.manifest?.name ?: targetPluginId
-        return RouterOutcome.Matched(
-            DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Bạn muốn vào chế độ điều khiển riêng biệt cho \"$displayName\", đúng không?")))
-        )
+        val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId)
+        return result.routerOutcome ?: RouterOutcome.RouterFailed("Pipeline execution error")
     }
-
-    val result = runPipeline(userMessage, username, PipelineMode.EXECUTE, traceId)
-    return result.routerOutcome ?: RouterOutcome.RouterFailed("Pipeline execution error")
-}
 
 // Cập nhật thêm tham số username cho hàm handleLockConfirmation:
-private fun handleLockConfirmation(userMessage: String, pluginId: String, username: String): RouterOutcome {
-    val matchedPlugin = plugins.find { it.manifest.id == pluginId }
-    val displayName = matchedPlugin?.manifest?.name ?: pluginId
-    return when (parseYesNo(userMessage)) {
-        true -> {
-            chatHistoryManager.lockPlugin(username, pluginId) // Khóa riêng biệt cho user này
-            chatHistoryManager.clearLockRequest(username)
-            RouterOutcome.Matched(
-                DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
-            )
-        }
-        false -> {
-            chatHistoryManager.clearLockRequest(username)
-            RouterOutcome.Matched(
-                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
-            )
-        }
-        null -> RouterOutcome.Matched(
-            DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Xác nhận vào chế độ điều khiển riêng cho \"$displayName\" chứ? (có/không)")))
-        )
-    }
-}
 
+private fun handleLockConfirmation(userMessage: String, pluginId: String, username: String): RouterOutcome {
+        val matchedPlugin = plugins.find { it.manifest.id == pluginId }
+        val displayName = matchedPlugin?.manifest?.name ?: pluginId
+        return when (parseYesNo(userMessage)) {
+            true -> {
+                chatHistoryManager.lockPlugin(username, pluginId) // Khóa riêng biệt cho user này [1]
+                chatHistoryManager.clearLockRequest(username)
+                RouterOutcome.Matched(
+                    DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
+                )
+            }
+            false -> {
+                chatHistoryManager.clearLockRequest(username)
+                RouterOutcome.Matched(
+                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
+                )
+            }
+            null -> RouterOutcome.Matched(
+                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Xác nhận vào chế độ điều khiển riêng cho \"$displayName\" chứ? (có/không)")))
+            )
+        }
+    }
 
 
     
@@ -2722,10 +2724,11 @@ private suspend fun tryResolvePendingIntent(
         }
     }
 
-    fun getLockedPluginId(): String? = chatHistoryManager.getLockedPlugin()
+    // ✅ ĐÃ SỬA: Chuyển đổi sang lấy trạng thái khóa biệt lập theo từng username [1]
+    fun getLockedPluginId(username: String = "default_user"): String? = chatHistoryManager.getLockedPlugin(username)
 
-    fun getLockedPluginName(): String? {
-        val id = getLockedPluginId() ?: return null
+    fun getLockedPluginName(username: String = "default_user"): String? {
+        val id = getLockedPluginId(username) ?: return null
         return plugins.find { it.manifest.id == id }?.manifest?.name ?: id
     }
 
