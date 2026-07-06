@@ -1426,7 +1426,28 @@ class AgentKernel @Inject constructor(
         }
 
         return when {
-            resolvedIntents.isEmpty() -> Layer3Result.NoMatch
+            resolvedIntents.isEmpty() -> {
+                // ✅ ĐẶC THÙ CHO GOAL: Nếu đang điều khiển riêng Quản gia ("housekeeper") và nói câu ra lệnh tự nhiên,
+                // tự động fallback chuyển sang create_goal luôn mà không đẩy xuống Chat thường.
+                val lockedId = chatHistoryManager.getLockedPlugin()
+                if (lockedId == "housekeeper") {
+                    val housekeeperPlugin = devicePlugins.find { it.manifest.id == "housekeeper" }
+                    if (housekeeperPlugin != null) {
+                        val createGoalAction = housekeeperPlugin.manifest.actions.find { it.name == "create_goal" }
+                        if (createGoalAction != null) {
+                            val resolvedParams = resolveParametersWithMeta(
+                                parameters = createGoalAction.parameters,
+                                inputParams = mapOf("goalText" to context.resolvedQuery),
+                                context = context,
+                                excludeIntentId = null,
+                                depth = 0
+                            )
+                            return Layer3Result.Single(housekeeperPlugin, Intent("housekeeper", "create_goal", resolvedParams))
+                        }
+                    }
+                }
+                Layer3Result.NoMatch
+            }
             resolvedIntents.size == 1 -> {
                 val (plugin, intent) = resolvedIntents.first()
                 Layer3Result.Single(plugin, intent)
@@ -1547,6 +1568,11 @@ class AgentKernel @Inject constructor(
 
         val localMatch = context.localEntities[param.semanticType]
         if (localMatch != null) return localMatch
+
+        // ✅ ĐẶC THÙ CHO GOAL TEXT: Tự động bơm nguyên văn câu lệnh (sau xử lý đại từ) vào tham số goalText
+        if (param.name == "goalText" && (currentValue == null || isPlh)) {
+            return context.resolvedQuery
+        }
 
         return currentValue ?: ""
     }
@@ -2127,7 +2153,9 @@ class AgentKernel @Inject constructor(
 
         val routerPrompt = buildString {
             append("<sys>Bạn là bộ định tuyến ý định (Intent Router) thông minh cho hệ thống Smarthome.\n")
-            append("Nhiệm vụ: Phân tích câu nói của người dùng và chuyển đổi thành JSON thô chính xác: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n\n")
+            append("Nhiệm vụ: Phân tích câu nói của người dùng và chuyển đổi thành JSON thô chính xác: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n")
+            append("🚨 LƯU Ý QUAN TRỌNG: Các ứng viên có định dạng \"pluginId.actionName\" (ví dụ: \"housekeeper.create_goal\"). ")
+            append("Khi gán, trường \"plugin\" phải là \"pluginId\" đứng trước dấu chấm (ví dụ: \"housekeeper\"), và \"action\" là \"actionName\" đứng sau dấu chấm (ví dụ: \"create_goal\"). Tuyệt đối không viết dồn cả cụm vào \"plugin\".\n\n")
             append("🚨 QUY TẮC CHỐNG GÁN LỆNH NHẦM (ANTI-TOOL-USE BIAS):\n")
             append("1. Chỉ định tuyến sang một ứng viên (candidate) bên dưới KHI VÀ CHỈ KHI người dùng đưa ra một YÊU CẦU HÀNH ĐỘNG RÕ RÀNG (ví dụ: bật, tắt, đóng, mở, quét, gửi email cụ thể, thiết lập lịch hẹn giờ thực tế, kiểm tra trạng thái thiết bị).\n")
             append("2. Nếu câu nói là CÂU HỎI THÔNG TIN, GIẢI THÍCH LÝ THUYẾT, ĐỊNH NGHĨA, CHÀO HỎI, TÁN GẪU (ví dụ: 'camera có bao nhiêu loại', 'email hoạt động thế nào', 'tại sao đèn không sáng', 'thời tiết thế nào'...): Bạn TUYỆT ĐỐI KHÔNG ĐƯỢC gán vào bất kỳ lệnh thiết bị nào, cho dù câu nói có chứa từ khóa 'camera', 'email' hay 'đèn'. Hãy xuất chính xác: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
@@ -2173,9 +2201,21 @@ class AgentKernel @Inject constructor(
         return try {
             val cleaned = response.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
             val json = JSONObject(cleaned)
+
+            var pluginId = json.getString("plugin")
+            val action = json.getString("action")
+
+            // ✅ SỬA LỖI AI GÁN NHẦM: Nếu LLM viết cả cụm "housekeeper.create_goal" vào ô "plugin"
+            if (pluginId.contains(".") && action.isNotBlank()) {
+                val parts = pluginId.split(".")
+                if (parts.size == 2 && parts[1] == action) {
+                    pluginId = parts[0]
+                }
+            }
+
             Intent(
-                pluginId = json.getString("plugin"),
-                action = json.getString("action"),
+                pluginId = pluginId,
+                action = action,
                 params = json.optJSONObject("params")?.toMap() ?: emptyMap()
             )
         } catch (e: Exception) {
