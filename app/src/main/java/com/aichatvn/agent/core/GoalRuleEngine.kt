@@ -15,22 +15,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
-/** Kết quả xử lý 1 sự kiện (vd "incoming_message"). handled=true nghĩa là caller nên BỎ QUA
- *  luồng xử lý mặc định vì GoalRuleEngine đã tự lo (vd đã trả lời "đang bận" thay). */
 data class GoalEventOutcome(val handled: Boolean, val replyText: String? = null)
 
-/**
- * GoalRuleEngine — bộ thực thi cho GoalRuleEntity (tính năng "quản gia GOD mode").
- *
- * - tickScheduleRules(): gọi định kỳ (polling, xem WebhookGatewayService) cho rule
- *   triggerType=SCHEDULE — tự kiểm tra hạn theo cron/intervalMinutes.
- * - fireEvent(eventName): gọi TRỰC TIẾP tại nơi phát sinh sự kiện thật (vd nhận tin nhắn
- *   khách trong WebhookGatewayService) cho rule triggerType=EVENT.
- *
- * Cả 2 đường đều chạy chung logic runRule(): check (nếu có) -> RuleConditionEvaluator ->
- * then -> ghi GoalRunLogEntity để Housekeeper.check_status/goal_report show lại cho người
- * dùng kiểm tra.
- */
 @Singleton
 class GoalRuleEngine @Inject constructor(
     private val database: AppDatabase,
@@ -38,12 +24,21 @@ class GoalRuleEngine @Inject constructor(
     private val logger: Logger
 ) {
     companion object {
-        // Rule cron chỉ được coi là "chưa chạy lại trong phút này" nếu lần chạy trước cách
-        // đây > 55s — tránh chạy trùng nhiều lần nếu vòng lặp tick có tick lệch nhẹ trong cùng 1 phút.
+        // Tránh chạy trùng lặp nhiều lần nếu vòng lặp tick bị lệch trong cùng một phút
         private const val MIN_GAP_BETWEEN_CRON_RUNS_MS = 55_000L
+        private const val CONFIG_AUTO_MODE_KEY = "housekeeper.auto_mode"
     }
 
+    /**
+     * Polling định kỳ cho các quy tắc thời gian SCHEDULE
+     */
     suspend fun tickScheduleRules() = withContext(Dispatchers.IO) {
+        // ✅ BỔ SUNG MASTER SWITCH: Ngắt quét lịch trình ngầm ngay lập tức nếu Quản gia đang bị tắt
+        val autoMode = database.appConfigDao().getConfig(CONFIG_AUTO_MODE_KEY)?.value?.toBoolean() ?: false
+        if (!autoMode) {
+            return@withContext
+        }
+
         val rules = try {
             database.goalRuleDao().getEnabledScheduleRules()
         } catch (e: Exception) {
@@ -67,11 +62,15 @@ class GoalRuleEngine @Inject constructor(
     }
 
     /**
-     * @param eventPayload ngữ cảnh sự kiện (vd text/senderId/platform của tin nhắn khách) —
-     * được đưa thẳng vào checkData để conditionExpr có thể tham chiếu (vd "text contains 'abc'")
-     * ngay cả khi rule không có bước checkAction riêng.
+     * Kích hoạt xử lý tức thời cho các sự kiện EVENT (Ví dụ: incoming_message)
      */
     suspend fun fireEvent(eventName: String, eventPayload: Map<String, Any> = emptyMap()): GoalEventOutcome = withContext(Dispatchers.IO) {
+        // ✅ BỔ SUNG MASTER SWITCH: Nếu Quản gia bị tắt, im lặng trả về handled = false để nhường luồng xử lý cho AgentKernel
+        val autoMode = database.appConfigDao().getConfig(CONFIG_AUTO_MODE_KEY)?.value?.toBoolean() ?: false
+        if (!autoMode) {
+            return@withContext GoalEventOutcome(handled = false)
+        }
+
         val rules = try {
             database.goalRuleDao().getEnabledEventRules(eventName)
         } catch (e: Exception) {
@@ -83,8 +82,6 @@ class GoalRuleEngine @Inject constructor(
         val conditionAndThenOk = runRule(rule, eventPayload)
         database.goalRuleDao().updateLastRun(rule.id, System.currentTimeMillis())
 
-        // Quy ước: rule EVENT dùng cho trả lời cố định chỉ nên có 1 phần tử duy nhất trong
-        // thenActions (xem ràng buộc ở prompt của GoalPlanner) -> chỉ cần đọc phần tử đầu.
         val actionsArray = safeJsonArray(rule.thenActions)
         val firstAction = if (actionsArray.length() > 0) actionsArray.optJSONObject(0) else null
 
@@ -99,9 +96,9 @@ class GoalRuleEngine @Inject constructor(
         }
     }
 
-    /** Chạy 1 rule: check (nếu có) -> đánh giá điều kiện -> chạy TUẦN TỰ từng phần tử trong
-     *  thenActions (dừng ở bước lỗi đầu tiên) -> ghi log.
-     *  Trả về true nếu điều kiện đúng VÀ toàn bộ chuỗi thenActions chạy thành công. */
+    /**
+     * Lõi thực thi quy tắc: check -> evaluate condition -> thenActions tuần tự
+     */
     private suspend fun runRule(rule: GoalRuleEntity, eventPayload: Map<String, Any> = emptyMap()): Boolean {
         var checkData: Map<*, *> = eventPayload
 
@@ -118,7 +115,6 @@ class GoalRuleEngine @Inject constructor(
                 return false
             }
             when (result) {
-                // Ghép kết quả check ĐÈ LÊN eventPayload (ưu tiên dữ liệu check mới hơn nếu trùng field)
                 is AgentKernel.PluginResult.Success -> checkData = checkData + ((result.data as? Map<*, *>) ?: emptyMap<String, Any>())
                 is AgentKernel.PluginResult.Failure -> {
                     logAndSkip(rule, "Bước kiểm tra thất bại: ${result.error}")
@@ -135,7 +131,7 @@ class GoalRuleEngine @Inject constructor(
         if (!conditionMet) {
             insertLog(
                 rule.id, conditionMet = false, success = true,
-                summary = "Đã kiểm tra \"${rule.rawGoalText}\" — không có gì bất thường."
+                summary = "Đã kiểm tra \"${rule.rawGoalText}\" — không thỏa mãn điều kiện."
             )
             return false
         }
@@ -155,14 +151,13 @@ class GoalRuleEngine @Inject constructor(
         var allSuccess = true
         val completedSteps = mutableListOf<String>()
 
-        // Chạy TUẦN TỰ từng hành động; dừng ngay khi gặp bước lỗi (không chạy tiếp các bước sau).
+        // Chạy TUẦN TỰ từng hành động; dừng ngay khi gặp bước lỗi đầu tiên
         for (i in 0 until actionsJson.length()) {
             val actObj = actionsJson.optJSONObject(i) ?: continue
             val pluginId = actObj.optString("pluginId")
             val action = actObj.optString("action")
             val actionParams = actObj.optJSONObject("params")?.toParamMap() ?: emptyMap()
 
-            // __system__ không đi qua Plugin.execute thật — caller (fireEvent) tự lo phần phản hồi
             if (pluginId == "__system__") {
                 completedSteps.add("Trả lời tự động")
                 continue
@@ -170,7 +165,7 @@ class GoalRuleEngine @Inject constructor(
 
             val thenPlugin = plugins.find { it.manifest.id == pluginId }
             if (thenPlugin == null) {
-                completedSteps.add("Lỗi: không tìm thấy plugin \"$pluginId\" (có thể đã gỡ cài đặt)")
+                completedSteps.add("Lỗi: không tìm thấy plugin \"$pluginId\"")
                 allSuccess = false
                 break
             }
@@ -192,13 +187,13 @@ class GoalRuleEngine @Inject constructor(
                     allSuccess = false
                 }
             }
-            if (!allSuccess) break // gặp lỗi giữa chuỗi -> dừng ngay, không chạy các bước còn lại
+            if (!allSuccess) break
         }
 
         val summary = if (allSuccess) {
-            "Đã thực hiện: \"${rule.rawGoalText}\"."
+            "Đã tự động hoàn thành: \"${rule.rawGoalText}\"."
         } else {
-            "Tiến trình bị gián đoạn khi thực hiện \"${rule.rawGoalText}\": " + completedSteps.joinToString(" -> ")
+            "Tiến trình bị gián đoạn: " + completedSteps.joinToString(" -> ")
         }
         insertLog(rule.id, conditionMet = true, success = allSuccess, summary = summary)
         return allSuccess
@@ -222,17 +217,45 @@ class GoalRuleEngine @Inject constructor(
         )
     }
 
-    /** Chỉ hỗ trợ cron tối giản "M H * * *" (phút giờ, mỗi ngày) — đúng định dạng
-     *  DateTimeParser.parseVietnameseTime() sinh ra cho các câu như "mỗi ngày lúc 7 giờ". */
+    /**
+     * ✅ ĐỒNG BỘ CHUẨN XÁC VỚI DATETIMEPARSER:
+     * Hỗ trợ đầy đủ giờ, phút và thứ trong tuần (Monday = 1, Sunday = 0) để quét lịch trình [1].
+     */
     private fun matchesCronMinute(cron: String, nowMillis: Long): Boolean {
         val parts = cron.trim().split(Regex("\\s+"))
-        if (parts.size < 2) return false
+        if (parts.size < 5) return false 
+        
         val minute = parts[0].toIntOrNull() ?: return false
         val hour = parts[1].toIntOrNull() ?: return false
+        val dayOfWeekPart = parts[4]
 
-        val cal = Calendar.getInstance()
-        cal.timeInMillis = nowMillis
-        return cal.get(Calendar.HOUR_OF_DAY) == hour && cal.get(Calendar.MINUTE) == minute
+        val cal = Calendar.getInstance().apply {
+            timeInMillis = nowMillis
+        }
+
+        if (cal.get(Calendar.MINUTE) != minute) return false
+        if (cal.get(Calendar.HOUR_OF_DAY) != hour) return false
+
+        if (dayOfWeekPart != "*") {
+            val currentCalendarDay = cal.get(Calendar.DAY_OF_WEEK)
+            
+            // Khớp lịch thứ trong tuần của Java Calendar sang định dạng DateTimeParser
+            val currentCronDay = when (currentCalendarDay) {
+                Calendar.SUNDAY -> 0
+                Calendar.MONDAY -> 1
+                Calendar.TUESDAY -> 2
+                Calendar.WEDNESDAY -> 3
+                Calendar.THURSDAY -> 4
+                Calendar.FRIDAY -> 5
+                Calendar.SATURDAY -> 6
+                else -> -1
+            }
+
+            val allowedDays = dayOfWeekPart.split(",").mapNotNull { it.toIntOrNull() }
+            if (currentCronDay !in allowedDays) return false
+        }
+
+        return true
     }
 
     private fun safeJson(raw: String): JSONObject = try { JSONObject(raw) } catch (e: Exception) { JSONObject() }
