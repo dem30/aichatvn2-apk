@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.GoalRuleEngine
 
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.utils.Logger
@@ -44,6 +45,9 @@ class WebhookGatewayService : Service() {
 
     @Inject
     lateinit var chatSkill: ChatSkill
+
+    @Inject
+    lateinit var goalRuleEngine: GoalRuleEngine
 
     @Inject
     lateinit var logger: Logger
@@ -102,6 +106,7 @@ class WebhookGatewayService : Service() {
         startCloudGatewaySSE()       // Lắng nghe kết nối hầm SSE từ Render
         startTelegramLongPolling()   // Tự nhận tin nhắn Telegram trực tiếp (Long Polling)
         startHeartbeatLoop()         // Giữ thức Render Gateway (Heartbeat)
+        startGoalRuleEngineLoop()    // ✅ MỚI: Polling các việc SCHEDULE đã giao cho Quản gia (GOD mode)
     }
 
     // ✅ ĐÃ THÊM: Hàm bổ trợ quản lý WakeLock an toàn chống crash và tránh hao pin khi thoát dịch vụ
@@ -395,6 +400,45 @@ class WebhookGatewayService : Service() {
                                                         }
                                                     }
 
+                                                    // ✅ MỚI: Cho Quản gia (GOD mode) cơ hội tự xử lý sự kiện "khách nhắn tin tới"
+                                                    // TRƯỚC luồng mặc định — vd rule "khách nhắn thì bảo tôi đang bận". Nếu có rule
+                                                    // EVENT đang bật khớp, quản gia tự trả lời cố định, KHÔNG gọi LLM/ChatSkill.
+                                                    val goalEventOutcome = try {
+                                                        goalRuleEngine.fireEvent("incoming_message")
+                                                    } catch (e: Exception) {
+                                                        logger.e("GoalRuleEngine", "Lỗi fireEvent incoming_message: ${e.message}")
+                                                        com.aichatvn.agent.core.GoalEventOutcome(handled = false)
+                                                    }
+
+                                                    if (goalEventOutcome.handled) {
+                                                        // Vẫn lưu tin nhắn khách vào lịch sử (giống nhánh "Người Trực") để Admin xem lại được.
+                                                        chatSkill.saveExternalUserMessage(text, unifiedUsername)
+                                                        val autoReply = goalEventOutcome.replyText
+                                                        if (!autoReply.isNullOrBlank()) {
+                                                            when (platform) {
+                                                                "facebook" -> {
+                                                                    findPlugin("facebook")?.execute(
+                                                                        "send_messenger",
+                                                                        mapOf(
+                                                                            "recipient_id" to senderId,
+                                                                            "message" to autoReply,
+                                                                            "page_id" to incomingPageId
+                                                                        )
+                                                                    )
+                                                                }
+                                                                "instagram" -> {
+                                                                    findPlugin("instagram")?.execute(
+                                                                        "send_messenger",
+                                                                        mapOf("recipient_id" to senderId, "message" to autoReply)
+                                                                    )
+                                                                }
+                                                                "website" -> {
+                                                                    sendWebsiteReply(gatewayUrl, gatewayToken, senderId, autoReply)
+                                                                }
+                                                            }
+                                                        }
+                                                        logger.i("CloudGateway", "🤵 Quản gia đã tự trả lời khách $unifiedUsername theo quy tắc đã giao.")
+                                                    } else {
                                                     val setting = withContext(Dispatchers.IO) {
                                                         database.cameraDao().getCustomerSetting(senderId)
                                                     }
@@ -438,6 +482,7 @@ class WebhookGatewayService : Service() {
                                                         chatSkill.saveExternalUserMessage(text, unifiedUsername)
                                                         logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời.")
                                                     }
+                                                    } // đóng else của goalEventOutcome.handled
                                                 }
                                             }
                                         } catch (e: Exception) {
@@ -616,6 +661,24 @@ class WebhookGatewayService : Service() {
                     }
                 }
                 delay(10 * 60 * 1000L) // Nhịp tim chu kỳ 10 phút/lần (an toàn trước mốc 30 phút dọn dẹp của server)
+            }
+        }
+    }
+
+    // ✅ MỚI: Vòng lặp riêng cho GoalRuleEngine — tách khỏi heartbeat (10 phút/lần, quá thưa cho
+    // việc theo lịch phút/giờ). Poll mỗi 60s và tự bỏ qua nếu tick bị dội (điều kiện đã có sẵn
+    // trong GoalRuleEngine.tickScheduleRules() dựa trên lastRunAt), nên an toàn kể cả khi delay
+    // hệ thống dao động nhẹ.
+    private fun startGoalRuleEngineLoop() {
+        serviceScope.launch(Dispatchers.IO) {
+            delay(15000) // để DB/Hilt khởi tạo xong trước khi rule đầu tiên có thể trùng khớp cron
+            while (isActive) {
+                try {
+                    goalRuleEngine.tickScheduleRules()
+                } catch (e: Exception) {
+                    logger.e("GoalRuleEngine", "Lỗi khi tick goal rules: ${e.message}")
+                }
+                delay(60 * 1000L)
             }
         }
     }

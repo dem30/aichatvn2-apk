@@ -142,6 +142,68 @@ data class ScheduleEntity(
     val createdAt: Long
 )
 
+// ==================== GOAL RULE (Housekeeper "GOD mode") ====================
+
+/**
+ * Một "quy tắc quản gia" được GoalPlanner phân rã từ 1 câu lệnh tự nhiên phức tạp
+ * (vd: "kiểm tra điện, có gì thì email cho tôi"). Khác với ScheduleEntity (luôn gọi
+ * thẳng 1 action theo lịch), GoalRuleEntity có thêm bước "check" + "condition" ở giữa,
+ * và có thể trigger theo SỰ KIỆN (EVENT) thay vì chỉ theo lịch (SCHEDULE).
+ *
+ * triggerType = "SCHEDULE": dùng cron/intervalMinutes, do RuleEngine polling.
+ * triggerType = "EVENT"   : dùng eventName (vd "incoming_message"), do nơi phát sinh
+ *                           sự kiện (WebhookGatewayService, ChatSkill...) tự gọi trực tiếp.
+ *
+ * checkPluginId/checkAction để trống nếu rule không cần bước kiểm tra riêng (vd rule
+ * "khách nhắn thì bảo bận" chạy thenAction ngay, không cần check gì trước).
+ *
+ * conditionExpr để trống nghĩa là luôn coi điều kiện là ĐÚNG (chạy thenAction mỗi lần
+ * trigger). Có giá trị thì RuleConditionEvaluator sẽ so khớp với data trả về từ checkAction
+ * (vd: "onlineDevices < totalDevices", "unreadAlerts > 0").
+ */
+@Entity(
+    tableName = "goal_rules",
+    indices = [Index(value = ["enabled"]), Index(value = ["triggerType"])]
+)
+data class GoalRuleEntity(
+    @PrimaryKey
+    val id: String,
+    val rawGoalText: String,          // câu lệnh gốc người dùng nhập, hiển thị lại khi báo cáo
+    val triggerType: String,          // "SCHEDULE" | "EVENT"
+    val cron: String = "",
+    val intervalMinutes: Int = 0,
+    val eventName: String = "",       // dùng khi triggerType = EVENT, vd "incoming_message"
+    val checkPluginId: String = "",   // rỗng = bỏ qua bước check, coi như điều kiện luôn đúng
+    val checkAction: String = "",
+    val checkParams: String = "{}",
+    val conditionExpr: String = "",   // rỗng = luôn đúng
+    val thenPluginId: String,
+    val thenAction: String,
+    val thenParams: String = "{}",
+    val enabled: Int = 1,
+    val lastRunAt: Long = 0L,
+    val createdAt: Long,
+    val createdBy: String = "default_user"
+)
+
+/**
+ * Log mỗi lần GoalRuleEntity được thực thi — để Housekeeper.check_status show ra
+ * "đã tự làm N việc hôm nay" cho người dùng kiểm tra lại.
+ */
+@Entity(
+    tableName = "goal_run_logs",
+    indices = [Index(value = ["goalId"]), Index(value = ["timestamp"])]
+)
+data class GoalRunLogEntity(
+    @PrimaryKey
+    val id: String,
+    val goalId: String,
+    val timestamp: Long,
+    val conditionMet: Int,   // 0/1 — điều kiện có đúng để chạy thenAction hay không
+    val success: Int,        // 0/1 — thenAction (nếu chạy) có thành công hay không
+    val summary: String      // câu tóm tắt dễ hiểu, vd "Phát hiện 1 thiết bị mất kết nối, đã gửi email"
+)
+
 // ==================== APP CONFIG ====================
 
 @Entity(tableName = "app_config")
