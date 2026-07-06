@@ -1783,8 +1783,8 @@ class AgentKernel @Inject constructor(
 
 
 
-    
-    // Trong AgentKernel.kt - Tìm đến hàm tryResolvePendingIntent và cập nhật đoạn đầu hàm:
+
+    // Trong AgentKernel.kt — Hàm tryResolvePendingIntent:
 
 private suspend fun tryResolvePendingIntent(
     pending: PendingIntent,
@@ -1825,16 +1825,44 @@ private suspend fun tryResolvePendingIntent(
 
     val heuristicFilled = mutableMapOf<String, Any>()
 
-    // ── ✅ ĐOẠN VÁ LỖI LOGIC VÒNG LẶP GOAL TEXT (THÊM MỚI Ở ĐÂY) ──
-    // Nếu đang hỏi bù thông tin cho lệnh tạo việc của Quản gia, lấy câu trả lời mới ghép dồn vào câu lệnh cũ
+    // ── ✅ BẢN SỬA ĐỔI: Giải mã số chọn lọc và ghép dồn cho Quản gia ──
     if (pending.pluginId == "housekeeper" && pending.action == "create_goal") {
         val oldGoalText = pending.knownParams["goalText"]?.toString() ?: ""
-        if (oldGoalText.isNotBlank() && !userMessage.equals(oldGoalText, ignoreCase = true)) {
-            val combined = "$oldGoalText $userMessage"
+        if (oldGoalText.isNotBlank()) {
+            val userReply = userMessage.trim()
+            val asked = pending.askedQuestion
+            var resolvedValue = userReply
+            
+            // Trích xuất số chỉ mục người dùng chọn (ví dụ: "1", "chọn 1")
+            val numberRegex = Regex("\\b(\\d+)\\b")
+            val match = numberRegex.find(userReply)
+            if (match != null) {
+                val num = match.groupValues[1]
+                // Tìm dòng khớp dạng "Số 1. <tên>" hoặc "1. <tên>" trong câu hỏi trước
+                val optionRegex = Regex("(?i)\\b(?:số\\s+)?$num\\.\\s*([^\\n]+)")
+                val optionMatch = optionRegex.find(asked)
+                if (optionMatch != null) {
+                    resolvedValue = optionMatch.groupValues[1].trim()
+                    // Nếu giá trị có chứa ID trong ngoặc đơn, bóc tách lấy ID
+                    val bracketRegex = Regex("\\(([^)]+)\\)")
+                    val bracketMatch = bracketRegex.find(resolvedValue)
+                    if (bracketMatch != null) {
+                        resolvedValue = bracketMatch.groupValues[1].trim()
+                    }
+                }
+            }
+            
+            val combined = "$oldGoalText $resolvedValue"
             heuristicFilled["goalText"] = combined
-            logger.d("AgentKernel", "[$traceId] 🤵 Ghép dồn câu trả lời mới vào goalText cũ để tạo câu lệnh đầy đủ: '$combined'")
+            logger.d("AgentKernel", "[$traceId] 🤵 Giải mã số chọn lọc và ghép dồn vào goalText: '$combined'")
         }
     }
+    // ───────────────────────────────────────────────────────────────
+
+    
+
+
+    
     // ─────────────────────────────────────────────────────────────
 
     for (param in pending.missingParams) {

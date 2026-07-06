@@ -8,6 +8,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
+import dagger.hilt.android.qualifiers.ApplicationContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -24,10 +25,11 @@ sealed class GoalPlanResult {
 
 @Singleton
 class GoalPlanner @Inject constructor(
+    // ✅ Trì hoãn việc nạp Set<Plugin> thông qua Provider để phá vỡ vòng lặp phụ thuộc của Hilt
     private val pluginsProvider: Provider<Set<@JvmSuppressWildcards Plugin>>,
     private val groqClient: GroqClientTool,
     private val logger: Logger,
-    private val context: Context // Inject context để truy cập DB cục bộ
+    @ApplicationContext private val context: Context // Inject ngữ cảnh ứng dụng để kết nối DB
 ) {
 
     companion object {
@@ -37,7 +39,7 @@ class GoalPlanner @Inject constructor(
     }
 
     /**
-     * ✅ MỚI: Tự động phân giải tất cả ALIAS (như "phòng khách" ➔ "camera 1") cục bộ trong SQLite
+     * ✅ Tự động phân giải tất cả ALIAS (như "phòng khách" ➔ "camera 1") cục bộ trong SQLite
      * trước khi gửi câu lệnh lên LLM. Giúp AI nhận diện thẳng tham số chuẩn, tránh vòng lặp hỏi bù [1]!
      */
     private suspend fun resolveGoalTextAliases(goalText: String, username: String, database: AppDatabase): String {
@@ -59,6 +61,40 @@ class GoalPlanner @Inject constructor(
         return resolved
     }
 
+    /**
+     * ✅ Tự động đọc SQLite vẽ ra danh sách các thiết bị/camera hiện có trên máy 
+     * dưới dạng đánh số "Số 1. camera 1..." giống hệt Agent Kernel để người dùng chọn nhanh [1].
+     */
+    private suspend fun buildClarificationQuestion(paramName: String, db: AppDatabase): String {
+        return when (paramName) {
+            "cameraId", "camera_id", "camera" -> {
+                val cameras = db.cameraDao().getActiveCameras()
+                if (cameras.isNotEmpty()) {
+                    val listText = cameras.mapIndexed { i, cam ->
+                        val displayName = if (!cam.landinfo.isNullOrBlank()) "${cam.landinfo} (${cam.id})" else cam.id
+                        "Số ${i + 1}. $displayName"
+                    }.joinToString("\n")
+                    "Bạn muốn quét camera nào?\n$listText"
+                } else "Bạn vui lòng cung cấp cameraId của camera nhé?"
+            }
+            "device", "device_id", "deviceId" -> {
+                val devices = db.tuyaDeviceDao().getAllDevices()
+                if (devices.isNotEmpty()) {
+                    val listText = devices.mapIndexed { i, dev -> "Số ${i + 1}. ${dev.name}" }.joinToString("\n")
+                    "Bạn muốn thao tác với thiết bị nào?\n$listText"
+                } else "Bạn vui lòng cung cấp tên thiết bị nhé?"
+            }
+            "id" -> {
+                val goals = db.goalRuleDao().getAllRules()
+                if (goals.isNotEmpty()) {
+                    val listText = goals.mapIndexed { i, rule -> "Số ${i + 1}. ${rule.rawGoalText}" }.joinToString("\n")
+                    "Bạn muốn thao tác với quy tắc quản gia nào?\n$listText"
+                } else "Bạn vui lòng cung cấp ID nhé?"
+            }
+            else -> "Bạn vui lòng cung cấp thông tin cho '$paramName' nhé?"
+        }
+    }
+
     suspend fun plan(goalText: String, createdBy: String = "default_user"): GoalPlanResult {
         val plugins = pluginsProvider.get()
         val routablePlugins = plugins.filter { it.manifest.routable }
@@ -66,20 +102,16 @@ class GoalPlanner @Inject constructor(
             return GoalPlanResult.Failed("Chưa có plugin nào khả dụng để giao việc.")
         }
 
-        // ✅ Nạp DB để phân giải bí danh tiếng Việt trước khi gửi đi [1]
+        // ✅ Nạp DB để phân giải bí danh tiếng Việt cục bộ trước khi gửi đi [1]
         val database = AppDatabase.getDatabase(context)
         val resolvedGoalText = resolveGoalTextAliases(goalText, createdBy, database)
         logger.d("GoalPlanner", "📝 Câu lệnh gốc: '$goalText' ➔ Câu lệnh sau giải mã alias: '$resolvedGoalText'")
 
-        val candidateLines = routablePlugins.joinToString("\n") { p ->
-            p.manifest.actions.joinToString("\n") { a ->
-                "  - ${p.manifest.id}.${a.name}: ${a.description} (params: ${
-                    a.parameters.filter { it.required }.joinToString(", ") { it.name }
-                })"
-            }
-        }
+        // ✅ TỐI GIẢN HÓA: Chỉ gửi duy nhất "pluginId.actionName" để giảm 70% kích thước prompt [1]
+        val candidateLines = routablePlugins.flatMap { p ->
+            p.manifest.actions.map { a -> "  - ${p.manifest.id}.${a.name}" }
+        }.joinToString("\n")
 
-        // ✅ TỐI ƯU HÓA: Prompt rút gọn cực kỳ ngắn để giảm 70% kích thước token, bảo vệ kết nối mạng nền [1]
         val prompt = buildString {
             append("<sys>Bạn là Goal Planner cho Smarthome. Đọc yêu cầu, trả về duy nhất JSON quy tắc.\n")
             append("Cấu trúc JSON bắt buộc:\n")
@@ -93,9 +125,9 @@ class GoalPlanner @Inject constructor(
             append("  \"clarificationQuestion\": \"\"\n")
             append("}\n")
             append("QUY TẮC:\n")
-            append("1. Lọc tin nhắn/camera cũ -> triggerType=\"SCHEDULE\" (chạy định kỳ), checkPluginId=\"chat\" hoặc \"camera\".\n")
+            append("1. Lọc tin nhắn/camera cũ -> triggerType=\"SCHEDULE\" (chạy định kỳ).\n")
             append("2. Phản hồi cố định -> triggerType=\"EVENT\", eventName=\"incoming_message\", thenActions=[{\"pluginId\":\"__system__\",\"action\":\"reply_fixed\",\"params\":{\"replyText\":\"...\"}}].\n")
-            append("3. Nếu thiếu tham số bắt buộc của action (nhìn ở candidates) -> set needClarification=true kèm câu hỏi tiếng Việt.\n")
+            append("3. Nếu thiếu tham số bắt buộc để hành động (ví dụ: không biết rõ camera nào, thiết bị nào) -> set needClarification=true và điền duy nhất từ khóa \"missing:tên_tham_số\" (ví dụ: \"missing:cameraId\") vào clarificationQuestion. Tuyệt đối không viết câu hỏi tiếng Việt dài dòng vào đây.\n")
             append("4. Chỉ xuất JSON thô, không giải thích.</sys>\n\n")
             append("<candidates>\n$candidateLines\n</candidates>\n")
             append("<goal>$resolvedGoalText</goal>\n")
@@ -112,9 +144,14 @@ class GoalPlanner @Inject constructor(
         val json = parsePlanJson(rawJson)
             ?: return GoalPlanResult.Failed("Không đọc được kế hoạch do AI trả về sai định dạng.")
 
+        // ✅ ĐỒNG BỘ LUỒNG HỎI BÙ TỰ ĐỘNG DỰNG DANH SÁCH CHỌN LỌC [1]:
         if (json.optBoolean("needClarification", false)) {
-            val question = json.optString("clarificationQuestion").ifBlank {
-                "Bạn có thể mô tả rõ hơn yêu cầu này không?"
+            val qRaw = json.optString("clarificationQuestion")
+            val question = if (qRaw.startsWith("missing:")) {
+                val paramName = qRaw.removePrefix("missing:").trim()
+                buildClarificationQuestion(paramName, database) // Vẽ danh sách đánh số từ DB [1]
+            } else {
+                qRaw.ifBlank { "Bạn vui lòng mô tả chi tiết yêu cầu của bạn?" }
             }
             return GoalPlanResult.NeedsInfo(question)
         }
@@ -136,8 +173,9 @@ class GoalPlanner @Inject constructor(
             )
         }
 
+        // Kiểm tra chống hallucination cho mảng thenActions
         if (thenActionsArray.length() == 0) {
-            return GoalPlanResult.Failed("AI không xác định được hành động cần thực hiện.")
+            return GoalPlanResult.Failed("AI không xác định được hành động cần thực hiện. Vui lòng mô tả rõ hơn.")
         }
         for (i in 0 until thenActionsArray.length()) {
             val act = thenActionsArray.optJSONObject(i)
