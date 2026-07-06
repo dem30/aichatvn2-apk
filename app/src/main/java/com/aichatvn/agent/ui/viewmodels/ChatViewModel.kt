@@ -135,8 +135,13 @@ class ChatViewModel @Inject constructor(
             // Với default_user thì đây là no-op (không có tin nào bị đánh dấu unread).
             database.chatMessageDao().markThreadAsRead(username)
 
-            // ✅ CẬP NHẬT: Khởi tạo nạp tin nhắn cũ cho ID khách hàng hiện tại
-            chatSkill.processQuery(message = "", username = username)
+            // ✅ ĐÃ SỬA: Trước đây gọi chatSkill.processQuery(message = "", username = username)
+            // để "nạp lịch sử" — nhưng processQuery() cũng là hàm mà Webhook/SSE dùng để xử lý
+            // tin nhắn tự động của MỌI khách khác ở nền, và trước đây cả hai trường hợp cùng
+            // chạy chung 1 đoạn code đổi currentUsername/nạp lại _messages -> gây lẫn lộn tin
+            // nhắn giữa các khách (xem ChatSkill.openThread()). Giờ dùng hẳn 1 hàm riêng
+            // openThread() chỉ có ý nghĩa "đây là thread Admin đang thực sự mở lên xem".
+            chatSkill.openThread(username)
 
             loadBotSmartModeStatus() // ✅ ĐÃ THÊM: Tải cấu hình gạt nút cướp quyền của khách
 

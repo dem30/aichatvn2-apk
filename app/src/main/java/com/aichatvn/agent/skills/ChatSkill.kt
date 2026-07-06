@@ -141,6 +141,21 @@ class ChatSkill @Inject constructor(
         _chatMode.value = mode
     }
 
+    // ✅ MỚI: Hàm RIÊNG để "mở 1 thread lên màn hình" — CHỈ được gọi khi Admin thực sự điều
+    // hướng vào xem 1 khách cụ thể (ChatViewModel.init()). Đây là NƠI DUY NHẤT được phép đổi
+    // currentUsername + nạp lại _messages. Trước đây logic này nằm lẫn trong processQuery() và
+    // chạy cho MỌI lời gọi — kể cả lời gọi ngầm của Webhook/SSE xử lý tin nhắn tự động cho MỘT
+    // KHÁCH KHÁC. Hậu quả: đang xem chat khách A, khách B nhắn tới, bot tự trả lời B bằng
+    // processQuery(username="B") ở nền -> đoạn switch cũ lập tức đổi currentUsername sang "B"
+    // và NẠP ĐÈ toàn bộ _messages bằng lịch sử của B, trong khi tiêu đề màn hình (lấy từ route
+    // param cố định) vẫn hiển thị A -> "Nick vẫn của người cũ, nội dung của người mới".
+    suspend fun openThread(username: String) {
+        messagesMutex.withLock {
+            currentUsername = username
+            reloadMessages(username)
+        }
+    }
+
     suspend fun processQuery(
         message: String,
         extraContext: String = "",
@@ -150,12 +165,11 @@ class ChatSkill @Inject constructor(
         isManual: Boolean = false // ✅ Đmax THÊM: Cờ hiệu phân biệt luồng Admin gõ tay / Máy chủ tự động gọi
     ): PluginResult {
         return try {
-            messagesMutex.withLock {
-                if (currentUsername != username) {
-                    currentUsername = username
-                    reloadMessages(username)
-                }
-            }
+            // ✅ ĐÃ XÓA: đoạn "if (currentUsername != username) { currentUsername = username;
+            // reloadMessages(username) }" trước đây nằm ở đây — đây chính là bug làm lẫn lộn
+            // tin nhắn giữa các khách (xem giải thích ở openThread() phía trên). processQuery()
+            // giờ KHÔNG BAO GIỜ tự ý đổi currentUsername nữa; việc đổi thread hiển thị chỉ có
+            // thể xảy ra qua openThread() gọi tường minh từ ChatViewModel khi màn hình mở lên.
 
             // ✅ ĐÃ THÊM: message rỗng + không kèm ảnh/file nghĩa là lệnh gọi này chỉ dùng để
             // NẠP LẠI LỊCH SỬ (ví dụ ChatViewModel.init() gọi processQuery(message = "", ...)
@@ -380,8 +394,15 @@ class ChatSkill @Inject constructor(
             withContext(Dispatchers.IO) {
                 database.chatMessageDao().clearMessages(username)
             }
+            // ✅ ĐÃ SỬA: Trước đây xóa `_messages` VÔ ĐIỀU KIỆN bất kể `username` truyền vào có
+            // phải là thread đang mở trên màn hình hay không — cùng nhóm lỗi với processQuery(),
+            // nếu có nơi nào gọi clearHistory() cho 1 khách khác trong lúc Admin đang xem khách
+            // hiện tại, màn hình đang mở sẽ bị trắng xóa nhầm. Giờ chỉ xóa _messages khi đúng là
+            // thread đang active.
             messagesMutex.withLock {
-                _messages.value = emptyList()
+                if (currentUsername == username) {
+                    _messages.value = emptyList()
+                }
             }
             PluginResult.Success(mapOf("message" to "History cleared"))
         } catch (e: Exception) {
