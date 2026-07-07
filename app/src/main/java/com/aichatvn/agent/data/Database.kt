@@ -67,6 +67,8 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages WHERE id = :messageId")
     suspend fun deleteMessage(messageId: String)
 
+     @Query("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT :limit")
++    suspend fun getAllMessagesRaw(limit: Int): List<ChatMessageEntity>
     // ✅ ĐÃ THÊM: Truy vấn quét Hộp thư đến (Inbox) - Lấy tin nhắn mới nhất của từng khách hàng để làm danh sách
     @Query("""
         SELECT m1.* FROM chat_messages m1
