@@ -21,6 +21,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
+// 🔴 CHÈN THÊM CÁC DÒNG NÀY:
+import com.aichatvn.agent.data.dataStore
+import kotlinx.coroutines.flow.first
 
 @HiltAndroidApp
 class MainApplication : Application(), Configuration.Provider {
