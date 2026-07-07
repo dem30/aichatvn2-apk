@@ -24,14 +24,15 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
+    // ===== ✅ ĐÃ SỬA: Cung cấp HassManager thay thế cho TuyaManager cũ =====
     @Provides
     @Singleton
-    fun provideTuyaManager(
+    fun provideHassManager(
         @ApplicationContext context: Context,
         database: AppDatabase,
         logger: Logger
-    ): TuyaManager {
-        return TuyaManager(context, database.tuyaDeviceDao(), logger)
+    ): HassManager {
+        return HassManager(context, database.tuyaDeviceDao(), logger)
     }
 
     @Provides
@@ -80,15 +81,13 @@ object AppModule {
     @IntoSet
     @Singleton
     fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
-
      
     @Provides
     @IntoSet
     @Singleton
     fun provideVisionPlugin(skill: VisionPlugin): Plugin = skill
-
     
-    // Đăng ký Plugin Facebook Assistant mới
+    // Đăng ký Plugin Facebook Assistant
     @Provides
     @IntoSet
     @Singleton

@@ -11,9 +11,7 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url = uri("https://jitpack.io") }
-        // ✅ THÊM: Cả hai kho phát hành tiêu chuẩn và thương mại của Tuya/Thingclips
-        maven { url = uri("https://maven-other.tuya.com/repository/maven-releases/") }
-        maven { url = uri("https://maven-other.tuya.com/repository/maven-commercial-releases/") }
+        // Toàn bộ các kho lưu trữ Maven của Tuya/Thingclips đã được gỡ bỏ sạch sẽ tại đây
     }
 }
 rootProject.name = "AIChatVN2"

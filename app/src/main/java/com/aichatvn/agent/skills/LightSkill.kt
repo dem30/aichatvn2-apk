@@ -23,13 +23,13 @@ import javax.inject.Singleton
 
 @Singleton
 class LightSkill @Inject constructor(
-    private val tuyaManager: TuyaManager,
+    private val hassManager: HassManager, // ✅ ĐÃ SỬA: Thay thế TuyaManager bằng HassManager
     private val database: AppDatabase,
     private val deviceRegistry: DeviceRegistry,
     logger: Logger
 ) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
 
-    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
+    // ✅ ĐÃ SỬA: Đồng bộ hóa ví dụ và mô tả sang hệ thống Home Assistant
     override val manifest = PluginManifest(
         id = id,
         name = name,
@@ -39,7 +39,7 @@ class LightSkill @Inject constructor(
         actions = listOf(
             PluginAction(
                 name = "set",
-                description = "Bật hoặc tắt đèn thông minh",
+                description = "Bật hoặc tắt đèn thông minh thông qua Home Assistant",
                 examples = listOf("bật đèn", "tắt đèn"),
                 tags = listOf("light", "switch", "relay", "device"),
                 parameters = listOf(
@@ -49,7 +49,7 @@ class LightSkill @Inject constructor(
             ),
             PluginAction(
                 name = "status",
-                description = "Xem trạng thái hiện tại của đèn",
+                description = "Xem trạng thái hiện tại của đèn trong Home Assistant",
                 examples = listOf("trạng thái đèn", "kiểm tra đèn"),
                 tags = listOf("status", "query", "sensor"),
                 parameters = listOf(
@@ -58,15 +58,14 @@ class LightSkill @Inject constructor(
             ),
             PluginAction(
                 name = "scan",
-                description = "Quét các thiết bị đèn thông minh trong mạng",
-                examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới"),
+                description = "Đồng bộ hóa danh sách thiết bị thông minh từ Home Assistant",
+                examples = listOf("quét thiết bị đèn", "tìm đèn mới"),
                 tags = listOf("discovery", "scan", "network"),
                 parameters = emptyList()
             )
         )
     )
 
-    // ✅ ĐÃ SỬA: Ghi đè trực tiếp hàm xuất Node giao diện của Plugin mà không cần DashboardProvider phụ thuộc ngoài
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
         
@@ -76,7 +75,7 @@ class LightSkill @Inject constructor(
                 val yCoord = 200f + (index / 2) * 160f
 
                 val isDeviceOnline = try {
-                    tuyaManager.getStatus(dev.name)
+                    hassManager.getStatus(dev.name) // ✅ ĐÃ SỬA: Gọi qua hassManager
                 } catch (e: Exception) {
                     false
                 }
@@ -139,10 +138,11 @@ class LightSkill @Inject constructor(
             ?: return failure("Thiếu trạng thái")
 
         return try {
+            // ✅ ĐÃ SỬA: Chuyển tiếp lệnh gọi sang HassManager
             if (state) {
-                tuyaManager.turnOn(deviceName)
+                hassManager.turnOn(deviceName)
             } else {
-                tuyaManager.turnOff(deviceName)
+                hassManager.turnOff(deviceName)
             }
             success("Đã ${if (state) "bật" else "tắt"} thiết bị $deviceName")
         } catch (e: Exception) {
@@ -155,7 +155,8 @@ class LightSkill @Inject constructor(
             ?: return failure("Thiếu tên thiết bị")
 
         return try {
-            val status = tuyaManager.getStatus(deviceName)
+            // ✅ ĐÃ SỬA: Chuyển tiếp lệnh gọi sang HassManager
+            val status = hassManager.getStatus(deviceName)
             success("Thiết bị $deviceName hiện đang ${if (status) "bật" else "tắt"}", mapOf("status" to status))
         } catch (e: Exception) {
             failure("Lỗi lấy trạng thái: ${e.message}")
@@ -164,10 +165,11 @@ class LightSkill @Inject constructor(
 
     private suspend fun handleScan(): AgentKernel.PluginResult {
         return try {
-            val devices = tuyaManager.scanDevices()
-            success("Đã quét hoàn tất mạng. Tìm thấy ${devices.size} thiết bị.")
+            // ✅ ĐÃ SỬA: Chuyển tiếp lệnh gọi sang HassManager
+            val devices = hassManager.scanDevices()
+            success("Đã đồng bộ hoàn tất. Tìm thấy ${devices.size} thiết bị hoạt động.")
         } catch (e: Exception) {
-            failure("Lỗi khi quét thiết bị: ${e.message}")
+            failure("Lỗi khi đồng bộ thiết bị: ${e.message}")
         }
     }
 

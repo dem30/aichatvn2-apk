@@ -1,7 +1,6 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.database.Cursor
 import android.os.Build
 import android.os.Environment
@@ -28,13 +27,12 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TrainingSkill
-import com.aichatvn.agent.skills.TuyaManager
+import com.aichatvn.agent.skills.HassManager // ✅ ĐÃ SỬA: Thay thế TuyaManager bằng HassManager
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.utils.Logger
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import com.thingclips.smart.home.sdk.bean.HomeBean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -46,7 +44,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -55,7 +52,7 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
-    private val tuyaManager: TuyaManager,
+    private val hassManager: HassManager, // ✅ ĐÃ SỬA: Thay thế TuyaManager bằng HassManager
     private val cameraSkill: CameraSkill,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
@@ -68,8 +65,10 @@ class SettingsViewModel @Inject constructor(
         val RESEND_API_KEY = stringPreferencesKey("resend_api_key")
         val RESEND_SENDER  = stringPreferencesKey("resend_sender")
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
-        val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
-        val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
+        
+        // ✅ ĐÃ SỬA: Các khóa lưu cấu hình Home Assistant
+        val HASS_URL = stringPreferencesKey("hass_url")
+        val HASS_TOKEN = stringPreferencesKey("hass_token")
 
         private val BACKUP_TABLES = listOf(
             "customers",
@@ -104,11 +103,12 @@ class SettingsViewModel @Inject constructor(
         .map { it[DARK_MODE] ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    private val _tuyaClientId = MutableStateFlow("")
-    val tuyaClientId: StateFlow<String> = _tuyaClientId.asStateFlow()
+    // ===== ✅ ĐÃ SỬA: StateFlow lưu Địa chỉ URL và Token của Home Assistant =====
+    private val _hassUrl = MutableStateFlow("")
+    val hassUrl: StateFlow<String> = _hassUrl.asStateFlow()
 
-    private val _tuyaClientSecret = MutableStateFlow("")
-    val tuyaClientSecret: StateFlow<String> = _tuyaClientSecret.asStateFlow()
+    private val _hassToken = MutableStateFlow("")
+    val hassToken: StateFlow<String> = _hassToken.asStateFlow()
 
     val isGroqKeyConfigured: StateFlow<Boolean> = groqApiKey
         .map { it.isNotBlank() }
@@ -116,10 +116,6 @@ class SettingsViewModel @Inject constructor(
 
     val isResendConfigured: StateFlow<Boolean> = combine(resendApiKey, resendSender) { key, sender ->
         key.isNotBlank() && sender.isNotBlank()
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    val isTuyaConfigured: StateFlow<Boolean> = combine(tuyaClientId, tuyaClientSecret) { id, secret ->
-        id.isNotBlank() && secret.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
@@ -131,7 +127,16 @@ class SettingsViewModel @Inject constructor(
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
-    // ===== Khôi phục toàn bộ các hàm lưu, Reset và khôi phục cài đặt hệ thống =====
+    init {
+        viewModelScope.launch {
+            val prefs = context.dataStore.data.first()
+            _hassUrl.value = prefs[HASS_URL] ?: ""
+            _hassToken.value = prefs[HASS_TOKEN] ?: ""
+            
+            // Tải lại đệm cache thiết bị từ SQLite lúc khởi chạy
+            hassManager.loadDevicesFromDB()
+        }
+    }
 
     fun saveConfig(key: String, value: String) {
         viewModelScope.launch {
@@ -179,208 +184,41 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ===== Các StateFlow quản lý luồng Thing Smart Life SDK =====
-    private val _isLoggedIn = MutableStateFlow(false)
-    val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
-
-    private val _tuyaHomes = MutableStateFlow<List<HomeBean>>(emptyList())
-    val tuyaHomes: StateFlow<List<HomeBean>> = _tuyaHomes.asStateFlow()
-
-    private val _selectedHomeId = MutableStateFlow<Long>(0L)
-    val selectedHomeId: StateFlow<Long> = _selectedHomeId.asStateFlow()
-
-    private val _isPairing = MutableStateFlow(false)
-    val isPairing: StateFlow<Boolean> = _isPairing.asStateFlow()
-
-    private val _pairingMessage = MutableStateFlow<String?>(null)
-    val pairingMessage: StateFlow<String?> = _pairingMessage.asStateFlow()
-
-    // ===== Luồng quản lý hiển thị SHA256 và SHA1 tự động đọc từ APK =====
-    private val _appSha256 = MutableStateFlow("")
-    val appSha256: StateFlow<String> = _appSha256.asStateFlow()
-
-    private val _appSha1 = MutableStateFlow("")
-    val appSha1: StateFlow<String> = _appSha1.asStateFlow()
-
-    // Tên gói ứng dụng lấy động từ Package Name thực tế của APK đang chạy
-    val appPackageName: String = context.packageName
-
-    init {
-        viewModelScope.launch {
-            val prefs = context.dataStore.data.first()
-            _tuyaClientId.value = prefs[TUYA_CLIENT_ID] ?: ""
-            _tuyaClientSecret.value = prefs[TUYA_CLIENT_SECRET] ?: ""
-            
-            // Đồng bộ trạng thái đăng nhập tài khoản thực tế từ SDK
-            _isLoggedIn.value = tuyaManager.isLoggedIn()
-            if (_isLoggedIn.value) {
-                loadHomes()
-            }
-            
-            // Tự sinh mã băm SHA256 và SHA1 của file APK đang chạy
-            _appSha256.value = getAppSignatureSHA256("SHA-256")
-            _appSha1.value = getAppSignatureSHA256("SHA-1")
-        }
-    }
-
-    // Helper tự động lấy dấu băm chữ ký công khai của APK hỗ trợ tùy chọn loại mã băm
-    private fun getAppSignatureSHA256(algorithm: String = "SHA-256"): String {
-        return try {
-            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                context.packageManager.getPackageInfo(
-                    context.packageName, 
-                    PackageManager.GET_SIGNING_CERTIFICATES
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(
-                    context.packageName, 
-                    PackageManager.GET_SIGNATURES
-                )
-            }
-            
-            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                packageInfo.signingInfo?.apkContentsSigners
-            } else {
-                @Suppress("DEPRECATION")
-                packageInfo.signatures
-            }
-            
-            if (signatures != null && signatures.isNotEmpty()) {
-                val md = MessageDigest.getInstance(algorithm)
-                val publicKey = md.digest(signatures[0].toByteArray())
-                publicKey.joinToString(":") { "%02X".format(it) }
-            } else {
-                "N/A"
-            }
-        } catch (e: Exception) {
-            "Lỗi: ${e.message}"
-        }
-    }
-
-
-
-    // 🔴 HÃY THAY THẾ TOÀN BỘ HÀM NÀY BẰNG PHIÊN BẢN AN TOÀN KHÔNG GÂY CRASH:
-    fun saveTuyaConfig(clientId: String, clientSecret: String) {
+    // ===== ✅ ĐÃ SỬA: Lưu cấu hình Home Assistant =====
+    fun saveHassConfig(url: String, token: String) {
         viewModelScope.launch {
             context.dataStore.edit { prefs ->
-                prefs[TUYA_CLIENT_ID] = clientId.trim()
-                prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+                prefs[HASS_URL] = url.trim()
+                prefs[HASS_TOKEN] = token.trim()
             }
-            _tuyaClientId.value = clientId.trim()
-            _tuyaClientSecret.value = clientSecret.trim()
-
-            // Hiển thị thông báo yêu cầu người dùng khởi động lại ứng dụng
-            _configSaveResult.value = "💾 Đã lưu! Vui lòng tắt hẳn và mở lại ứng dụng để áp dụng cấu hình mới."
-            kotlinx.coroutines.delay(4000)
+            _hassUrl.value = url.trim()
+            _hassToken.value = token.trim()
+            _configSaveResult.value = "💾 Đã lưu cấu hình Home Assistant!"
+            kotlinx.coroutines.delay(2000)
             _configSaveResult.value = null
         }
     }
 
-    
-    fun toggleDarkMode(enabled: Boolean) {
+    // ===== ✅ ĐÃ SỬA: Đồng bộ hóa danh sách thực thể từ Home Assistant =====
+    fun syncHassDevices() {
         viewModelScope.launch {
-            context.dataStore.edit { it[DARK_MODE] = enabled }
-        }
-    }
-
-    fun loginTuya(email: String, password: String, onResult: (Boolean, String) -> Unit) {
-        viewModelScope.launch {
+            _configSaveResult.value = "🔄 Đang đồng bộ từ Home Assistant..."
             try {
-                val success = tuyaManager.login(email.trim(), password.trim())
-                _isLoggedIn.value = success
-                if (success) {
-                    loadHomes()
-                    onResult(true, "✅ Đăng nhập Tuya SDK thành công!")
-                } else {
-                    onResult(false, "❌ Đăng nhập thất bại.")
-                }
-            } catch (e: Exception) {
-                onResult(false, "❌ Lỗi: ${e.message}")
-            }
-        }
-    }
-
-    fun logoutTuya() {
-        viewModelScope.launch {
-            try {
-                tuyaManager.logout()
-                _isLoggedIn.value = false
-                _tuyaHomes.value = emptyList()
-                _selectedHomeId.value = 0L
-            } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Logout error: ${e.message}")
-            }
-        }
-    }
-
-    private fun loadHomes() {
-        viewModelScope.launch {
-            try {
-                val list = tuyaManager.getHomeList()
-                _tuyaHomes.value = list
-                if (list.isNotEmpty()) {
-                    _selectedHomeId.value = list.first().homeId
-                }
-            } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Error loading homes: ${e.message}")
-            }
-        }
-    }
-
-    fun selectHome(homeId: Long) {
-        _selectedHomeId.value = homeId
-    }
-
-    fun syncTuyaDevices() {
-        viewModelScope.launch {
-            val homeId = _selectedHomeId.value
-            if (homeId == 0L) {
-                _configSaveResult.value = "❌ Chưa chọn ngôi nhà nào để đồng bộ."
-                return@launch
-            }
-            _configSaveResult.value = "🔄 Đang đồng bộ..."
-            try {
-                tuyaManager.syncDevicesFromHome(homeId)
+                hassManager.scanDevices()
                 _configSaveResult.value = "✅ Đồng bộ thiết bị thành công!"
             } catch (e: Exception) {
                 _configSaveResult.value = "❌ Lỗi đồng bộ: ${e.message}"
             } finally {
-                kotlinx.coroutines.delay(2000)
+                kotlinx.coroutines.delay(2500)
                 _configSaveResult.value = null
             }
         }
     }
 
-    fun startPairingDevice(ssid: String, password: String) {
-        val homeId = _selectedHomeId.value
-        if (homeId == 0L) {
-            _pairingMessage.value = "❌ Vui lòng chọn một ngôi nhà trước khi ghép nối."
-            return
-        }
-        _isPairing.value = true
-        _pairingMessage.value = "📶 Đang quét tìm thiết bị (EZ Mode)..."
+    fun toggleDarkMode(enabled: Boolean) {
         viewModelScope.launch {
-            tuyaManager.startEzPairing(
-                ssid = ssid,
-                password = password,
-                homeId = homeId,
-                onDevicePaired = { dev ->
-                    _isPairing.value = false
-                    _pairingMessage.value = "🎉 Ghép nối thành công thiết bị: ${dev.name}!"
-                },
-                onError = { code, msg ->
-                    _isPairing.value = false
-                    _pairingMessage.value = "❌ Lỗi: $msg (Mã: $code)"
-                }
-            )
+            context.dataStore.edit { it[DARK_MODE] = enabled }
         }
-    }
-
-    fun stopPairingDevice() {
-        tuyaManager.stopEzPairing()
-        _isPairing.value = false
-        _pairingMessage.value = "⏹️ Đã dừng tiến trình ghép nối."
     }
 
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
@@ -446,17 +284,18 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
+    // ===== ✅ ĐÃ SỬA: Kiểm thử kết nối API Home Assistant =====
+    suspend fun testHassConnection(url: String, token: String): String {
         return withContext(Dispatchers.IO) {
             try {
                 context.dataStore.edit { prefs ->
-                    prefs[TUYA_CLIENT_ID] = clientId.trim()
-                    prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+                    prefs[HASS_URL] = url.trim()
+                    prefs[HASS_TOKEN] = token.trim()
                 }
-                val devices = tuyaManager.scanDevices()
-                "✅ Kết nối Tuya OK — ${devices.size} thiết bị trong nhà mặc định"
+                val devices = hassManager.scanDevices()
+                "✅ Kết nối OK — Tìm thấy ${devices.size} thiết bị trong Home Assistant"
             } catch (e: Exception) {
-                "❌ Lỗi Tuya: ${e.message}"
+                "❌ Lỗi kết nối: ${e.message}"
             }
         }
     }
@@ -470,8 +309,8 @@ class SettingsViewModel @Inject constructor(
                     put("groq_api_key",      prefs[GROQ_API_KEY] ?: "")
                     put("resend_api_key",    prefs[RESEND_API_KEY] ?: "")
                     put("resend_sender",     prefs[RESEND_SENDER] ?: "")
-                    put("tuya_client_id",    prefs[TUYA_CLIENT_ID] ?: "")
-                    put("tuya_client_secret",prefs[TUYA_CLIENT_SECRET] ?: "")
+                    put("hass_url",          prefs[HASS_URL] ?: "") // ✅ ĐÃ SỬA
+                    put("hass_token",        prefs[HASS_TOKEN] ?: "") // ✅ ĐÃ SỬA
                     put("dark_mode",         prefs[DARK_MODE] ?: false)
                 }
 
@@ -561,20 +400,20 @@ class SettingsViewModel @Inject constructor(
                 val groqKey         = settingsJson.optString("groq_api_key", "")
                 val resendKey       = settingsJson.optString("resend_api_key", "")
                 val resendSenderVal = settingsJson.optString("resend_sender", "")
-                val tuyaClientIdVal = settingsJson.optString("tuya_client_id", "")
-                val tuyaSecretVal   = settingsJson.optString("tuya_client_secret", "")
+                val hassUrlVal      = settingsJson.optString("hass_url", "") // ✅ ĐÃ SỬA
+                val hassTokenVal    = settingsJson.optString("hass_token", "") // ✅ ĐÃ SỬA
                 val darkModeVal     = settingsJson.optBoolean("dark_mode", false)
 
                 context.dataStore.edit { prefs ->
-                    if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]       = groqKey
-                    if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY]     = resendKey
-                    if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]      = resendSenderVal
-                    if (tuyaClientIdVal.isNotEmpty()) prefs[TUYA_CLIENT_ID]     = tuyaClientIdVal
-                    if (tuyaSecretVal.isNotEmpty())   prefs[TUYA_CLIENT_SECRET] = tuyaSecretVal
+                    if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]   = groqKey
+                    if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY] = resendKey
+                    if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]  = resendSenderVal
+                    if (hassUrlVal.isNotEmpty())      prefs[HASS_URL]       = hassUrlVal
+                    if (hassTokenVal.isNotEmpty())    prefs[HASS_TOKEN]     = hassTokenVal
                     prefs[DARK_MODE] = darkModeVal
                 }
-                _tuyaClientId.value = tuyaClientIdVal
-                _tuyaClientSecret.value = tuyaSecretVal
+                _hassUrl.value = hassUrlVal
+                _hassToken.value = hassTokenVal
 
                 var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
@@ -690,9 +529,9 @@ class SettingsViewModel @Inject constructor(
 
                 try {
                     cameraSkill.initialize()
-                    tuyaManager.loadDevicesFromDB()
+                    hassManager.loadDevicesFromDB() // ✅ ĐÃ SỬA: Thay thế Tuya
                 } catch (e: Exception) {
-                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya sau khi import thất bại", e)
+                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ sau khi import thất bại", e)
                 }
 
                 if (dataJson?.has("schedules") == true || dataJson?.has("ScheduleEntity") == true) {

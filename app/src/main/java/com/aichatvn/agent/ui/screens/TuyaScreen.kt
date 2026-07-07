@@ -25,7 +25,7 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.skills.LightSkill
-import com.aichatvn.agent.skills.TuyaManager
+import com.aichatvn.agent.skills.HassManager // ✅ ĐÃ SỬA: Import HassManager mới
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +41,7 @@ import javax.inject.Inject
 @HiltViewModel
 class TuyaViewModel @Inject constructor(
     private val database: AppDatabase,
-    private val tuyaManager: TuyaManager,
+    private val hassManager: HassManager, // ✅ ĐÃ SỬA: Inject HassManager thay cho TuyaManager
     private val lightSkill: LightSkill,
     private val logger: Logger
 ) : ViewModel() {
@@ -76,12 +76,12 @@ class TuyaViewModel @Inject constructor(
         viewModelScope.launch {
             _isScanning.value = true
             try {
-                // Quét thiết bị từ Home mặc định của SDK thông qua TuyaManager mới
-                val found = withContext(Dispatchers.IO) { tuyaManager.scanDevices() }
+                // ✅ ĐÃ SỬA: Đồng bộ thực thể từ Home Assistant
+                val found = withContext(Dispatchers.IO) { hassManager.scanDevices() }
                 loadDevices()
-                _message.value = "✅ Tìm thấy ${found.size} thiết bị trong tài khoản"
+                _message.value = "✅ Đã đồng bộ thành công ${found.size} thiết bị từ Home Assistant"
             } catch (e: Exception) {
-                _message.value = "❌ Lỗi quét: ${e.message}"
+                _message.value = "❌ Lỗi đồng bộ: ${e.message}"
                 logger.e("TuyaViewModel", "scanDevices error", e)
             } finally {
                 _isScanning.value = false
@@ -160,8 +160,9 @@ fun TuyaScreen(
 
     Scaffold(
         topBar = {
+            // ✅ ĐÃ SỬA: Đổi tiêu đề sang Home Assistant
             TopAppBar(
-                title = { Text("Thiết bị Tuya") },
+                title = { Text("Thiết bị Home Assistant") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
@@ -172,11 +173,8 @@ fun TuyaScreen(
                         if (isScanning) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Default.Search, contentDescription = "Quét thiết bị")
+                            Icon(Icons.Default.Refresh, contentDescription = "Đồng bộ từ HASS")
                         }
-                    }
-                    IconButton(onClick = { viewModel.loadDevices() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Làm mới")
                     }
                 }
             )
@@ -185,8 +183,8 @@ fun TuyaScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { viewModel.scanDevices() },
-                icon = { Icon(Icons.Default.Search, contentDescription = null) },
-                text = { Text("Quét thiết bị") },
+                icon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                text = { Text("Đồng bộ thiết bị") },
                 containerColor = MaterialTheme.colorScheme.primary
             )
         }
@@ -280,9 +278,10 @@ private fun TuyaDeviceCard(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold
                         )
+                        // ✅ ĐÃ SỬA: Hiển thị trạng thái On/Off thực tế thay vì mã PID của Tuya
                         if (device.productName.isNotBlank()) {
                             Text(
-                                text = "PID: " + device.productName,
+                                text = "Trạng thái: " + device.productName.uppercase(),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -310,8 +309,8 @@ private fun TuyaDeviceCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                InfoChip(label = "Loại", value = device.category.ifBlank { "—" })
-                InfoChip(label = "ID", value = device.id.take(12) + "…")
+                InfoChip(label = "Phân vùng", value = device.category.ifBlank { "—" })
+                InfoChip(label = "Entity ID", value = device.id)
             }
 
             Spacer(Modifier.height(12.dp))
@@ -348,7 +347,7 @@ private fun TuyaDeviceCard(
                         onClick = onRefresh,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Trạng thái", maxLines = 1)
+                        Text("Làm mới", maxLines = 1)
                     }
                 }
             }
@@ -383,16 +382,16 @@ private fun EmptyTuyaState(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("🔌", fontSize = 64.sp)
+        Text("🏠", fontSize = 64.sp)
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "Chưa có thiết bị Tuya",
+            text = "Chưa có thiết bị Smart Home",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Nhấn Quét để tìm thiết bị trong tài khoản Tuya",
+            text = "Nhấn Đồng bộ để nạp các thực thể từ Home Assistant của bạn",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -405,22 +404,19 @@ private fun EmptyTuyaState(
                     color = MaterialTheme.colorScheme.onPrimary
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Đang quét…")
+                Text("Đang đồng bộ…")
             } else {
-                Icon(Icons.Default.Search, contentDescription = null)
+                Icon(Icons.Default.Refresh, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Quét thiết bị")
+                Text("Đồng bộ thiết bị")
             }
         }
     }
 }
 
 private fun categoryIcon(category: String): String = when (category.lowercase()) {
-    "dj", "dj2"       -> "💡"
-    "kg", "cz"        -> "🔌"
-    "fs"               -> "🌀"
-    "cl"               -> "🪟"
-    "wk"               -> "🌡️"
-    "gw"               -> "📡"
+    "light"            -> "💡"
+    "switch"           -> "🔌"
+    "input_boolean"    -> "⚙️"
     else               -> "⚡"
 }

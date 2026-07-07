@@ -13,7 +13,6 @@ import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.service.WebhookGatewayService
 import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
-import com.thingclips.smart.home.sdk.ThingHomeSdk // Import thư viện Thing Smart Home SDK
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,9 +20,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
-// 🔴 CHÈN THÊM CÁC DÒNG NÀY:
-import com.aichatvn.agent.data.dataStore
-import kotlinx.coroutines.flow.first
 
 @HiltAndroidApp
 class MainApplication : Application(), Configuration.Provider {
@@ -44,57 +40,12 @@ class MainApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        logger.d("MainApplication", "App khởi động - Khởi tạo plugins và Thing Smart SDK")
+        logger.d("MainApplication", "App khởi động - Khởi tạo các dịch vụ nền")
 
-        // ===== ✅ BỔ SUNG: Khởi tạo Thing Smart SDK =====
-        try {
-
-
-          
-            // ===== ✅ SỬA ĐỔI: Khởi tạo động Thing Smart SDK từ bộ nhớ lưu trữ cục bộ =====
-        try {
-            // Đọc đồng bộ dữ liệu AppKey và AppSecret đã lưu từ DataStore
-            val savedKeys = kotlinx.coroutines.runBlocking {
-                try {
-                    val prefs = dataStore.data.first()
-                    val key = prefs[androidx.datastore.preferences.core.stringPreferencesKey("tuya_client_id")] ?: ""
-                    val secret = prefs[androidx.datastore.preferences.core.stringPreferencesKey("tuya_client_secret")] ?: ""
-                    Pair(key, secret)
-                } catch (e: Exception) {
-                    Pair("", "")
-                }
-            }
-
-            val (appKey, appSecret) = savedKeys
-            if (appKey.isNotBlank() && appSecret.isNotBlank()) {
-                // Khởi tạo SDK bằng khóa động do người dùng nhập trong Settings
-                ThingHomeSdk.init(this, appKey, appSecret)
-                logger.i("MainApplication", "🔑 Thing Smart SDK initialized with USER keys: $appKey")
-            } else {
-                // Fallback khởi tạo mặc định bằng Manifest nếu chưa có cấu hình riêng
-                ThingHomeSdk.init(this)
-                logger.i("MainApplication", "🔑 Thing Smart SDK initialized with MANIFEST keys")
-            }
-
-            // Bật chế độ debug sau khi đã init thành công
-            ThingHomeSdk.setDebugMode(BuildConfig.DEBUG)
-        } catch (e: Exception) {
-            logger.e("MainApplication", "❌ Failed to initialize Thing Smart Life App SDK", e)
-        }
-
-
-
-
-            
-        } catch (e: Exception) {
-            logger.e("MainApplication", "❌ Failed to initialize Thing Smart Life App SDK", e)
-        }
-
-        initializePlugins()
-
+        // Thực hiện đăng ký vòng lặp đảm bảo Lịch trình tự động hóa luôn chạy
         TaskScheduler.ensureRunning(this)
 
-        // ✅ KHÔNG ĐỔI: Tự động khởi chạy WebhookGatewayService
+        // Tự động khởi chạy cổng Ktor Webhook Gateway Service phục vụ chat đa kênh (Facebook/Zalo...)
         try {
             val serviceIntent = Intent(this, WebhookGatewayService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -107,7 +58,7 @@ class MainApplication : Application(), Configuration.Provider {
             logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
         }
 
-        // ✅ KHÔNG ĐỔI: Khởi chạy vòng lặp hands-free (mic) ngầm độc lập
+        // Tự động khởi chạy vòng lặp Trợ lý thoại rảnh tay (Hands-free mic) nếu đã được cấp quyền ghi âm
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
         ) {
@@ -128,6 +79,9 @@ class MainApplication : Application(), Configuration.Provider {
                 "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này."
             )
         }
+
+        // Đăng ký khởi tạo không đồng bộ các Plugins nghiệp vụ trong hệ thống
+        initializePlugins()
     }
 
     private fun initializePlugins() {

@@ -37,10 +37,6 @@ android {
         buildConfigField("String", "RESEND_SENDER", "\"${System.getenv("RESEND_SENDER") ?: ""}\"")
 
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
-        
-        // Inject khóa kích hoạt SDK của ứng dụng từ Gradle/Local Properties vào Manifest Placeholders
-        manifestPlaceholders["THING_SMART_APPKEY"] = project.findProperty("THING_SMART_APPKEY") ?: ""
-        manifestPlaceholders["THING_SMART_SECRET"] = project.findProperty("THING_SMART_SECRET") ?: ""
     }
 
     buildTypes {
@@ -82,15 +78,6 @@ android {
                 "META-INF/*.kotlin_module",
                 "META-INF/INDEX.LIST",
                 "META-INF/io.netty.versions.properties"
-            )
-        }
-        
-        // Tránh lỗi trùng lặp thư viện gốc .so khi tải nhiều AAR con của Tuya
-        jniLibs {
-            pickFirsts += setOf(
-                "lib/*/libc++_shared.so",
-                "lib/*/libv8wrapper.so",
-                "lib/*/libv8android.so"
             )
         }
     }
@@ -176,17 +163,6 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
     implementation("com.jcraft:jsch:0.1.55")
-
-    // ===== ✅ Smart Life App SDK (Phiên bản ổn định chính thức) =====
-    // Chuyển cấu hình exclude từ toàn cục (configurations.all) trực tiếp vào dependency ở cấp độ node để chắc chắn áp dụng cho mọi nội bộ task của Gradle
-    implementation("com.thingclips.smart:thingsmart:7.5.6") {
-        exclude(group = "com.thingclips.smart", module = "thingsmart-modularCampAnno")
-    }
-
-    // ===== Các thư viện bổ trợ bắt buộc cho SDK Tuya/Smart Life =====
-    implementation("com.alibaba:fastjson:1.1.67.android")
-    implementation("com.squareup.okhttp3:okhttp-urlconnection:4.11.0")
-    implementation("com.facebook.soloader:soloader:0.10.5")
 }
 
 kapt {
