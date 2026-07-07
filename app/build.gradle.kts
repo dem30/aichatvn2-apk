@@ -184,8 +184,13 @@ dependencies {
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
     implementation("com.jcraft:jsch:0.1.55")
 
-    // ===== ✅ BỔ SUNG: Phiên bản SDK ổn định và khả dụng phổ thông mới nhất =====
+    // ===== Phiên bản SDK ổn định và khả dụng phổ thông mới nhất =====
     implementation("com.thingclips.smart:thingsmart:7.5.6")
+
+    // ===== ✅ BỔ SUNG: Các thư viện bổ trợ bắt buộc cho SDK Tuya/Smart Life =====
+    implementation("com.alibaba:fastjson:1.1.67.android")
+    implementation("com.squareup.okhttp3:okhttp-urlconnection:4.11.0")
+    implementation("com.facebook.soloader:soloader:0.10.5")
 }
 
 kapt {
