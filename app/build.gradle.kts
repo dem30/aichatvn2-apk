@@ -19,7 +19,7 @@ configurations.all {
     }
     
     // ✅ THÊM: Loại bỏ module annotation xử lý riêng này để tránh xảy ra lỗi xung đột biên dịch.
-    exclude(group = "com.thingclips.smart", module = "thingsmart-modularCampAnno")
+   // exclude(group = "com.thingclips.smart", module = "thingsmart-modularCampAnno")
 }
 
 android {
