@@ -12,6 +12,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
+    <!-- ✅ THÊM: Quyền Wi-Fi để đọc thông tin mạng và truyền nhận tín hiệu UDP/Multicast khi ghép nối thiết bị -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    
     <!-- Quyền chạy ngầm tiền cảnh cho Android 14 (Target SDK 34) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -53,15 +58,14 @@
             </intent-filter>
         </receiver>
 
-        <!-- ✅ ĐÃ SỬA: Đăng ký WebhookGatewayService thay cho lớp cũ -->
+        <!-- ✅ ĐH ĐÃ ĐĂNG KÝ: WebhookGatewayService -->
         <service
             android:name=".service.WebhookGatewayService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- ✅ ĐÃ THÊM: Service chạy ngầm riêng cho vòng lặp hands-free (mic), độc lập với
-             ChatScreen/Inbox — xem VoiceAssistantService.kt -->
+        <!-- ✅ ĐÃ THÊM: Service chạy ngầm riêng cho vòng lặp hands-free (mic) -->
         <service
             android:name=".service.VoiceAssistantService"
             android:enabled="true"
@@ -82,6 +86,15 @@
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="${MAPS_API_KEY}" />
+
+        <!-- ✅ THÊM: Đăng ký thông tin định danh SDK của Tuya / Thingclips. -->
+        <!-- Các giá trị này sẽ được inject tự động thông qua cấu hình trong build.gradle của app -->
+        <meta-data
+            android:name="THING_SMART_APPKEY"
+            android:value="${THING_SMART_APPKEY}" />
+        <meta-data
+            android:name="THING_SMART_SECRET"
+            android:value="${THING_SMART_SECRET}" />
             
     </application>
 </manifest>

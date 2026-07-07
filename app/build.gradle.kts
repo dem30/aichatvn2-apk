@@ -17,6 +17,10 @@ configurations.all {
         force("androidx.core:core:1.13.1")
         force("androidx.core:core-ktx:1.13.1")
     }
+    
+    // ✅ THÊM: Theo tài liệu tích hợp chính thức của Tuya/Thing Smart, bắt buộc phải loại bỏ
+    // module annotation xử lý riêng này để tránh xảy ra lỗi xung đột trong quá trình biên dịch.
+    exclude(group = "com.thingclips.smart", module = "thingsmart-modularCampAnno")
 }
 
 android {
@@ -37,6 +41,11 @@ android {
         buildConfigField("String", "RESEND_SENDER", "\"${System.getenv("RESEND_SENDER") ?: ""}\"")
 
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
+        
+        // ✅ THÊM: Inject khóa kích hoạt SDK của ứng dụng từ Gradle/Local Properties vào Manifest Placeholders.
+        // Điều này giúp tách biệt thông tin bảo mật của nhà phát triển khỏi mã nguồn Manifest tĩnh.
+        manifestPlaceholders["THING_SMART_APPKEY"] = project.findProperty("THING_SMART_APPKEY") ?: ""
+        manifestPlaceholders["THING_SMART_SECRET"] = project.findProperty("THING_SMART_SECRET") ?: ""
 
         // ✅ Đã bỏ giới hạn abiFilters arm64-v8a — không còn native lib (llama.cpp) nào nữa
         // sau khi chuyển routing sang Groq (xem AgentKernel/GroqClientTool). App giờ build
@@ -82,6 +91,16 @@ android {
                 "META-INF/*.kotlin_module",
                 "META-INF/INDEX.LIST",
                 "META-INF/io.netty.versions.properties"
+            )
+        }
+        
+        // ✅ THÊM: Thingclips/Tuya Smart SDK đóng gói rất nhiều thư viện C++ (.so) dùng chung.
+        // Quy tắc pickFirst giúp chọn bản build hợp lệ đầu tiên thay vì báo lỗi biên dịch trùng lặp thư viện.
+        jniLibs {
+            pickFirsts += setOf(
+                "lib/*/libc++_shared.so",
+                "lib/*/libv8wrapper.so",
+                "lib/*/libv8android.so"
             )
         }
     }
@@ -167,6 +186,9 @@ dependencies {
     implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
     implementation("com.jcraft:jsch:0.1.55")
+
+    // ===== ✅ BỔ SUNG: Smart Life App SDK Core (Phiên bản ổn định khuyên dùng) =====
+    implementation("com.thingclips.smart:thingsmart:6.11.0")
 }
 
 kapt {
