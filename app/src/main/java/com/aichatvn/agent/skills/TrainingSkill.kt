@@ -38,16 +38,11 @@ class TrainingSkill @Inject constructor(
     logger: Logger, 
 ) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
 
-    companion object {
-    // Chỉ những type này được coi là "câu trả lời chat" thật — KHÔNG gồm "intent" (định tuyến
-    // lệnh thiết bị) và "alias" (giải nghĩa tham số). Nhờ tách riêng, catalogue chat không còn
-    // bị alias/intent lẫn vào.
-    private val CHAT_CATALOG_TYPES = setOf("qa", "chat", "general")
-}
-  
+    
   companion object {
         private val SPACE_REGEX = Regex("\\s+")
         private const val MAX_QUERY_CACHE_SIZE = 500
+    private val CHAT_CATALOG_TYPES = setOf("qa", "chat", "general")
     }
 
     override val manifest = PluginManifest(
