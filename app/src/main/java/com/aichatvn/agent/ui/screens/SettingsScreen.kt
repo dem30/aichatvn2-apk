@@ -73,6 +73,7 @@ fun SettingsScreen(
     val pairingMessage   by viewModel.pairingMessage.collectAsState()
     val appSha256        by viewModel.appSha256.collectAsState()
     val appPackageName   = viewModel.appPackageName // Nhận động từ ViewModel
+  val appSha1          by viewModel.appSha1.collectAsState()
 
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
@@ -203,6 +204,32 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("📋 Sao chép mã SHA-256")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    // 🔴 CHÈN THÊM KHỐI NÀY:
+                    // --- ✅ HIỂN THỊ MÃ BĂM SHA-1 ĐỂ KHÁCH HÀNG SAO CHÉP ĐĂNG KÝ ---
+                    Text("🔑 Mã băm SHA-1 chữ ký file APK này (Tuya yêu cầu):", style = MaterialTheme.typography.labelSmall)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = appSha1,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(appSha1))
+                            Toast.makeText(context, "📋 Đã sao chép mã băm SHA1!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("📋 Sao chép mã SHA-1")
                     }
 
                     Spacer(Modifier.height(8.dp))

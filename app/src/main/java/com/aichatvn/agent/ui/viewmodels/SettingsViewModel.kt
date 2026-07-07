@@ -83,9 +83,6 @@ class SettingsViewModel @Inject constructor(
         )
     }
 
-    private val _appSha1 = MutableStateFlow("")
-val appSha1: StateFlow<String> = _appSha1.asStateFlow()
-
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -134,6 +131,54 @@ val appSha1: StateFlow<String> = _appSha1.asStateFlow()
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
+    // ===== Khôi phục toàn bộ các hàm lưu, Reset và khôi phục cài đặt hệ thống =====
+
+    fun saveConfig(key: String, value: String) {
+        viewModelScope.launch {
+            configProvider.set(key, value)
+            _configSaveResult.value = "✅ Đã lưu"
+            kotlinx.coroutines.delay(1500)
+            _configSaveResult.value = null
+        }
+    }
+
+    fun resetConfig(key: String) {
+        viewModelScope.launch {
+            val default = AppConfigDefaults.all().firstOrNull { it.key == key } ?: return@launch
+            configProvider.upsert(default)
+            _configSaveResult.value = "🔄 Đã reset về mặc định"
+            kotlinx.coroutines.delay(1500)
+            _configSaveResult.value = null
+        }
+    }
+
+    fun clearConfigSaveResult() { _configSaveResult.value = null }
+
+    private val _exportResult = MutableStateFlow<String?>(null)
+    val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
+
+    private val _importResult = MutableStateFlow<String?>(null)
+    val importResult: StateFlow<String?> = _importResult.asStateFlow()
+
+    fun clearImportResult() { _importResult.value = null }
+    fun clearExportResult() { _exportResult.value = null }
+
+    fun saveGroqApiKey(key: String) {
+        viewModelScope.launch {
+            context.dataStore.edit { it[GROQ_API_KEY] = key.trim() }
+            logger.i("SettingsViewModel", "Groq API key saved")
+        }
+    }
+
+    fun saveResendSettings(apiKey: String, sender: String) {
+        viewModelScope.launch {
+            context.dataStore.edit {
+                it[RESEND_API_KEY] = apiKey.trim()
+                it[RESEND_SENDER] = sender.trim()
+            }
+        }
+    }
+
     // ===== Các StateFlow quản lý luồng Thing Smart Life SDK =====
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
@@ -150,11 +195,14 @@ val appSha1: StateFlow<String> = _appSha1.asStateFlow()
     private val _pairingMessage = MutableStateFlow<String?>(null)
     val pairingMessage: StateFlow<String?> = _pairingMessage.asStateFlow()
 
-    // ===== Luồng quản lý hiển thị SHA256 tự động đọc từ APK =====
+    // ===== Luồng quản lý hiển thị SHA256 và SHA1 tự động đọc từ APK =====
     private val _appSha256 = MutableStateFlow("")
     val appSha256: StateFlow<String> = _appSha256.asStateFlow()
 
-    // ✅ THÊM: Tên gói ứng dụng lấy động từ Package Name thực tế của APK đang chạy
+    private val _appSha1 = MutableStateFlow("")
+    val appSha1: StateFlow<String> = _appSha1.asStateFlow()
+
+    // Tên gói ứng dụng lấy động từ Package Name thực tế của APK đang chạy
     val appPackageName: String = context.packageName
 
     init {
@@ -169,46 +217,46 @@ val appSha1: StateFlow<String> = _appSha1.asStateFlow()
                 loadHomes()
             }
             
-            // Tự sinh mã băm SHA256 của file APK đang chạy
-            _appSha256.value = getAppSignatureSHA256()
+            // Tự sinh mã băm SHA256 và SHA1 của file APK đang chạy
+            _appSha256.value = getAppSignatureSHA256("SHA-256")
             _appSha1.value = getAppSignatureSHA256("SHA-1")
         }
     }
 
-// Hàm đọc chữ ký động hỗ trợ tùy chọn loại mã băm:
-private fun getAppSignatureSHA256(algorithm: String = "SHA-256"): String {
-    return try {
-        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
-        } else {
-            @Suppress("DEPRECATION")
-            context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+    // Helper tự động lấy dấu băm chữ ký công khai của APK hỗ trợ tùy chọn loại mã băm
+    private fun getAppSignatureSHA256(algorithm: String = "SHA-256"): String {
+        return try {
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                context.packageManager.getPackageInfo(
+                    context.packageName, 
+                    PackageManager.GET_SIGNING_CERTIFICATES
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(
+                    context.packageName, 
+                    PackageManager.GET_SIGNATURES
+                )
+            }
+            
+            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.signatures
+            }
+            
+            if (signatures != null && signatures.isNotEmpty()) {
+                val md = MessageDigest.getInstance(algorithm)
+                val publicKey = md.digest(signatures[0].toByteArray())
+                publicKey.joinToString(":") { "%02X".format(it) }
+            } else {
+                "N/A"
+            }
+        } catch (e: Exception) {
+            "Lỗi: ${e.message}"
         }
-        
-        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            packageInfo.signingInfo?.apkContentsSigners
-        } else {
-            @Suppress("DEPRECATION")
-            packageInfo.signatures
-        }
-        
-        if (signatures != null && signatures.isNotEmpty()) {
-            val md = MessageDigest.getInstance(algorithm)
-            val publicKey = md.digest(signatures[0].toByteArray())
-            publicKey.joinToString(":") { "%02X".format(it) }
-        } else {
-            "N/A"
-        }
-    } catch (e: Exception) {
-        "Lỗi: ${e.message}"
     }
-}
-
-
-
-
-
-    
 
     fun saveTuyaConfig(clientId: String, clientSecret: String) {
         viewModelScope.launch {
