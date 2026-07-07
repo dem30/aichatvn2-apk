@@ -10,10 +10,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.service.VoiceAssistantService
+import com.aichatvn.agent.skills.NotificationSkill
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -29,12 +32,22 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var logger: com.aichatvn.agent.utils.Logger
 
+    // ✅ MỚI: Route điều hướng đang chờ xử lý khi Activity được mở/đưa lên trước từ 1
+    // notification (vd cảnh báo camera). Dùng mutableStateOf để đọc trong setContent { }
+    // tự động kích hoạt recomposition + LaunchedEffect trong AppNavigator khi giá trị đổi,
+    // kể cả khi thay đổi đến từ onNewIntent() (ngoài luồng Composable) chứ không chỉ onCreate().
+    private var pendingDeepLinkRoute by mutableStateOf<String?>(null)
+
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         logger.i("MainActivity", "🚀 App khởi động - v3")
+
+        // ✅ MỚI: Trường hợp app đang bị kill hoàn toàn, bấm vào notification sẽ tạo Activity
+        // mới qua onCreate() (không qua onNewIntent()) — đọc extra ngay tại đây để không bỏ lỡ.
+        pendingDeepLinkRoute = intent?.getStringExtra(NotificationSkill.DEEP_LINK_EXTRA)
 
         setContent {
             // ✅ Danh sách quyền — RECORD_AUDIO thêm vào đây, không dùng ActivityCompat riêng
@@ -95,8 +108,22 @@ class MainActivity : ComponentActivity() {
                 .collectAsState(initial = false)
 
             AIChatVN2Theme(darkTheme = darkMode) {
-                AppNavigator()
+                AppNavigator(
+                    pendingDeepLinkRoute = pendingDeepLinkRoute,
+                    onDeepLinkConsumed = { pendingDeepLinkRoute = null }
+                )
             }
         }
+    }
+
+    // ✅ MỚI: Trường hợp app đang chạy nền/foreground (Activity instance đã tồn tại trong task) —
+    // bấm vào notification lúc này KHÔNG tạo Activity mới, Android tái sử dụng instance hiện tại
+    // và gọi onNewIntent() thay vì onCreate(). Trước đây MainActivity không override hàm này nên
+    // Intent mới (mang theo DEEP_LINK_EXTRA) bị coi như không tồn tại — notification bấm vào lúc
+    // app đang mở sẵn hoàn toàn không có tác dụng gì.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingDeepLinkRoute = intent.getStringExtra(NotificationSkill.DEEP_LINK_EXTRA)
     }
 }

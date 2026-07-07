@@ -1,5 +1,6 @@
 package com.aichatvn.agent.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -141,10 +142,15 @@ fun DiagnosticsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     StatSummaryCard("🔌 Tuya online", "$onlineTuya/$totalTuya", modifier = Modifier.weight(1f))
+                    // ✅ MỚI: Trước đây con số này chỉ để xem, không bấm được — AlertHistoryScreen
+                    // đã có sẵn route "alert_history" trong AppNavigator nhưng không nơi nào gọi
+                    // navigate() tới nó. Đây là entry point thật đầu tiên cho màn Lịch sử cảnh báo.
                     StatSummaryCard(
                         "🔔 Cảnh báo chưa đọc", "$unreadAlerts",
                         color = if (unreadAlerts > 0) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { navController.navigate("alert_history") }
                     )
                     StatSummaryCard("🗓 Lịch hoạt động", "$activeSchedules/$totalSchedules", modifier = Modifier.weight(1f))
                 }

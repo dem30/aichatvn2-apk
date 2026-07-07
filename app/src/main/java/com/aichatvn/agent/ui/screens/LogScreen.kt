@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.ui.viewmodels.LogViewModel
 import com.aichatvn.agent.utils.Logger
 
@@ -33,6 +34,8 @@ fun LogScreen(
 
     val logs by viewModel.logs.collectAsState()
     val filterLevel by viewModel.filterLevel.collectAsState()
+    // ✅ MỚI: Số cảnh báo chưa đọc — hiện badge đỏ lên icon Diagnostics ở top bar
+    val unreadAlertCount by viewModel.unreadAlertCount.collectAsState()
     val filteredLogs = remember(logs, filterLevel) {
         logs.filter { it.level.ordinal >= filterLevel.ordinal }
     }
@@ -57,6 +60,29 @@ fun LogScreen(
                     }
                 },
                 actions = {
+                    // ✅ MỚI: Lối vào màn Chẩn đoán hệ thống (Diagnostics) — đồng bộ với cách
+                    // ChatScreen có icon mở Logs. Trước đây DiagnosticsScreen tồn tại trong source
+                    // nhưng không có route/entry point nào cả nên không thể mở được từ trong app.
+                    // Badge đỏ hiện số cảnh báo (alert) chưa đọc ngay trên icon — thay vì phải mở
+                    // hẳn Diagnostics ra mới thấy con số này nằm trong StatSummaryCard bên dưới.
+                    IconButton(onClick = {
+                        navController.navigate(Screen.DIAGNOSTICS_ROUTE) { launchSingleTop = true }
+                    }) {
+                        if (unreadAlertCount > 0) {
+                            BadgedBox(
+                                badge = {
+                                    Badge {
+                                        Text(if (unreadAlertCount > 99) "99+" else unreadAlertCount.toString())
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.MonitorHeart, contentDescription = "Chẩn đoán hệ thống")
+                            }
+                        } else {
+                            Icon(Icons.Default.MonitorHeart, contentDescription = "Chẩn đoán hệ thống")
+                        }
+                    }
+
                     Box {
                         IconButton(onClick = { expandedFilterMenu = true }) {
                             Icon(Icons.Default.FilterList, contentDescription = "Filter")

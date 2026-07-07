@@ -86,7 +86,20 @@ class NotificationSkill @Inject constructor(
     suspend fun sendNotification(
         title: String,
         message: String,
-        channelId: String = CHANNEL_ID
+        channelId: String = CHANNEL_ID,
+        // ✅ MỚI: Cho phép nơi gọi (vd CameraSkill) truyền ID ỔN ĐỊNH tính từ alertId, thay vì
+        // luôn dùng notificationCounter nội bộ. Nhờ vậy 1 AlertEntity ↔ 1 notification là quan
+        // hệ 1-1 xác định được (dùng notificationIdForAlert() bên dưới), cho phép huỷ đúng
+        // notification khi alert được đánh dấu đã đọc/xoá (xem cancelNotification()).
+        // Nếu không truyền, giữ hành vi cũ (tự tăng số) cho các lời gọi chung chung khác
+        // (vd AI tự gọi action "send" của skill này).
+        notificationId: Int? = null,
+        // ✅ MỚI: Route điều hướng (theo cú pháp NavController.navigate()) để mở ĐÚNG màn hình
+        // liên quan khi người dùng bấm vào notification — trước đây luôn dùng generic launch
+        // intent nên bấm vào chỉ mở app về màn mặc định, mất hết ngữ cảnh "đây là cảnh báo của
+        // camera nào". Cần MainActivity đọc extra DEEP_LINK_EXTRA này rồi gọi navController
+        // tương ứng (phần đó cần xem MainActivity.kt để nối nốt).
+        deepLinkRoute: String? = null
     ): Int = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (notificationManager.getNotificationChannel(channelId) == null) {
@@ -94,11 +107,16 @@ class NotificationSkill @Inject constructor(
             }
         }
 
-        val id = notificationCounter.getAndIncrement()
+        val id = notificationId ?: notificationCounter.getAndIncrement()
 
         val launchIntent = context.packageManager
             .getLaunchIntentForPackage(context.packageName)
-            ?.apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+            ?.apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                if (deepLinkRoute != null) {
+                    putExtra(DEEP_LINK_EXTRA, deepLinkRoute)
+                }
+            }
 
         val pendingIntent = PendingIntent.getActivity(
             context,
@@ -124,6 +142,13 @@ class NotificationSkill @Inject constructor(
         id
     }
 
+    // ✅ MỚI: Huỷ notification hệ thống ứng với 1 alert cụ thể — gọi khi AlertHistoryViewModel
+    // đánh dấu đã đọc hoặc xoá alert đó, để notification không còn nằm ì trên thanh trạng thái
+    // sau khi Admin đã xử lý xong trong app.
+    fun cancelNotification(notificationId: Int) {
+        notificationManager.cancel(notificationId)
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -141,5 +166,15 @@ class NotificationSkill @Inject constructor(
         private const val CHANNEL_ID = "aichatvn_alerts"
         private const val CHANNEL_NAME = "Cảnh báo an ninh"
         private const val CHANNEL_DESCRIPTION = "Thông báo từ AI Chat VN"
+
+        // ✅ MỚI: Key extra để MainActivity đọc route điều hướng khi app được mở từ notification
+        // (xem sendNotification() phía trên).
+        const val DEEP_LINK_EXTRA = "deep_link_route"
+
+        // ✅ MỚI: Hàm DÙNG CHUNG để tính notification ID từ alertId (UUID) — đảm bảo CameraSkill
+        // (lúc gửi) và AlertHistoryViewModel (lúc huỷ) luôn tính ra CÙNG 1 con số cho cùng 1
+        // alert, mà không cần lưu thêm cột nào trong DB. Notification ID của Android là Int nên
+        // dùng hashCode() của UUID string.
+        fun notificationIdForAlert(alertId: String): Int = alertId.hashCode()
     }
 }

@@ -920,12 +920,23 @@ class CameraSkill @Inject constructor(
                             emailSent = true
                         }
                         
+                        // ✅ ĐÃ SỬA: Sinh alertId TRƯỚC — dùng chung cho cả notification lẫn
+                        // record lưu DB, thay vì để 2 nơi tự sinh ID riêng không liên quan gì
+                        // nhau (trước đây notificationSkill.sendNotification() trả về 1 ID rồi
+                        // vứt bỏ, còn saveAlertToHistory() tự tạo alertId khác). Nhờ ID chung +
+                        // deepLinkRoute, bấm vào notification giờ sẽ mở đúng lịch sử cảnh báo
+                        // của camera này, và huỷ được đúng notification khi Admin đánh dấu đã
+                        // đọc/xoá alert tương ứng (xem AlertHistoryViewModel).
+                        val alertId = UUID.randomUUID().toString()
                         notificationSkill.sendNotification(
                             title = "Cảnh Báo Camera ${camera.customername}",
-                            message = aiComment.take(100)
+                            message = aiComment.take(100),
+                            notificationId = NotificationSkill.notificationIdForAlert(alertId),
+                            deepLinkRoute = "alert_history?cameraId=$tid"
                         )
                         
                         saveAlertToHistory(
+                            alertId = alertId,
                             camera = camera,
                             aiComment = aiComment,
                             imageBytes = optimizedBytes,
@@ -1339,6 +1350,7 @@ class CameraSkill @Inject constructor(
     }
     
     private suspend fun saveAlertToHistory(
+        alertId: String,
         camera: CameraConfigEntity,
         aiComment: String,
         imageBytes: ByteArray?,
@@ -1349,7 +1361,6 @@ class CameraSkill @Inject constructor(
     ) {
         val tid = camera.id.trim()
         try {
-            val alertId = UUID.randomUUID().toString()
             val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
 
             val alert = AlertEntity(

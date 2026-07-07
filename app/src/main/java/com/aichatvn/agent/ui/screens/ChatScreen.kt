@@ -68,7 +68,12 @@ private fun chatScreenTitle(username: String): String {
 @Composable
 fun ChatScreen(
     navController: NavController,
-    viewModel: ChatViewModel = hiltViewModel()
+    viewModel: ChatViewModel = hiltViewModel(),
+    // ✅ MỚI: Tổng số tin nhắn khách chưa đọc trên toàn app — trước đây hiện badge này ở icon
+    // tab "Trò chuyện" dưới BottomNavigation (xem AppNavigator.kt), nhưng đặt ở đó dễ gây hiểu
+    // lầm vì tab đó dẫn vào chat cá nhân AI (default_user), không phải Inbox khách hàng. Giờ
+    // truyền xuống đây để hiện đúng chỗ — ngay trên icon Hộp thư đa kênh (Forum) bên dưới.
+    unreadInboxCount: Int = 0
 ) {
     val messages by viewModel.messages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -210,7 +215,22 @@ fun ChatScreen(
                     IconButton(onClick = {
                         navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
                     }) {
-                        Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
+                        // ✅ MỚI: Badge đỏ hiện tổng số tin nhắn khách chưa đọc trên TOÀN APP,
+                        // ngay trên icon Hộp thư đa kênh — chuyển từ tab dưới cùng lên đây để
+                        // đúng ngữ cảnh (icon này chính là lối vào Inbox, nơi badge có ý nghĩa).
+                        if (unreadInboxCount > 0) {
+                            BadgedBox(
+                                badge = {
+                                    Badge {
+                                        Text(if (unreadInboxCount > 99) "99+" else unreadInboxCount.toString())
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
+                            }
+                        } else {
+                            Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
+                        }
                     }
 
                     IconButton(onClick = {
