@@ -37,11 +37,7 @@ object AppConfigDefaults {
     // ───────────────────────── SCHEDULE ─────────────────────
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
-    // ───────────────────────── HOUSEKEEPER (QUẢN GIA) ────────
-    // ✅ MỚI: key cho HousekeeperSkill.set_auto_mode — seed sẵn để mục "Quản gia" hiện ra
-    // ngay trong Cài đặt (SettingsScreen nhóm theo pluginId lấy trực tiếp từ DB) kể cả khi
-    // người dùng chưa từng bật/tắt qua lệnh chat lần nào.
-    const val HOUSEKEEPER_AUTO_MODE = "housekeeper.auto_mode"
+    
 
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
