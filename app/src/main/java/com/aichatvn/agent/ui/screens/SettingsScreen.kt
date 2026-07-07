@@ -188,7 +188,7 @@ fun SettingsScreen(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                     Button(
-                        onClick = { viewModel.syncTuyaDevices() }, // Gọi hàm đồng bộ hóa thiết bị của HassManager
+                        onClick = { viewModel.syncHassDevices() }, // Gọi hàm đồng bộ hóa thiết bị của HassManager
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) { Text("🔄 Đồng bộ thiết bị từ Home Assistant") }
