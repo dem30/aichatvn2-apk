@@ -83,6 +83,9 @@ class SettingsViewModel @Inject constructor(
         )
     }
 
+    private val _appSha1 = MutableStateFlow("")
+val appSha1: StateFlow<String> = _appSha1.asStateFlow()
+
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -168,89 +171,44 @@ class SettingsViewModel @Inject constructor(
             
             // Tự sinh mã băm SHA256 của file APK đang chạy
             _appSha256.value = getAppSignatureSHA256()
+            _appSha1.value = getAppSignatureSHA256("SHA-1")
         }
     }
 
-    // ===== Helper tự động lấy dấu băm SHA256 chữ ký công khai của APK =====
-    private fun getAppSignatureSHA256(): String {
-        return try {
-            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                context.packageManager.getPackageInfo(
-                    context.packageName, 
-                    PackageManager.GET_SIGNING_CERTIFICATES
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getPackageInfo(
-                    context.packageName, 
-                    PackageManager.GET_SIGNATURES
-                )
-            }
-            
-            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                packageInfo.signingInfo?.apkContentsSigners
-            } else {
-                @Suppress("DEPRECATION")
-                packageInfo.signatures
-            }
-            
-            if (signatures != null && signatures.isNotEmpty()) {
-                val md = MessageDigest.getInstance("SHA-256")
-                val publicKey = md.digest(signatures[0].toByteArray())
-                publicKey.joinToString(":") { "%02X".format(it) }
-            } else {
-                "N/A"
-            }
-        } catch (e: Exception) {
-            "Lỗi: ${e.message}"
+// Hàm đọc chữ ký động hỗ trợ tùy chọn loại mã băm:
+private fun getAppSignatureSHA256(algorithm: String = "SHA-256"): String {
+    return try {
+        val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+        } else {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
         }
-    }
-
-    fun saveConfig(key: String, value: String) {
-        viewModelScope.launch {
-            configProvider.set(key, value)
-            _configSaveResult.value = "✅ Đã lưu"
-            kotlinx.coroutines.delay(1500)
-            _configSaveResult.value = null
+        
+        val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.signingInfo?.apkContentsSigners
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.signatures
         }
-    }
-
-    fun resetConfig(key: String) {
-        viewModelScope.launch {
-            val default = AppConfigDefaults.all().firstOrNull { it.key == key } ?: return@launch
-            configProvider.upsert(default)
-            _configSaveResult.value = "🔄 Đã reset về mặc định"
-            kotlinx.coroutines.delay(1500)
-            _configSaveResult.value = null
+        
+        if (signatures != null && signatures.isNotEmpty()) {
+            val md = MessageDigest.getInstance(algorithm)
+            val publicKey = md.digest(signatures[0].toByteArray())
+            publicKey.joinToString(":") { "%02X".format(it) }
+        } else {
+            "N/A"
         }
+    } catch (e: Exception) {
+        "Lỗi: ${e.message}"
     }
+}
 
-    fun clearConfigSaveResult() { _configSaveResult.value = null }
 
-    private val _exportResult = MutableStateFlow<String?>(null)
-    val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
-    private val _importResult = MutableStateFlow<String?>(null)
-    val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
-    fun clearImportResult() { _importResult.value = null }
-    fun clearExportResult() { _exportResult.value = null }
 
-    fun saveGroqApiKey(key: String) {
-        viewModelScope.launch {
-            context.dataStore.edit { it[GROQ_API_KEY] = key.trim() }
-            logger.i("SettingsViewModel", "Groq API key saved")
-        }
-    }
-
-    fun saveResendSettings(apiKey: String, sender: String) {
-        viewModelScope.launch {
-            context.dataStore.edit {
-                it[RESEND_API_KEY] = apiKey.trim()
-                it[RESEND_SENDER] = sender.trim()
-            }
-        }
-    }
+    
 
     fun saveTuyaConfig(clientId: String, clientSecret: String) {
         viewModelScope.launch {
