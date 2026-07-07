@@ -257,7 +257,7 @@ class AgentKernel @Inject constructor(
         username: String,
         threshold: Float? = null
     ): List<SearchMatch> {
-        return trainingSkill.fuzzyMatchQuestion(query, username, threshold)
+        return return trainingSkill.fuzzyMatchChatCatalog(query, username, threshold)
     }
 
     suspend fun chat(request: ChatRequest): ChatResponse {
@@ -365,7 +365,7 @@ class AgentKernel @Inject constructor(
             withTimeout(30_000L) {
                 when (usedMode.lowercase()) {
                     "qa" -> {
-                        val matches = search(message, username, 0.6f)
+                        val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
                     }
@@ -393,7 +393,7 @@ class AgentKernel @Inject constructor(
                     }
 
                     else -> {
-                        val matches = search(message, username, 0.85f)
+                        val matches = search(message, username)
                         val perfectMatch = matches.firstOrNull()?.qa
 
                         if (perfectMatch != null) {
@@ -435,8 +435,8 @@ class AgentKernel @Inject constructor(
     }
 
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
-        // Chỉ lấy các dữ liệu huấn luyện có loại là "qa" hoặc "chat"
-        val matches = search(message, username, 0.7f).filter { it.qa.type == "qa" || it.qa.type == "chat" }
+        // search() giờ đã tự giới hạn trong catalogue chat (qa/chat/general), không cần filter lại
+        val matches = search(message, username, 0.7f)
         if (matches.isEmpty()) return ""
         return matches.joinToString("\n") { match ->
             "📚 Q: ${match.qa.question}\n   A: ${match.qa.answer} (độ tương tự: ${String.format("%.2f", match.similarity)})"

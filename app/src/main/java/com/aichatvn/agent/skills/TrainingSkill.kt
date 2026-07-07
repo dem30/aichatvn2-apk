@@ -39,6 +39,13 @@ class TrainingSkill @Inject constructor(
 ) : BaseSkill("training", "Huấn luyện AI quản gia", logger), Plugin {
 
     companion object {
+    // Chỉ những type này được coi là "câu trả lời chat" thật — KHÔNG gồm "intent" (định tuyến
+    // lệnh thiết bị) và "alias" (giải nghĩa tham số). Nhờ tách riêng, catalogue chat không còn
+    // bị alias/intent lẫn vào.
+    private val CHAT_CATALOG_TYPES = setOf("qa", "chat", "general")
+}
+  
+  companion object {
         private val SPACE_REGEX = Regex("\\s+")
         private const val MAX_QUERY_CACHE_SIZE = 500
     }
@@ -540,22 +547,36 @@ class TrainingSkill @Inject constructor(
         }
     }
 
-    suspend fun fuzzyMatchQuestion(
-        query: String,
-        username: String,
-        threshold: Float? = null
-    ): List<SearchMatch> {
-        return try {
-            val matches = fuzzyMatchCategorized(query, username, intentThreshold = threshold)
-            (matches.intentMatches + matches.aliasMatches)
-                .map { (qa, similarity) ->
-                    SearchMatch(qa, similarity.toFloat())
-                }
-        } catch (e: Exception) {
-            logger.e("TrainingSkill", "Lỗi fuzzyMatchQuestion: ${e.message}", e)
-            emptyList()
-        }
+
+    
+
+    
+
+// Tìm nhanh trong catalogue chat — KHÔNG gộp alias/intent, 1 lượt lọc + sort duy nhất.
+suspend fun fuzzyMatchChatCatalog(
+    query: String,
+    username: String,
+    threshold: Float? = null
+): List<SearchMatch> {
+    return try {
+        val normalizedQuery = normalizeVietnamese(query)
+        val activeThreshold = threshold
+            ?: configProvider.getFloat(AppConfigDefaults.GLOBAL_CHAT_QA_THRESHOLD, 0.8f)
+
+        cachedQAList
+            .asSequence()
+            .filter { (it.createdBy == username || it.createdBy == "default_user") && it.type in CHAT_CATALOG_TYPES }
+            .map { qa -> SearchMatch(qa, calculateSimilarity(normalizedQuery, qa.question)) }
+            .filter { it.similarity >= activeThreshold }
+            .sortedByDescending { it.similarity }
+            .toList()
+    } catch (e: Exception) {
+        logger.e("TrainingSkill", "Lỗi fuzzyMatchChatCatalog: ${e.message}", e)
+        emptyList()
     }
+}
+
+    
 
     suspend fun fuzzyMatchCategorized(
         query: String, 
@@ -577,7 +598,8 @@ class TrainingSkill @Inject constructor(
         if (cachedResult != null) return cachedResult
 
         return try {
-            val allQAs = cachedQAList.filter { it.createdBy == username }
+          
+            val allQAs = cachedQAList.filter { it.createdBy == username || it.createdBy == "default_user" }
             val intents = mutableListOf<Pair<QAEntity, Double>>()
             val aliases = mutableListOf<Pair<QAEntity, Double>>()
 

@@ -46,6 +46,7 @@ object AppConfigDefaults {
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
     const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
+  const val GLOBAL_CHAT_QA_THRESHOLD      = "global.chat_qa_threshold"
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
     const val GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = "global.block_external_device_control"
 
@@ -339,6 +340,22 @@ object AppConfigDefaults {
             label = "Ngưỡng alias gửi LLM (Alias Threshold)",
             description = "Alias."
         ),
+
+
+      AppConfigEntity(
+
+          key = GLOBAL_CHAT_QA_THRESHOLD,
+           value = "0.8",
+           type = "float",
+           pluginId = "global",
+           label = "Ngưỡng khớp câu hỏi Chat (Chat QA Threshold)",
+          description = "Độ tương tự tối thiểu (0.0–1.0) để 1 câu trong catalogue Chat " 
+              "(loại qa/chat/general) được coi là khớp và trả lời trực tiếp, không cần gọi Groq. " 
+               "KHÔNG áp dụng cho alias tham số hay intent điều khiển thiết bị. Cao = phải hỏi gần " 
+              "giống hệt câu đã train. Thấp = dễ khớp nhầm câu không liên quan."
+      ),
+
+      
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
             value = "0.85",
