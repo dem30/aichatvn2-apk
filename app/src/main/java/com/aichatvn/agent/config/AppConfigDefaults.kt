@@ -349,11 +349,7 @@ object AppConfigDefaults {
            type = "float",
            pluginId = "global",
            label = "Ngưỡng khớp câu hỏi Chat (Chat QA Threshold)",
-          description = "Độ tương tự tối thiểu (0.0–1.0) để 1 câu trong catalogue Chat " 
-              "(loại qa/chat/general) được coi là khớp và trả lời trực tiếp, không cần gọi Groq. " 
-               "KHÔNG áp dụng cho alias tham số hay intent điều khiển thiết bị. Cao = phải hỏi gần " 
-              "giống hệt câu đã train. Thấp = dễ khớp nhầm câu không liên quan."
-      ),
+          description = "Độ tương tự tối thiểu (0.0–1.0) để 1 câu trong catalogue Chat "  ),
 
       
         AppConfigEntity(
