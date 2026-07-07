@@ -1,7 +1,9 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.database.Cursor
+import android.os.Build
 import android.os.Environment
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -44,6 +46,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -65,10 +68,8 @@ class SettingsViewModel @Inject constructor(
         val RESEND_API_KEY = stringPreferencesKey("resend_api_key")
         val RESEND_SENDER  = stringPreferencesKey("resend_sender")
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
-        
-        // Giữ nguyên key cũ để tương thích ngược dữ liệu đã lưu trong DataStore
-        val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")         // Đóng vai trò là AppKey
-        val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret") // Đóng vai trò là AppSecret
+        val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
+        val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
 
         private val BACKUP_TABLES = listOf(
             "customers",
@@ -130,7 +131,7 @@ class SettingsViewModel @Inject constructor(
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
-    // ===== ✅ THÊM: Các StateFlow mới quản lý luồng Thing Smart Life SDK =====
+    // ===== Các StateFlow quản lý luồng Thing Smart Life SDK =====
     private val _isLoggedIn = MutableStateFlow(false)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
@@ -146,6 +147,13 @@ class SettingsViewModel @Inject constructor(
     private val _pairingMessage = MutableStateFlow<String?>(null)
     val pairingMessage: StateFlow<String?> = _pairingMessage.asStateFlow()
 
+    // ===== Luồng quản lý hiển thị SHA256 tự động đọc từ APK =====
+    private val _appSha256 = MutableStateFlow("")
+    val appSha256: StateFlow<String> = _appSha256.asStateFlow()
+
+    // ✅ THÊM: Tên gói ứng dụng lấy động từ Package Name thực tế của APK đang chạy
+    val appPackageName: String = context.packageName
+
     init {
         viewModelScope.launch {
             val prefs = context.dataStore.data.first()
@@ -157,6 +165,44 @@ class SettingsViewModel @Inject constructor(
             if (_isLoggedIn.value) {
                 loadHomes()
             }
+            
+            // Tự sinh mã băm SHA256 của file APK đang chạy
+            _appSha256.value = getAppSignatureSHA256()
+        }
+    }
+
+    // ===== Helper tự động lấy dấu băm SHA256 chữ ký công khai của APK =====
+    private fun getAppSignatureSHA256(): String {
+        return try {
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                context.packageManager.getPackageInfo(
+                    context.packageName, 
+                    PackageManager.GET_SIGNING_CERTIFICATES
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(
+                    context.packageName, 
+                    PackageManager.GET_SIGNATURES
+                )
+            }
+            
+            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.signatures
+            }
+            
+            if (signatures != null && signatures.isNotEmpty()) {
+                val md = MessageDigest.getInstance("SHA-256")
+                val publicKey = md.digest(signatures[0].toByteArray())
+                publicKey.joinToString(":") { "%02X".format(it) }
+            } else {
+                "N/A"
+            }
+        } catch (e: Exception) {
+            "Lỗi: ${e.message}"
         }
     }
 
@@ -222,8 +268,6 @@ class SettingsViewModel @Inject constructor(
             context.dataStore.edit { it[DARK_MODE] = enabled }
         }
     }
-
-    // ===== ✅ THÊM: Các hàm xử lý Đăng nhập, Lấy nhà & Ghép nối Wi-Fi SDK =====
 
     fun loginTuya(email: String, password: String, onResult: (Boolean, String) -> Unit) {
         viewModelScope.launch {
@@ -324,8 +368,6 @@ class SettingsViewModel @Inject constructor(
         _pairingMessage.value = "⏹️ Đã dừng tiến trình ghép nối."
     }
 
-    // ========================================================================
-
     fun testGroqConnection(apiKey: String, onResult: (Boolean, String) -> Unit) {
         val trimmedKey = apiKey.trim()
         if (trimmedKey.isEmpty()) {
@@ -396,7 +438,6 @@ class SettingsViewModel @Inject constructor(
                     prefs[TUYA_CLIENT_ID] = clientId.trim()
                     prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
                 }
-                // Tận dụng scanDevices() mới thông qua SDK để test kết nối tài khoản
                 val devices = tuyaManager.scanDevices()
                 "✅ Kết nối Tuya OK — ${devices.size} thiết bị trong nhà mặc định"
             } catch (e: Exception) {

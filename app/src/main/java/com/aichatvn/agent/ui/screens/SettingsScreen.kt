@@ -51,6 +51,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
 
     val groqApiKey       by viewModel.groqApiKey.collectAsState()
     val darkMode         by viewModel.darkMode.collectAsState()
@@ -70,6 +71,8 @@ fun SettingsScreen(
     val selectedHomeId   by viewModel.selectedHomeId.collectAsState()
     val isPairing        by viewModel.isPairing.collectAsState()
     val pairingMessage   by viewModel.pairingMessage.collectAsState()
+    val appSha256        by viewModel.appSha256.collectAsState()
+    val appPackageName   = viewModel.appPackageName // Nhận động từ ViewModel
 
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
@@ -151,6 +154,59 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    
+                    // --- ✅ HIỂN THỊ PACKAGE NAME ĐỂ KHÁCH HÀNG SAO CHÉP ĐĂNG KÝ ---
+                    Text("📦 Package Name (Tên gói) ứng dụng của bạn:", style = MaterialTheme.typography.labelSmall)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = appPackageName,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(appPackageName))
+                            Toast.makeText(context, "📋 Đã sao chép Package Name!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("📋 Sao chép Package Name")
+                    }
+
+                    Spacer(Modifier.height(4.dp))
+
+                    // --- ✅ HIỂN THỊ MÃ BĂM SHA256 ĐỂ KHÁCH HÀNG SAO CHÉP ĐĂNG KÝ ---
+                    Text("🔑 Mã băm SHA-256 chữ ký file APK này:", style = MaterialTheme.typography.labelSmall)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
+                            .padding(8.dp)
+                    ) {
+                        Text(
+                            text = appSha256,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(appSha256))
+                            Toast.makeText(context, "📋 Đã sao chép mã băm SHA256!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("📋 Sao chép mã SHA-256")
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+
                     OutlinedTextField(
                         value = tuyaClientIdInput, 
                         onValueChange = { tuyaClientIdInput = it }, 
@@ -237,7 +293,6 @@ fun SettingsScreen(
 
                         Button(
                             onClick = {
-                                // ✅ ĐÃ SỬA: Loại bỏ tuyaCountryCode dư thừa để khớp chính xác chữ ký phương thức 3 tham số của ViewModel
                                 viewModel.loginTuya(tuyaEmailInput, tuyaPasswordInput) { success, msg ->
                                     if (!success) errorMessage = msg
                                 }
