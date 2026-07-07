@@ -5,8 +5,8 @@ import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.utils.Logger
 import com.thingclips.smart.home.sdk.ThingHomeSdk
-import com.thingclips.smart.home.sdk.api.IThingActivatorGetToken
-import com.thingclips.smart.home.sdk.api.IThingHomeResultCallback
+import com.thingclips.smart.sdk.api.IThingActivatorGetToken // ✅ ĐÃ SỬA: Đúng Package SDK mới
+import com.thingclips.smart.home.sdk.callback.IThingHomeResultCallback // ✅ ĐÃ SỬA: Đúng Package SDK mới
 import com.thingclips.smart.home.sdk.bean.HomeBean
 import com.thingclips.smart.home.sdk.builder.ActivatorBuilder
 import com.thingclips.smart.home.sdk.callback.IThingGetHomeListCallback
@@ -15,15 +15,14 @@ import com.thingclips.smart.sdk.api.IThingActivator
 import com.thingclips.smart.sdk.api.IThingDevice
 import com.thingclips.smart.sdk.api.IThingSmartActivatorListener
 import com.thingclips.smart.android.user.api.ILoginCallback
+import com.thingclips.smart.android.user.api.ILogoutCallback // ✅ ĐÃ THÊM: Import interface Logout Callback
 import com.thingclips.smart.android.user.bean.User
 import com.thingclips.smart.sdk.bean.DeviceBean
 import com.thingclips.smart.sdk.enums.ActivatorModelEnum
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -42,6 +41,9 @@ class TuyaManager @Inject constructor(
     private val mutex = Mutex()
     private val deviceCache = mutableMapOf<String, DeviceInfo>()
     private var activeActivator: IThingActivator? = null
+
+    // ✅ ĐÃ THÊM: Scope chạy ngầm riêng để thực thi các tác vụ SQLite từ Callback phi tuần tự của SDK
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     data class DeviceInfo(
         val id: String,
@@ -165,16 +167,17 @@ class TuyaManager @Inject constructor(
     suspend fun logout() {
         return withContext(Dispatchers.IO) {
             suspendCancellableCoroutine { continuation ->
-                ThingHomeSdk.getUserInstance().logout(object : IResultCallback {
+                // ✅ ĐA SỬA: Sử dụng ILogoutCallback thay cho IResultCallback lỗi kiểu dữ liệu
+                ThingHomeSdk.getUserInstance().logout(object : ILogoutCallback {
                     override fun onSuccess() {
                         logger.i("TuyaManager", "🔌 Đã đăng xuất tài khoản thành công.")
                         deviceCache.clear()
                         continuation.resume(Unit)
                     }
 
-                    override fun onError(code: String?, error: String?) {
-                        logger.e("TuyaManager", "❌ Lỗi đăng xuất SDK: $error")
-                        continuation.resumeWithException(Exception(error ?: "Logout error"))
+                    override fun onError(errorCode: String?, errorMsg: String?) {
+                        logger.e("TuyaManager", "❌ Lỗi đăng xuất SDK: $errorMsg (Mã: $errorCode)")
+                        continuation.resumeWithException(Exception(errorMsg ?: "Logout error"))
                     }
                 })
             }
@@ -207,6 +210,7 @@ class TuyaManager @Inject constructor(
     suspend fun syncDevicesFromHome(homeId: Long): Map<String, DeviceInfo> {
         return withContext(Dispatchers.IO) {
             val homeBean = suspendCancellableCoroutine<HomeBean> { continuation ->
+                // ✅ ĐÃ SỬA: Ép kiểu ẩn danh chuẩn IThingHomeResultCallback
                 ThingHomeSdk.newHomeInstance(homeId).getHomeDetail(object : IThingHomeResultCallback {
                     override fun onSuccess(bean: HomeBean?) {
                         if (bean != null) {
@@ -230,12 +234,14 @@ class TuyaManager @Inject constructor(
                 val name = dev.name
                 val id = dev.devId
                 if (!name.isNullOrBlank() && !id.isNullOrBlank()) {
+                    // ✅ ĐÃ SỬA: Thay thế thuộc tính productName không tồn tại bằng productId
+                    val pName = dev.productId ?: ""
                     val info = DeviceInfo(
                         id = id,
                         name = name,
                         online = dev.isOnline,
                         category = dev.category ?: "",
-                        productName = dev.productName ?: ""
+                        productName = pName
                     )
                     deviceCache[name] = info
 
@@ -245,7 +251,7 @@ class TuyaManager @Inject constructor(
                             name = name,
                             online = dev.isOnline,
                             category = dev.category ?: "",
-                            productName = dev.productName ?: "",
+                            productName = pName,
                             lastSeen = System.currentTimeMillis()
                         )
                     )
@@ -332,6 +338,7 @@ class TuyaManager @Inject constructor(
             try {
                 // 1. Sinh Token kết nối mới từ đám mây (Token hợp lệ trong 10 phút)
                 val token = suspendCancellableCoroutine<String> { continuation ->
+                    // ✅ ĐÃ SỬA: Ép kiểu anonymous cho callback lấy Token kết nối
                     ThingHomeSdk.getActivatorInstance().getActivatorToken(homeId, object : IThingActivatorGetToken {
                         override fun onSuccess(token: String) {
                             continuation.resume(token)
@@ -350,7 +357,8 @@ class TuyaManager @Inject constructor(
                     .setSsid(ssid)
                     .setPassword(password)
                     .setContext(context)
-                    .setActivatorModel(ActivatorModelEnum.TY_EZ)
+                    // ✅ ĐÃ SỬA: Chuyển TY_EZ thành THING_EZ cho đúng hằng số enum trong SDK mới
+                    .setActivatorModel(ActivatorModelEnum.THING_EZ)
                     .setTimeOut(100)
                     .setToken(token)
                     .setListener(object : IThingSmartActivatorListener {
@@ -363,16 +371,17 @@ class TuyaManager @Inject constructor(
                             devResp?.let { dev ->
                                 logger.i("TuyaManager", "🎉 Ghép nối thành công thiết bị: ${dev.name} [ID: ${dev.devId}]")
                                 
-                                // Lưu thiết bị mới vào SQLite DB cục bộ ngay lập tức
+                                // ✅ ĐÃ SỬA: Thay thế productName không tồn tại bằng productId
+                                val pName = dev.productId ?: ""
                                 val entity = TuyaDeviceEntity(
                                     id = dev.devId,
                                     name = dev.name ?: "Thiết bị mới",
                                     online = dev.isOnline,
                                     category = dev.category ?: "",
-                                    productName = dev.productName ?: "",
+                                    productName = pName,
                                     lastSeen = System.currentTimeMillis()
                                 )
-                                // Launch insert trong IO Thread
+                                
                                 deviceCache[entity.name] = DeviceInfo(
                                     id = entity.id,
                                     name = entity.name,
@@ -380,7 +389,11 @@ class TuyaManager @Inject constructor(
                                     category = entity.category,
                                     productName = entity.productName
                                 )
-                                tuyaDeviceDao.insertDevice(entity)
+
+                                // ✅ ĐÃ SỬA: Chạy insert SQLite bằng serviceScope cục bộ thay vì gọi trực tiếp suspend
+                                serviceScope.launch {
+                                    tuyaDeviceDao.insertDevice(entity)
+                                }
                                 onDevicePaired(dev)
                             }
                         }
