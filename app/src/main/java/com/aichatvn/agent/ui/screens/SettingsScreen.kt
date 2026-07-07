@@ -35,7 +35,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
-import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
+import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -62,13 +62,27 @@ fun SettingsScreen(
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
     val configSaveResult by viewModel.configSaveResult.collectAsState()
-    val facebookPages    by viewModel.facebookPages.collectAsState() // ✅ ĐÃ THÊM: Quan sát danh sách trang từ DB
+    val facebookPages    by viewModel.facebookPages.collectAsState()
+
+    // Quan sát các luồng dữ liệu mới từ Thing Smart Life SDK
+    val isLoggedIn       by viewModel.isLoggedIn.collectAsState()
+    val tuyaHomes        by viewModel.tuyaHomes.collectAsState()
+    val selectedHomeId   by viewModel.selectedHomeId.collectAsState()
+    val isPairing        by viewModel.isPairing.collectAsState()
+    val pairingMessage   by viewModel.pairingMessage.collectAsState()
 
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
     var resendSenderInput     by remember(resendSender)   { mutableStateOf(resendSender) }
     var tuyaClientIdInput     by remember(tuyaClientId)   { mutableStateOf(tuyaClientId) }
     var tuyaClientSecretInput by remember(tuyaClientSecret) { mutableStateOf(tuyaClientSecret) }
+
+    // Các biến phụ trợ cho Đăng nhập Tuya cá nhân và Ghép nối Wi-Fi
+    var tuyaEmailInput        by remember { mutableStateOf("") }
+    var tuyaPasswordInput     by remember { mutableStateOf("") }
+    var tuyaCountryCode       by remember { mutableStateOf("84") }
+    var wifiSsidInput         by remember { mutableStateOf("") }
+    var wifiPasswordInput     by remember { mutableStateOf("") }
 
     var testEmailAddress  by remember { mutableStateOf("") }
     var showSaved         by remember { mutableStateOf(false) }
@@ -122,30 +136,216 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ==================== 🔌 THIẾT LẬP NHÀ THÔNG MINH TUYA SMART LIFE ====================
             Text("🔌 Thiết lập nhà thông minh Tuya Smart Life", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            
+            // --- SUB-CARD 1: CẤU HÌNH APPKEY / APPSECRET (Cho phép người dùng APK tự tùy biến) ---
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Text("Đăng ký tài khoản miễn phí tại developer.tuya.com → Tạo Cloud Project → Liên kết app Smart Life.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                    Text("Lấy Client ID và Client Secret từ project để điền xuống phía dưới.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("⚙️ Cấu hình API Nhà phát triển (Developer Keys)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Nhập AppKey và AppSecret từ dự án đám mây Tuya để ứng dụng khởi tạo SDK tương thích. Bạn có thể thay đổi các giá trị này bất cứ lúc nào.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = tuyaClientIdInput, 
+                        onValueChange = { tuyaClientIdInput = it }, 
+                        label = { Text("Tuya AppKey (Access ID)") }, 
+                        modifier = Modifier.fillMaxWidth(), 
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = tuyaClientSecretInput, 
+                        onValueChange = { tuyaClientSecretInput = it }, 
+                        label = { Text("Tuya AppSecret (Access Secret)") }, 
+                        modifier = Modifier.fillMaxWidth(), 
+                        visualTransformation = PasswordVisualTransformation(), 
+                        singleLine = true
+                    )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { 
+                                viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput)
+                                showSaved = true 
+                            }, 
+                            modifier = Modifier.weight(1f)
+                        ) { Text("💾 Lưu AppKey/Secret") }
+                        
+                        Button(
+                            onClick = { 
+                                scope.launch { 
+                                    tuyaTestResult = viewModel.testTuyaConnection(tuyaClientIdInput, tuyaClientSecretInput) 
+                                } 
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                        ) { Text("🔌 Thử kết nối") }
+                    }
+                    if (tuyaTestResult != null) {
+                        Text(
+                            text = tuyaTestResult!!, 
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (tuyaTestResult!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
-            OutlinedTextField(value = tuyaClientIdInput, onValueChange = { tuyaClientIdInput = it }, label = { Text("Tuya Access ID / Client ID") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            OutlinedTextField(value = tuyaClientSecretInput, onValueChange = { tuyaClientSecretInput = it }, label = { Text("Tuya Access Secret / Client Secret") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput); showSaved = true }, modifier = Modifier.weight(1f)) { Text("💾 Lưu cấu hình Tuya") }
-                Button(
-                    onClick = { scope.launch { tuyaTestResult = viewModel.testTuyaConnection(tuyaClientIdInput, tuyaClientSecretInput) } },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                ) { Text("🔌 Thử kết nối") }
+
+            // --- SUB-CARD 2: TƯƠNG TÁC TÀI KHOẢN SMART LIFE (LOGIN, HOME SELECTION, PAIRING) ---
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f))
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("👤 Quản lý tài khoản cá nhân Tuya/Smart Life", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+
+                    if (!isLoggedIn) {
+                        // GIAO DIỆN CHƯA ĐĂNG NHẬP: Hiển thị form đăng nhập email thông thường
+                        Text("Đăng nhập bằng tài khoản Smart Life (Tuya) của bạn để điều khiển và ghép nối thiết bị qua Wi-Fi.", style = MaterialTheme.typography.bodySmall)
+                        
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedTextField(
+                                value = tuyaCountryCode,
+                                onValueChange = { tuyaCountryCode = it },
+                                label = { Text("Mã QG") },
+                                modifier = Modifier.width(80.dp),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                            )
+                            OutlinedTextField(
+                                value = tuyaEmailInput,
+                                onValueChange = { tuyaEmailInput = it },
+                                label = { Text("Email đăng ký") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("example@email.com") }
+                            )
+                        }
+                        
+                        OutlinedTextField(
+                            value = tuyaPasswordInput,
+                            onValueChange = { tuyaPasswordInput = it },
+                            label = { Text("Mật khẩu") },
+                            modifier = Modifier.fillMaxWidth(),
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true
+                        )
+
+                        Button(
+                            onClick = {
+                                viewModel.loginTuya(tuyaEmailInput, tuyaPasswordInput, tuyaCountryCode) { success, msg ->
+                                    if (!success) errorMessage = msg
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("🔌 Đăng nhập tài khoản Smart Life") }
+                    } else {
+                        // GIAO DIỆN ĐÃ ĐĂNG NHẬP: Quản lý nhà thông minh, đồng bộ và ghép nối Wi-Fi
+                        Text("Trạng thái: Đang đăng nhập thành công ✅", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        
+                        // Dropdown menu lựa chọn ngôi nhà làm việc
+                        if (tuyaHomes.isNotEmpty()) {
+                            var expandedHomeMenu by remember { mutableStateOf(false) }
+                            val currentHomeName = tuyaHomes.find { it.homeId == selectedHomeId }?.name ?: "Chọn ngôi nhà"
+
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { expandedHomeMenu = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("🏠 Ngôi nhà hiện tại: $currentHomeName")
+                                    Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.padding(start = 4.dp))
+                                }
+                                DropdownMenu(
+                                    expanded = expandedHomeMenu,
+                                    onDismissRequest = { expandedHomeMenu = false },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    tuyaHomes.forEach { home ->
+                                        DropdownMenuItem(
+                                            text = { Text(home.name ?: "Không tên") },
+                                            onClick = {
+                                                viewModel.selectHome(home.homeId)
+                                                expandedHomeMenu = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            Text("⚠️ Không tìm thấy ngôi nhà nào liên kết với tài khoản này. Vui lòng tạo ngôi nhà trên app Tuya Smart trước.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { viewModel.syncTuyaDevices() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) { Text("🔄 Đồng bộ thiết bị") }
+
+                            OutlinedButton(
+                                onClick = { viewModel.logoutTuya() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) { Text("🔌 Đăng xuất") }
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                        // --- TRÌNH GHÉP NỐI THIẾT BỊ WI-FI EZ MODE (PAIRING WIZARD) ---
+                        Text("📶 Ghép nối thêm thiết bị Wi-Fi mới", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                        Text("Nhập thông tin Wi-Fi băng tần 2.4GHz của bạn, đặt thiết bị (bóng đèn/ổ cắm) nhấp nháy nhanh để tiến hành ghép nối.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        
+                        OutlinedTextField(
+                            value = wifiSsidInput,
+                            onValueChange = { wifiSsidInput = it },
+                            label = { Text("Tên mạng Wi-Fi (SSID)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = wifiPasswordInput,
+                            onValueChange = { wifiPasswordInput = it },
+                            label = { Text("Mật khẩu Wi-Fi") },
+                            modifier = Modifier.fillMaxWidth(),
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true
+                        )
+
+                        if (isPairing) {
+                            Button(
+                                onClick = { viewModel.stopPairingDevice() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), color = MaterialTheme.colorScheme.onError, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("⏹️ Đang quét... Bấm để hủy bỏ")
+                            }
+                        } else {
+                            Button(
+                                onClick = { viewModel.startPairingDevice(wifiSsidInput, wifiPasswordInput) },
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = wifiSsidInput.isNotBlank()
+                            ) { Text("📶 Bắt đầu ghép nối (EZ Mode)") }
+                        }
+
+                        pairingMessage?.let {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Text(it, modifier = Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
             }
-            if (tuyaTestResult != null) {
-                Text(tuyaTestResult!!, style = MaterialTheme.typography.bodySmall,
-                    color = if (tuyaTestResult!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-            }
+
             OutlinedButton(
                 onClick = { navController.navigate("tuya") },
                 modifier = Modifier.fillMaxWidth()
@@ -190,7 +390,7 @@ fun SettingsScreen(
             PluginConfigSection(
                 configs = allConfigs,
                 configSaveResult = configSaveResult,
-                facebookPages = facebookPages, // ✅ ĐÃ SỬA: Chuyển tiếp danh sách trang xuống
+                facebookPages = facebookPages,
                 onSave = { key, value -> viewModel.saveConfig(key, value) },
                 onReset = { key -> viewModel.resetConfig(key) }
             )
@@ -267,7 +467,7 @@ fun SettingsScreen(
 private fun PluginConfigSection(
     configs: List<AppConfigEntity>,
     configSaveResult: String?,
-    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận danh sách trang
+    facebookPages: List<FacebookPageEntity>,
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -316,7 +516,7 @@ private fun PluginConfigSection(
             pluginId = pluginId,
             items = items,
             allConfigs = configs,
-            facebookPages = facebookPages, // ✅ ĐÃ SỬA: Truyền tiếp danh sách trang xuống dưới
+            facebookPages = facebookPages,
             onSave = onSave,
             onReset = onReset
         )
@@ -328,7 +528,7 @@ private fun PluginGroupCard(
     pluginId: String,
     items: List<AppConfigEntity>,
     allConfigs: List<AppConfigEntity>,
-    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận tham số trang facebook
+    facebookPages: List<FacebookPageEntity>,
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -341,11 +541,8 @@ private fun PluginGroupCard(
         "camera"    -> Pair("📷", "Camera giám sát thửa đất")
         "email"     -> Pair("📧", "Email thông báo cảnh báo")
         "schedule"  -> Pair("⏰", "Lịch trình tự động hóa")
-        
         "facebook"  -> Pair("📘", "Facebook Messenger")
-        
         "telegram"  -> Pair("✈️", "Telegram Assistant")
-        
         "website"   -> Pair("💻", "Website Chat Widget")
         else        -> Pair("🔧", "Cấu hình $pluginId")
     }
@@ -371,7 +568,6 @@ private fun PluginGroupCard(
             if (groupExpanded) {
                 Spacer(Modifier.height(4.dp))
 
-                // ✅ ĐÃ THÊM: Nếu mở rộng thẻ cấu hình Website, tự động render mã nhúng HTML kèm nút Copy 1 chạm!
                 if (pluginId == "website") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val widgetKey = allConfigs.firstOrNull { it.key == AppConfigDefaults.WEBSITE_WIDGET_KEY }?.value ?: ""
@@ -416,11 +612,6 @@ private fun PluginGroupCard(
                                     Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
                                 }
 
-                                // ✅ ĐÃ THÊM: URL nhúng riêng cho kiểu "Embed by URL" (Google Sites và các trình
-                                // dựng web kéo-thả khác chặn localStorage khi dùng "Embed code" do bọc iframe
-                                // sandbox không allow-same-origin — mỗi lần refresh trang sẽ mất senderId/lịch sử).
-                                // Trỏ thẳng iframe tới URL này (origin thật) thì localStorage lưu bền qua các lần
-                                // refresh. Xem route /widget-frame trên app.py (Render).
                                 Spacer(Modifier.height(16.dp))
                                 Text(
                                     "🔗 URL nhúng (kiểu \"Nhúng URL\" — dùng cho Google Sites hoặc web kéo-thả):",
@@ -456,13 +647,11 @@ private fun PluginGroupCard(
                     }
                 }
 
-                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Facebook kèm danh sách Fanpage thực tế
                 if (pluginId == "facebook") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
                     val authUrl = "$gatewayUrl/auth/facebook?token=$gatewayToken"
 
-                    // --- VẼ DANH SÁCH FANPAGE ĐÃ KẾT NỐI ---
                     if (facebookPages.isNotEmpty()) {
                         Card(
                             modifier = Modifier
@@ -539,7 +728,6 @@ private fun PluginGroupCard(
                     }
                 }
 
-                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Zalo
                 if (pluginId == "zalo") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
