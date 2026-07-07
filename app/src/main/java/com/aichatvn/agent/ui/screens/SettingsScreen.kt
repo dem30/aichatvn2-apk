@@ -237,7 +237,8 @@ fun SettingsScreen(
 
                         Button(
                             onClick = {
-                                viewModel.loginTuya(tuyaEmailInput, tuyaPasswordInput, tuyaCountryCode) { success, msg ->
+                                // ✅ ĐÃ SỬA: Loại bỏ tuyaCountryCode dư thừa để khớp chính xác chữ ký phương thức 3 tham số của ViewModel
+                                viewModel.loginTuya(tuyaEmailInput, tuyaPasswordInput) { success, msg ->
                                     if (!success) errorMessage = msg
                                 }
                             },

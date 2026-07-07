@@ -76,9 +76,10 @@ class TuyaViewModel @Inject constructor(
         viewModelScope.launch {
             _isScanning.value = true
             try {
+                // Quét thiết bị từ Home mặc định của SDK thông qua TuyaManager mới
                 val found = withContext(Dispatchers.IO) { tuyaManager.scanDevices() }
                 loadDevices()
-                _message.value = "✅ Tìm thấy ${found.size} thiết bị"
+                _message.value = "✅ Tìm thấy ${found.size} thiết bị trong tài khoản"
             } catch (e: Exception) {
                 _message.value = "❌ Lỗi quét: ${e.message}"
                 logger.e("TuyaViewModel", "scanDevices error", e)
@@ -281,7 +282,7 @@ private fun TuyaDeviceCard(
                         )
                         if (device.productName.isNotBlank()) {
                             Text(
-                                text = device.productName,
+                                text = "PID: " + device.productName,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
