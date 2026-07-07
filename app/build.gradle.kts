@@ -17,9 +17,6 @@ configurations.all {
         force("androidx.core:core:1.13.1")
         force("androidx.core:core-ktx:1.13.1")
     }
-    
-    // ✅ THÊM: Loại bỏ module annotation xử lý riêng này để tránh xảy ra lỗi xung đột biên dịch.
-   // exclude(group = "com.thingclips.smart", module = "thingsmart-modularCampAnno")
 }
 
 android {
@@ -41,13 +38,9 @@ android {
 
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
         
-        // ✅ THÊM: Inject khóa kích hoạt SDK của ứng dụng từ Gradle/Local Properties vào Manifest Placeholders.
+        // Inject khóa kích hoạt SDK của ứng dụng từ Gradle/Local Properties vào Manifest Placeholders
         manifestPlaceholders["THING_SMART_APPKEY"] = project.findProperty("THING_SMART_APPKEY") ?: ""
         manifestPlaceholders["THING_SMART_SECRET"] = project.findProperty("THING_SMART_SECRET") ?: ""
-
-        // ✅ Đã bỏ giới hạn abiFilters arm64-v8a — không còn native lib (llama.cpp) nào nữa
-        // sau khi chuyển routing sang Groq (xem AgentKernel/GroqClientTool). App giờ build
-        // và chạy được trên mọi ABI, kể cả emulator x86_64.
     }
 
     buildTypes {
@@ -92,7 +85,7 @@ android {
             )
         }
         
-        // ✅ THÊM: Tránh lỗi trùng lặp thư viện gốc .so khi tải nhiều AAR con của Tuya
+        // Tránh lỗi trùng lặp thư viện gốc .so khi tải nhiều AAR con của Tuya
         jniLibs {
             pickFirsts += setOf(
                 "lib/*/libc++_shared.so",
@@ -184,10 +177,13 @@ dependencies {
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
     implementation("com.jcraft:jsch:0.1.55")
 
-    // ===== Phiên bản SDK ổn định và khả dụng phổ thông mới nhất =====
-    implementation("com.thingclips.smart:thingsmart:7.5.6")
+    // ===== ✅ Smart Life App SDK (Phiên bản ổn định chính thức) =====
+    // Chuyển cấu hình exclude từ toàn cục (configurations.all) trực tiếp vào dependency ở cấp độ node để chắc chắn áp dụng cho mọi nội bộ task của Gradle
+    implementation("com.thingclips.smart:thingsmart:7.5.6") {
+        exclude(group = "com.thingclips.smart", module = "thingsmart-modularCampAnno")
+    }
 
-    // ===== ✅ BỔ SUNG: Các thư viện bổ trợ bắt buộc cho SDK Tuya/Smart Life =====
+    // ===== Các thư viện bổ trợ bắt buộc cho SDK Tuya/Smart Life =====
     implementation("com.alibaba:fastjson:1.1.67.android")
     implementation("com.squareup.okhttp3:okhttp-urlconnection:4.11.0")
     implementation("com.facebook.soloader:soloader:0.10.5")
