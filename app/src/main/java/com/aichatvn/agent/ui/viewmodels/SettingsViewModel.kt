@@ -258,6 +258,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+
+
+    // 🔴 HÃY THAY THẾ TOÀN BỘ HÀM NÀY BẰNG PHIÊN BẢN AN TOÀN KHÔNG GÂY CRASH:
     fun saveTuyaConfig(clientId: String, clientSecret: String) {
         viewModelScope.launch {
             context.dataStore.edit { prefs ->
@@ -267,22 +270,14 @@ class SettingsViewModel @Inject constructor(
             _tuyaClientId.value = clientId.trim()
             _tuyaClientSecret.value = clientSecret.trim()
 
-            // ✅ THÊM: Kích hoạt/Cập nhật lại SDK ngay lập tức với cặp khóa mới nhập để tránh lỗi IApiUrlProvider
-            try {
-                if (clientId.trim().isNotBlank() && clientSecret.trim().isNotBlank()) {
-                    com.thingclips.smart.home.sdk.ThingHomeSdk.init(
-                        context as android.app.Application,
-                        clientId.trim(),
-                        clientSecret.trim()
-                    )
-                    logger.i("SettingsViewModel", "🔄 Tuya SDK re-initialized instantly with new AppKey")
-                }
-            } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Lỗi khởi tạo lại SDK động: ${e.message}")
-            }
+            // Hiển thị thông báo yêu cầu người dùng khởi động lại ứng dụng
+            _configSaveResult.value = "💾 Đã lưu! Vui lòng tắt hẳn và mở lại ứng dụng để áp dụng cấu hình mới."
+            kotlinx.coroutines.delay(4000)
+            _configSaveResult.value = null
         }
     }
 
+    
     fun toggleDarkMode(enabled: Boolean) {
         viewModelScope.launch {
             context.dataStore.edit { it[DARK_MODE] = enabled }
