@@ -13,7 +13,7 @@ import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.service.WebhookGatewayService
 import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
-import com.thingclips.smart.home.sdk.ThingHomeSdk // ✅ BỔ SUNG: Import thư viện Thing Smart Home SDK
+import com.thingclips.smart.home.sdk.ThingHomeSdk // Import thư viện Thing Smart Home SDK
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,10 +45,12 @@ class MainApplication : Application(), Configuration.Provider {
 
         // ===== ✅ BỔ SUNG: Khởi tạo Thing Smart SDK =====
         try {
-            // Cho phép hiển thị log hệ thống của SDK khi ở chế độ gỡ lỗi (Debug) để tiện điều tra
-            ThingHomeSdk.setDebugMode(BuildConfig.DEBUG)
-            // Kích hoạt SDK
+            // ✅ ĐÃ SỬA: Phải gọi hàm khởi tạo init() để nạp môi trường SDK và tải thư viện native TRƯỚC
             ThingHomeSdk.init(this)
+            
+            // ✅ ĐÃ SỬA: Sau khi khởi tạo xong mới bật chế độ gỡ lỗi (Debug Mode) để tránh lỗi UnsatisfiedLinkError
+            ThingHomeSdk.setDebugMode(BuildConfig.DEBUG)
+            
             logger.i("MainApplication", "🔑 Thing Smart Life App SDK initialized successfully")
         } catch (e: Exception) {
             logger.e("MainApplication", "❌ Failed to initialize Thing Smart Life App SDK", e)
