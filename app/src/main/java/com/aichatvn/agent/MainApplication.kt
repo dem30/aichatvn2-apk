@@ -45,13 +45,44 @@ class MainApplication : Application(), Configuration.Provider {
 
         // ===== ✅ BỔ SUNG: Khởi tạo Thing Smart SDK =====
         try {
-            // ✅ ĐÃ SỬA: Phải gọi hàm khởi tạo init() để nạp môi trường SDK và tải thư viện native TRƯỚC
-            ThingHomeSdk.init(this)
-            
-            // ✅ ĐÃ SỬA: Sau khi khởi tạo xong mới bật chế độ gỡ lỗi (Debug Mode) để tránh lỗi UnsatisfiedLinkError
+
+
+          
+            // ===== ✅ SỬA ĐỔI: Khởi tạo động Thing Smart SDK từ bộ nhớ lưu trữ cục bộ =====
+        try {
+            // Đọc đồng bộ dữ liệu AppKey và AppSecret đã lưu từ DataStore
+            val savedKeys = kotlinx.coroutines.runBlocking {
+                try {
+                    val prefs = dataStore.data.first()
+                    val key = prefs[androidx.datastore.preferences.core.stringPreferencesKey("tuya_client_id")] ?: ""
+                    val secret = prefs[androidx.datastore.preferences.core.stringPreferencesKey("tuya_client_secret")] ?: ""
+                    Pair(key, secret)
+                } catch (e: Exception) {
+                    Pair("", "")
+                }
+            }
+
+            val (appKey, appSecret) = savedKeys
+            if (appKey.isNotBlank() && appSecret.isNotBlank()) {
+                // Khởi tạo SDK bằng khóa động do người dùng nhập trong Settings
+                ThingHomeSdk.init(this, appKey, appSecret)
+                logger.i("MainApplication", "🔑 Thing Smart SDK initialized with USER keys: $appKey")
+            } else {
+                // Fallback khởi tạo mặc định bằng Manifest nếu chưa có cấu hình riêng
+                ThingHomeSdk.init(this)
+                logger.i("MainApplication", "🔑 Thing Smart SDK initialized with MANIFEST keys")
+            }
+
+            // Bật chế độ debug sau khi đã init thành công
             ThingHomeSdk.setDebugMode(BuildConfig.DEBUG)
+        } catch (e: Exception) {
+            logger.e("MainApplication", "❌ Failed to initialize Thing Smart Life App SDK", e)
+        }
+
+
+
+
             
-            logger.i("MainApplication", "🔑 Thing Smart Life App SDK initialized successfully")
         } catch (e: Exception) {
             logger.e("MainApplication", "❌ Failed to initialize Thing Smart Life App SDK", e)
         }

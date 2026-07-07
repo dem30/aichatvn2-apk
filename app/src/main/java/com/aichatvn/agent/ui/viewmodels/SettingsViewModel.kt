@@ -266,6 +266,20 @@ class SettingsViewModel @Inject constructor(
             }
             _tuyaClientId.value = clientId.trim()
             _tuyaClientSecret.value = clientSecret.trim()
+
+            // ✅ THÊM: Kích hoạt/Cập nhật lại SDK ngay lập tức với cặp khóa mới nhập để tránh lỗi IApiUrlProvider
+            try {
+                if (clientId.trim().isNotBlank() && clientSecret.trim().isNotBlank()) {
+                    com.thingclips.smart.home.sdk.ThingHomeSdk.init(
+                        context as android.app.Application,
+                        clientId.trim(),
+                        clientSecret.trim()
+                    )
+                    logger.i("SettingsViewModel", "🔄 Tuya SDK re-initialized instantly with new AppKey")
+                }
+            } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Lỗi khởi tạo lại SDK động: ${e.message}")
+            }
         }
     }
 
