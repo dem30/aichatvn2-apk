@@ -309,15 +309,7 @@ object AppConfigDefaults {
             description = "Khoảng thời gian giữa 2 lần TaskScheduler tự động quét toàn bộ camera. Mặc định 15 phút."
         ),
 
-        // ── HOUSEKEEPER (QUẢN GIA) ──
-        AppConfigEntity(
-            key = HOUSEKEEPER_AUTO_MODE,
-            value = "false",
-            type = "boolean",
-            pluginId = "housekeeper",
-            label = "Chế độ quản gia tự động",
-            description = "Bật/tắt tự động hóa của HousekeeperSkill (điều phối camera/Tuya/cảnh báo/lịch trình)."
-        ),
+        
 
         // ── GLOBAL ──
         AppConfigEntity(
