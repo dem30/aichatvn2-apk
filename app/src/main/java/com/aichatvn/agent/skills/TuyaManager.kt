@@ -1,32 +1,33 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
-import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.utils.Logger
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
+import com.thingclips.smart.home.sdk.ThingHomeSdk
+import com.thingclips.smart.home.sdk.api.IThingActivatorGetToken
+import com.thingclips.smart.home.sdk.api.IThingHomeResultCallback
+import com.thingclips.smart.home.sdk.bean.HomeBean
+import com.thingclips.smart.home.sdk.builder.ActivatorBuilder
+import com.thingclips.smart.home.sdk.callback.IThingGetHomeListCallback
+import com.thingclips.smart.sdk.api.IResultCallback
+import com.thingclips.smart.sdk.api.IThingActivator
+import com.thingclips.smart.sdk.api.IThingDevice
+import com.thingclips.smart.sdk.api.IThingSmartActivatorListener
+import com.thingclips.smart.android.user.api.ILoginCallback
+import com.thingclips.smart.android.user.bean.User
+import com.thingclips.smart.sdk.bean.DeviceBean
+import com.thingclips.smart.sdk.enums.ActivatorModelEnum
 import dagger.hilt.android.qualifiers.ApplicationContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
-import java.nio.charset.StandardCharsets
-import java.security.MessageDigest
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
-import java.util.*
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 @Singleton
 class TuyaManager @Inject constructor(
@@ -35,33 +36,12 @@ class TuyaManager @Inject constructor(
     private val logger: Logger
 ) {
     companion object {
-        private val CLIENT_ID = stringPreferencesKey("tuya_client_id")
-        private val CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
-        private val DATA_CENTER = stringPreferencesKey("tuya_data_center")
-        
-        // Cập nhật URL máy chủ Singapore theo tài liệu chính thức của Tuya
-        private val API_URLS = mapOf(
-            "us" to "https://openapi.tuyaus.com",
-            "eu" to "https://openapi.tuyaeu.com",
-            "cn" to "https://openapi.tuyacn.com",
-            "in" to "https://openapi.tuyain.com",
-            "sg" to "https://openapi-sg.iotbing.com"
-        )
-        
-        private const val DEFAULT_REGION = "sg"
-        private var powerDps = "1"
+        private const val POWER_DPS_KEY = "1" // Mã DP ID nguồn tiêu chuẩn của đa số thiết bị điện Tuya
     }
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
-
     private val mutex = Mutex()
-    private var accessToken: String? = null
-    private var tokenExpiry: Long = 0L
-    
     private val deviceCache = mutableMapOf<String, DeviceInfo>()
+    private var activeActivator: IThingActivator? = null
 
     data class DeviceInfo(
         val id: String,
@@ -71,6 +51,9 @@ class TuyaManager @Inject constructor(
         val productName: String = ""
     )
 
+    /**
+     * Đồng bộ thiết bị cục bộ từ SQLite Database vào cache RAM
+     */
     suspend fun loadDevicesFromDB() = withContext(Dispatchers.IO) {
         val devices = tuyaDeviceDao.getAllDevices()
         deviceCache.clear()
@@ -86,93 +69,24 @@ class TuyaManager @Inject constructor(
         logger.i("TuyaManager", "📂 Loaded ${deviceCache.size} devices from DB")
     }
 
+    /**
+     * Quét thiết bị: Tự động truy vấn danh sách thiết bị của Home đầu tiên (hoặc Home mặc định)
+     * để tương thích ngược với API cũ, cập nhật vào SQLite cục bộ và trả về Map.
+     */
     suspend fun scanDevices(): Map<String, DeviceInfo> = withContext(Dispatchers.IO) {
-        val token = getAccessToken()
-        val prefs = context.dataStore.data.first()
-        val clientId = prefs[CLIENT_ID] ?: ""
-        val clientSecret = prefs[CLIENT_SECRET] ?: ""
-        val baseUrl = getApiBaseUrl()
-        
-        val urlPath = "/v1.0/iot-01/associated-users/devices"
-        val timestamp = System.currentTimeMillis()
-        val nonce = UUID.randomUUID().toString()
-        
-        // Tạo chữ ký cho API nghiệp vụ (Business API)
-        val sign = calculateSignature(
-            clientId = clientId,
-            accessToken = token,
-            timestamp = timestamp,
-            nonce = nonce,
-            secret = clientSecret,
-            method = "GET",
-            urlPathAndQuery = urlPath,
-            bodyStr = ""
-        )
-        
-        val url = "$baseUrl$urlPath"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("client_id", clientId)
-            .addHeader("access_token", token)
-            .addHeader("sign", sign)
-            .addHeader("t", timestamp.toString())
-            .addHeader("nonce", nonce)
-            .addHeader("sign_method", "HMAC-SHA256")
-            .get()
-            .build()
-        
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw Exception("Quét thiết bị thất bại: ${response.code}")
+        val homes = getHomeList()
+        if (homes.isEmpty()) {
+            logger.w("TuyaManager", "⚠️ Không tìm thấy ngôi nhà nào liên kết với tài khoản này.")
+            return@withContext emptyMap()
         }
-        
-        val json = JSONObject(response.body?.string() ?: "")
-        val success = json.optBoolean("success")
-        if (!success) {
-            val msg = json.optString("msg", "Unknown error")
-            throw Exception("Scan API error: $msg")
-        }
-        
-        val result = json.optJSONArray("result")
-        deviceCache.clear()
-        val deviceList = mutableListOf<TuyaDeviceEntity>()
-        
-        if (result != null) {
-            for (i in 0 until result.length()) {
-                val device = result.getJSONObject(i)
-                val name = device.optString("name")
-                val id = device.optString("id")
-                val online = device.optBoolean("online", false)
-                val category = device.optString("category", "")
-                val productName = device.optString("product_name", "")
-                
-                if (name.isNotBlank() && id.isNotBlank()) {
-                    deviceCache[name] = DeviceInfo(id, name, online, category, productName)
-                    logger.i("TuyaManager", "📱 $name → $id (online: $online)")
-                    
-                    deviceList.add(
-                        TuyaDeviceEntity(
-                            id = id,
-                            name = name,
-                            online = online,
-                            category = category,
-                            productName = productName,
-                            lastSeen = System.currentTimeMillis()
-                        )
-                    )
-                }
-            }
-        }
-        
-        if (deviceList.isNotEmpty()) {
-            tuyaDeviceDao.insertAllDevices(deviceList)
-            logger.i("TuyaManager", "💾 Saved ${deviceList.size} devices to DB")
-        }
-        
-        logger.i("TuyaManager", "✅ Tìm thấy ${deviceCache.size} thiết bị")
-        deviceCache
+        // Chọn Home đầu tiên làm mặc định để đồng bộ hóa
+        val defaultHomeId = homes.first().homeId
+        return@withContext syncDevicesFromHome(defaultHomeId)
     }
 
+    /**
+     * Lấy thông tin thiết bị từ cache RAM hoặc truy vấn từ SQLite nếu chưa nạp
+     */
     private suspend fun getDeviceInfo(deviceName: String): DeviceInfo = withContext(Dispatchers.IO) {
         val cached = deviceCache[deviceName]
         if (cached != null) {
@@ -192,9 +106,12 @@ class TuyaManager @Inject constructor(
             return@withContext info
         }
         
-        throw IllegalArgumentException("Không tìm thấy thiết bị '$deviceName'")
+        throw IllegalArgumentException("Không tìm thấy thiết bị '$deviceName' trong cơ sở dữ liệu cục bộ.")
     }
 
+    /**
+     * Cập nhật trạng thái trực tuyến của thiết bị vào SQLite và Cache
+     */
     private suspend fun updateDeviceStatus(deviceId: String, online: Boolean) = withContext(Dispatchers.IO) {
         tuyaDeviceDao.updateOnlineStatus(deviceId, online, System.currentTimeMillis())
         deviceCache.values.find { it.id == deviceId }?.let { info ->
@@ -202,270 +119,298 @@ class TuyaManager @Inject constructor(
         }
     }
 
+    /**
+     * API Tương thích ngược: Trả về Token session hiện tại của tài khoản người dùng
+     */
     suspend fun getAccessToken(): String = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            if (accessToken != null && System.currentTimeMillis() < tokenExpiry) {
-                return@withLock accessToken!!
-            }
-            
-            val prefs = context.dataStore.data.first()
-            val clientId = prefs[CLIENT_ID] ?: ""
-            val clientSecret = prefs[CLIENT_SECRET] ?: ""
-            val region = prefs[DATA_CENTER] ?: DEFAULT_REGION
-            val baseUrl = getApiBaseUrl()
-            
-            if (clientId.isBlank() || clientSecret.isBlank()) {
-                throw IllegalStateException("Chưa cấu hình Tuya Client ID/Secret")
-            }
-            
-            val timestamp = System.currentTimeMillis()
-            val nonce = UUID.randomUUID().toString()
-            val urlPath = "/v1.0/token?grant_type=1"
-            
-            // Tính chữ ký theo định dạng chuẩn mới cho API lấy Token
-            val sign = calculateSignature(
-                clientId = clientId,
-                accessToken = null,
-                timestamp = timestamp,
-                nonce = nonce,
-                secret = clientSecret,
-                method = "GET",
-                urlPathAndQuery = urlPath,
-                bodyStr = ""
-            )
+        return@withContext ThingHomeSdk.getUserInstance().user?.sid ?: ""
+    }
 
-            logger.i("TuyaManager", "Region=$region BaseUrl=$baseUrl ClientId=$clientId")
-            logger.i("TuyaManager", "Timestamp=$timestamp Nonce=$nonce Sign=$sign")
+    /**
+     * Kiểm tra trạng thái đã đăng nhập hay chưa
+     */
+    fun isLoggedIn(): Boolean {
+        return ThingHomeSdk.getUserInstance().isLogin
+    }
 
-            val url = "$baseUrl$urlPath"
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("client_id", clientId)
-                .addHeader("sign", sign)
-                .addHeader("t", timestamp.toString())
-                .addHeader("nonce", nonce)
-                .addHeader("sign_method", "HMAC-SHA256")
-                .get()
-                .build()
+    /**
+     * Đăng nhập tài khoản Smart Life bằng Email thông qua SDK
+     */
+    suspend fun login(email: String, password: String, countryCode: String = "84"): Boolean {
+        return withContext(Dispatchers.IO) {
+            suspendCancellableCoroutine { continuation ->
+                ThingHomeSdk.getUserInstance().loginWithEmail(
+                    countryCode,
+                    email,
+                    password,
+                    object : ILoginCallback {
+                        override fun onSuccess(user: User?) {
+                            logger.i("TuyaManager", "✅ Đăng nhập thành công: ${user?.username}")
+                            continuation.resume(true)
+                        }
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                throw Exception("Lấy token thất bại: ${response.code}")
+                        override fun onError(code: String?, error: String?) {
+                            logger.e("TuyaManager", "❌ Lỗi đăng nhập SDK: $error (Mã: $code)")
+                            continuation.resumeWithException(Exception(error ?: "Unknown login error"))
+                        }
+                    }
+                )
             }
-            
-            val body = response.body?.string().orEmpty()
-            logger.i("TuyaManager", "TokenResponse: $body")
-            val json = JSONObject(body)
-            val success = json.optBoolean("success")
-            if (!success) {
-                val code = json.optInt("code")
-                val msg = json.optString("msg", "Unknown error")
-                throw Exception("Token API error: code=$code msg=$msg")
-            }
-            
-            val result = json.optJSONObject("result")
-            accessToken = result?.optString("access_token")
-            val expireSeconds = result?.optInt("expires_in") ?: 7200
-            tokenExpiry = System.currentTimeMillis() + (expireSeconds - 60) * 1000L
-            
-            logger.i("TuyaManager", "🔑 Đã lấy token mới")
-            accessToken!!
         }
     }
 
-    // Hàm mã hóa SHA256 cho phần Body
-    private fun sha256(data: String): String {
-        return try {
-            val digest = MessageDigest.getInstance("SHA-256")
-            val hash = digest.digest(data.toByteArray(StandardCharsets.UTF_8))
-            hash.joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" // Mã SHA256 mặc định khi chuỗi rỗng
+    /**
+     * Đăng xuất tài khoản người dùng Tuya khỏi SDK
+     */
+    suspend fun logout() {
+        return withContext(Dispatchers.IO) {
+            suspendCancellableCoroutine { continuation ->
+                ThingHomeSdk.getUserInstance().logout(object : IResultCallback {
+                    override fun onSuccess() {
+                        logger.i("TuyaManager", "🔌 Đã đăng xuất tài khoản thành công.")
+                        deviceCache.clear()
+                        continuation.resume(Unit)
+                    }
+
+                    override fun onError(code: String?, error: String?) {
+                        logger.e("TuyaManager", "❌ Lỗi đăng xuất SDK: $error")
+                        continuation.resumeWithException(Exception(error ?: "Logout error"))
+                    }
+                })
+            }
         }
     }
 
-    // Hàm tạo chữ ký HMAC-SHA256 chung theo tài liệu nhà phát triển Tuya
-    private fun calculateSignature(
-        clientId: String,
-        accessToken: String?,
-        timestamp: Long,
-        nonce: String,
-        secret: String,
-        method: String,
-        urlPathAndQuery: String,
-        bodyStr: String = ""
-    ): String {
-        val contentSha256 = sha256(bodyStr)
-        
-        // Cấu trúc chuỗi stringToSign = HTTPMethod + "\n" + Content-SHA256 + "\n" + Headers + "\n" + Url
-        // Đoạn Headers để trống ("") nên có 2 dấu xuống dòng liên tiếp
-        val stringToSign = "$method\n$contentSha256\n\n$urlPathAndQuery"
-        
-        val signString = if (accessToken.isNullOrEmpty()) {
-            clientId + timestamp.toString() + nonce + stringToSign
-        } else {
-            clientId + accessToken + timestamp.toString() + nonce + stringToSign
-        }
-        
-        return hmacSha256(signString, secret)
-    }
+    /**
+     * Truy vấn danh sách các ngôi nhà (Home List) từ đám mây Tuya
+     */
+    suspend fun getHomeList(): List<HomeBean> {
+        return withContext(Dispatchers.IO) {
+            suspendCancellableCoroutine { continuation ->
+                ThingHomeSdk.getHomeManagerInstance().queryHomeList(object : IThingGetHomeListCallback {
+                    override fun onSuccess(homeBeans: List<HomeBean>?) {
+                        continuation.resume(homeBeans ?: emptyList())
+                    }
 
-    private fun hmacSha256(data: String, key: String): String {
-        try {
-            val mac = Mac.getInstance("HmacSHA256")
-            val secretKey = SecretKeySpec(key.toByteArray(StandardCharsets.UTF_8), "HmacSHA256")
-            mac.init(secretKey)
-            val hash = mac.doFinal(data.toByteArray(StandardCharsets.UTF_8))
-            return hash.joinToString("") { "%02X".format(it) } // Tuya yêu cầu chữ ký dạng in hoa
-        } catch (e: Exception) {
-            logger.e("TuyaManager", "HMAC error: ${e.message}", e)
-            throw e
+                    override fun onError(errorCode: String?, error: String?) {
+                        logger.e("TuyaManager", "❌ Lỗi lấy danh sách Home: $error")
+                        continuation.resumeWithException(Exception(error ?: "Get home list error"))
+                    }
+                })
+            }
         }
     }
 
-    private suspend fun getApiBaseUrl(): String {
-        val prefs = context.dataStore.data.first()
-        val region = prefs[DATA_CENTER] ?: DEFAULT_REGION
-        return API_URLS[region]
-            ?: throw IllegalStateException("Unsupported Tuya region: $region")
+    /**
+     * Đồng bộ hóa và ghi đè danh sách thiết bị từ một Ngôi nhà cụ thể vào SQLite DB
+     */
+    suspend fun syncDevicesFromHome(homeId: Long): Map<String, DeviceInfo> {
+        return withContext(Dispatchers.IO) {
+            val homeBean = suspendCancellableCoroutine<HomeBean> { continuation ->
+                ThingHomeSdk.newHomeInstance(homeId).getHomeDetail(object : IThingHomeResultCallback {
+                    override fun onSuccess(bean: HomeBean?) {
+                        if (bean != null) {
+                            continuation.resume(bean)
+                        } else {
+                            continuation.resumeWithException(Exception("Dữ liệu Home rỗng"))
+                        }
+                    }
+
+                    override fun onError(errorCode: String?, errorMsg: String?) {
+                        continuation.resumeWithException(Exception(errorMsg ?: "Error getting home details"))
+                    }
+                })
+            }
+
+            val deviceList = homeBean.deviceList ?: emptyList()
+            val entities = mutableListOf<TuyaDeviceEntity>()
+            deviceCache.clear()
+
+            deviceList.forEach { dev ->
+                val name = dev.name
+                val id = dev.devId
+                if (!name.isNullOrBlank() && !id.isNullOrBlank()) {
+                    val info = DeviceInfo(
+                        id = id,
+                        name = name,
+                        online = dev.isOnline,
+                        category = dev.category ?: "",
+                        productName = dev.productName ?: ""
+                    )
+                    deviceCache[name] = info
+
+                    entities.add(
+                        TuyaDeviceEntity(
+                            id = id,
+                            name = name,
+                            online = dev.isOnline,
+                            category = dev.category ?: "",
+                            productName = dev.productName ?: "",
+                            lastSeen = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+
+            if (entities.isNotEmpty()) {
+                tuyaDeviceDao.insertAllDevices(entities)
+                logger.i("TuyaManager", "💾 Đã lưu thành công ${entities.size} thiết bị của Home [ID: $homeId] vào SQLite DB")
+            }
+
+            return@withContext deviceCache
+        }
     }
 
+    /**
+     * Bật thiết bị thông minh thông qua SDK
+     */
     suspend fun turnOn(deviceName: String) = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, true)
-        logger.i("TuyaManager", "💡 BẬT ${device.name}")
+        logger.i("TuyaManager", "💡 BẬT thiết bị: ${device.name}")
     }
 
+    /**
+     * Tắt thiết bị thông minh thông qua SDK
+     */
     suspend fun turnOff(deviceName: String) = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, false)
-        logger.i("TuyaManager", "💡 TẮT ${device.name}")
+        logger.i("TuyaManager", "🔌 TẮT thiết bị: ${device.name}")
     }
 
+    /**
+     * Đọc trạng thái Bật/Tắt hiện tại của thiết bị (Đọc từ Cache trạng thái cục bộ để tăng tốc)
+     */
     suspend fun getStatus(deviceName: String): Boolean = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
-        val token = getAccessToken()
-        val prefs = context.dataStore.data.first()
-        val clientId = prefs[CLIENT_ID] ?: ""
-        val clientSecret = prefs[CLIENT_SECRET] ?: ""
-        val baseUrl = getApiBaseUrl()
+        val deviceBean = ThingHomeSdk.getDataInstance().getDeviceBean(device.id)
+        val dps = deviceBean?.getDps()
         
-        val urlPath = "/v1.0/devices/${device.id}/status"
-        val timestamp = System.currentTimeMillis()
-        val nonce = UUID.randomUUID().toString()
-        
-        val sign = calculateSignature(
-            clientId = clientId,
-            accessToken = token,
-            timestamp = timestamp,
-            nonce = nonce,
-            secret = clientSecret,
-            method = "GET",
-            urlPathAndQuery = urlPath,
-            bodyStr = ""
-        )
-        
-        val url = "$baseUrl$urlPath"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("client_id", clientId)
-            .addHeader("access_token", token)
-            .addHeader("sign", sign)
-            .addHeader("t", timestamp.toString())
-            .addHeader("nonce", nonce)
-            .addHeader("sign_method", "HMAC-SHA256")
-            .get()
-            .build()
-        
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw Exception("Lấy trạng thái thất bại: ${response.code}")
+        val value = dps?.get(POWER_DPS_KEY)
+        return@withContext when (value) {
+            is Boolean -> value
+            is Int -> value == 1
+            is String -> value == "true" || value == "1"
+            else -> false
         }
-        
-        val json = JSONObject(response.body?.string() ?: "")
-        val success = json.optBoolean("success")
-        if (!success) {
-            val msg = json.optString("msg", "Unknown error")
-            throw Exception("Status API error: $msg")
-        }
-        
-        val result = json.optJSONArray("result")
-        if (result != null) {
-            for (i in 0 until result.length()) {
-                val status = result.getJSONObject(i)
-                if (status.optString("code") == powerDps) {
-                    val value = status.opt("value")
-                    return@withContext when (value) {
-                        is Boolean -> value
-                        is Int -> value == 1
-                        is String -> value == "true" || value == "1"
-                        else -> false
-                    }
-                }
-            }
-        }
-        
-        false
     }
 
+    /**
+     * Thiết lập trạng thái rơ-le / nguồn của thiết bị
+     */
     private suspend fun setDeviceState(device: DeviceInfo, state: Boolean) = withContext(Dispatchers.IO) {
-        val token = getAccessToken()
-        val prefs = context.dataStore.data.first()
-        val clientId = prefs[CLIENT_ID] ?: ""
-        val clientSecret = prefs[CLIENT_SECRET] ?: ""
-        val baseUrl = getApiBaseUrl()
+        val mDevice = ThingHomeSdk.newDeviceInstance(device.id)
+        val dpsCommand = "{\"$POWER_DPS_KEY\": $state}"
         
-        val urlPath = "/v1.0/devices/${device.id}/commands"
-        val timestamp = System.currentTimeMillis()
-        val nonce = UUID.randomUUID().toString()
-        
-        val bodyJson = JSONObject().apply {
-            put("commands", org.json.JSONArray().apply {
-                put(JSONObject().apply {
-                    put("code", powerDps)
-                    put("value", state)
-                })
+        suspendCancellableCoroutine<Unit> { continuation ->
+            mDevice.publishDps(dpsCommand, object : IResultCallback {
+                override fun onSuccess() {
+                    // Cập nhật trạng thái trực tuyến cục bộ sau khi điều khiển thành công
+                    continuation.resume(Unit)
+                }
+
+                override fun onError(code: String?, error: String?) {
+                    continuation.resumeWithException(Exception("Lỗi điều khiển DP: $error (Mã: $code)"))
+                }
             })
         }
-        val bodyStr = bodyJson.toString()
-        
-        // Tính chữ ký chứa SHA256 mã hóa của Request Body (vì là request POST)
-        val sign = calculateSignature(
-            clientId = clientId,
-            accessToken = token,
-            timestamp = timestamp,
-            nonce = nonce,
-            secret = clientSecret,
-            method = "POST",
-            urlPathAndQuery = urlPath,
-            bodyStr = bodyStr
-        )
-        
-        val url = "$baseUrl$urlPath"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("client_id", clientId)
-            .addHeader("access_token", token)
-            .addHeader("sign", sign)
-            .addHeader("t", timestamp.toString())
-            .addHeader("nonce", nonce)
-            .addHeader("sign_method", "HMAC-SHA256")
-            .addHeader("Content-Type", "application/json")
-            .post(bodyStr.toRequestBody("application/json".toMediaType()))
-            .build()
-        
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw Exception("Điều khiển thất bại: ${response.code}")
-        }
-        
-        val json = JSONObject(response.body?.string() ?: "")
-        val success = json.optBoolean("success")
-        if (!success) {
-            val msg = json.optString("msg", "Unknown error")
-            throw Exception("Control API error: $msg")
-        }
-        
         updateDeviceStatus(device.id, true)
+    }
+
+    /**
+     * Khởi chạy tiến trình tìm kiếm ghép nối thiết bị qua Wi-Fi EZ Mode (SmartConfig)
+     */
+    suspend fun startEzPairing(
+        ssid: String,
+        password: String,
+        homeId: Long,
+        onDevicePaired: (DeviceBean) -> Unit,
+        onError: (String, String) -> Unit
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                // 1. Sinh Token kết nối mới từ đám mây (Token hợp lệ trong 10 phút)
+                val token = suspendCancellableCoroutine<String> { continuation ->
+                    ThingHomeSdk.getActivatorInstance().getActivatorToken(homeId, object : IThingActivatorGetToken {
+                        override fun onSuccess(token: String) {
+                            continuation.resume(token)
+                        }
+
+                        override fun onFailure(errorCode: String?, errorMsg: String?) {
+                            continuation.resumeWithException(
+                                Exception("Không thể lấy Token kết nối: $errorMsg (Mã: $errorCode)")
+                            )
+                        }
+                    })
+                }
+
+                // 2. Thiết lập trình cấu hình ghép nối Wi-Fi EZ Mode
+                val builder = ActivatorBuilder()
+                    .setSsid(ssid)
+                    .setPassword(password)
+                    .setContext(context)
+                    .setActivatorModel(ActivatorModelEnum.TY_EZ)
+                    .setTimeOut(100)
+                    .setToken(token)
+                    .setListener(object : IThingSmartActivatorListener {
+                        override fun onError(errorCode: String?, errorMsg: String?) {
+                            logger.e("TuyaManager", "❌ Lỗi ghép nối thiết bị: $errorMsg")
+                            onError(errorCode ?: "ERROR", errorMsg ?: "Unknown error")
+                        }
+
+                        override fun onActiveSuccess(devResp: DeviceBean?) {
+                            devResp?.let { dev ->
+                                logger.i("TuyaManager", "🎉 Ghép nối thành công thiết bị: ${dev.name} [ID: ${dev.devId}]")
+                                
+                                // Lưu thiết bị mới vào SQLite DB cục bộ ngay lập tức
+                                val entity = TuyaDeviceEntity(
+                                    id = dev.devId,
+                                    name = dev.name ?: "Thiết bị mới",
+                                    online = dev.isOnline,
+                                    category = dev.category ?: "",
+                                    productName = dev.productName ?: "",
+                                    lastSeen = System.currentTimeMillis()
+                                )
+                                // Launch insert trong IO Thread
+                                deviceCache[entity.name] = DeviceInfo(
+                                    id = entity.id,
+                                    name = entity.name,
+                                    online = entity.online,
+                                    category = entity.category,
+                                    productName = entity.productName
+                                )
+                                tuyaDeviceDao.insertDevice(entity)
+                                onDevicePaired(dev)
+                            }
+                        }
+
+                        override fun onStep(step: String?, data: Any?) {
+                            logger.d("TuyaManager", "Pairing Step: $step, Data: $data")
+                        }
+                    })
+
+                stopEzPairing()
+
+                // 3. Khởi chạy tác vụ kết nối
+                val activator = ThingHomeSdk.getActivatorInstance().newMultiActivator(builder)
+                activeActivator = activator
+                activator.start()
+                logger.i("TuyaManager", "📶 Bắt đầu phát sóng quét Wi-Fi tìm thiết bị...")
+            } catch (e: Exception) {
+                logger.e("TuyaManager", "❌ Exception in startEzPairing: ${e.message}", e)
+                onError("EXCEPTION", e.message ?: "Unknown exception")
+            }
+        }
+    }
+
+    /**
+     * Dừng và hủy bỏ tiến trình ghép nối Wi-Fi đang chạy
+     */
+    fun stopEzPairing() {
+        activeActivator?.stop()
+        activeActivator?.onDestroy()
+        activeActivator = null
+        logger.i("TuyaManager", "📶 Đã dừng tiến trình quét và giải phóng trình ghép nối.")
     }
 }
