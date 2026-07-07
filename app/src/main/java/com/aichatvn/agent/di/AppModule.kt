@@ -81,12 +81,7 @@ object AppModule {
     @Singleton
     fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
 
-     // Đăng ký Plugin Kiểm toán hệ thống — thay HousekeeperSkill, không còn routable qua NLP
-    @Provides
-    @IntoSet
-    @Singleton
-    fun provideAuditSkill(skill: AuditSkill): Plugin = skill
-  
+     
     @Provides
     @IntoSet
     @Singleton
