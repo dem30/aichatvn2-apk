@@ -92,16 +92,23 @@ fun DashboardScreen(
                         zoomScale = 1f
                         panOffset = Offset.Zero
                     }) {
-                        Icon(Icons.Default.Refresh, "Khôi phục thu phóng")
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Khôi phục thu phóng"
+                        )
                     }
                     IconButton(onClick = {
-                        viewModel.refreshAllNodes() // Thay thế bằng hàm refresh nodes mặc định của Dashboard
+                        viewModel.refreshDashboardNodes() // Đã sửa đổi gọi đúng hàm gốc
                     }) {
-                        Icon(Icons.Default.Add, "Tải lại thiết bị")
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Làm mới"
+                        )
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Box(
             modifier = Modifier
@@ -113,7 +120,7 @@ fun DashboardScreen(
                 val gridSpacing = 40.dp.toPx()
                 val pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
                 
-                // Vẽ lưới trục đứng
+                // Vẽ lưới dọc
                 var x = panOffset.x % gridSpacing
                 while (x < size.width) {
                     if (x >= 0) {
@@ -128,7 +135,7 @@ fun DashboardScreen(
                     x += gridSpacing
                 }
 
-                // Vẽ lưới trục ngang
+                // Vẽ lưới ngang
                 var y = panOffset.y % gridSpacing
                 while (y < size.height) {
                     if (y >= 0) {
@@ -148,7 +155,7 @@ fun DashboardScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        // Sửa lỗi: detectTransformGestures sửa lại phép gán thuộc tính mượt mà
+                        // detectTransformGestures sửa lại phép gán chính xác
                         detectTransformGestures { _, pan, zoom, _ ->
                             zoomScale = (zoomScale * zoom).coerceIn(0.5f, 3.0f)
                             panOffset += pan
