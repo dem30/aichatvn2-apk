@@ -443,7 +443,7 @@ class TuyaManager @Inject constructor(
 
         switchCodeCache[deviceId] = resolved
         logger.i("TuyaManager", "🔎 Đã dò mã lệnh bật/tắt cho $deviceId: $resolved")
-        resolved
+        return resolved
     }
 
     suspend fun getStatus(deviceName: String): Boolean = withContext(Dispatchers.IO) {
