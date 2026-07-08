@@ -32,6 +32,12 @@ class DashboardViewModel @Inject constructor(
     private val _executionMessage = MutableStateFlow<String?>(null)
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
+    fun updateNodePosition(id: String, x: Float, y: Float) {
+        deviceRegistry.updateNodeAndPersist(id) { current ->
+            current.copy(x = x, y = y)
+        }
+    }
+
     fun refreshDashboardNodes() {
         viewModelScope.launch {
             _isProcessing.value = true
@@ -39,8 +45,6 @@ class DashboardViewModel @Inject constructor(
                 val activePlugins = agentKernel.getAvailablePluginsForUI()
                 withContext(Dispatchers.IO) {
                     activePlugins.forEach { plugin ->
-                        // ✅ ĐÃ SỬA: Ép kiểu thô "is DashboardProvider" chính thức bị xóa bỏ.
-                        // Giờ đây Core kiểm tra động năng lực của plugin đã khai báo trong Manifest
                         if (plugin.manifest.capabilities.dashboard) {
                             val nodes = plugin.getDashboardNodes()
                             deviceRegistry.registerNodes(nodes)
@@ -102,7 +106,6 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    // Overload giữ lại để tương thích với defaultAction (không có DeviceAction object)
     fun sendDeviceAction(node: DeviceNode, actionId: String, extraParams: Map<String, Any>) {
         val action = node.supportedActions.find { it.id == actionId }
             ?: DeviceAction(id = actionId, title = actionId, icon = "")

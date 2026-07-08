@@ -1,17 +1,25 @@
 package com.aichatvn.agent.ui.dashboard
 
+import com.aichatvn.agent.config.AppConfigProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class DeviceRegistry @Inject constructor() {
-
+class DeviceRegistry @Inject constructor(
+    private val configProvider: AppConfigProvider
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _deviceNodes = MutableStateFlow<List<DeviceNode>>(emptyList())
+    
     /**
      * StateFlow thời gian thực lưu trữ bản sao số của toàn bộ thiết bị trong nhà.
      * UI Dashboard chỉ cần đăng ký Flow này để tự recompose tức thời khi có sự kiện đẩy về.
@@ -23,12 +31,23 @@ class DeviceRegistry @Inject constructor() {
 
     /**
      * Đăng ký lô danh sách node ban đầu (gọi lúc khởi động plugin hoặc khi quét mạng)
+     * Đã nâng cấp: Tự động tải lại vị trí tùy chỉnh của người dùng từ persistence layer.
      */
     fun registerNodes(nodes: List<DeviceNode>) {
-        nodes.forEach { node ->
-            nodeMap[node.id] = node
+        scope.launch {
+            nodes.forEach { node ->
+                val savedX = configProvider.getFloat("layout_x_${node.id}", -1f)
+                val savedY = configProvider.getFloat("layout_y_${node.id}", -1f)
+                
+                val finalNode = if (savedX >= 0f && savedY >= 0f) {
+                    node.copy(x = savedX, y = savedY)
+                } else {
+                    node
+                }
+                nodeMap[node.id] = finalNode
+            }
+            syncState()
         }
-        syncState()
     }
 
     /**
@@ -39,6 +58,21 @@ class DeviceRegistry @Inject constructor() {
         val updatedNode = transform(currentNode)
         nodeMap[id] = updatedNode
         syncState()
+    }
+
+    /**
+     * Cập nhật tọa độ di chuyển mới của Node và lưu bất đồng bộ vào cơ sở dữ liệu
+     */
+    fun updateNodeAndPersist(id: String, transform: (DeviceNode) -> DeviceNode) {
+        val currentNode = nodeMap[id] ?: return
+        val updatedNode = transform(currentNode)
+        nodeMap[id] = updatedNode
+        syncState()
+
+        scope.launch {
+            configProvider.set("layout_x_$id", updatedNode.x.toString())
+            configProvider.set("layout_y_$id", updatedNode.y.toString())
+        }
     }
 
     /**
