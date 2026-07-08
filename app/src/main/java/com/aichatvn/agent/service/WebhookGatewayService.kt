@@ -127,9 +127,16 @@ class WebhookGatewayService : Service() {
 
     private fun startForegroundService() {
         val notification = buildNotification("Hệ thống Webhook Gateway đang hoạt động...")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // Android 14+ (API 34+)
+            // Đồng bộ chính xác kiểu SERVICE_TYPE_SPECIAL_USE khớp với Manifest
+            startForeground(
+                NOTIFICATION_ID, 
+                notification, 
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
         } else {
+            // Đối với các phiên bản Android cũ hơn, khởi chạy tiền cảnh tiêu chuẩn không cần truyền tham số Type đặc biệt
             startForeground(NOTIFICATION_ID, notification)
         }
     }
