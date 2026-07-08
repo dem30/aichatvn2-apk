@@ -66,6 +66,7 @@ class SettingsViewModel @Inject constructor(
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
         val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
         val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
+        val TUYA_UID = stringPreferencesKey("tuya_uid")
 
         // DANH SÁCH TRẮNG: Các bảng dữ liệu nghiệp vụ quan trọng cần sao lưu
         private val BACKUP_TABLES = listOf(
@@ -107,6 +108,9 @@ class SettingsViewModel @Inject constructor(
     private val _tuyaClientSecret = MutableStateFlow("")
     val tuyaClientSecret: StateFlow<String> = _tuyaClientSecret.asStateFlow()
 
+    private val _tuyaUid = MutableStateFlow("")
+    val tuyaUid: StateFlow<String> = _tuyaUid.asStateFlow()
+
     val isGroqKeyConfigured: StateFlow<Boolean> = groqApiKey
         .map { it.isNotBlank() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -115,8 +119,8 @@ class SettingsViewModel @Inject constructor(
         key.isNotBlank() && sender.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val isTuyaConfigured: StateFlow<Boolean> = combine(tuyaClientId, tuyaClientSecret) { id, secret ->
-        id.isNotBlank() && secret.isNotBlank()
+    val isTuyaConfigured: StateFlow<Boolean> = combine(tuyaClientId, tuyaClientSecret, tuyaUid) { id, secret, uid ->
+        id.isNotBlank() && secret.isNotBlank() && uid.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
@@ -161,6 +165,7 @@ class SettingsViewModel @Inject constructor(
             val prefs = context.dataStore.data.first()
             _tuyaClientId.value = prefs[TUYA_CLIENT_ID] ?: ""
             _tuyaClientSecret.value = prefs[TUYA_CLIENT_SECRET] ?: ""
+            _tuyaUid.value = prefs[TUYA_UID] ?: ""
         }
     }
 
@@ -183,14 +188,16 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveTuyaConfig(clientId: String, clientSecret: String) {
+    fun saveTuyaConfig(clientId: String, clientSecret: String, uid: String) {
         viewModelScope.launch {
             context.dataStore.edit { prefs ->
                 prefs[TUYA_CLIENT_ID] = clientId.trim()
                 prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+                prefs[TUYA_UID] = uid.trim()
             }
             _tuyaClientId.value = clientId.trim()
             _tuyaClientSecret.value = clientSecret.trim()
+            _tuyaUid.value = uid.trim()
         }
     }
 
@@ -263,12 +270,13 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
+    suspend fun testTuyaConnection(clientId: String, clientSecret: String, uid: String): String {
         return withContext(Dispatchers.IO) {
             try {
                 context.dataStore.edit { prefs ->
                     prefs[TUYA_CLIENT_ID] = clientId.trim()
                     prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+                    prefs[TUYA_UID] = uid.trim()
                 }
                 val devices = tuyaManager.scanDevices()
                 "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
@@ -289,6 +297,7 @@ class SettingsViewModel @Inject constructor(
                     put("resend_sender",     prefs[RESEND_SENDER] ?: "")
                     put("tuya_client_id",    prefs[TUYA_CLIENT_ID] ?: "")
                     put("tuya_client_secret",prefs[TUYA_CLIENT_SECRET] ?: "")
+                    put("tuya_uid",          prefs[TUYA_UID] ?: "")
                     put("dark_mode",         prefs[DARK_MODE] ?: false)
                 }
 
@@ -386,6 +395,7 @@ class SettingsViewModel @Inject constructor(
                 val resendSenderVal = settingsJson.optString("resend_sender", "")
                 val tuyaClientIdVal = settingsJson.optString("tuya_client_id", "")
                 val tuyaSecretVal   = settingsJson.optString("tuya_client_secret", "")
+                val tuyaUidVal      = settingsJson.optString("tuya_uid", "")
                 val darkModeVal     = settingsJson.optBoolean("dark_mode", false)
 
                 context.dataStore.edit { prefs ->
@@ -394,10 +404,12 @@ class SettingsViewModel @Inject constructor(
                     if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]      = resendSenderVal
                     if (tuyaClientIdVal.isNotEmpty()) prefs[TUYA_CLIENT_ID]     = tuyaClientIdVal
                     if (tuyaSecretVal.isNotEmpty())   prefs[TUYA_CLIENT_SECRET] = tuyaSecretVal
+                    if (tuyaUidVal.isNotEmpty())       prefs[TUYA_UID]          = tuyaUidVal
                     prefs[DARK_MODE] = darkModeVal
                 }
                 _tuyaClientId.value = tuyaClientIdVal
                 _tuyaClientSecret.value = tuyaSecretVal
+                _tuyaUid.value = tuyaUidVal
 
                 var restoredCount = 0
                 val dataJson = json.optJSONObject("data")

@@ -58,6 +58,7 @@ fun SettingsScreen(
     val resendSender     by viewModel.resendSender.collectAsState()
     val tuyaClientId     by viewModel.tuyaClientId.collectAsState()
     val tuyaClientSecret by viewModel.tuyaClientSecret.collectAsState()
+    val tuyaUid          by viewModel.tuyaUid.collectAsState()
     val exportResult     by viewModel.exportResult.collectAsState()
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
@@ -69,6 +70,7 @@ fun SettingsScreen(
     var resendSenderInput     by remember(resendSender)   { mutableStateOf(resendSender) }
     var tuyaClientIdInput     by remember(tuyaClientId)   { mutableStateOf(tuyaClientId) }
     var tuyaClientSecretInput by remember(tuyaClientSecret) { mutableStateOf(tuyaClientSecret) }
+    var tuyaUidInput          by remember(tuyaUid)        { mutableStateOf(tuyaUid) }
 
     var testEmailAddress  by remember { mutableStateOf("") }
     var showSaved         by remember { mutableStateOf(false) }
@@ -130,14 +132,16 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(10.dp)) {
                     Text("Đăng ký tài khoản miễn phí tại developer.tuya.com → Tạo Cloud Project → Liên kết app Smart Life.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                     Text("Lấy Client ID và Client Secret từ project để điền xuống phía dưới.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
+                    Text("Vào Cloud Project → Devices → Manage Devices → bấm vào tài khoản đã link (Automatic Link) để lấy UID (dạng ay...).", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
                 }
             }
             OutlinedTextField(value = tuyaClientIdInput, onValueChange = { tuyaClientIdInput = it }, label = { Text("Tuya Access ID / Client ID") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(value = tuyaClientSecretInput, onValueChange = { tuyaClientSecretInput = it }, label = { Text("Tuya Access Secret / Client Secret") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
+            OutlinedTextField(value = tuyaUidInput, onValueChange = { tuyaUidInput = it }, label = { Text("Tuya UID (tài khoản Smart Life đã link)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput); showSaved = true }, modifier = Modifier.weight(1f)) { Text("💾 Lưu cấu hình Tuya") }
+                Button(onClick = { viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput, tuyaUidInput); showSaved = true }, modifier = Modifier.weight(1f)) { Text("💾 Lưu cấu hình Tuya") }
                 Button(
-                    onClick = { scope.launch { tuyaTestResult = viewModel.testTuyaConnection(tuyaClientIdInput, tuyaClientSecretInput) } },
+                    onClick = { scope.launch { tuyaTestResult = viewModel.testTuyaConnection(tuyaClientIdInput, tuyaClientSecretInput, tuyaUidInput) } },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
                 ) { Text("🔌 Thử kết nối") }
@@ -237,7 +241,7 @@ fun SettingsScreen(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
                     viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
-                    viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput)
+                    viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput, tuyaUidInput)
                     showSaved = true; errorMessage = null
                 },
                 modifier = Modifier.fillMaxWidth()

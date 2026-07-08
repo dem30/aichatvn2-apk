@@ -2,8 +2,6 @@ package com.aichatvn.agent.data
 
 import android.content.Context
 import androidx.room.*
-import androidx.room.migration.Migration
-import androidx.sqlite.db.SupportSQLiteDatabase
 import com.aichatvn.agent.data.model.*
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -374,137 +372,12 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        private val MIGRATION_1_2 = object : Migration(1, 2) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL(
-                    """
-                    CREATE TABLE IF NOT EXISTS `alerts` (
-                        `id` TEXT NOT NULL,
-                        `cameraId` TEXT NOT NULL,
-                        `customerId` TEXT NOT NULL,
-                        `cameraName` TEXT NOT NULL,
-                        `timestamp` INTEGER NOT NULL,
-                        `aiComment` TEXT NOT NULL,
-                        `diff` INTEGER NOT NULL,
-                        `deltaTrigger` INTEGER NOT NULL,
-                        `absDiffTrigger` INTEGER NOT NULL,
-                        `imagePath` TEXT,
-                        `emailSent` INTEGER NOT NULL DEFAULT 0,
-                        `isSuspicious` INTEGER NOT NULL DEFAULT 1,
-                        `isRead` INTEGER NOT NULL DEFAULT 0,
-                        PRIMARY KEY(`id`)
-                    )
-                    """.trimIndent()
-                )
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alerts_cameraId` ON `alerts` (`cameraId`)")
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_alerts_timestamp` ON `alerts` (`timestamp`)")
-            }
-        }
-
-        private val MIGRATION_2_3 = object : Migration(2, 3) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("""
-                    CREATE TABLE IF NOT EXISTS `schedules` (
-                        `id` TEXT NOT NULL,
-                        `pluginId` TEXT NOT NULL,
-                        `action` TEXT NOT NULL,
-                        `params` TEXT NOT NULL,
-                        `cron` TEXT NOT NULL,
-                        `intervalMinutes` INTEGER NOT NULL,
-                        `enabled` INTEGER NOT NULL DEFAULT 1,
-                        `lastRunAt` INTEGER NOT NULL DEFAULT 0,
-                        `createdAt` INTEGER NOT NULL,
-                        PRIMARY KEY(`id`)
-                    )
-                """.trimIndent())
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_schedules_enabled` ON `schedules` (`enabled`)")
-            }
-        }
-
-        private val MIGRATION_4_5 = object : Migration(4, 5) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE chat_messages ADD COLUMN sourcePlugin TEXT")
-            }
-        }
-
-        private val MIGRATION_5_6 = object : Migration(5, 6) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("""
-                    CREATE TABLE IF NOT EXISTS `customers` (
-                        `id` TEXT NOT NULL,
-                        `name` TEXT NOT NULL,
-                        `email` TEXT NOT NULL,
-                        `address` TEXT NOT NULL DEFAULT '',
-                        `note` TEXT NOT NULL DEFAULT '',
-                        `createdAt` INTEGER NOT NULL,
-                        PRIMARY KEY(`id`)
-                    )
-                """.trimIndent())
-            }
-        }
-
-        private val MIGRATION_6_7 = object : Migration(6, 7) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE cameras ADD COLUMN smartMode INTEGER NOT NULL DEFAULT 1")
-            }
-        }
-
-        private val MIGRATION_7_8 = object : Migration(7, 8) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("""
-                    CREATE TABLE IF NOT EXISTS `app_config` (
-                        `key` TEXT NOT NULL,
-                        `value` TEXT NOT NULL,
-                        `type` TEXT NOT NULL DEFAULT 'string',
-                        `pluginId` TEXT NOT NULL DEFAULT 'global',
-                        `label` TEXT NOT NULL DEFAULT '',
-                        `description` TEXT NOT NULL DEFAULT '',
-                        `updatedAt` INTEGER NOT NULL,
-                        PRIMARY KEY(`key`)
-                    )
-                """.trimIndent())
-                db.execSQL("CREATE INDEX IF NOT EXISTS `index_app_config_pluginId` ON `app_config` (`pluginId`)")
-            }
-        }
-
-        private val MIGRATION_8_9 = object : Migration(8, 9) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE qa_data ADD COLUMN type TEXT NOT NULL DEFAULT 'alias'")
-            }
-        }
-
-        // ✅ MIGRATION 9 -> 10: Tự động khởi tạo bảng 'facebook_pages' lưu nhiều trang
-        private val MIGRATION_9_10 = object : Migration(9, 10) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("""
-                    CREATE TABLE IF NOT EXISTS `facebook_pages` (
-                        `id` TEXT NOT NULL,
-                        `name` TEXT NOT NULL,
-                        `accessToken` TEXT NOT NULL,
-                        `updatedAt` INTEGER NOT NULL DEFAULT 0,
-                        PRIMARY KEY(`id`)
-                    )
-                """.trimIndent())
-            }
-        }
-
-        // ✅ MIGRATION 10 -> 11: Thêm cột lưu Page ID Facebook gần nhất của từng khách (PSID),
-        // phục vụ trả lời thủ công đúng Fanpage khi chủ app liên kết nhiều Fanpage cùng lúc.
-        private val MIGRATION_10_11 = object : Migration(10, 11) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE customer_settings ADD COLUMN lastFacebookPageId TEXT")
-            }
-        }
-
-        // ✅ MIGRATION 11 -> 12: Thêm cột isRead cho chat_messages, phục vụ badge tin nhắn
-        // chưa đọc trên InboxScreen. DEFAULT 1 (đã đọc) để không đánh dấu nhầm toàn bộ lịch sử
-        // cũ thành "chưa đọc" — chỉ tin nhắn khách MỚI gửi tới sau bản cập nhật này mới được
-        // insert với isRead = 0 (xem ChatSkill.saveExternalUserMessage() và processQuery()).
-        private val MIGRATION_11_12 = object : Migration(11, 12) {
-            override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE chat_messages ADD COLUMN isRead INTEGER NOT NULL DEFAULT 1")
-            }
-        }
+        // ✅ App đang trong giai đoạn test/dev, không cần viết Migration tay cho từng version nữa.
+        // fallbackToDestructiveMigration() sẽ tự XOÁ VÀ TẠO LẠI toàn bộ database mỗi khi `version`
+        // trong @Database tăng lên mà không khớp version cũ trên máy — mất hết dữ liệu cũ trong DB,
+        // nhưng đổi lại không cần lo migration khi đổi schema liên tục.
+        // ⚠️ Nếu sau này lên bản chính thức cho người dùng thật, PHẢI viết lại Migration đầy đủ,
+        // nếu không mỗi lần tăng version sẽ xoá sạch dữ liệu người dùng.
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -514,18 +387,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "aichatvn_database"
                 )
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-                    .addMigrations(
-                        MIGRATION_1_2, 
-                        MIGRATION_2_3, 
-                        MIGRATION_4_5, 
-                        MIGRATION_5_6, 
-                        MIGRATION_6_7, 
-                        MIGRATION_7_8,
-                        MIGRATION_8_9,
-                        MIGRATION_9_10,
-                        MIGRATION_10_11,
-                        MIGRATION_11_12 // ✅ ĐĂNG KÝ: Bản di cư isRead mới cho chat_messages
-                    )
+                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance

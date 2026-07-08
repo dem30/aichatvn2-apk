@@ -38,6 +38,11 @@ class TuyaManager @Inject constructor(
         private val CLIENT_ID = stringPreferencesKey("tuya_client_id")
         private val CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
         private val DATA_CENTER = stringPreferencesKey("tuya_data_center")
+        // UID của tài khoản Smart Life mà user đã link vào Cloud Project của họ
+        // (xem ở "Manage Devices" > bấm vào dòng tài khoản để thấy UID dạng ay...).
+        // Đây LÀ giá trị do chính user nhập ở Settings — KHÔNG hardcode — để mỗi
+        // người dùng app với Cloud Project Tuya riêng của họ vẫn quét được thiết bị.
+        private val UID = stringPreferencesKey("tuya_uid")
         
         // Cập nhật URL máy chủ Singapore theo tài liệu chính thức của Tuya
         private val API_URLS = mapOf(
@@ -91,9 +96,16 @@ class TuyaManager @Inject constructor(
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""
         val clientSecret = prefs[CLIENT_SECRET] ?: ""
+        val uid = prefs[UID] ?: ""
         val baseUrl = getApiBaseUrl()
-        
-        val urlPath = "/v1.0/iot-01/associated-users/devices"
+
+        if (uid.isBlank()) {
+            throw Exception("Chưa nhập Tuya UID trong Cài đặt. Vào 'Manage Devices' trên Tuya console, bấm vào tài khoản đã link để lấy UID (dạng ay...) rồi nhập vào Settings.")
+        }
+
+        // Với kiểu link "App Account / Automatic Link" (QR Smart Life), phải dùng endpoint theo UID.
+        // /v1.0/iot-01/associated-users/devices KHÔNG áp dụng cho kiểu link này nên luôn trả về rỗng.
+        val urlPath = "/v1.0/users/$uid/devices"
         val timestamp = System.currentTimeMillis()
         val nonce = UUID.randomUUID().toString()
         
