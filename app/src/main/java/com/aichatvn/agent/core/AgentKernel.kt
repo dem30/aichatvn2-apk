@@ -17,6 +17,8 @@ import com.aichatvn.agent.utils.StringSimilarityUtil
 import com.aichatvn.agent.utils.DateTimeParser
 import org.json.JSONObject
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.Dispatchers      // ✅ MỚI
+import kotlinx.coroutines.withContext      // ✅ MỚI
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
