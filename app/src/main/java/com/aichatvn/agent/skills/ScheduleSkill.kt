@@ -29,11 +29,10 @@ class ScheduleSkill @Inject constructor(
     logger: Logger
 ) : BaseSkill("schedule", "Lên lịch trình", logger), Plugin {
 
-    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(schedule = true), // Tuyên bố năng lực lập lịch
+        capabilities = PluginCapabilities(schedule = true),
         routable = true,
         visibleOnDashboard = false,
         autoGenerateQA = true,
@@ -41,10 +40,7 @@ class ScheduleSkill @Inject constructor(
             PluginAction(
                 name = "add",
                 description = "Thêm lịch trình mới để tự động gọi 1 action của plugin khác theo cron/interval. " +
-                    "QUAN TRỌNG: param 'params' phải chứa ĐẦY ĐỦ các tham số bắt buộc của action đích " +
-                    "(pluginId.action), tra đúng theo schema action đó trong danh sách plugin — " +
-                    "ví dụ pluginId=email, action=send thì params={to, subject, body}; " +
-                    "pluginId=camera, action=scan thì params={camera}. Áp dụng cho MỌI plugin, không riêng email.",
+                    "QUAN TRỌNG: param 'params' phải chứa ĐẦY ĐỦ các tham số bắt buộc của action đích.",
                 examples = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"),
                 parameters = listOf(
                     PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
@@ -52,10 +48,21 @@ class ScheduleSkill @Inject constructor(
                     PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false, "time"),
                     PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false, "interval"),
                     PluginParameter("params", "object", "Tham số cho action đích theo đúng schema của plugin đó", false, "params"),
-                    // ✅ MỚI: Tên gợi nhớ cho lịch trình — hiển thị trên ScheduleCard và cho phép
-                    // xoá/bật/tắt bằng tên thay vì phải nhớ UUID (xem resolveScheduleReference()
-                    // trong AgentKernel). Optional — nếu bỏ trống sẽ fallback "$pluginId.$action".
-                    PluginParameter("label", "string", "Tên gợi nhớ cho lịch trình (vd: Bật đèn phòng khách)", false, "string")
+                    PluginParameter("label", "string", "Tên gợi nhớ cho lịch trình", false, "string")
+                )
+            ),
+            PluginAction(
+                name = "update",
+                description = "Cập nhật thay đổi một lịch trình tự động có sẵn theo ID.",
+                examples = listOf("sửa lịch trình", "cập nhật lịch trình", "thay đổi lịch trình", "đặt lại lịch"),
+                parameters = listOf(
+                    PluginParameter("id", "string", "ID của lịch trình cần cập nhật", true, "schedule_ref"),
+                    PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", false, "plugin_id"),
+                    PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", false, "action_id"),
+                    PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false, "time"),
+                    PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false, "interval"),
+                    PluginParameter("params", "object", "Tham số mới cho action đích", false, "params"),
+                    PluginParameter("label", "string", "Tên gợi nhớ mới cho lịch trình", false, "string")
                 )
             ),
             PluginAction(
@@ -69,9 +76,6 @@ class ScheduleSkill @Inject constructor(
                 description = "Xóa hoàn toàn một lịch trình tự động theo số thứ tự hoặc tên gợi nhớ",
                 examples = listOf("xóa lịch trình"),
                 parameters = listOf(
-                    // ✅ ĐÃ SỬA: semanticType "string" -> "schedule_ref" để AgentKernel.resolverTable
-                    // tự động dịch "số thứ tự" (vd "xoá lịch số 2") hoặc "tên gợi nhớ" (vd "xoá lịch
-                    // bật đèn") thành đúng UUID thật trước khi tới đây — handleDelete() không đổi gì.
                     PluginParameter("id", "string", "Số thứ tự hoặc tên lịch trình", true, "schedule_ref")
                 )
             ),
@@ -84,7 +88,6 @@ class ScheduleSkill @Inject constructor(
                     "tắt lịch trình" to mapOf("enabled" to false)
                 ),
                 parameters = listOf(
-                    // ✅ ĐÃ SỬA: cùng lý do như "delete" — cho phép "bật lịch số 1"/"tắt lịch tưới cây"
                     PluginParameter("id", "string", "Số thứ tự hoặc tên lịch trình", true, "schedule_ref"),
                     PluginParameter("enabled", "boolean", "true: bật, false: tắt", true, "boolean")
                 )
@@ -100,6 +103,7 @@ class ScheduleSkill @Inject constructor(
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         return when (action) {
             "add" -> handleAdd(params)
+            "update" -> handleUpdate(params)
             "list" -> handleList()
             "delete" -> handleDelete(params)
             "toggle" -> handleToggle(params)
@@ -129,9 +133,6 @@ class ScheduleSkill @Inject constructor(
         }
         val paramsJson = JSONObject(nestedParams).toString()
 
-        // ✅ MỚI: label optional — nếu không truyền hoặc rỗng thì fallback về "$pluginId.$action"
-        // (đúng thông tin đang hiển thị trước đây), tránh phải phụ thuộc Set<Plugin> ở đây
-        // (sẽ tạo circular dependency vì ScheduleSkill cũng nằm trong chính Set<Plugin> đó).
         val label = (params["label"] as? String)?.trim()?.takeIf { it.isNotBlank() }
             ?: "$pluginId.$action"
 
@@ -160,6 +161,54 @@ class ScheduleSkill @Inject constructor(
         )
     }
 
+    private suspend fun handleUpdate(params: Map<String, Any>): AgentKernel.PluginResult {
+        val id = params["id"] as? String ?: return failure("Thiếu id")
+        
+        val existing = withContext(Dispatchers.IO) {
+            database.scheduleDao().getAllSchedules().find { it.id == id }
+        } ?: return failure("Không tìm thấy lịch trình cần sửa")
+
+        val pluginId = params["pluginId"] as? String ?: existing.pluginId
+        val action = params["action"] as? String ?: existing.action
+        val cron = params["cron"] as? String ?: ""
+        val intervalMinutes = (params["intervalMinutes"] as? Number)?.toInt() ?: 0
+
+        @Suppress("UNCHECKED_CAST")
+        val nestedParams: Map<String, Any> = when (val raw = params["params"]) {
+            is Map<*, *> -> raw as Map<String, Any>
+            null -> emptyMap()
+            else -> emptyMap()
+        }
+        val paramsJson = if (params.containsKey("params")) {
+            JSONObject(nestedParams).toString()
+        } else {
+            existing.params
+        }
+
+        val label = (params["label"] as? String)?.trim()?.takeIf { it.isNotBlank() }
+            ?: existing.label
+
+        val updatedSchedule = existing.copy(
+            pluginId = pluginId,
+            action = action,
+            params = paramsJson,
+            cron = cron,
+            intervalMinutes = intervalMinutes,
+            label = label
+        )
+
+        withContext(Dispatchers.IO) {
+            database.scheduleDao().insertSchedule(updatedSchedule)
+            TaskScheduler.runNow(context)
+        }
+        loadSchedules()
+
+        return success(
+            message = "✅ Đã cập nhật lịch trình \"$label\" thành công.",
+            data = mapOf("schedule" to updatedSchedule)
+        )
+    }
+
     private suspend fun handleList(): AgentKernel.PluginResult {
         val list = withContext(Dispatchers.IO) {
             database.scheduleDao().getAllSchedules()
@@ -169,8 +218,6 @@ class ScheduleSkill @Inject constructor(
 
     private suspend fun handleDelete(params: Map<String, Any>): AgentKernel.PluginResult {
         val id = params["id"] as? String ?: return failure("Thiếu id")
-        // ✅ MỚI: lấy label từ cache hiện có trước khi xoá để phản hồi rõ ràng hơn
-        // (không query DB thêm, dùng lại _schedules đang giữ trong bộ nhớ)
         val label = _schedules.value.find { it.id == id }?.label?.takeIf { it.isNotBlank() } ?: id
 
         withContext(Dispatchers.IO) {

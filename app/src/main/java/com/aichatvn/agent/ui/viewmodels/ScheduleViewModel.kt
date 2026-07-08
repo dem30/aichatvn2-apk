@@ -4,11 +4,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ScheduleEntity
+import com.aichatvn.agent.data.model.TuyaDeviceEntity
+import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.skills.ScheduleSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -17,17 +22,24 @@ import javax.inject.Inject
 @HiltViewModel
 class ScheduleViewModel @Inject constructor(
     private val scheduleSkill: ScheduleSkill,
-    private val agentKernel: AgentKernel
+    private val agentKernel: AgentKernel,
+    private val database: AppDatabase
 ) : ViewModel() {
 
     val schedules: StateFlow<List<ScheduleEntity>> = scheduleSkill.schedules
+
+    private val _tuyaDevices = MutableStateFlow<List<TuyaDeviceEntity>>(emptyList())
+    val tuyaDevices: StateFlow<List<TuyaDeviceEntity>> = _tuyaDevices.asStateFlow()
+
+    private val _activeCameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
+    val activeCameras: StateFlow<List<CameraConfigEntity>> = _activeCameras.asStateFlow()
 
     val schedulablePlugins: List<Plugin> =
         agentKernel.getAvailablePluginsForUI().filter { it.id != "schedule" }
 
     init {
-        // Tự động tải trước dữ liệu lịch trình khi khởi tạo để tránh màn hình rỗng ban đầu
         loadSchedules()
+        loadDevicesAndCameras()
     }
 
     fun loadSchedules() {
@@ -36,9 +48,23 @@ class ScheduleViewModel @Inject constructor(
         }
     }
 
+    fun loadDevicesAndCameras() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _tuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
+            _activeCameras.value = database.cameraDao().getActiveCameras()
+        }
+    }
+
     fun addSchedule(schedule: ScheduleEntity) {
+        saveSchedule(schedule, isEdit = false)
+    }
+
+    fun updateSchedule(schedule: ScheduleEntity) {
+        saveSchedule(schedule, isEdit = true)
+    }
+
+    private fun saveSchedule(schedule: ScheduleEntity, isEdit: Boolean) {
         viewModelScope.launch {
-            // Chuyển việc parse chuỗi JSON sang Dispatchers.Default để tránh chiếm dụng luồng chính
             val paramsMap: Map<String, Any> = withContext(Dispatchers.Default) {
                 try {
                     val json = JSONObject(schedule.params.ifBlank { "{}" })
@@ -48,22 +74,24 @@ class ScheduleViewModel @Inject constructor(
                 }
             }
 
-            scheduleSkill.execute(
-                "add",
-                mapOf(
-                    "pluginId" to schedule.pluginId,
-                    "action" to schedule.action,
-                    "cron" to schedule.cron,
-                    "intervalMinutes" to schedule.intervalMinutes,
-                    "params" to paramsMap,
-                    "label" to schedule.label // ✅ MỚI: tên gợi nhớ nhập từ AddScheduleDialog
-                )
+            val actionName = if (isEdit) "update" else "add"
+            val executionParams = mutableMapOf<String, Any>(
+                "pluginId" to schedule.pluginId,
+                "action" to schedule.action,
+                "cron" to schedule.cron,
+                "intervalMinutes" to schedule.intervalMinutes,
+                "params" to paramsMap,
+                "label" to schedule.label
             )
+            if (isEdit) {
+                executionParams["id"] = schedule.id
+            }
+
+            scheduleSkill.execute(actionName, executionParams)
             loadSchedules()
         }
     }
 
-    // Đệ quy giải mã chuỗi JSON lồng ghép sang Map và List chuẩn Kotlin bản địa
     private fun jsonToMap(json: JSONObject): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
         json.keys().forEach { key ->

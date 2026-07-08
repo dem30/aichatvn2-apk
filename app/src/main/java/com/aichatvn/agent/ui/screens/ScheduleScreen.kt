@@ -19,6 +19,8 @@ import androidx.navigation.NavController
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.data.model.ScheduleEntity
+import com.aichatvn.agent.data.model.TuyaDeviceEntity
+import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.ui.viewmodels.ScheduleViewModel
 import org.json.JSONObject
 import java.util.UUID
@@ -30,10 +32,15 @@ fun ScheduleScreen(
     viewModel: ScheduleViewModel = hiltViewModel()
 ) {
     val schedules by viewModel.schedules.collectAsState()
+    val tuyaDevices by viewModel.tuyaDevices.collectAsState()
+    val activeCameras by viewModel.activeCameras.collectAsState()
+
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingSchedule by remember { mutableStateOf<ScheduleEntity?>(null) }
     
     LaunchedEffect(Unit) {
         viewModel.loadSchedules()
+        viewModel.loadDevicesAndCameras()
     }
 
     Scaffold(
@@ -41,7 +48,10 @@ fun ScheduleScreen(
             TopAppBar(
                 title = { Text("Lịch trình") },
                 actions = {
-                    IconButton(onClick = { showAddDialog = true }) {
+                    IconButton(onClick = { 
+                        editingSchedule = null
+                        showAddDialog = true 
+                    }) {
                         Icon(Icons.Default.Add, "Thêm lịch")
                     }
                 }
@@ -58,7 +68,10 @@ fun ScheduleScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("⏰", fontSize = MaterialTheme.typography.displayMedium.fontSize)
                     Text("Chưa có lịch trình nào")
-                    TextButton(onClick = { showAddDialog = true }) {
+                    TextButton(onClick = { 
+                        editingSchedule = null
+                        showAddDialog = true 
+                    }) {
                         Text("Thêm lịch trình đầu tiên")
                     }
                 }
@@ -71,15 +84,17 @@ fun ScheduleScreen(
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ✅ Dùng index-based items để truyền số thứ tự vào ScheduleCard.
-                // User thấy "#1", "#2"... → có thể nói "xoá lịch số 1" với AI.
                 items(schedules.size) { index ->
                     val schedule = schedules[index]
                     ScheduleCard(
                         index = index + 1,
                         schedule = schedule,
                         onToggle = { viewModel.toggleSchedule(it) },
-                        onDelete = { viewModel.deleteSchedule(it) }
+                        onDelete = { viewModel.deleteSchedule(it) },
+                        onEdit = { 
+                            editingSchedule = it
+                            showAddDialog = true 
+                        }
                     )
                 }
             }
@@ -89,10 +104,21 @@ fun ScheduleScreen(
     if (showAddDialog) {
         AddScheduleDialog(
             plugins = viewModel.schedulablePlugins,
-            onDismiss = { showAddDialog = false },
-            onSave = { schedule ->
-                viewModel.addSchedule(schedule)
+            editingSchedule = editingSchedule,
+            tuyaDevices = tuyaDevices,
+            activeCameras = activeCameras,
+            onDismiss = { 
                 showAddDialog = false
+                editingSchedule = null
+            },
+            onSave = { schedule ->
+                if (editingSchedule != null) {
+                    viewModel.updateSchedule(schedule)
+                } else {
+                    viewModel.addSchedule(schedule)
+                }
+                showAddDialog = false
+                editingSchedule = null
             }
         )
     }
@@ -100,10 +126,11 @@ fun ScheduleScreen(
 
 @Composable
 fun ScheduleCard(
-    index: Int,                     // ✅ Số thứ tự hiển thị cho user và AI
+    index: Int,
     schedule: ScheduleEntity,
     onToggle: (String) -> Unit,
-    onDelete: (String) -> Unit
+    onDelete: (String) -> Unit,
+    onEdit: (ScheduleEntity) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -121,8 +148,6 @@ fun ScheduleCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                // ✅ ĐÃ SỬA: Hiện tên gợi nhớ (label) làm tiêu đề chính thay vì "pluginId.action" thô.
-                // Fallback về pluginId.action nếu label rỗng (lịch cũ tạo trước khi có field này).
                 Text(
                     "#$index · ${schedule.label.ifBlank { "${schedule.pluginId}.${schedule.action}" }}",
                     style = MaterialTheme.typography.titleSmall
@@ -156,6 +181,10 @@ fun ScheduleCard(
                 checked = schedule.enabled == 1,
                 onCheckedChange = { onToggle(schedule.id) }
             )
+
+            IconButton(onClick = { onEdit(schedule) }) {
+                Icon(Icons.Default.Edit, "Sửa", tint = MaterialTheme.colorScheme.primary)
+            }
             
             IconButton(onClick = { onDelete(schedule.id) }) {
                 Icon(Icons.Default.Delete, "Xóa", tint = MaterialTheme.colorScheme.error)
@@ -168,31 +197,113 @@ fun ScheduleCard(
 @Composable
 fun AddScheduleDialog(
     plugins: List<Plugin>,
+    editingSchedule: ScheduleEntity? = null,
+    tuyaDevices: List<TuyaDeviceEntity> = emptyList(),
+    activeCameras: List<CameraConfigEntity> = emptyList(),
     onDismiss: () -> Unit,
     onSave: (ScheduleEntity) -> Unit
 ) {
     var pluginExpanded by remember { mutableStateOf(false) }
     var actionExpanded by remember { mutableStateOf(false) }
 
-    var selectedPlugin by remember { mutableStateOf<Plugin?>(null) }
-    var selectedAction by remember { mutableStateOf<PluginAction?>(null) }
+    val initialPlugin = remember(editingSchedule) {
+        editingSchedule?.let { schedule ->
+            plugins.find { it.id == schedule.pluginId }
+        }
+    }
+    var selectedPlugin by remember(initialPlugin) { mutableStateOf(initialPlugin) }
+
+    val initialAction = remember(editingSchedule, selectedPlugin) {
+        editingSchedule?.let { schedule ->
+            selectedPlugin?.getActions()?.find { it.name == schedule.action }
+        }
+    }
+    var selectedAction by remember(initialAction) { mutableStateOf(initialAction) }
 
     val paramValues = remember { mutableStateMapOf<String, String>() }
     val paramBooleans = remember { mutableStateMapOf<String, Boolean>() }
 
-    // ✅ MỚI: tên gợi nhớ cho lịch trình — xem ScheduleSkill.handleAdd() / label field trong Entity
-    var label by remember { mutableStateOf("") }
+    var label by remember(editingSchedule) { mutableStateOf(editingSchedule?.label ?: "") }
 
-    // ✅ MỚI: "Lặp lại" kiểu Smart Life — daily/weekly dùng TimePicker + weekday chips,
-    // interval giữ cách cũ (mỗi N phút), advanced để nhập cron thủ công cho trường hợp đặc biệt
-    // (không phá khả năng cron tuỳ ý sẵn có của hệ thống).
-    var repeatMode by remember { mutableStateOf("daily") } // "daily" | "weekly" | "interval" | "advanced"
-    val timePickerState = rememberTimePickerState(initialHour = 7, initialMinute = 0, is24Hour = true)
-    val selectedWeekdays = remember { mutableStateListOf<Int>() } // giá trị cron: 0=CN,1=T2...6=T7
+    val parsedRepeatMode = remember(editingSchedule) {
+        when {
+            editingSchedule == null -> "daily"
+            editingSchedule.intervalMinutes > 0 -> "interval"
+            editingSchedule.cron.isNotEmpty() -> {
+                val parts = editingSchedule.cron.trim().split("\\s+".toRegex())
+                if (parts.size == 5 && parts[4] != "*") "weekly" else "daily"
+            }
+            else -> "daily"
+        }
+    }
+    var repeatMode by remember(parsedRepeatMode) { mutableStateOf(parsedRepeatMode) }
+
+    val parsedIntervalMinutes = remember(editingSchedule) {
+        if (editingSchedule != null && editingSchedule.intervalMinutes > 0) {
+            editingSchedule.intervalMinutes.toString()
+        } else ""
+    }
+    var intervalMinutes by remember(parsedIntervalMinutes) { mutableStateOf(parsedIntervalMinutes) }
+
+    val parsedCron = remember(editingSchedule) {
+        if (editingSchedule != null && editingSchedule.cron.isNotEmpty() && parsedRepeatMode == "advanced") {
+            editingSchedule.cron
+        } else ""
+    }
+    var cron by remember(parsedCron) { mutableStateOf(parsedCron) }
+
+    val parsedTime = remember(editingSchedule) {
+        if (editingSchedule != null && editingSchedule.cron.isNotEmpty()) {
+            val parts = editingSchedule.cron.trim().split("\\s+".toRegex())
+            if (parts.size >= 2) {
+                val m = parts[0].toIntOrNull() ?: 0
+                val h = parts[1].toIntOrNull() ?: 7
+                Pair(h, m)
+            } else Pair(7, 0)
+        } else Pair(7, 0)
+    }
+    val timePickerState = rememberTimePickerState(
+        initialHour = parsedTime.first,
+        initialMinute = parsedTime.second,
+        is24Hour = true
+    )
+
+    val parsedWeekdays = remember(editingSchedule) {
+        val list = mutableListOf<Int>()
+        if (editingSchedule != null && editingSchedule.cron.isNotEmpty()) {
+            val parts = editingSchedule.cron.trim().split("\\s+".toRegex())
+            if (parts.size == 5 && parts[4] != "*") {
+                parts[4].split(",").mapNotNull { it.toIntOrNull() }.forEach { list.add(it) }
+            }
+        }
+        list
+    }
+    val selectedWeekdays = remember { mutableStateListOf<Int>().apply { addAll(parsedWeekdays) } }
     val weekdayOptions = listOf("T2" to 1, "T3" to 2, "T4" to 3, "T5" to 4, "T6" to 5, "T7" to 6, "CN" to 0)
 
-    var cron by remember { mutableStateOf("") }          // dùng khi repeatMode == "advanced"
-    var intervalMinutes by remember { mutableStateOf("") } // dùng khi repeatMode == "interval"
+    LaunchedEffect(selectedAction) {
+        paramValues.clear()
+        paramBooleans.clear()
+        selectedAction?.parameters?.forEach { p ->
+            if (p.type == "boolean") paramBooleans[p.name] = false else paramValues[p.name] = ""
+        }
+        
+        if (selectedAction != null && editingSchedule != null && 
+            editingSchedule.pluginId == selectedPlugin?.id && 
+            editingSchedule.action == selectedAction?.name
+        ) {
+            try {
+                val json = JSONObject(editingSchedule.params)
+                selectedAction?.parameters?.forEach { p ->
+                    if (p.type == "boolean") {
+                        paramBooleans[p.name] = json.optBoolean(p.name, false)
+                    } else {
+                        paramValues[p.name] = json.opt(p.name)?.toString() ?: ""
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
 
     fun selectPlugin(p: Plugin) {
         selectedPlugin = p
@@ -215,23 +326,19 @@ fun AddScheduleDialog(
         ?.all { p -> p.type == "boolean" || !paramValues[p.name].isNullOrBlank() }
         ?: true
 
-    // ✅ ĐÃ SỬA: điều kiện "đã chọn thời gian" giờ phụ thuộc repeatMode thay vì chỉ check cron/interval thô
     val timingFilled = when (repeatMode) {
-        "daily" -> true // TimePicker luôn có giá trị mặc định
+        "daily" -> true
         "weekly" -> selectedWeekdays.isNotEmpty()
         "interval" -> (intervalMinutes.toIntOrNull() ?: 0) > 0
         "advanced" -> cron.isNotBlank() || (intervalMinutes.toIntOrNull() ?: 0) > 0
         else -> false
     }
 
-    val canSave = selectedPlugin != null &&
-        selectedAction != null &&
-        requiredParamsFilled &&
-        timingFilled
+    val canSave = selectedPlugin != null && selectedAction != null && requiredParamsFilled && timingFilled
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Thêm lịch trình mới") },
+        title = { Text(if (editingSchedule != null) "Chỉnh sửa lịch trình" else "Thêm lịch trình mới") },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -239,7 +346,6 @@ fun AddScheduleDialog(
                     .heightIn(max = 480.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                // ✅ MỚI: tên gợi nhớ — optional, để trống sẽ fallback "pluginId.action" (ScheduleSkill)
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
@@ -312,36 +418,122 @@ fun AddScheduleDialog(
                 }
 
                 selectedAction?.parameters?.forEach { param ->
-                    if (param.type == "boolean") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("${param.name}${if (param.required) " *" else ""}")
-                                Text(
-                                    param.description,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    when {
+                        param.type == "boolean" -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("${param.name}${if (param.required) " *" else ""}")
+                                    Text(
+                                        param.description,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = paramBooleans[param.name] ?: false,
+                                    onCheckedChange = { paramBooleans[param.name] = it }
                                 )
                             }
-                            Switch(
-                                checked = paramBooleans[param.name] ?: false,
-                                onCheckedChange = { paramBooleans[param.name] = it }
+                        }
+                        
+                        param.semanticType == "device" -> {
+                            var deviceExpanded by remember { mutableStateOf(false) }
+                            val selectedDeviceId = paramValues[param.name] ?: ""
+                            val selectedDevice = tuyaDevices.find { it.id == selectedDeviceId }
+                            val displayText = selectedDevice?.let { dev ->
+                                val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
+                                if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
+                            } ?: selectedDeviceId
+
+                            ExposedDropdownMenuBox(
+                                expanded = deviceExpanded,
+                                onExpandedChange = { deviceExpanded = it }
+                            ) {
+                                OutlinedTextField(
+                                    value = displayText,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("${param.name}${if (param.required) " *" else ""} — Chọn thiết bị") },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = deviceExpanded) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .menuAnchor()
+                                )
+                                ExposedDropdownMenu(
+                                    expanded = deviceExpanded,
+                                    onDismissRequest = { deviceExpanded = false }
+                                ) {
+                                    tuyaDevices.forEach { dev ->
+                                        val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
+                                        val itemLabel = if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
+                                        DropdownMenuItem(
+                                            text = { Text(itemLabel) },
+                                            onClick = {
+                                                paramValues[param.name] = dev.id
+                                                deviceExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        param.semanticType == "camera" -> {
+                            var cameraExpanded by remember { mutableStateOf(false) }
+                            val selectedCameraId = paramValues[param.name] ?: ""
+                            val selectedCamera = activeCameras.find { it.id == selectedCameraId }
+                            val displayText = selectedCamera?.let { cam ->
+                                if (!cam.landinfo.isNullOrBlank()) "${cam.landinfo} (${cam.id})" else cam.id
+                            } ?: selectedCameraId
+
+                            ExposedDropdownMenuBox(
+                                expanded = cameraExpanded,
+                                onExpandedChange = { cameraExpanded = it }
+                            ) {
+                                OutlinedTextField(
+                                    value = displayText,
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    label = { Text("${param.name}${if (param.required) " *" else ""} — Chọn camera") },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cameraExpanded) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .menuAnchor()
+                                )
+                                ExposedDropdownMenu(
+                                    expanded = cameraExpanded,
+                                    onDismissRequest = { cameraExpanded = false }
+                                ) {
+                                    activeCameras.forEach { cam ->
+                                        val itemLabel = if (!cam.landinfo.isNullOrBlank()) "${cam.landinfo} (${cam.id})" else cam.id
+                                        DropdownMenuItem(
+                                            text = { Text(itemLabel) },
+                                            onClick = {
+                                                paramValues[param.name] = cam.id
+                                                cameraExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        else -> {
+                            OutlinedTextField(
+                                value = paramValues[param.name] ?: "",
+                                onValueChange = { paramValues[param.name] = it },
+                                label = { Text("${param.name}${if (param.required) " *" else ""} — ${param.description}") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = param.type != "string" || param.name != "body",
+                                keyboardOptions = if (param.type == "number")
+                                    KeyboardOptions(keyboardType = KeyboardType.Number)
+                                else KeyboardOptions.Default
                             )
                         }
-                    } else {
-                        OutlinedTextField(
-                            value = paramValues[param.name] ?: "",
-                            onValueChange = { paramValues[param.name] = it },
-                            label = { Text("${param.name}${if (param.required) " *" else ""} — ${param.description}") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = param.type != "string" || param.name != "body",
-                            keyboardOptions = if (param.type == "number")
-                                KeyboardOptions(keyboardType = KeyboardType.Number)
-                            else KeyboardOptions.Default
-                        )
                     }
                 }
 
@@ -349,7 +541,6 @@ fun AddScheduleDialog(
                     Divider(modifier = Modifier.padding(vertical = 4.dp))
                     Text("Khi nào chạy", style = MaterialTheme.typography.labelMedium)
 
-                    // ✅ MỚI: chọn kiểu lặp lại — thay cho 2 ô nhập cron/interval thô trước đây
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -373,7 +564,6 @@ fun AddScheduleDialog(
 
                     when (repeatMode) {
                         "daily", "weekly" -> {
-                            // Giờ chạy chung cho cả 2 kiểu
                             TimePicker(state = timePickerState)
 
                             if (repeatMode == "weekly") {
@@ -412,8 +602,6 @@ fun AddScheduleDialog(
                         }
                     }
 
-                    // ✅ Giữ lối cũ (nhập cron tay) cho trường hợp đặc biệt picker chưa hỗ trợ —
-                    // không phá khả năng cron tuỳ ý sẵn có của hệ thống (TaskScheduler/DateTimeParser).
                     var showAdvanced by remember { mutableStateOf(false) }
                     TextButton(onClick = { showAdvanced = !showAdvanced }) {
                         Text(if (showAdvanced) "Ẩn tuỳ chỉnh nâng cao" else "Tuỳ chỉnh nâng cao (cron thủ công)")
@@ -425,7 +613,7 @@ fun AddScheduleDialog(
                                 cron = it
                                 if (it.isNotBlank()) repeatMode = "advanced"
                             },
-                            label = { Text("Cron thủ công (VD: 0 8 * * *) — ghi đè lựa chọn ở trên") },
+                            label = { Text("Cron thủ công (VD: 0 8 * * *)") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -440,9 +628,6 @@ fun AddScheduleDialog(
                     val plugin = selectedPlugin ?: return@TextButton
                     val action = selectedAction ?: return@TextButton
 
-                    // ✅ ĐÃ SỬA: build cron/intervalMinutes theo repeatMode thay vì đọc thẳng
-                    // 2 ô nhập tay — vẫn dùng đúng format cron cũ ("$minute $hour * * $days")
-                    // để tương thích 100% với TaskScheduler/DateTimeParser hiện có.
                     val finalCron: String
                     val finalInterval: Int
                     when (repeatMode) {
@@ -459,7 +644,7 @@ fun AddScheduleDialog(
                             finalCron = ""
                             finalInterval = intervalMinutes.toIntOrNull() ?: 0
                         }
-                        else -> { // "advanced"
+                        else -> {
                             finalCron = cron
                             finalInterval = intervalMinutes.toIntOrNull() ?: 0
                         }
@@ -475,20 +660,18 @@ fun AddScheduleDialog(
                         }
                     }.toString()
 
-                    // ✅ MỚI: fallback label giống hệt logic trong ScheduleSkill.handleAdd() —
-                    // để UI hiển thị nhất quán ngay cả trước khi round-trip qua DB.
                     val finalLabel = label.trim().ifBlank { "${plugin.id}.${action.name}" }
 
                     val schedule = ScheduleEntity(
-                        id = UUID.randomUUID().toString(),
+                        id = editingSchedule?.id ?: UUID.randomUUID().toString(),
                         pluginId = plugin.id,
                         action = action.name,
                         params = paramsJson,
                         cron = finalCron,
                         intervalMinutes = finalInterval,
-                        enabled = 1,
-                        lastRunAt = 0,
-                        createdAt = System.currentTimeMillis(),
+                        enabled = editingSchedule?.enabled ?: 1,
+                        lastRunAt = editingSchedule?.lastRunAt ?: 0,
+                        createdAt = editingSchedule?.createdAt ?: System.currentTimeMillis(),
                         label = finalLabel
                     )
                     onSave(schedule)
