@@ -92,10 +92,12 @@ fun DashboardScreen(
                         zoomScale = 1f
                         panOffset = Offset.Zero
                     }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Reset khung nhìn")
+                        Icon(Icons.Default.Refresh, "Khôi phục thu phóng")
                     }
-                    IconButton(onClick = { viewModel.loadSchedules() }) { // Trigger nạp lại gián tiếp từ bên ngoài
-                        Icon(Icons.Default.Refresh, "Đồng bộ")
+                    IconButton(onClick = {
+                        viewModel.refreshAllNodes() // Thay thế bằng hàm refresh nodes mặc định của Dashboard
+                    }) {
+                        Icon(Icons.Default.Add, "Tải lại thiết bị")
                     }
                 }
             )
@@ -105,145 +107,159 @@ fun DashboardScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .pointerInput(Unit) {
-                    // Lắng nghe cử chỉ 2 ngón tay để thu phóng và di chuyển Canvas
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        zoomScale ->
-                        zoomScale.let {
-                            scale = (scale * zoom).coerceIn(0.5f, 3.0f)
-                            panOffset += pan
-                        }
-                    }
-                }
         ) {
-            // 1. Vẽ lưới ô ly mờ đồng đều theo tọa độ di chuyển nền
+            // Lớp vẽ mạng lưới nền (Grid Background Canvas)
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val gridGap = 40f
-                val dotRadius = 1.dp.toPx()
-                val color = Color.Gray.copy(alpha = 0.15f)
-
-                val startX = (panOffset.x % gridGap) - gridGap
-                val startY = (panOffset.y % gridGap) - gridGap
-
-                var x = startX
-                while (x < size.width + gridGap) {
-                    var y = startY
-                    while (y < size.height + gridGap) {
-                        drawCircle(
-                            color = color,
-                            radius = dotRadius,
-                            center = Offset(x, y)
+                val gridSpacing = 40.dp.toPx()
+                val pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+                
+                // Vẽ lưới trục đứng
+                var x = panOffset.x % gridSpacing
+                while (x < size.width) {
+                    if (x >= 0) {
+                        drawLine(
+                            color = Color.LightGray.copy(alpha = 0.2f),
+                            start = Offset(x, 0f),
+                            end = Offset(x, size.height),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = pathEffect
                         )
-                        y += gridGap
                     }
-                    x += gridGap
+                    x += gridSpacing
+                }
+
+                // Vẽ lưới trục ngang
+                var y = panOffset.y % gridSpacing
+                while (y < size.height) {
+                    if (y >= 0) {
+                        drawLine(
+                            color = Color.LightGray.copy(alpha = 0.2f),
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1.dp.toPx(),
+                            pathEffect = pathEffect
+                        )
+                    }
+                    y += gridSpacing
                 }
             }
 
-            // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và phân vùng phòng
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer(
-                        scaleX = zoomScale,
-                        scaleY = zoomScale,
-                        translationX = panOffset.x,
-                        translationY = panOffset.y
-                    )
-            ) {
-                // Biểu tượng ngôi nhà trung tâm sơ đồ
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(bottom = 40.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("🏠", fontSize = 100.sp, modifier = Modifier.clip(CircleShape))
-                    Text(
-                        text = "AIChatVN Home",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.padding(top = 90.dp)
-                    )
-                }
-
-                // 2. Vẽ phân vùng không gian các phòng mờ ảo (Room bounding boundary)
-                val rooms = deviceNodes
-                    .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
-                    .groupBy { it.room }
-
-                rooms.forEach { (roomName, nodes) ->
-                    if (nodes.isNotEmpty()) {
-                        val minX = nodes.minOf { it.x } - 12f
-                        val minY = nodes.minOf { it.y } - 12f
-                        val maxX = nodes.maxOf { it.x } + 150f + 12f // 150dp là chiều rộng Card thiết kế
-                        val maxY = nodes.maxOf { it.y } + 115f + 12f // 115dp là chiều cao Card thiết kế
-
-                        val width = maxX - minX
-                        val height = maxY - minY
-
-                        Box(
-                            modifier = Modifier
-                                .offset { IntOffset(minX.roundToInt(), minY.roundToInt()) }
-                                .width(width.dp)
-                                .height(height.dp)
-                        ) {
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                drawRoundRect(
-                                    color = Color.Gray.copy(alpha = 0.25f),
-                                    size = this.size,
-                                    style = Stroke(
-                                        width = 1.dp.toPx(),
-                                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-                                    )
-                                )
-                            }
-                            Text(
-                                text = roomName,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.padding(8.dp)
-                            )
+                    .pointerInput(Unit) {
+                        // Sửa lỗi: detectTransformGestures sửa lại phép gán thuộc tính mượt mà
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            zoomScale = (zoomScale * zoom).coerceIn(0.5f, 3.0f)
+                            panOffset += pan
                         }
                     }
-                }
-
-                // 3. Hiển thị danh sách thiết bị và bắt cử chỉ kéo thả
-                deviceNodes.forEach { node ->
-                    var totalDragOffset by remember { mutableStateOf(Offset.Zero) }
-                    
+            ) {
+                // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và phân vùng phòng
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(
+                            scaleX = zoomScale,
+                            scaleY = zoomScale,
+                            translationX = panOffset.x,
+                            translationY = panOffset.y
+                        )
+                ) {
+                    // Biểu tượng ngôi nhà trung tâm sơ đồ
                     Box(
                         modifier = Modifier
-                            .offset { IntOffset((node.x * baseScale).roundToInt(), (node.y * baseScale).roundToInt()) }
-                            .pointerInput(node.id) {
-                                detectDragGestures(
-                                    onDragStart = { totalDragOffset = Offset.Zero },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        totalDragOffset += dragAmount
-                                        
-                                        // Tính toán vị trí tương đối thực tế dựa vào tỉ lệ co giãn màn hình
-                                        val targetX = node.x + (dragAmount.x / baseScale)
-                                        val targetY = node.y + (dragAmount.y / baseScale)
-                                        
-                                        // Hút tọa độ kéo thô về lưới lề ô ly
-                                        viewModel.updateNodePosition(
-                                            id = node.id,
-                                            x = snapToGrid(targetX),
-                                            y = snapToGrid(targetY)
+                            .align(Alignment.Center)
+                            .padding(bottom = 40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("🏠", fontSize = 100.sp, modifier = Modifier.clip(CircleShape))
+                        Text(
+                            text = "AIChatVN Home",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(top = 90.dp)
+                        )
+                    }
+
+                    // 2. Vẽ phân vùng không gian các phòng mờ ảo (Room bounding boundary)
+                    val rooms = deviceNodes
+                        .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
+                        .groupBy { it.room }
+
+                    rooms.forEach { (roomName, nodes) ->
+                        if (nodes.isNotEmpty()) {
+                            val minX = nodes.minOf { it.x } - 12f
+                            val minY = nodes.minOf { it.y } - 12f
+                            val maxX = nodes.maxOf { it.x } + 150f + 12f // 150dp là chiều rộng Card thiết kế
+                            val maxY = nodes.maxOf { it.y } + 115f + 12f // 115dp là chiều cao Card thiết kế
+
+                            val width = maxX - minX
+                            val height = maxY - minY
+
+                            Box(
+                                modifier = Modifier
+                                    .offset { IntOffset(minX.roundToInt(), minY.roundToInt()) }
+                                    .width(width.dp)
+                                    .height(height.dp)
+                            ) {
+                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                    drawRoundRect(
+                                        color = Color.Gray.copy(alpha = 0.25f),
+                                        size = this.size,
+                                        style = Stroke(
+                                            width = 1.dp.toPx(),
+                                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
                                         )
-                                    },
-                                    onDragEnd = {
-                                        // Phân tách chạm click mượt mà: nếu khoảng lệch di động bé hơn 6px thì mở BottomSheet
-                                        if (totalDragOffset.getDistance() < 6f) {
-                                            selectedNode = node
-                                        }
-                                    }
+                                    )
+                                }
+                                Text(
+                                    text = roomName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier.padding(6.dp)
                                 )
                             }
-                    ) {
-                        DeviceNodeCardWidget(node = node)
+                        }
+                    }
+
+                    // 3. Hiển thị danh sách thiết bị và bắt cử chỉ kéo thả
+                    deviceNodes.forEach { node ->
+                        var totalDragOffset by remember { mutableStateOf(Offset.Zero) }
+                        
+                        Box(
+                            modifier = Modifier
+                                .offset { IntOffset((node.x * baseScale).roundToInt(), (node.y * baseScale).roundToInt()) }
+                                .pointerInput(node.id) {
+                                    detectDragGestures(
+                                        onDragStart = { totalDragOffset = Offset.Zero },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            totalDragOffset += dragAmount
+                                            
+                                            // Tính toán vị trí tương đối thực tế dựa vào tỉ lệ co giãn màn hình và hệ số zoom
+                                            val targetX = node.x + (dragAmount.x / (baseScale * zoomScale))
+                                            val targetY = node.y + (dragAmount.y / (baseScale * zoomScale))
+                                            
+                                            // Hút tọa độ kéo thô về lưới lề ô ly
+                                            viewModel.updateNodePosition(
+                                                id = node.id,
+                                                x = snapToGrid(targetX),
+                                                y = snapToGrid(targetY)
+                                            )
+                                        },
+                                        onDragEnd = {
+                                            // Phân tách chạm click mượt mà: nếu khoảng lệch di động bé hơn 6px thì mở BottomSheet
+                                            if (totalDragOffset.getDistance() < 6f) {
+                                                selectedNode = node
+                                            }
+                                        }
+                                    )
+                                }
+                        ) {
+                            DeviceNodeCardWidget(node = node)
+                        }
                     }
                 }
             }
