@@ -230,54 +230,17 @@ fun DashboardScreen(
                         }
                     }
 
-                    // 3. Hiển thị danh sách thiết bị và bắt cử chỉ kéo thả
+                    // 3. Hiển thị danh sách thiết bị bằng Composable tách biệt để Compose tối ưu hóa skip-recomposition
                     deviceNodes.forEach { node ->
-                        var totalDragOffset by remember(node.id) { mutableStateOf(Offset.Zero) }
-                        
-                        Box(
-                            modifier = Modifier
-                                .offset { IntOffset((node.x * baseScale).roundToInt(), (node.y * baseScale).roundToInt()) }
-                                .pointerInput(node.id) {
-                                    detectDragGestures(
-                                        onDragStart = { totalDragOffset = Offset.Zero },
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            totalDragOffset += dragAmount
-                                            
-                                            // Sửa lỗi bẫy: Cập nhật tọa độ trơn mượt thời gian thực không làm tròn để icon bám tay
-                                            val targetX = node.x + (dragAmount.x / (baseScale * zoomScale))
-                                            val targetY = node.y + (dragAmount.y / (baseScale * zoomScale))
-                                            
-                                            viewModel.updateNodePosition(
-                                                id = node.id,
-                                                x = targetX,
-                                                y = targetY
-                                            )
-                                        },
-                                        onDragEnd = {
-                                            // Chỉ thực hiện hút lưới ô ly khi ngón tay đã nhấc ra khỏi màn hình
-                                            viewModel.updateNodePosition(
-                                                id = node.id,
-                                                x = snapToGrid(node.x),
-                                                y = snapToGrid(node.y)
-                                            )
-                                            // Phân tách chạm click mượt mà: dưới 15px nhận dạng là Click
-                                            if (totalDragOffset.getDistance() < 15f) {
-                                                selectedNode = node
-                                            }
-                                        },
-                                        onDragCancel = {
-                                            // Snap tọa độ về lưới nếu cử chỉ drag bị hệ thống hủy bỏ giữa chừng
-                                            viewModel.updateNodePosition(
-                                                id = node.id,
-                                                x = snapToGrid(node.x),
-                                                y = snapToGrid(node.y)
-                                            )
-                                        }
-                                    )
-                                }
-                        ) {
-                            DeviceNodeCardWidget(node = node)
+                        key(node.id) { // Đăng ký khóa định danh duy nhất để tối ưu hóa quản lý phần tử động
+                            DraggableDeviceNodeItem(
+                                node = node,
+                                baseScale = baseScale,
+                                zoomScale = zoomScale,
+                                snapToGrid = ::snapToGrid,
+                                onNodeClick = { selectedNode = it },
+                                onUpdatePosition = { id, x, y -> viewModel.updateNodePosition(id, x, y) }
+                            )
                         }
                     }
                 }
@@ -435,6 +398,86 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Thành phần Composable tách biệt bao đóng trạng thái kéo thả cục bộ của từng thiết bị,
+ * giúp tối ưu hóa hiệu năng render (Skippable) và chống ghi đè nhầm trạng thái trong lúc kéo.
+ */
+@Composable
+fun DraggableDeviceNodeItem(
+    node: DeviceNode,
+    baseScale: Float,
+    zoomScale: Float,
+    snapToGrid: (Float) -> Float,
+    onNodeClick: (DeviceNode) -> Unit,
+    onUpdatePosition: (String, Float, Float) -> Unit
+) {
+    // Khởi tạo tọa độ kéo cục bộ, độc lập hoàn toàn với chu kỳ Recompose chính của màn hình
+    var localPosition by remember(node.id) { mutableStateOf(Offset(node.x, node.y)) }
+    
+    // Cờ kiểm soát trạng thái đang thực hiện kéo thả
+    var isDragging by remember(node.id) { mutableStateOf(false) }
+
+    // Đồng bộ lại vị trí cục bộ ngược từ Flow ngoài (chỉ kích hoạt khi người dùng KHÔNG thực hiện kéo thả)
+    LaunchedEffect(node.x, node.y) {
+        if (!isDragging) {
+            localPosition = Offset(node.x, node.y)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .offset {
+                // SỬ DỤNG LAMBDA OFFSET: Trì hoãn việc đọc localPosition sang Layout phase.
+                // Chỉ recompose cục bộ trong phạm vi Card thiết bị đang kéo, bỏ qua toàn bộ khung nền Canvas và các Node còn lại.
+                IntOffset(
+                    (localPosition.x * baseScale).roundToInt(),
+                    (localPosition.y * baseScale).roundToInt()
+                )
+            }
+            .pointerInput(node.id) {
+                detectDragGestures(
+                    onDragStart = { 
+                        isDragging = true 
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        
+                        // Cập nhật vị trí mượt mà, trơn tru (chưa snap) theo hệ số thu phóng zoom và scale cơ sở
+                        val nextX = localPosition.x + (dragAmount.x / (baseScale * zoomScale))
+                        val nextY = localPosition.y + (dragAmount.y / (baseScale * zoomScale))
+                        localPosition = Offset(nextX, nextY)
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        
+                        // Tính toán độ lệch bình phương khoảng cách thực tế (pixel vật lý)
+                        val dx = (localPosition.x - node.x) * baseScale
+                        val dy = (localPosition.y - node.y) * baseScale
+                        val squaredDistance = dx * dx + dy * dy
+
+                        if (squaredDistance < 225f) { // 15^2 = 225, loại bỏ căn bậc hai (sqrt) để tối ưu hóa CPU
+                            onNodeClick(node)
+                            // Phục hồi nguyên trạng tọa độ hợp lệ từ Flow ngoài
+                            localPosition = Offset(node.x, node.y)
+                        } else {
+                            // Kéo thả thực tế: Tiến hành hút tọa độ kéo thô về lưới lề ô ly gần nhất
+                            val snappedX = snapToGrid(localPosition.x)
+                            val snappedY = snapToGrid(localPosition.y)
+                            localPosition = Offset(snappedX, snappedY)
+                            onUpdatePosition(node.id, snappedX, snappedY)
+                        }
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        localPosition = Offset(node.x, node.y)
+                    }
+                )
+            }
+    ) {
+        DeviceNodeCardWidget(node = node)
     }
 }
 
