@@ -735,7 +735,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                         .padding(8.dp)
                 ) {
                     Text(
-                        text = dev.productName, // wait, dev is undefined! Ah, this was entry.response in original but let's check
+                        text = entry.response, // wait, dev is undefined! Ah, this was entry.response in original but let's check
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

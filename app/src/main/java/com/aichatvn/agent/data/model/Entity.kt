@@ -4,19 +4,6 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-// ==================== TUYA DEVICE ====================
-
-@Entity(tableName = "tuya_devices")
-data class TuyaDeviceEntity(
-    @PrimaryKey
-    val id: String,              // Device ID từ Tuya
-    val name: String,            // Tên thiết bị (user đặt trong Tuya App)
-    val online: Boolean = false, // Trạng thái online
-    val category: String = "",   // Loại thiết bị (socket, light, switch...)
-    val productName: String = "",// Tên sản phẩm
-    val lastSeen: Long = System.currentTimeMillis()
-)
-
 // ==================== CHAT MESSAGE ====================
 
 @Entity(tableName = "chat_messages")
@@ -32,7 +19,7 @@ data class ChatMessageEntity(
     val timestamp: Long,
     // Nguồn gốc câu trả lời của Assistant (human, learn, camera, v.v.)
     val sourcePlugin: String? = null,
-    // ✅ MỚI: Trạng thái đã đọc — CHỈ có ý nghĩa với tin nhắn role="user" của khách ngoại kênh
+    // Trạng thái đã đọc — CHỈ có ý nghĩa với tin nhắn role="user" của khách ngoại kênh
     // (Facebook/Telegram/Website). Mặc định true để không phá dữ liệu cũ/tin nhắn assistant/tin
     // nhắn của default_user (những tin này không cần badge chưa đọc). Các nơi insert tin nhắn
     // KHÁCH GỬI TỚI từ webhook sẽ set false tường minh — xem ChatSkill.saveExternalUserMessage().
@@ -97,7 +84,7 @@ data class CustomerSettingEntity(
     val isActive: Int = 1,
     val updatedAt: Long,
     val timestamp: Long,
-    // ✅ MỚI: Page ID Facebook gần nhất mà khách (customerId = PSID) đã nhắn tới.
+    // Page ID Facebook gần nhất mà khách (customerId = PSID) đã nhắn tới.
     // Dùng để trả lời thủ công đúng Fanpage khi có nhiều Fanpage liên kết cùng lúc,
     // thay vì phụ thuộc extraContext (thường rỗng khi Admin gõ tay từ ChatScreen).
     val lastFacebookPageId: String? = null

@@ -67,9 +67,9 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages WHERE id = :messageId")
     suspend fun deleteMessage(messageId: String)
 
-     @Query("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT :limit")
+    @Query("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT :limit")
     suspend fun getAllMessagesRaw(limit: Int): List<ChatMessageEntity>
-    // ✅ ĐÃ THÊM: Truy vấn quét Hộp thư đến (Inbox) - Lấy tin nhắn mới nhất của từng khách hàng để làm danh sách.
+    
     @Query("""
         SELECT m1.* FROM chat_messages m1
         INNER JOIN (
@@ -81,8 +81,6 @@ interface ChatMessageDao {
     """)
     fun getLatestChatThreadsFlow(): Flow<List<ChatMessageEntity>>
 
-    // ✅ MỚI: Đếm số tin nhắn khách CHƯA ĐỌC theo từng thread — dùng để hiện badge trên InboxScreen.
-    // Chỉ đếm role="user" vì tin "assistant" (AI tự trả lời hoặc admin gõ tay) không cần badge.
     @Query("""
         SELECT username, COUNT(*) as unreadCount
         FROM chat_messages
@@ -91,13 +89,10 @@ interface ChatMessageDao {
     """)
     fun getUnreadCountsFlow(): Flow<List<ThreadUnreadCount>>
 
-    // ✅ MỚI: Đánh dấu toàn bộ tin nhắn khách của 1 thread là đã đọc — gọi khi Admin mở
-    // ChatScreen của khách đó (xem ChatViewModel.init()).
     @Query("UPDATE chat_messages SET isRead = 1 WHERE username = :username AND role = 'user' AND isRead = 0")
     suspend fun markThreadAsRead(username: String)
 }
 
-// ✅ MỚI: Kết quả gộp nhóm cho getUnreadCountsFlow()
 data class ThreadUnreadCount(
     val username: String,
     val unreadCount: Int
@@ -134,39 +129,6 @@ interface QADao {
     """)
     suspend fun searchQAs(query: String, username: String): List<QAEntity>
 }
-
-// ==================== TUYA DEVICE DAO ====================
-
-@Dao
-interface TuyaDeviceDao {
-    @Query("SELECT * FROM tuya_devices ORDER BY name ASC")
-    fun getAllDevicesFlow(): Flow<List<TuyaDeviceEntity>>
-    
-    @Query("SELECT * FROM tuya_devices ORDER BY name ASC")
-    suspend fun getAllDevices(): List<TuyaDeviceEntity>
-    
-    @Query("SELECT * FROM tuya_devices WHERE id = :deviceId")
-    suspend fun getDeviceById(deviceId: String): TuyaDeviceEntity?
-    
-    @Query("SELECT * FROM tuya_devices WHERE name = :name")
-    suspend fun getDeviceByName(name: String): TuyaDeviceEntity?
-    
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertDevice(device: TuyaDeviceEntity)
-    
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertAllDevices(devices: List<TuyaDeviceEntity>)
-    
-    @Query("UPDATE tuya_devices SET online = :online, lastSeen = :timestamp WHERE id = :deviceId")
-    suspend fun updateOnlineStatus(deviceId: String, online: Boolean, timestamp: Long)
-    
-    @Query("DELETE FROM tuya_devices WHERE id = :deviceId")
-    suspend fun deleteDevice(deviceId: String)
-    
-    @Query("DELETE FROM tuya_devices")
-    suspend fun deleteAllDevices()
-}
-
 
 @Dao
 interface CameraDao {
@@ -206,7 +168,6 @@ interface CameraDao {
     @Query("UPDATE customer_settings SET smartMode = :enabled, updatedAt = :timestamp WHERE customerId = :customerId")
     suspend fun updateSmartMode(customerId: String, enabled: Boolean, timestamp: Long)
 
-    // ✅ MỚI: Ghi lại Page ID Facebook gần nhất mà khách (customerId = PSID) vừa nhắn tới
     @Query("UPDATE customer_settings SET lastFacebookPageId = :pageId WHERE customerId = :customerId")
     suspend fun updateLastFacebookPageId(customerId: String, pageId: String)
     
@@ -262,8 +223,6 @@ interface AlertDao {
     suspend fun deleteAlertsOlderThan(beforeTimestamp: Long)
 }
 
-// ==================== SCHEDULE DAO ====================
-
 @Dao
 interface ScheduleDao {
     @Query("SELECT * FROM schedules WHERE enabled = 1 ORDER BY createdAt DESC")
@@ -288,9 +247,6 @@ interface ScheduleDao {
     suspend fun toggleSchedule(id: String, enabled: Int)
 }
 
-
-// ==================== APP CONFIG DAO ====================
-
 @Dao
 interface AppConfigDao {
     @Query("SELECT * FROM app_config ORDER BY pluginId ASC, key ASC")
@@ -314,8 +270,6 @@ interface AppConfigDao {
     @Query("SELECT * FROM app_config ORDER BY pluginId ASC, key ASC")
     suspend fun getAll(): List<AppConfigEntity>
 }
-
-// ==================== MULTI FACEBOOK PAGES DAO ====================
 
 @Dao
 interface FacebookPageDao {
@@ -348,13 +302,11 @@ interface FacebookPageDao {
         CustomerSettingEntity::class,
         AlertEntity::class,
         ScheduleEntity::class,
-        TuyaDeviceEntity::class,
         AppConfigEntity::class,
         CustomerEntity::class,
-        FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
+        FacebookPageEntity::class
     ],
-    version = 12, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 11 lên 12 (thêm isRead cho chat_messages)
-
+    version = 12,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -365,10 +317,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun cameraDao(): CameraDao
     abstract fun alertDao(): AlertDao
     abstract fun scheduleDao(): ScheduleDao
-    abstract fun tuyaDeviceDao(): TuyaDeviceDao
     abstract fun customerDao(): CustomerDao
     abstract fun appConfigDao(): AppConfigDao
-    abstract fun facebookPageDao(): FacebookPageDao // ✅ ĐĂNG KÝ DAO của Facebook Pages
+    abstract fun facebookPageDao(): FacebookPageDao
 
     companion object {
         @Volatile
@@ -473,7 +424,6 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ MIGRATION 9 -> 10: Tự động khởi tạo bảng 'facebook_pages' lưu nhiều trang
         private val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -488,18 +438,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        // ✅ MIGRATION 10 -> 11: Thêm cột lưu Page ID Facebook gần nhất của từng khách (PSID),
-        // phục vụ trả lời thủ công đúng Fanpage khi chủ app liên kết nhiều Fanpage cùng lúc.
         private val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE customer_settings ADD COLUMN lastFacebookPageId TEXT")
             }
         }
 
-        // ✅ MIGRATION 11 -> 12: Thêm cột isRead cho chat_messages, phục vụ badge tin nhắn
-        // chưa đọc trên InboxScreen. DEFAULT 1 (đã đọc) để không đánh dấu nhầm toàn bộ lịch sử
-        // cũ thành "chưa đọc" — chỉ tin nhắn khách MỚI gửi tới sau bản cập nhật này mới được
-        // insert với isRead = 0 (xem ChatSkill.saveExternalUserMessage() và processQuery()).
         private val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE chat_messages ADD COLUMN isRead INTEGER NOT NULL DEFAULT 1")
@@ -524,7 +468,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_8_9,
                         MIGRATION_9_10,
                         MIGRATION_10_11,
-                        MIGRATION_11_12 // ✅ ĐĂNG KÝ: Bản di cư isRead mới cho chat_messages
+                        MIGRATION_11_12
                     )
                     .build()
                 INSTANCE = instance
