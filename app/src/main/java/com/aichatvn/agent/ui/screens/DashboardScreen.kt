@@ -64,7 +64,7 @@ fun DashboardScreen(
     var zoomScale by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
 
-    // Khoảng cách ô lưới để hút tọa độ khi kéo thả (Snap-to-Grid)
+    // Khoảng cách ô lưới để hút tọa độ khi kết thúc kéo thả (Snap-to-Grid)
     val snapGridSize = 20f
     fun snapToGrid(value: Float): Float {
         return (value / snapGridSize).roundToInt() * snapGridSize
@@ -98,7 +98,7 @@ fun DashboardScreen(
                         )
                     }
                     IconButton(onClick = {
-                        viewModel.refreshDashboardNodes() // Đã sửa đổi gọi đúng hàm gốc
+                        viewModel.refreshDashboardNodes()
                     }) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -155,7 +155,6 @@ fun DashboardScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
-                        // detectTransformGestures sửa lại phép gán chính xác
                         detectTransformGestures { _, pan, zoom, _ ->
                             zoomScale = (zoomScale * zoom).coerceIn(0.5f, 3.0f)
                             panOffset += pan
@@ -233,7 +232,7 @@ fun DashboardScreen(
 
                     // 3. Hiển thị danh sách thiết bị và bắt cử chỉ kéo thả
                     deviceNodes.forEach { node ->
-                        var totalDragOffset by remember { mutableStateOf(Offset.Zero) }
+                        var totalDragOffset by remember(node.id) { mutableStateOf(Offset.Zero) }
                         
                         Box(
                             modifier = Modifier
@@ -245,22 +244,35 @@ fun DashboardScreen(
                                             change.consume()
                                             totalDragOffset += dragAmount
                                             
-                                            // Tính toán vị trí tương đối thực tế dựa vào tỉ lệ co giãn màn hình và hệ số zoom
+                                            // Sửa lỗi bẫy: Cập nhật tọa độ trơn mượt thời gian thực không làm tròn để icon bám tay
                                             val targetX = node.x + (dragAmount.x / (baseScale * zoomScale))
                                             val targetY = node.y + (dragAmount.y / (baseScale * zoomScale))
                                             
-                                            // Hút tọa độ kéo thô về lưới lề ô ly
                                             viewModel.updateNodePosition(
                                                 id = node.id,
-                                                x = snapToGrid(targetX),
-                                                y = snapToGrid(targetY)
+                                                x = targetX,
+                                                y = targetY
                                             )
                                         },
                                         onDragEnd = {
-                                            // Phân tách chạm click mượt mà: nếu khoảng lệch di động bé hơn 6px thì mở BottomSheet
-                                            if (totalDragOffset.getDistance() < 6f) {
+                                            // Chỉ thực hiện hút lưới ô ly khi ngón tay đã nhấc ra khỏi màn hình
+                                            viewModel.updateNodePosition(
+                                                id = node.id,
+                                                x = snapToGrid(node.x),
+                                                y = snapToGrid(node.y)
+                                            )
+                                            // Phân tách chạm click mượt mà: dưới 15px nhận dạng là Click
+                                            if (totalDragOffset.getDistance() < 15f) {
                                                 selectedNode = node
                                             }
+                                        },
+                                        onDragCancel = {
+                                            // Snap tọa độ về lưới nếu cử chỉ drag bị hệ thống hủy bỏ giữa chừng
+                                            viewModel.updateNodePosition(
+                                                id = node.id,
+                                                x = snapToGrid(node.x),
+                                                y = snapToGrid(node.y)
+                                            )
                                         }
                                     )
                                 }
