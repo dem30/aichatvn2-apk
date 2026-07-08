@@ -72,7 +72,7 @@ class CameraSkill @Inject constructor(
                 description = "Quét camera để phát hiện thay đổi và phân tích AI",
                 examples = listOf("quét camera", "chụp ảnh camera"),
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", true, "camera") // Sửa thành true để kích hoạt tính năng hỏi bù tham số
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera")
                 )
             ),
             PluginAction(
@@ -83,43 +83,33 @@ class CameraSkill @Inject constructor(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera")
                 )
             ),
-            
-          
-          
-          
-          PluginAction(
-    name = "set_active",
-    description = "Bật hoặc tắt theo dõi của camera cụ thể",
-    examples = listOf("bật camera", "tắt camera"),
-    exampleOverrides = mapOf(
-        "bật camera" to mapOf("active" to true),
-        "tắt camera" to mapOf("active" to false)
-    ),
-    parameters = listOf(
-        PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
-        PluginParameter("active", "boolean", "Trạng thái bật/tắt", true, "boolean")
-    )
-),
-
-
-          
             PluginAction(
-    name = "set_smart_mode",
-    description = "Bật hoặc tắt chế độ phân tích AI cho camera",
-    examples = listOf("bật ai camera", "tắt ai camera"),
-    exampleOverrides = mapOf(
-        "bật ai camera" to mapOf("enabled" to true),
-        "tắt ai camera" to mapOf("enabled" to false)
-    ),
-    parameters = listOf(
-        PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
-        PluginParameter("customerId", "string", "Mã khách hàng", false, "string"),
-        PluginParameter("enabled", "boolean", "Trạng thái bật/tắt AI", true, "boolean")
-    )
-),
-
-
-          
+                name = "set_active",
+                description = "Bật hoặc tắt theo dõi của camera cụ thể",
+                examples = listOf("bật camera", "tắt camera"),
+                exampleOverrides = mapOf(
+                    "bật camera" to mapOf("active" to true),
+                    "tắt camera" to mapOf("active" to false)
+                ),
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
+                    PluginParameter("active", "boolean", "Trạng thái bật/tắt", true, "boolean")
+                )
+            ),
+            PluginAction(
+                name = "set_smart_mode",
+                description = "Bật hoặc tắt chế độ phân tích AI cho camera",
+                examples = listOf("bật ai camera", "tắt ai camera"),
+                exampleOverrides = mapOf(
+                    "bật ai camera" to mapOf("enabled" to true),
+                    "tắt ai camera" to mapOf("enabled" to false)
+                ),
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
+                    PluginParameter("customerId", "string", "Mã khách hàng", false, "string"),
+                    PluginParameter("enabled", "boolean", "Trạng thái bật/tắt AI", true, "boolean")
+                )
+            ),
             PluginAction(
                 name = "configure",
                 description = "Cập nhật cấu hình kỹ thuật cho thiết bị camera",
@@ -223,8 +213,15 @@ class CameraSkill @Inject constructor(
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
         cameras.mapIndexed { index, cam ->
-            val xCoord = 40f + (index % 2) * 160f
-            val yCoord = 40f + (index / 2) * 160f
+            // Tọa độ mặc định ban đầu của thiết bị camera
+            val defaultX = 40f + (index % 2) * 160f
+            val defaultY = 40f + (index / 2) * 160f
+
+            // ✅ Kiểm tra và ưu tiên nạp tọa độ tùy chỉnh từ Database
+            val savedX = configProvider.getFloat("layout_x_${cam.id.trim()}", -1f)
+            val savedY = configProvider.getFloat("layout_y_${cam.id.trim()}", -1f)
+            val finalX = if (savedX >= 0f) savedX else defaultX
+            val finalY = if (savedY >= 0f) savedY else defaultY
 
             val isOnline = cam.isOnline == 1
 
@@ -244,8 +241,8 @@ class CameraSkill @Inject constructor(
                     DashboardDeviceAction(id = "set_smart_mode", title = "Bật AI", icon = "🧠", defaultParams = mapOf("enabled" to true))
                 ),
                 
-                x = xCoord,
-                y = yCoord,
+                x = finalX,
+                y = finalY,
                 online = isOnline,
                 icon = "📷",
                 ip = "192.168.1.${10 + index}",

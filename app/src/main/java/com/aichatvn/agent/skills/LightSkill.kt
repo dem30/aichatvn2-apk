@@ -8,6 +8,7 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.ui.dashboard.DeviceNode
@@ -26,37 +27,31 @@ class LightSkill @Inject constructor(
     private val tuyaManager: TuyaManager,
     private val database: AppDatabase,
     private val deviceRegistry: DeviceRegistry,
+    private val configProvider: AppConfigProvider, // ✅ ĐÃ THÊM: Inject AppConfigProvider để đọc tọa độ
     logger: Logger
 ) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
 
-    // ✅ ĐÃ SỬA: Chuyển đổi toàn bộ cấu trúc định danh cũ sang PluginManifest thống nhất
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(dashboard = true), // Tuyên bố năng lực Dashboard
+        capabilities = PluginCapabilities(dashboard = true),
         visibleOnDashboard = true,
         autoGenerateQA = true,
         actions = listOf(
-            
-          
-          
-          PluginAction(
-    name = "set",
-    description = "Bật hoặc tắt đèn thông minh",
-    examples = listOf("bật đèn", "tắt đèn"),
-    exampleOverrides = mapOf(
-        "bật đèn" to mapOf("state" to true),
-        "tắt đèn" to mapOf("state" to false)
-    ),
-    tags = listOf("light", "switch", "relay", "device"),
-    parameters = listOf(
-        PluginParameter("device", "string", "Tên thiết bị", true, "device"),
-        PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
-    )
-),
-
-
-          
+            PluginAction(
+                name = "set",
+                description = "Bật hoặc tắt đèn thông minh",
+                examples = listOf("bật đèn", "tắt đèn"),
+                exampleOverrides = mapOf(
+                    "bật đèn" to mapOf("state" to true),
+                    "tắt đèn" to mapOf("state" to false)
+                ),
+                tags = listOf("light", "switch", "relay", "device"),
+                parameters = listOf(
+                    PluginParameter("device", "string", "Tên thiết bị", true, "device"),
+                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
+                )
+            ),
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái hiện tại của đèn",
@@ -66,10 +61,6 @@ class LightSkill @Inject constructor(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device")
                 )
             ),
-
-
-
-          
             PluginAction(
                 name = "scan",
                 description = "Quét các thiết bị đèn thông minh trong mạng",
@@ -80,14 +71,20 @@ class LightSkill @Inject constructor(
         )
     )
 
-    // ✅ ĐÃ SỬA: Ghi đè trực tiếp hàm xuất Node giao diện của Plugin mà không cần DashboardProvider phụ thuộc ngoài
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
         
         val deferredNodes = tuyaDevices.mapIndexed { index, dev ->
             async {
-                val xCoord = 40f + (index % 2) * 160f
-                val yCoord = 200f + (index / 2) * 160f
+                // Tọa độ mặc định ban đầu của thiết bị đèn
+                val defaultX = 40f + (index % 2) * 160f
+                val defaultY = 200f + (index / 2) * 160f
+
+                // ✅ Kiểm tra và ưu tiên nạp tọa độ tùy chỉnh từ Database
+                val savedX = configProvider.getFloat("layout_x_${dev.id}", -1f)
+                val savedY = configProvider.getFloat("layout_y_${dev.id}", -1f)
+                val finalX = if (savedX >= 0f) savedX else defaultX
+                val finalY = if (savedY >= 0f) savedY else defaultY
 
                 val isDeviceOnline = try {
                     tuyaManager.getStatus(dev.name)
@@ -101,8 +98,6 @@ class LightSkill @Inject constructor(
                     type = DeviceType.LIGHT,
                     pluginId = manifest.id,
                     defaultAction = "status",
-                    // ✅ SỬA: dùng dev.id (duy nhất) thay vì dev.name — tránh trường hợp 2 thiết bị
-                    // trùng tên trên Tuya khiến nút bấm trên dashboard điều khiển nhầm thiết bị.
                     defaultParams = mapOf("device" to dev.id),
                     supportedActions = listOf(
                         DeviceAction(
@@ -123,8 +118,8 @@ class LightSkill @Inject constructor(
                             icon = "ℹ️"
                         )
                     ),
-                    x = xCoord,
-                    y = yCoord,
+                    x = finalX,
+                    y = finalY,
                     online = isDeviceOnline,
                     icon = "💡",
                     ip = "192.168.1.${50 + index}",
