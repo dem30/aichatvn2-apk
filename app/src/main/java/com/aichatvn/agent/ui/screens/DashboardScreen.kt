@@ -88,13 +88,14 @@ fun DashboardScreen(
             TopAppBar(
                 title = { Text("Sơ đồ điều khiển thiết bị") },
                 actions = {
+                    // Sửa lỗi 2: Chuyển icon khôi phục thu phóng thành biểu tượng Home (Ngôi nhà) để tránh trùng lặp
                     IconButton(onClick = {
                         zoomScale = 1f
                         panOffset = Offset.Zero
                     }) {
                         Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Khôi phục thu phóng"
+                            imageVector = Icons.Default.Home,
+                            contentDescription = "Căn giữa sơ đồ nhà"
                         )
                     }
                     IconButton(onClick = {

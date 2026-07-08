@@ -27,7 +27,7 @@ class LightSkill @Inject constructor(
     private val tuyaManager: TuyaManager,
     private val database: AppDatabase,
     private val deviceRegistry: DeviceRegistry,
-    private val configProvider: AppConfigProvider, // ✅ ĐÃ THÊM: Inject AppConfigProvider để đọc tọa độ
+    private val configProvider: AppConfigProvider,
     logger: Logger
 ) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
 
@@ -76,18 +76,23 @@ class LightSkill @Inject constructor(
         
         val deferredNodes = tuyaDevices.mapIndexed { index, dev ->
             async {
-                // Tọa độ mặc định ban đầu của thiết bị đèn
                 val defaultX = 40f + (index % 2) * 160f
                 val defaultY = 200f + (index / 2) * 160f
 
-                // ✅ Kiểm tra và ưu tiên nạp tọa độ tùy chỉnh từ Database
                 val savedX = configProvider.getFloat("layout_x_${dev.id}", -1f)
                 val savedY = configProvider.getFloat("layout_y_${dev.id}", -1f)
                 val finalX = if (savedX >= 0f) savedX else defaultX
                 val finalY = if (savedY >= 0f) savedY else defaultY
 
-                val isDeviceOnline = try {
-                    tuyaManager.getStatus(dev.name)
+                // Sửa lỗi 1: Trực tuyến (online) lấy từ dev.online thay vì getStatus()
+                val isOnline = dev.online 
+                
+                val isDeviceOn = try {
+                    if (isOnline) {
+                        tuyaManager.getStatus(dev.name)
+                    } else {
+                        false
+                    }
                 } catch (e: Exception) {
                     false
                 }
@@ -120,11 +125,15 @@ class LightSkill @Inject constructor(
                     ),
                     x = finalX,
                     y = finalY,
-                    online = isDeviceOnline,
+                    online = isOnline,
                     icon = "💡",
                     ip = "192.168.1.${50 + index}",
                     battery = null,
-                    status = if (isDeviceOnline) "Đang hoạt động" else "Mất kết nối",
+                    status = if (isOnline) {
+                        if (isDeviceOn) "Đang bật" else "Đang tắt"
+                    } else {
+                        "Mất kết nối"
+                    },
                     room = "Phòng Khách"
                 )
             }
@@ -155,6 +164,16 @@ class LightSkill @Inject constructor(
             } else {
                 tuyaManager.turnOff(deviceName)
             }
+            
+            // Sửa lỗi 3: Cập nhật trực tiếp lên registry để các luồng điều khiển (tiếng nói/lịch trình) tự đồng bộ UI
+            deviceRegistry.updateNode(deviceName) { current ->
+                current.copy(
+                    online = true,
+                    status = if (state) "Đang bật" else "Đang tắt",
+                    lastSeen = System.currentTimeMillis()
+                )
+            }
+            
             success("Đã ${if (state) "bật" else "tắt"} thiết bị $deviceName")
         } catch (e: Exception) {
             failure("Lỗi điều khiển thiết bị: ${e.message}")

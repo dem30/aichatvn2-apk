@@ -79,7 +79,8 @@ class DashboardViewModel @Inject constructor(
                             ?: "✅ Đã thực hiện thành công"
                         _executionMessage.value = msg
 
-                        val stateValue = extraParams["state"] as? Boolean
+                        // Sửa lỗi 3: Kiểm tra thuộc tính "state" từ finalParams đã gộp thay vì extraParams rỗng
+                        val stateValue = finalParams["state"] as? Boolean
                         if (stateValue != null) {
                             deviceRegistry.updateNode(node.id) { current ->
                                 current.copy(
