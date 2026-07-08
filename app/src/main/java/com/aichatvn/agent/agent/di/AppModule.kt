@@ -26,6 +26,16 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideTuyaManager(
+        @ApplicationContext context: Context,
+        database: AppDatabase,
+        logger: Logger
+    ): TuyaManager {
+        return TuyaManager(context, database.tuyaDeviceDao(), logger)
+    }
+
+    @Provides
+    @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
         return AppDatabase.getDatabase(context)
     }
@@ -40,6 +50,11 @@ object AppModule {
     @IntoSet
     @Singleton
     fun provideCameraSkill(skill: CameraSkill): Plugin = skill
+
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideLightSkill(skill: LightSkill): Plugin = skill
 
     @Provides
     @IntoSet
@@ -65,13 +80,15 @@ object AppModule {
     @IntoSet
     @Singleton
     fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
+
      
     @Provides
     @IntoSet
     @Singleton
     fun provideVisionPlugin(skill: VisionPlugin): Plugin = skill
+
     
-    // Đăng ký Plugin Facebook Assistant
+    // Đăng ký Plugin Facebook Assistant mới
     @Provides
     @IntoSet
     @Singleton

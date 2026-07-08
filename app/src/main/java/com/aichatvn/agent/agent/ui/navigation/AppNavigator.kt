@@ -32,7 +32,7 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
     object Schedule   : Screen("schedule",    R.string.tab_schedule,    Icons.Default.Schedule)
     object Logs       : Screen("logs",        R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",    R.string.tab_settings,    Icons.Default.Settings)
-    
+    object Tuya       : Screen("tuya",        R.string.tab_settings,    Icons.Default.Devices)
 
     companion object {
         // Inbox giờ chỉ là màn con, mở từ icon trong ChatScreen — không nằm trong Bottom Navigation.
@@ -163,7 +163,7 @@ fun AppNavigator(
             composable(Screen.Schedule.route)    { ScheduleScreen(navController) }
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
-            
+            composable(Screen.Tuya.route)        { TuyaScreen(navController) }
 
             // ✅ ĐÃ SỬA: route KHÔNG tham số — vừa là màn hình mở đầu app (default_user, xem
             // ChatViewModel.username mặc định), VỪA là root của tab "Trò chuyện" (Screen.Chat).

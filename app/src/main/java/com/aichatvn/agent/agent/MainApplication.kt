@@ -40,12 +40,13 @@ class MainApplication : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        logger.d("MainApplication", "App khởi động - Khởi tạo các dịch vụ nền")
+        logger.d("MainApplication", "App khởi động - Khởi tạo plugins")
 
-        // Thực hiện đăng ký vòng lặp đảm bảo Lịch trình tự động hóa luôn chạy
+        initializePlugins()
+
         TaskScheduler.ensureRunning(this)
 
-        // Tự động khởi chạy cổng Ktor Webhook Gateway Service phục vụ chat đa kênh (Facebook/Zalo...)
+        // ✅ ĐÃ SỬA: Tự động khởi chạy WebhookGatewayService khi mở ứng dụng
         try {
             val serviceIntent = Intent(this, WebhookGatewayService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -58,7 +59,12 @@ class MainApplication : Application(), Configuration.Provider {
             logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
         }
 
-        // Tự động khởi chạy vòng lặp Trợ lý thoại rảnh tay (Hands-free mic) nếu đã được cấp quyền ghi âm
+        // ✅ ĐÃ THÊM: Khởi chạy vòng lặp hands-free (mic) ngầm, độc lập với ChatScreen/Inbox —
+        // để người dùng hạn chế vận động ra lệnh thoại được bất cứ lúc nào, kể cả màn hình tắt.
+        // ✅ ĐÃ SỬA: kiểm tra quyền RECORD_AUDIO trước — máy mới cài chưa cấp quyền này, gọi
+        // thẳng startForegroundService(type=microphone) sẽ bị hệ thống crash cả app (Android 14+).
+        // Service tự nó cũng tự kiểm tra lại quyền này (double-check), nhưng chặn sớm ở đây để
+        // tránh tốn 1 lượt gọi service vô ích khi biết chắc sẽ bị từ chối.
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
         ) {
@@ -76,12 +82,10 @@ class MainApplication : Application(), Configuration.Provider {
         } else {
             logger.w(
                 "MainApplication",
-                "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này."
+                "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này. " +
+                    "Cần gọi lại startForegroundService(VoiceAssistantService) sau khi người dùng cấp quyền mic."
             )
         }
-
-        // Đăng ký khởi tạo không đồng bộ các Plugins nghiệp vụ trong hệ thống
-        initializePlugins()
     }
 
     private fun initializePlugins() {

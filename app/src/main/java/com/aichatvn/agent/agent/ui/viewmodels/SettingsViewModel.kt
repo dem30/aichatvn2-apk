@@ -1,8 +1,7 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
-import android.database.Cursor
-import android.os.Build
+import android.database.Cursor // Để xử lý các kiểu dữ liệu và con trỏ SQLite
 import android.os.Environment
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -21,11 +20,13 @@ import com.aichatvn.agent.data.model.CustomerEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
+import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TrainingSkill
+import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.utils.Logger
@@ -50,6 +51,7 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
+    private val tuyaManager: TuyaManager,
     private val cameraSkill: CameraSkill,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
@@ -62,11 +64,15 @@ class SettingsViewModel @Inject constructor(
         val RESEND_API_KEY = stringPreferencesKey("resend_api_key")
         val RESEND_SENDER  = stringPreferencesKey("resend_sender")
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
+        val TUYA_CLIENT_ID = stringPreferencesKey("tuya_client_id")
+        val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
 
+        // DANH SÁCH TRẮNG: Các bảng dữ liệu nghiệp vụ quan trọng cần sao lưu
         private val BACKUP_TABLES = listOf(
             "customers",
             "customer_settings",
             "cameras",
+            "tuya_devices",
             "facebook_pages",
             "qa_data",
             "schedules",
@@ -95,6 +101,12 @@ class SettingsViewModel @Inject constructor(
         .map { it[DARK_MODE] ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    private val _tuyaClientId = MutableStateFlow("")
+    val tuyaClientId: StateFlow<String> = _tuyaClientId.asStateFlow()
+
+    private val _tuyaClientSecret = MutableStateFlow("")
+    val tuyaClientSecret: StateFlow<String> = _tuyaClientSecret.asStateFlow()
+
     val isGroqKeyConfigured: StateFlow<Boolean> = groqApiKey
         .map { it.isNotBlank() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -103,18 +115,19 @@ class SettingsViewModel @Inject constructor(
         key.isNotBlank() && sender.isNotBlank()
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    val isTuyaConfigured: StateFlow<Boolean> = combine(tuyaClientId, tuyaClientSecret) { id, secret ->
+        id.isNotBlank() && secret.isNotBlank()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
 
+    // Theo dõi và cập nhật luồng các Fanpage đã lưu trong DB
     val facebookPages: StateFlow<List<FacebookPageEntity>> = database.facebookPageDao().getAllPagesFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
-
-    init {
-        // Trống rỗng, không cần nạp Tuya hay Hass
-    }
 
     fun saveConfig(key: String, value: String) {
         viewModelScope.launch {
@@ -143,6 +156,14 @@ class SettingsViewModel @Inject constructor(
     private val _importResult = MutableStateFlow<String?>(null)
     val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            val prefs = context.dataStore.data.first()
+            _tuyaClientId.value = prefs[TUYA_CLIENT_ID] ?: ""
+            _tuyaClientSecret.value = prefs[TUYA_CLIENT_SECRET] ?: ""
+        }
+    }
+
     fun clearImportResult() { _importResult.value = null }
     fun clearExportResult() { _exportResult.value = null }
 
@@ -159,6 +180,17 @@ class SettingsViewModel @Inject constructor(
                 it[RESEND_API_KEY] = apiKey.trim()
                 it[RESEND_SENDER] = sender.trim()
             }
+        }
+    }
+
+    fun saveTuyaConfig(clientId: String, clientSecret: String) {
+        viewModelScope.launch {
+            context.dataStore.edit { prefs ->
+                prefs[TUYA_CLIENT_ID] = clientId.trim()
+                prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+            }
+            _tuyaClientId.value = clientId.trim()
+            _tuyaClientSecret.value = clientSecret.trim()
         }
     }
 
@@ -231,6 +263,21 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    suspend fun testTuyaConnection(clientId: String, clientSecret: String): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                context.dataStore.edit { prefs ->
+                    prefs[TUYA_CLIENT_ID] = clientId.trim()
+                    prefs[TUYA_CLIENT_SECRET] = clientSecret.trim()
+                }
+                val devices = tuyaManager.scanDevices()
+                "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
+            } catch (e: Exception) {
+                "❌ Lỗi Tuya: ${e.message}"
+            }
+        }
+    }
+
     suspend fun exportSettings(context: Context): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -240,6 +287,8 @@ class SettingsViewModel @Inject constructor(
                     put("groq_api_key",      prefs[GROQ_API_KEY] ?: "")
                     put("resend_api_key",    prefs[RESEND_API_KEY] ?: "")
                     put("resend_sender",     prefs[RESEND_SENDER] ?: "")
+                    put("tuya_client_id",    prefs[TUYA_CLIENT_ID] ?: "")
+                    put("tuya_client_secret",prefs[TUYA_CLIENT_SECRET] ?: "")
                     put("dark_mode",         prefs[DARK_MODE] ?: false)
                 }
 
@@ -248,15 +297,18 @@ class SettingsViewModel @Inject constructor(
                 
                 var totalRecords = 0
 
+                // Quét qua danh sách các bảng cần sao lưu thuộc Whitelist
                 for (tableName in BACKUP_TABLES) {
                     val rowsArray = JSONArray()
                     
+                    // Lọc bỏ dữ liệu khởi tạo mặc định "auto_init" ở tầng truy vấn
                     val query = if (tableName == "qa_data") {
                         "SELECT * FROM `$tableName` WHERE `category` != 'auto_init'"
                     } else {
                         "SELECT * FROM `$tableName`"
                     }
 
+                    // ✅ ĐÃ SỬA: Sử dụng emptyArray<Any?>() thay cho null để đáp ứng chữ ký phương thức nghiêm ngặt của Kotlin
                     val rowCursor = sdb.query(query, emptyArray<Any?>())
                     val columnNames = rowCursor.columnNames
 
@@ -271,6 +323,7 @@ class SettingsViewModel @Inject constructor(
                                     Cursor.FIELD_TYPE_FLOAT -> rowObj.put(colName, rowCursor.getDouble(i))
                                     Cursor.FIELD_TYPE_STRING -> rowObj.put(colName, rowCursor.getString(i))
                                     Cursor.FIELD_TYPE_BLOB -> {
+                                        // Mã hóa Base64 và đánh dấu cấu trúc nhận dạng kiểu BLOB khi nạp lại
                                         val bytes = rowCursor.getBlob(i)
                                         val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                                         val blobObj = JSONObject().apply {
@@ -290,7 +343,7 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 val json = JSONObject().apply {
-                    put("export_version", 4)
+                    put("export_version", 4) // Định dạng cấu trúc danh sách trắng v4
                     put("exported_at", System.currentTimeMillis())
                     put("settings", settingsJson)
                     put("data", dataJson)
@@ -317,6 +370,7 @@ class SettingsViewModel @Inject constructor(
                 val json = JSONObject(jsonString)
                 val gson = Gson()
 
+                // Kiểm tra tính tương thích của export_version trước khi ghi đè
                 val exportVersion = json.optInt("export_version", 1)
                 if (exportVersion > 4) {
                     val errMsg = "❌ Lỗi: Bản sao lưu (v$exportVersion) mới hơn phiên bản ứng dụng hiện tại. Vui lòng cập nhật ứng dụng."
@@ -326,17 +380,24 @@ class SettingsViewModel @Inject constructor(
 
                 val settingsJson = json.optJSONObject("settings") ?: json
 
+                // 1. Phục hồi cấu hình Preferences
                 val groqKey         = settingsJson.optString("groq_api_key", "")
                 val resendKey       = settingsJson.optString("resend_api_key", "")
                 val resendSenderVal = settingsJson.optString("resend_sender", "")
+                val tuyaClientIdVal = settingsJson.optString("tuya_client_id", "")
+                val tuyaSecretVal   = settingsJson.optString("tuya_client_secret", "")
                 val darkModeVal     = settingsJson.optBoolean("dark_mode", false)
 
                 context.dataStore.edit { prefs ->
-                    if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]   = groqKey
-                    if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY] = resendKey
-                    if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]  = resendSenderVal
+                    if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]       = groqKey
+                    if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY]     = resendKey
+                    if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]      = resendSenderVal
+                    if (tuyaClientIdVal.isNotEmpty()) prefs[TUYA_CLIENT_ID]     = tuyaClientIdVal
+                    if (tuyaSecretVal.isNotEmpty())   prefs[TUYA_CLIENT_SECRET] = tuyaSecretVal
                     prefs[DARK_MODE] = darkModeVal
                 }
+                _tuyaClientId.value = tuyaClientIdVal
+                _tuyaClientSecret.value = tuyaSecretVal
 
                 var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
@@ -344,13 +405,16 @@ class SettingsViewModel @Inject constructor(
                 if (dataJson != null) {
                     val sdb = database.openHelper.writableDatabase
                     
+                    // Khởi động Transaction để bảo đảm an toàn dữ liệu, tự động Rollback nếu lỗi giữa chừng
                     sdb.beginTransaction()
                     try {
+                        // Tắt ràng buộc khóa ngoại tạm thời để tránh lỗi xung đột thứ tự xóa bảng
                         sdb.execSQL("PRAGMA foreign_keys=OFF;")
 
                         for (tableName in BACKUP_TABLES) {
                             val rowsArray = dataJson.optJSONArray(tableName) ?: continue
 
+                            // NGHIỆP VỤ ĐẶC THÙ (APP_CONFIG): Sử dụng upsert của Provider để xóa cache và gửi tín hiệu notify
                             if (tableName == "app_config") {
                                 val list: List<AppConfigEntity> = gson.fromJson(
                                     rowsArray.toString(), 
@@ -361,6 +425,8 @@ class SettingsViewModel @Inject constructor(
                                 continue
                             }
 
+                            // Đọc cấu trúc cột thực tế trên thiết bị của bảng hiện tại
+                            // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu chữ ký phương thức
                             val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", emptyArray<Any?>())
                             val existingColumns = mutableSetOf<String>()
                             if (pragmaCursor.moveToFirst()) {
@@ -375,6 +441,7 @@ class SettingsViewModel @Inject constructor(
 
                             if (existingColumns.isEmpty()) continue
 
+                            // Nghiệp vụ đặc thù Q&A: Chỉ xóa những dòng KHÔNG thuộc loại "auto_init" để không làm hỏng dữ liệu khởi tạo mặc định của hệ thống
                             if (tableName == "qa_data") {
                                 sdb.execSQL("DELETE FROM `$tableName` WHERE `category` != 'auto_init'")
                             } else {
@@ -388,6 +455,7 @@ class SettingsViewModel @Inject constructor(
                             val colKeys = firstRow.keys()
                             while (colKeys.hasNext()) {
                                 val colName = colKeys.next()
+                                // Lọc chống thừa cột (chỉ insert cột thực tế đang tồn tại ở Schema vật lý hiện hành)
                                 if (colName in existingColumns) {
                                     columnsToInsert.add(colName)
                                 }
@@ -408,6 +476,7 @@ class SettingsViewModel @Inject constructor(
 
                                     bindArgs[colIndex] = when {
                                         value == JSONObject.NULL -> null
+                                        // GIẢI MÃ BLOB: Đọc nhãn định dạng để giải mã Base64 sang mảng byte chuẩn
                                         value is JSONObject && value.optString("_type") == "blob" -> {
                                             val base64Data = value.getString("data")
                                             android.util.Base64.decode(base64Data, android.util.Base64.NO_WRAP)
@@ -419,7 +488,9 @@ class SettingsViewModel @Inject constructor(
                                 restoredCount++
                             }
 
+                            // NGHIỆP VỤ ĐẶC THÙ (CAMERAS): Tự sinh cấu hình CustomerSetting mặc định nếu chưa tồn tại
                             if (tableName == "cameras") {
+                                // ✅ ĐÃ SỬA: Thay null bằng emptyArray<Any?>() để khớp kiểu phương thức
                                 val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", emptyArray<Any?>())
                                 if (cursor.moveToFirst()) {
                                     do {
@@ -448,14 +519,18 @@ class SettingsViewModel @Inject constructor(
                     }
                 }
 
+                // Đồng bộ hóa RAM Cache của TrainingSkill được cập nhật tức thời ngay sau khi Import dữ liệu thành công
                 trainingSkill.refreshQAList("default_user")
 
+                // TỰ ĐỘNG ĐỒNG BỘ BẢN SAO SỐ LÊN DASHBOARD: Cập nhật sơ đồ thiết bị ngay lập tức sau khi import
                 try {
                     cameraSkill.initialize()
+                    tuyaManager.loadDevicesFromDB()
                 } catch (e: Exception) {
-                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ sau khi import thất bại", e)
+                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya sau khi import thất bại", e)
                 }
 
+                // Kích hoạt lại lịch trình tự động hóa
                 if (dataJson?.has("schedules") == true || dataJson?.has("ScheduleEntity") == true) {
                     com.aichatvn.agent.scheduler.TaskScheduler.runNow(context)
                 }

@@ -35,7 +35,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
-import com.aichatvn.agent.data.model.FacebookPageEntity
+import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -56,20 +56,25 @@ fun SettingsScreen(
     val darkMode         by viewModel.darkMode.collectAsState()
     val resendApiKey     by viewModel.resendApiKey.collectAsState()
     val resendSender     by viewModel.resendSender.collectAsState()
+    val tuyaClientId     by viewModel.tuyaClientId.collectAsState()
+    val tuyaClientSecret by viewModel.tuyaClientSecret.collectAsState()
     val exportResult     by viewModel.exportResult.collectAsState()
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
     val configSaveResult by viewModel.configSaveResult.collectAsState()
-    val facebookPages    by viewModel.facebookPages.collectAsState()
+    val facebookPages    by viewModel.facebookPages.collectAsState() // ✅ ĐÃ THÊM: Quan sát danh sách trang từ DB
 
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
     var resendSenderInput     by remember(resendSender)   { mutableStateOf(resendSender) }
+    var tuyaClientIdInput     by remember(tuyaClientId)   { mutableStateOf(tuyaClientId) }
+    var tuyaClientSecretInput by remember(tuyaClientSecret) { mutableStateOf(tuyaClientSecret) }
 
     var testEmailAddress  by remember { mutableStateOf("") }
     var showSaved         by remember { mutableStateOf(false) }
     var errorMessage      by remember { mutableStateOf<String?>(null) }
     var testEmailResult   by remember { mutableStateOf<String?>(null) }
+    var tuyaTestResult    by remember { mutableStateOf<String?>(null) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -117,6 +122,39 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            Text("🔌 Thiết lập nhà thông minh Tuya Smart Life", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text("Đăng ký tài khoản miễn phí tại developer.tuya.com → Tạo Cloud Project → Liên kết app Smart Life.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                    Text("Lấy Client ID và Client Secret từ project để điền xuống phía dưới.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f))
+                }
+            }
+            OutlinedTextField(value = tuyaClientIdInput, onValueChange = { tuyaClientIdInput = it }, label = { Text("Tuya Access ID / Client ID") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(value = tuyaClientSecretInput, onValueChange = { tuyaClientSecretInput = it }, label = { Text("Tuya Access Secret / Client Secret") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput); showSaved = true }, modifier = Modifier.weight(1f)) { Text("💾 Lưu cấu hình Tuya") }
+                Button(
+                    onClick = { scope.launch { tuyaTestResult = viewModel.testTuyaConnection(tuyaClientIdInput, tuyaClientSecretInput) } },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                ) { Text("🔌 Thử kết nối") }
+            }
+            if (tuyaTestResult != null) {
+                Text(tuyaTestResult!!, style = MaterialTheme.typography.bodySmall,
+                    color = if (tuyaTestResult!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+            }
+            OutlinedButton(
+                onClick = { navController.navigate("tuya") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🔌 Quản lý danh sách thiết bị Tuya")
+            }
+
+            HorizontalDivider()
+
             Text("📧 Cấu hình gửi Mail cảnh báo bằng Resend.com", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
                 Column(modifier = Modifier.padding(10.dp)) {
@@ -152,7 +190,7 @@ fun SettingsScreen(
             PluginConfigSection(
                 configs = allConfigs,
                 configSaveResult = configSaveResult,
-                facebookPages = facebookPages,
+                facebookPages = facebookPages, // ✅ ĐÃ SỬA: Chuyển tiếp danh sách trang xuống
                 onSave = { key, value -> viewModel.saveConfig(key, value) },
                 onReset = { key -> viewModel.resetConfig(key) }
             )
@@ -199,6 +237,7 @@ fun SettingsScreen(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
                     viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
+                    viewModel.saveTuyaConfig(tuyaClientIdInput, tuyaClientSecretInput)
                     showSaved = true; errorMessage = null
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -228,7 +267,7 @@ fun SettingsScreen(
 private fun PluginConfigSection(
     configs: List<AppConfigEntity>,
     configSaveResult: String?,
-    facebookPages: List<FacebookPageEntity>,
+    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận danh sách trang
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -277,7 +316,7 @@ private fun PluginConfigSection(
             pluginId = pluginId,
             items = items,
             allConfigs = configs,
-            facebookPages = facebookPages,
+            facebookPages = facebookPages, // ✅ ĐÃ SỬA: Truyền tiếp danh sách trang xuống dưới
             onSave = onSave,
             onReset = onReset
         )
@@ -289,7 +328,7 @@ private fun PluginGroupCard(
     pluginId: String,
     items: List<AppConfigEntity>,
     allConfigs: List<AppConfigEntity>,
-    facebookPages: List<FacebookPageEntity>,
+    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận tham số trang facebook
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -302,8 +341,11 @@ private fun PluginGroupCard(
         "camera"    -> Pair("📷", "Camera giám sát thửa đất")
         "email"     -> Pair("📧", "Email thông báo cảnh báo")
         "schedule"  -> Pair("⏰", "Lịch trình tự động hóa")
+        
         "facebook"  -> Pair("📘", "Facebook Messenger")
+        
         "telegram"  -> Pair("✈️", "Telegram Assistant")
+        
         "website"   -> Pair("💻", "Website Chat Widget")
         else        -> Pair("🔧", "Cấu hình $pluginId")
     }
@@ -329,6 +371,7 @@ private fun PluginGroupCard(
             if (groupExpanded) {
                 Spacer(Modifier.height(4.dp))
 
+                // ✅ ĐÃ THÊM: Nếu mở rộng thẻ cấu hình Website, tự động render mã nhúng HTML kèm nút Copy 1 chạm!
                 if (pluginId == "website") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val widgetKey = allConfigs.firstOrNull { it.key == AppConfigDefaults.WEBSITE_WIDGET_KEY }?.value ?: ""
@@ -373,6 +416,11 @@ private fun PluginGroupCard(
                                     Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
                                 }
 
+                                // ✅ ĐÃ THÊM: URL nhúng riêng cho kiểu "Embed by URL" (Google Sites và các trình
+                                // dựng web kéo-thả khác chặn localStorage khi dùng "Embed code" do bọc iframe
+                                // sandbox không allow-same-origin — mỗi lần refresh trang sẽ mất senderId/lịch sử).
+                                // Trỏ thẳng iframe tới URL này (origin thật) thì localStorage lưu bền qua các lần
+                                // refresh. Xem route /widget-frame trên app.py (Render).
                                 Spacer(Modifier.height(16.dp))
                                 Text(
                                     "🔗 URL nhúng (kiểu \"Nhúng URL\" — dùng cho Google Sites hoặc web kéo-thả):",
@@ -408,11 +456,13 @@ private fun PluginGroupCard(
                     }
                 }
 
+                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Facebook kèm danh sách Fanpage thực tế
                 if (pluginId == "facebook") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
                     val authUrl = "$gatewayUrl/auth/facebook?token=$gatewayToken"
 
+                    // --- VẼ DANH SÁCH FANPAGE ĐÃ KẾT NỐI ---
                     if (facebookPages.isNotEmpty()) {
                         Card(
                             modifier = Modifier
@@ -489,6 +539,7 @@ private fun PluginGroupCard(
                     }
                 }
 
+                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Zalo
                 if (pluginId == "zalo") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
@@ -735,7 +786,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                         .padding(8.dp)
                 ) {
                     Text(
-                        text = entry.response, // wait, dev is undefined! Ah, this was entry.response in original but let's check
+                        text = entry.response,
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
