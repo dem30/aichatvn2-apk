@@ -12,7 +12,6 @@ import com.aichatvn.agent.core.QAInitBuilder
 import com.aichatvn.agent.service.WebhookGatewayService
 import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
-import dagger.hilt.android.AppHiltAndroidApp
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,8 +42,6 @@ class MainApplication : Application(), Configuration.Provider {
         logger.d("MainApplication", "App khởi động - Khởi tạo plugins")
 
         initializePlugins()
-
-        // ❌ ĐÃ GỠ BỎ: TaskScheduler.ensureRunning(this) không còn sử dụng
 
         // Tự động khởi chạy WebhookGatewayService khi mở ứng dụng từ Launcher
         try {
