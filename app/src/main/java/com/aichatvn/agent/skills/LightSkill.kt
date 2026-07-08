@@ -87,7 +87,9 @@ class LightSkill @Inject constructor(
                     type = DeviceType.LIGHT,
                     pluginId = manifest.id,
                     defaultAction = "status",
-                    defaultParams = mapOf("device" to dev.name),
+                    // ✅ SỬA: dùng dev.id (duy nhất) thay vì dev.name — tránh trường hợp 2 thiết bị
+                    // trùng tên trên Tuya khiến nút bấm trên dashboard điều khiển nhầm thiết bị.
+                    defaultParams = mapOf("device" to dev.id),
                     supportedActions = listOf(
                         DeviceAction(
                             id = "set",

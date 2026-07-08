@@ -17,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import org.json.JSONArray
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import javax.crypto.Mac
@@ -54,8 +55,12 @@ class TuyaManager @Inject constructor(
         )
         
         private const val DEFAULT_REGION = "sg"
-        private var powerDps = "1"
     }
+
+    // Cache mã lệnh bật/tắt (DP code) thực tế của từng thiết bị, vì mỗi loại/model Tuya
+    // có thể dùng code khác nhau ("switch", "switch_1", "switch_led"...). Không hardcode "1"
+    // như trước nữa — đó là nguyên nhân lỗi "command or value not support".
+    private val switchCodeCache = mutableMapOf<String, String>()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -185,14 +190,32 @@ class TuyaManager @Inject constructor(
         deviceCache
     }
 
-    private suspend fun getDeviceInfo(deviceName: String): DeviceInfo = withContext(Dispatchers.IO) {
-        val cached = deviceCache[deviceName]
-        if (cached != null) {
-            return@withContext cached
+    // ✅ SỬA: nhận cả ID lẫn tên (deviceKey). Ưu tiên tra theo ID trước vì ID là duy nhất
+    // trên Tuya Cloud (name có thể trùng nhau giữa nhiều thiết bị). Value đến từ menu chọn
+    // "Số N" (AgentKernel.buildNumberedQuestion) LUÔN là ID; value gõ tay/giọng nói (vd "bật
+    // đèn phòng khách") LÀ tên → fallback tra theo tên ở bước 2.
+    private suspend fun getDeviceInfo(deviceKey: String): DeviceInfo = withContext(Dispatchers.IO) {
+        // 1) Tra theo ID trước — duy nhất, không lo trùng
+        deviceCache.values.find { it.id == deviceKey }?.let { return@withContext it }
+        tuyaDeviceDao.getDeviceById(deviceKey)?.let { entity ->
+            val info = DeviceInfo(
+                id = entity.id,
+                name = entity.name,
+                online = entity.online,
+                category = entity.category,
+                productName = entity.productName
+            )
+            deviceCache[entity.id] = info // cache theo ID để lần sau vẫn ưu tiên khớp ID
+            return@withContext info
         }
-        
-        val entity = tuyaDeviceDao.getDeviceByName(deviceName)
-        if (entity != null) {
+
+        // 2) Fallback: tra theo TÊN — chỉ dùng khi người dùng gõ tay/nói, không qua menu số.
+        // ⚠️ Nếu trùng tên, kết quả có thể không xác định (Room chỉ trả về 1 dòng bất kỳ).
+        val cachedByName = deviceCache[deviceKey]
+        if (cachedByName != null) {
+            return@withContext cachedByName
+        }
+        tuyaDeviceDao.getDeviceByName(deviceKey)?.let { entity ->
             val info = DeviceInfo(
                 id = entity.id,
                 name = entity.name,
@@ -203,8 +226,8 @@ class TuyaManager @Inject constructor(
             deviceCache[entity.name] = info
             return@withContext info
         }
-        
-        throw IllegalArgumentException("Không tìm thấy thiết bị '$deviceName'")
+
+        throw IllegalArgumentException("Không tìm thấy thiết bị '$deviceKey'")
     }
 
     private suspend fun updateDeviceStatus(deviceId: String, online: Boolean) = withContext(Dispatchers.IO) {
@@ -354,18 +377,18 @@ class TuyaManager @Inject constructor(
         logger.i("TuyaManager", "💡 TẮT ${device.name}")
     }
 
-    suspend fun getStatus(deviceName: String): Boolean = withContext(Dispatchers.IO) {
-        val device = getDeviceInfo(deviceName)
+    // Gọi API lấy danh sách trạng thái (status) thô của thiết bị — dùng chung cho getStatus() và resolveSwitchCode()
+    private suspend fun fetchDeviceStatusList(deviceId: String): JSONArray = withContext(Dispatchers.IO) {
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""
         val clientSecret = prefs[CLIENT_SECRET] ?: ""
         val baseUrl = getApiBaseUrl()
-        
-        val urlPath = "/v1.0/devices/${device.id}/status"
+
+        val urlPath = "/v1.0/devices/$deviceId/status"
         val timestamp = System.currentTimeMillis()
         val nonce = UUID.randomUUID().toString()
-        
+
         val sign = calculateSignature(
             clientId = clientId,
             accessToken = token,
@@ -376,7 +399,7 @@ class TuyaManager @Inject constructor(
             urlPathAndQuery = urlPath,
             bodyStr = ""
         )
-        
+
         val url = "$baseUrl$urlPath"
         val request = Request.Builder()
             .url(url)
@@ -388,35 +411,60 @@ class TuyaManager @Inject constructor(
             .addHeader("sign_method", "HMAC-SHA256")
             .get()
             .build()
-        
+
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
             throw Exception("Lấy trạng thái thất bại: ${response.code}")
         }
-        
+
         val json = JSONObject(response.body?.string() ?: "")
         val success = json.optBoolean("success")
         if (!success) {
             val msg = json.optString("msg", "Unknown error")
             throw Exception("Status API error: $msg")
         }
-        
-        val result = json.optJSONArray("result")
-        if (result != null) {
-            for (i in 0 until result.length()) {
-                val status = result.getJSONObject(i)
-                if (status.optString("code") == powerDps) {
-                    val value = status.opt("value")
-                    return@withContext when (value) {
-                        is Boolean -> value
-                        is Int -> value == 1
-                        is String -> value == "true" || value == "1"
-                        else -> false
-                    }
+
+        json.optJSONArray("result") ?: org.json.JSONArray()
+    }
+
+    // Tự động dò mã lệnh bật/tắt (DP code) thật của thiết bị từ danh sách status trả về,
+    // vì mỗi model Tuya có thể dùng code khác nhau: "switch", "switch_1", "switch_led"...
+    // Kết quả được cache lại theo deviceId để không phải gọi lại API mỗi lần điều khiển.
+    private suspend fun resolveSwitchCode(deviceId: String): String {
+        switchCodeCache[deviceId]?.let { return it }
+
+        val statusList = fetchDeviceStatusList(deviceId)
+        val codes = (0 until statusList.length()).map { statusList.getJSONObject(it).optString("code") }
+
+        // Ưu tiên theo thứ tự phổ biến nhất của Tuya cho nhóm Switch/Socket/Light
+        val preferredOrder = listOf("switch_led", "switch", "switch_1")
+        val resolved = preferredOrder.firstOrNull { it in codes }
+            ?: codes.firstOrNull { it.startsWith("switch") }
+            ?: throw Exception("Không tìm thấy mã lệnh bật/tắt phù hợp cho thiết bị này (codes: $codes)")
+
+        switchCodeCache[deviceId] = resolved
+        logger.i("TuyaManager", "🔎 Đã dò mã lệnh bật/tắt cho $deviceId: $resolved")
+        resolved
+    }
+
+    suspend fun getStatus(deviceName: String): Boolean = withContext(Dispatchers.IO) {
+        val device = getDeviceInfo(deviceName)
+        val switchCode = resolveSwitchCode(device.id)
+        val result = fetchDeviceStatusList(device.id)
+
+        for (i in 0 until result.length()) {
+            val status = result.getJSONObject(i)
+            if (status.optString("code") == switchCode) {
+                val value = status.opt("value")
+                return@withContext when (value) {
+                    is Boolean -> value
+                    is Int -> value == 1
+                    is String -> value == "true" || value == "1"
+                    else -> false
                 }
             }
         }
-        
+
         false
     }
 
@@ -426,7 +474,8 @@ class TuyaManager @Inject constructor(
         val clientId = prefs[CLIENT_ID] ?: ""
         val clientSecret = prefs[CLIENT_SECRET] ?: ""
         val baseUrl = getApiBaseUrl()
-        
+        val switchCode = resolveSwitchCode(device.id)
+
         val urlPath = "/v1.0/devices/${device.id}/commands"
         val timestamp = System.currentTimeMillis()
         val nonce = UUID.randomUUID().toString()
@@ -434,7 +483,7 @@ class TuyaManager @Inject constructor(
         val bodyJson = JSONObject().apply {
             put("commands", org.json.JSONArray().apply {
                 put(JSONObject().apply {
-                    put("code", powerDps)
+                    put("code", switchCode)
                     put("value", state)
                 })
             })

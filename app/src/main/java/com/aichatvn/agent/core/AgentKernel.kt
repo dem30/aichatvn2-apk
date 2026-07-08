@@ -1630,7 +1630,17 @@ class AgentKernel @Inject constructor(
         if (actualKey in setOf("device", "device_id", "deviceId")) {
             val devices = database.tuyaDeviceDao().getAllDevices()
             if (devices.isNotEmpty()) {
-                return buildNumberedQuestion("Bạn muốn điều khiển thiết bị nào?", devices.map { it.name to it.id })
+                // ✅ SỬA: value PHẢI là it.id (duy nhất) — không dùng it.name vì có thể trùng tên
+                // giữa nhiều thiết bị trên Tuya, khiến "Số 1"/"Số 2" cùng trỏ về 1 thiết bị.
+                // Nếu tên bị trùng, gắn thêm 4 ký tự cuối của ID vào label để user phân biệt được.
+                val duplicateNames = devices.groupBy { it.name }.filterValues { it.size > 1 }.keys
+                return buildNumberedQuestion(
+                    "Bạn muốn điều khiển thiết bị nào?",
+                    devices.map { d ->
+                        val label = if (d.name in duplicateNames) "${d.name} (${d.id.takeLast(4)})" else d.name
+                        label to d.id
+                    }
+                )
             }
         }
         if (actualKey == "id" && plugin?.manifest?.id == "schedule") {
