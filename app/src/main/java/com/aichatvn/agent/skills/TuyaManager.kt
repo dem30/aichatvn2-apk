@@ -192,8 +192,8 @@ class TuyaManager @Inject constructor(
 
     // ✅ SỬA: nhận cả ID lẫn tên (deviceKey). Ưu tiên tra theo ID trước vì ID là duy nhất
     // trên Tuya Cloud (name có thể trùng nhau giữa nhiều thiết bị). Value đến từ menu chọn
-    // "Số N" (AgentKernel.buildNumberedQuestion) LUÔN là ID; value gõ tay/giọng nói (vd "bật
-    // đèn phòng khách") LÀ tên → fallback tra theo tên ở bước 2.
+    // "Số N" (AgentKernel.buildNumberedQuestion) và từ dashboard LUÔN là ID; value gõ tay/
+    // giọng nói (vd "bật đèn phòng khách") LÀ tên → fallback tra theo tên ở bước 2.
     private suspend fun getDeviceInfo(deviceKey: String): DeviceInfo = withContext(Dispatchers.IO) {
         // 1) Tra theo ID trước — duy nhất, không lo trùng
         deviceCache.values.find { it.id == deviceKey }?.let { return@withContext it }
@@ -205,12 +205,11 @@ class TuyaManager @Inject constructor(
                 category = entity.category,
                 productName = entity.productName
             )
-            deviceCache[entity.id] = info // cache theo ID để lần sau vẫn ưu tiên khớp ID
+            deviceCache[entity.id] = info
             return@withContext info
         }
 
         // 2) Fallback: tra theo TÊN — chỉ dùng khi người dùng gõ tay/nói, không qua menu số.
-        // ⚠️ Nếu trùng tên, kết quả có thể không xác định (Room chỉ trả về 1 dòng bất kỳ).
         val cachedByName = deviceCache[deviceKey]
         if (cachedByName != null) {
             return@withContext cachedByName
@@ -452,20 +451,25 @@ class TuyaManager @Inject constructor(
         val switchCode = resolveSwitchCode(device.id)
         val result = fetchDeviceStatusList(device.id)
 
+        // ✅ SỬA: dùng biến trung gian + break thay vì return@withContext lồng trong
+        // if/for — cách cũ khiến trình biên dịch Kotlin (K2) báo lỗi "Missing return
+        // statement" vì không chứng minh được mọi nhánh đều return.
+        var statusResult = false
         for (i in 0 until result.length()) {
             val status = result.getJSONObject(i)
             if (status.optString("code") == switchCode) {
                 val value = status.opt("value")
-                return@withContext when (value) {
+                statusResult = when (value) {
                     is Boolean -> value
                     is Int -> value == 1
                     is String -> value == "true" || value == "1"
                     else -> false
                 }
+                break
             }
         }
 
-        false
+        statusResult
     }
 
     private suspend fun setDeviceState(device: DeviceInfo, state: Boolean) = withContext(Dispatchers.IO) {
