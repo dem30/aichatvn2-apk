@@ -13,7 +13,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.aichatvn.agent.core.AgentKernel
-
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
@@ -22,6 +21,7 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatSkill
+import com.aichatvn.agent.scheduler.CronParser // ĐÃ THÊM: Import lớp phân tích cron độc lập
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
@@ -31,7 +31,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.IOException
-
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
@@ -61,50 +60,41 @@ class WebhookGatewayService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
 
-    // OkHttp Client chuyên dụng để tái sử dụng Connection Pool và Keep-Alive
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        // ✅ ĐÃ SỬA: readTimeout(0) = vô hạn khiến coroutine treo mãi nếu server chết mà
-        // không có FIN/RST tới máy (mất mạng, Render restart, NAT rớt gói...).
-        // Đặt 45s: nếu 45s không có byte nào (kể cả dòng ping giữ kết nối từ server)
-        // thì coi như đứt, ném IOException để rơi vào catch -> tự reconnect + re-register.
         .readTimeout(45, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // Client OkHttp cho các tác vụ API thông thường (Register, Heartbeat, Send)
     private val apiClient = okHttpClient.newBuilder()
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // Client OkHttp chuyên dụng cho Long Polling Telegram
     private val pollingClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
     companion object {
-        // ✅ ĐÃ SỬA: đổi CHANNEL_ID sang "_v2" — Android KHÔNG cho phép đổi importance/sound
-        // của một channel đã tồn tại trên máy người dùng bằng code. Đổi ID buộc hệ thống tạo
-        // channel MỚI với cấu hình IMPORTANCE_LOW + tắt sound ngay từ đầu, không cần người
-        // dùng tự vào Cài đặt tắt tay. Channel cũ (có sound) sẽ không còn được dùng nữa.
         private const val CHANNEL_ID = "WebhookGatewayServiceChannel_v2"
         private const val NOTIFICATION_ID = 1002
     }
 
     override fun onCreate() {
         super.onCreate()
-        acquireWakeLock() // ✅ ĐÃ SỬA: Giữ WakeLock an toàn ngay khi khởi tạo dịch vụ
+        acquireWakeLock()
 
         createNotificationChannel()
         startForegroundService()
         
-        startCloudGatewaySSE()       // Lắng nghe kết nối hầm SSE từ Render
-        startTelegramLongPolling()   // Tự nhận tin nhắn Telegram trực tiếp (Long Polling)
-        startHeartbeatLoop()         // Giữ thức Render Gateway (Heartbeat)
+        startCloudGatewaySSE()       
+        startTelegramLongPolling()   
+        startHeartbeatLoop()         
+        
+        // ✅ THÊM MỚI: Kích hoạt vòng lặp quét lịch độc lập từng phút
+        startScheduleLoop()
     }
 
-    // ✅ ĐÃ THÊM: Hàm bổ trợ quản lý WakeLock an toàn chống crash và tránh hao pin khi thoát dịch vụ
     private fun acquireWakeLock() {
         try {
             if (wakeLock == null) {
@@ -259,7 +249,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ===== 🔌 KÊNH 1: NHẬN TIN NHẮN TỪ RENDER QUA SSE =====
     private fun startCloudGatewaySSE() {
         serviceScope.launch(Dispatchers.IO) {
             var isOfflineLogged = false
@@ -306,7 +295,6 @@ class WebhookGatewayService : Service() {
                             return@use
                         }
 
-                        // ✅ ĐÃ SỬA: Kiểm tra an toàn khác null để tránh lỗi sập NullPointerException trên response.body
                         val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
                         val reader = BufferedReader(InputStreamReader(body.byteStream()))
                         var line: String? = null
@@ -371,10 +359,6 @@ class WebhookGatewayService : Service() {
                                                 if (text.isNotBlank()) {
                                                     val unifiedUsername = "${platform}_$senderId"
 
-                                                    // ✅ MỚI: Luôn ghi nhận Page ID Facebook mới nhất mà khách vừa nhắn tới
-                                                    // (bất kể bot đang bật hay tắt), để ChatSkill dùng lại đúng Page ID này
-                                                    // khi Admin gõ tay trả lời thủ công sau đó — trước đây thông tin này
-                                                    // bị vứt bỏ hoàn toàn ở nhánh "Người Trực" (isBotEnabled = false).
                                                     if (platform == "facebook" && incomingPageId.isNotBlank()) {
                                                         withContext(Dispatchers.IO) {
                                                             val existingForPage = database.cameraDao().getCustomerSetting(senderId)
@@ -457,7 +441,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ===== 🔌 KÊNH 2: TỰ NHẬN TIN NHẮN TELEGRAM (LONG POLLING) =====
     private fun startTelegramLongPolling() {
         serviceScope.launch(Dispatchers.IO) {
             var lastUpdateId = 0
@@ -586,15 +569,12 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ===== 🔌 KÊNH 3: NHỊP TIM GIỮ THỨC RENDER GATEWAY (HEARTBEAT LOOP) =====
-   
-  private fun startHeartbeatLoop() {
+    private fun startHeartbeatLoop() {
         serviceScope.launch(Dispatchers.IO) {
             delay(10000)
             
             while (isActive) {
                 val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-                // Đọc thêm mã token bảo mật của Gateway
                 val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
                 
                 if (gatewayUrl.isNotBlank() && gatewayToken.isNotBlank() && isNetworkAvailable()) {
@@ -602,7 +582,7 @@ class WebhookGatewayService : Service() {
                         logger.d("Heartbeat", "💓 Đang gửi nhịp tim gia hạn cổng kết nối...")
                         
                         val request = Request.Builder()
-                            .url("$gatewayUrl/ping/$gatewayToken") // Thay đổi từ /health sang cổng /ping/{token} chuyên dụng
+                            .url("$gatewayUrl/ping/$gatewayToken")
                             .get()
                             .build()
 
@@ -615,23 +595,85 @@ class WebhookGatewayService : Service() {
                         logger.e("Heartbeat", "❌ Gửi nhịp tim giữ thức thất bại: ${e.message}")
                     }
                 }
-                delay(10 * 60 * 1000L) // Nhịp tim chu kỳ 10 phút/lần (an toàn trước mốc 30 phút dọn dẹp của server)
+                delay(10 * 60 * 1000L)
             }
         }
     }
 
+    // ✅ THÊM MỚI: Luồng quét và thực thi lịch trình cục bộ (Thay thế cho WorkManager)
+    private fun startScheduleLoop() {
+        serviceScope.launch(Dispatchers.IO) {
+            delay(5000) // Đợi database và cơ chế tiêm phụ thuộc ổn định
+            while (isActive) {
+                try {
+                    val schedules = database.scheduleDao().getAllSchedules()
+                    val now = System.currentTimeMillis()
 
+                    for (schedule in schedules) {
+                        if (schedule.enabled != 1) continue
 
+                        // Tận dụng CronParser đã sửa bug logic ở File 1
+                        val shouldRun = CronParser.matches(schedule.cron, now, schedule.lastRunAt) ||
+                                (schedule.intervalMinutes > 0 && 
+                                 (now - schedule.lastRunAt) >= (schedule.intervalMinutes * 60_000L - 10_000L))
 
-  
+                        if (shouldRun) {
+                            val plugin = plugins.find { it.manifest.id == schedule.pluginId }
+                            if (plugin == null) {
+                                logger.w("ScheduleLoop", "⚠️ Plugin không tồn tại: ${schedule.pluginId}")
+                                continue
+                            }
+                            
+                            try {
+                                val params = if (schedule.params.isNotEmpty()) {
+                                    jsonObjectToMap(org.json.JSONObject(schedule.params))
+                                } else {
+                                    emptyMap()
+                                }
+
+                                val result = plugin.execute(schedule.action, params)
+                                logger.i("ScheduleLoop", "✅ Thực thi lịch trình thành công: ${schedule.pluginId}.${schedule.action} -> $result")
+                            } catch (e: Exception) {
+                                logger.e("ScheduleLoop", "❌ Lỗi thực thi action: ${schedule.pluginId}.${schedule.action}: ${e.message}")
+                            }
+                            database.scheduleDao().updateLastRun(schedule.id, now)
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("ScheduleLoop", "⚠️ Gặp lỗi trong vòng lặp quét lịch trình: ${e.message}")
+                }
+                delay(60_000L) // Quét database mỗi 60 giây một lần với WakeLock bảo vệ
+            }
+        }
+    }
+
+    // ✅ THÊM MỚI: Hàm chuyển đổi đệ quy an toàn JSON sang Map thuần tuý cho các Action
+    private fun jsonObjectToMap(json: org.json.JSONObject): Map<String, Any> {
+        val map = mutableMapOf<String, Any>()
+        json.keys().forEach { key ->
+            val value = json.get(key)
+            if (value != org.json.JSONObject.NULL) {
+                map[key] = when (value) {
+                    is org.json.JSONObject -> jsonObjectToMap(value)
+                    is org.json.JSONArray -> {
+                        val list = mutableListOf<Any>()
+                        for (i in 0 until value.length()) {
+                            val item = value.get(i)
+                            if (item != org.json.JSONObject.NULL) {
+                                list.add(if (item is org.json.JSONObject) jsonObjectToMap(item) else item)
+                            }
+                        }
+                        list
+                    }
+                    else -> value
+                }
+            }
+        }
+        return map
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // ✅ ĐÃ SỬA (tút tút liên tục): IMPORTANCE_DEFAULT khiến hệ thống phát âm thanh
-            // mỗi lần notify() được gọi. Service này chạy 24/7 nền và updateNotification()
-            // được gọi rất thường xuyên theo trạng thái mạng/SSE (mất mạng, đang kết nối,
-            // đã kết nối, lỗi HTTP, mất kết nối rồi tự retry mỗi 5s...) — mỗi lần đổi text là
-            // một tiếng "tút". Đây chỉ là trạng thái nền, không phải cảnh báo cần âm thanh,
-            // nên dùng IMPORTANCE_LOW: vẫn hiển thị ongoing, không rung, không kêu.
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Webhook Gateway Service Channel",
@@ -646,13 +688,12 @@ class WebhookGatewayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        acquireWakeLock() // Củng cố khóa giữ thức CPU bất cứ khi nào service được kích hoạt chạy
+        acquireWakeLock() 
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // Cơ chế tự khởi chạy lại Service khi bị người dùng vuốt đóng ứng dụng khỏi đa nhiệm (Task Swiped)
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         logger.i("WebhookGateway", "Task removed - restarting service")
@@ -672,7 +713,7 @@ class WebhookGatewayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        releaseWakeLock() // ✅ ĐÃ SỬA: Giải phóng khóa giữ thức CPU triệt để khi hủy dịch vụ
+        releaseWakeLock() 
         serviceScope.cancel()
         logger.i("WebhookGateway", "Dịch vụ đã tắt hoàn toàn.")
     }

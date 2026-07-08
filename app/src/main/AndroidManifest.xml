@@ -14,7 +14,8 @@
     
     <!-- Quyền chạy ngầm tiền cảnh cho Android 14 (Target SDK 34) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- ✅ THÊM MỚI: Khai báo quyền chạy ngầm đặc biệt thay cho dataSync để tránh giới hạn thời gian -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
@@ -53,12 +54,17 @@
             </intent-filter>
         </receiver>
 
-        <!-- Đăng ký dịch vụ Webhook Gateway cho Facebook/Zalo -->
+        <!-- ✅ ĐÃ SỬA: Chuyển đổi kiểu chạy ngầm sang specialUse để tránh bị hệ thống ép huỷ sau 6 tiếng -->
         <service
             android:name=".service.WebhookGatewayService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <!-- Bổ sung thuộc tính subtype giải trình lý do sử dụng đặc biệt theo tiêu chuẩn Google Play Console -->
+            <property 
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="smarthome_scheduler_webhook_sse" />
+        </service>
 
         <!-- Dịch vụ chạy ngầm riêng cho Trợ lý thoại rảnh tay (mic) -->
         <service

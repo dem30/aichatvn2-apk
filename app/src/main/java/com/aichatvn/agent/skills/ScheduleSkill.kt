@@ -2,7 +2,6 @@ package com.aichatvn.agent.skills
 
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel
-import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
@@ -151,7 +150,7 @@ class ScheduleSkill @Inject constructor(
         
         withContext(Dispatchers.IO) {
             database.scheduleDao().insertSchedule(schedule)
-            TaskScheduler.runNow(context)
+            // ❌ ĐÃ GỠ BỎ: TaskScheduler.runNow(context)
         }
         loadSchedules()
 
@@ -199,7 +198,7 @@ class ScheduleSkill @Inject constructor(
 
         withContext(Dispatchers.IO) {
             database.scheduleDao().insertSchedule(updatedSchedule)
-            TaskScheduler.runNow(context)
+            // ❌ ĐÃ GỠ BỎ: TaskScheduler.runNow(context)
         }
         loadSchedules()
 

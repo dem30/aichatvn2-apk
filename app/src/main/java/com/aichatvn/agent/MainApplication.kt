@@ -9,10 +9,10 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.QAInitBuilder
-import com.aichatvn.agent.scheduler.TaskScheduler
 import com.aichatvn.agent.service.WebhookGatewayService
 import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
+import dagger.hilt.android.AppHiltAndroidApp
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,9 +44,9 @@ class MainApplication : Application(), Configuration.Provider {
 
         initializePlugins()
 
-        TaskScheduler.ensureRunning(this)
+        // ❌ ĐÃ GỠ BỎ: TaskScheduler.ensureRunning(this) không còn sử dụng
 
-        // ✅ ĐÃ SỬA: Tự động khởi chạy WebhookGatewayService khi mở ứng dụng
+        // Tự động khởi chạy WebhookGatewayService khi mở ứng dụng từ Launcher
         try {
             val serviceIntent = Intent(this, WebhookGatewayService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -59,12 +59,7 @@ class MainApplication : Application(), Configuration.Provider {
             logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
         }
 
-        // ✅ ĐÃ THÊM: Khởi chạy vòng lặp hands-free (mic) ngầm, độc lập với ChatScreen/Inbox —
-        // để người dùng hạn chế vận động ra lệnh thoại được bất cứ lúc nào, kể cả màn hình tắt.
-        // ✅ ĐÃ SỬA: kiểm tra quyền RECORD_AUDIO trước — máy mới cài chưa cấp quyền này, gọi
-        // thẳng startForegroundService(type=microphone) sẽ bị hệ thống crash cả app (Android 14+).
-        // Service tự nó cũng tự kiểm tra lại quyền này (double-check), nhưng chặn sớm ở đây để
-        // tránh tốn 1 lượt gọi service vô ích khi biết chắc sẽ bị từ chối.
+        // Khởi chạy vòng lặp mic thoại rảnh tay (nếu đã có quyền)
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
         ) {
@@ -82,8 +77,7 @@ class MainApplication : Application(), Configuration.Provider {
         } else {
             logger.w(
                 "MainApplication",
-                "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này. " +
-                    "Cần gọi lại startForegroundService(VoiceAssistantService) sau khi người dùng cấp quyền mic."
+                "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này."
             )
         }
     }
