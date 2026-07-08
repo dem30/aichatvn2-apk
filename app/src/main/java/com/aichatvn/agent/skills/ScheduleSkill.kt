@@ -68,15 +68,26 @@ class ScheduleSkill @Inject constructor(
                     PluginParameter("id", "string", "ID lịch trình", true, "string")
                 )
             ),
+
+
+          
             PluginAction(
-                name = "toggle",
-                description = "Bật hoặc tắt trạng thái kích hoạt của một lịch trình",
-                examples = listOf("bật lịch trình", "tắt lịch trình"),
-                parameters = listOf(
-                    PluginParameter("id", "string", "ID lịch trình", true, "string"),
-                    PluginParameter("enabled", "boolean", "true: bật, false: tắt", true, "boolean")
-                )
-            )
+    name = "toggle",
+    description = "Bật hoặc tắt trạng thái kích hoạt của một lịch trình",
+    examples = listOf("bật lịch trình", "tắt lịch trình"),
+    exampleOverrides = mapOf(
+        "bật lịch trình" to mapOf("enabled" to true),
+        "tắt lịch trình" to mapOf("enabled" to false)
+    ),
+    parameters = listOf(
+        PluginParameter("id", "string", "ID lịch trình", true, "string"),
+        PluginParameter("enabled", "boolean", "true: bật, false: tắt", true, "boolean")
+    )
+)
+
+
+
+            
         )
     )
 

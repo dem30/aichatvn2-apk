@@ -120,6 +120,8 @@ data class PluginAction(
     val name: String,
     val description: String,
     val examples: List<String> = emptyList(),
+    val exampleOverrides: Map<String, Map<String, Any>> = emptyMap(), // ✅ MỚI
+    
     val parameters: List<PluginParameter> = emptyList(),
     val tags: List<String> = emptyList(),
     val enabled: Boolean = true,

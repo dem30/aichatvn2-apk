@@ -37,16 +37,26 @@ class LightSkill @Inject constructor(
         visibleOnDashboard = true,
         autoGenerateQA = true,
         actions = listOf(
-            PluginAction(
-                name = "set",
-                description = "Bật hoặc tắt đèn thông minh",
-                examples = listOf("bật đèn", "tắt đèn"),
-                tags = listOf("light", "switch", "relay", "device"),
-                parameters = listOf(
-                    PluginParameter("device", "string", "Tên thiết bị", true, "device"),
-                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
-                )
-            ),
+            
+          
+          
+          PluginAction(
+    name = "set",
+    description = "Bật hoặc tắt đèn thông minh",
+    examples = listOf("bật đèn", "tắt đèn"),
+    exampleOverrides = mapOf(
+        "bật đèn" to mapOf("state" to true),
+        "tắt đèn" to mapOf("state" to false)
+    ),
+    tags = listOf("light", "switch", "relay", "device"),
+    parameters = listOf(
+        PluginParameter("device", "string", "Tên thiết bị", true, "device"),
+        PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
+    )
+),
+
+
+          
             PluginAction(
                 name = "status",
                 description = "Xem trạng thái hiện tại của đèn",
@@ -56,6 +66,10 @@ class LightSkill @Inject constructor(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device")
                 )
             ),
+
+
+
+          
             PluginAction(
                 name = "scan",
                 description = "Quét các thiết bị đèn thông minh trong mạng",

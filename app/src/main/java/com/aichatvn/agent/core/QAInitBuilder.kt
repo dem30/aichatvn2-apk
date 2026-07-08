@@ -35,27 +35,37 @@ class QAInitBuilder @Inject constructor(
         targetPlugins.forEach { plugin ->
             // ✅ ĐÃ SỬA: Đọc danh mục actions từ manifest
             plugin.manifest.actions.filter { it.enabled }.forEach { action ->
-                val schemaParams = JSONObject()
-                action.parameters.forEach { param ->
-                    schemaParams.put(param.name, param.defaultValue ?: getDefaultPlaceholder(param))
-                }
-
-                // ✅ ĐÃ SỬA: Lấy toàn bộ siêu dữ liệu phiên bản từ manifest
-                val jsonSchema = JSONObject().apply {
-                    put("plugin", plugin.manifest.id)
-                    put("pluginVersion", plugin.manifest.pluginVersion)
-                    put("schemaVersion", plugin.manifest.schemaVersion)
-                    put("action", action.name)
-                    put("params", schemaParams)
-                }
-
                 if (action.examples.isEmpty()) return@forEach
 
                 val finalTriggers = action.examples
                     .map { it.trim().lowercase() }
                     .distinctBy { it }
 
+                // ✅ ĐÃ SỬA (fix bug bật/tắt cùng giá trị): trước đây schemaParams/jsonSchema được
+                // build 1 LẦN DUY NHẤT cho cả action, dùng chung cho mọi example — nên "bật đèn"
+                // và "tắt đèn" luôn nhận cùng 1 schema (state mặc định = false cho cả hai). Giờ
+                // build RIÊNG cho từng câu hỏi, ưu tiên đọc override khai báo tại
+                // action.exampleOverrides[question] trước khi rơi về defaultValue/placeholder.
                 finalTriggers.forEach { question ->
+                    val overrides = action.exampleOverrides[question] ?: emptyMap()
+
+                    val schemaParams = JSONObject()
+                    action.parameters.forEach { param ->
+                        val value = overrides[param.name]
+                            ?: param.defaultValue
+                            ?: getDefaultPlaceholder(param)
+                        schemaParams.put(param.name, value)
+                    }
+
+                    // ✅ ĐÃ SỬA: Lấy toàn bộ siêu dữ liệu phiên bản từ manifest
+                    val jsonSchema = JSONObject().apply {
+                        put("plugin", plugin.manifest.id)
+                        put("pluginVersion", plugin.manifest.pluginVersion)
+                        put("schemaVersion", plugin.manifest.schemaVersion)
+                        put("action", action.name)
+                        put("params", schemaParams)
+                    }
+
                     val schemaString = jsonSchema.toString()
                     val existing = existingByQuestion[question]
                     
@@ -129,10 +139,15 @@ class QAInitBuilder @Inject constructor(
         return try {
             val obj1 = JSONObject(jsonStr1)
             val obj2 = JSONObject(jsonStr2)
-            
+
+            // ✅ ĐÃ SỬA: trước đây chỉ so plugin/action/schemaVersion, KHÔNG so "params" — nên khi
+            // sửa exampleOverrides (vd fix state:false -> đúng true/false theo từng câu), QA cũ
+            // trong DB không tự refresh vì hàm này coi là "giống hệt". Giờ so thêm params.toString()
+            // để bất kỳ thay đổi giá trị tham số nào cũng kích hoạt update lại QA hiện có.
             obj1.optString("plugin") == obj2.optString("plugin") &&
             obj1.optString("action") == obj2.optString("action") &&
-            obj1.optString("schemaVersion") == obj2.optString("schemaVersion")
+            obj1.optString("schemaVersion") == obj2.optString("schemaVersion") &&
+            obj1.optJSONObject("params")?.toString() == obj2.optJSONObject("params")?.toString()
         } catch (_: Exception) {
             false
         }

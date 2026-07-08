@@ -212,32 +212,44 @@ class AgentKernel @Inject constructor(
     }
 
     private val resolverTable: Map<String, suspend (
-        param: PluginParameter,
-        currentValue: Any?,
-        isPlh: Boolean,
-        context: RoutingContext,
-        secondaryIntentQA: QAEntity?,
-        devicePlugins: List<Plugin>,
-        excludeIntentId: String?,
-        depth: Int
-    ) -> Any?> = mapOf(
-        "time" to { _, currentValue, _, context, _, _, _, _ ->
-            context.localEntities["cron"] ?: currentValue ?: ""
-        },
-        "interval" to { _, currentValue, _, context, _, _, _, _ ->
-            context.localEntities["intervalMinutes"] ?: currentValue ?: 0
-        },
-        "plugin_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
-            if (isPlh && secondaryIntent != null) resolvePluginIdFromSecondary(secondaryIntent) else currentValue ?: ""
-        },
-        "action_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
-            if (isPlh && secondaryIntent != null) resolveActionIdFromSecondary(secondaryIntent) else currentValue ?: ""
-        },
-        "params" to { param, currentValue, _, context, secondaryIntent, devicePlugins, excludeId, depth ->
-            resolveNestedParams(param, currentValue, context, secondaryIntent, devicePlugins, excludeId, depth)
+    param: PluginParameter,
+    currentValue: Any?,
+    isPlh: Boolean,
+    context: RoutingContext,
+    secondaryIntentQA: QAEntity?,
+    devicePlugins: List<Plugin>,
+    excludeIntentId: String?,
+    depth: Int
+) -> Any?> = mapOf(
+    "time" to { _, currentValue, _, context, _, _, _, _ ->
+        context.localEntities["cron"] ?: currentValue ?: ""
+    },
+    "interval" to { _, currentValue, _, context, _, _, _, _ ->
+        context.localEntities["intervalMinutes"] ?: currentValue ?: 0
+    },
+    "plugin_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
+        if (isPlh && secondaryIntent != null) resolvePluginIdFromSecondary(secondaryIntent) else currentValue ?: ""
+    },
+    "action_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
+        if (isPlh && secondaryIntent != null) resolveActionIdFromSecondary(secondaryIntent) else currentValue ?: ""
+    },
+    "params" to { param, currentValue, _, context, secondaryIntent, devicePlugins, excludeId, depth ->
+        resolveNestedParams(param, currentValue, context, secondaryIntent, devicePlugins, excludeId, depth)
+    },
+    // ✅ MỚI: cho phép xoá/toggle lịch trình bằng số thứ tự ("xoá lịch số 2") hoặc theo
+    // tên gợi nhớ ("xoá lịch bật đèn") thay vì bắt buộc phải biết UUID thật của ScheduleEntity.
+    "schedule_ref" to { _, currentValue, isPlh, _, _, _, _, _ ->
+        if (isPlh) {
+            currentValue ?: ""
+        } else {
+            resolveScheduleReference(currentValue.toString().trim())
         }
-    )
+    }
+)
 
+
+
+    
     private fun generateTraceId(): String = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
 
     private fun PendingIntent.toPendingState(): PendingState = PendingState(
@@ -1476,6 +1488,35 @@ class AgentKernel @Inject constructor(
     private fun resolveActionIdFromSecondary(secondaryIntent: QAEntity): String {
         return try { JSONObject(secondaryIntent.answer).optString("action", "") } catch (_: Exception) { "" }
     }
+
+
+
+    private suspend fun resolveScheduleReference(raw: String): String {
+    if (raw.isBlank()) return raw
+
+    val allSchedules = withContext(Dispatchers.IO) {
+        database.scheduleDao().getAllSchedules()
+    }.sortedBy { it.createdAt }
+
+    // Trường hợp 1: user nói số thứ tự — khớp đúng thứ tự hiển thị trên ScheduleScreen
+    // (ScheduleScreen.kt hiện đang dùng items(schedules.size){ index -> ... index+1 })
+    raw.toIntOrNull()?.let { orderNumber ->
+        allSchedules.getOrNull(orderNumber - 1)?.let { return it.id }
+    }
+
+    // Trường hợp 2: user nói theo tên/mô tả — fuzzy match theo label (cần Entity đã có field label)
+    val normalizedRaw = StringSimilarityUtil.normalizeVietnamese(raw)
+    val bestMatch = allSchedules
+        .filter { it.label.isNotBlank() }
+        .maxByOrNull { schedule ->
+            StringSimilarityUtil.calculateLocalSimilarity(
+                StringSimilarityUtil.normalizeVietnamese(schedule.label),
+                normalizedRaw
+            )
+        }
+
+    return bestMatch?.id ?: raw // không khớp gì thì trả nguyên giá trị, để executeIntent báo lỗi rõ ràng thay vì âm thầm sai
+}
 
     private suspend fun resolveNestedParams(
         param: PluginParameter,

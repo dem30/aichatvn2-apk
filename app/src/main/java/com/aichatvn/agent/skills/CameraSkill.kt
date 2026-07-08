@@ -83,25 +83,43 @@ class CameraSkill @Inject constructor(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera")
                 )
             ),
+            
+          
+          
+          
+          PluginAction(
+    name = "set_active",
+    description = "Bật hoặc tắt theo dõi của camera cụ thể",
+    examples = listOf("bật camera", "tắt camera"),
+    exampleOverrides = mapOf(
+        "bật camera" to mapOf("active" to true),
+        "tắt camera" to mapOf("active" to false)
+    ),
+    parameters = listOf(
+        PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
+        PluginParameter("active", "boolean", "Trạng thái bật/tắt", true, "boolean")
+    )
+),
+
+
+          
             PluginAction(
-                name = "set_active",
-                description = "Bật hoặc tắt theo dõi của camera cụ thể",
-                examples = listOf("bật camera", "tắt camera"),
-                parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
-                    PluginParameter("active", "boolean", "Trạng thái bật/tắt", true, "boolean")
-                )
-            ),
-            PluginAction(
-                name = "set_smart_mode",
-                description = "Bật hoặc tắt chế độ phân tích AI cho camera",
-                examples = listOf("bật ai camera", "tắt ai camera"),
-                parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
-                    PluginParameter("customerId", "string", "Mã khách hàng", false, "string"),
-                    PluginParameter("enabled", "boolean", "Trạng thái bật/tắt AI", true, "boolean")
-                )
-            ),
+    name = "set_smart_mode",
+    description = "Bật hoặc tắt chế độ phân tích AI cho camera",
+    examples = listOf("bật ai camera", "tắt ai camera"),
+    exampleOverrides = mapOf(
+        "bật ai camera" to mapOf("enabled" to true),
+        "tắt ai camera" to mapOf("enabled" to false)
+    ),
+    parameters = listOf(
+        PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
+        PluginParameter("customerId", "string", "Mã khách hàng", false, "string"),
+        PluginParameter("enabled", "boolean", "Trạng thái bật/tắt AI", true, "boolean")
+    )
+),
+
+
+          
             PluginAction(
                 name = "configure",
                 description = "Cập nhật cấu hình kỹ thuật cho thiết bị camera",

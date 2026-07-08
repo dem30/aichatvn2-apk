@@ -139,6 +139,7 @@ data class ScheduleEntity(
     val intervalMinutes: Int = 0, // 15, 30, 60
     val enabled: Int = 1,        // 0 = tắt, 1 = bật
     val lastRunAt: Long = 0L,
+    val label: String = "",
     val createdAt: Long
 )
 
