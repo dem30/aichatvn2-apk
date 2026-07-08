@@ -6,7 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -230,9 +230,9 @@ fun DashboardScreen(
                         }
                     }
 
-                    // 3. Hiển thị danh sách thiết bị bằng Composable tách biệt để Compose tối ưu hóa skip-recomposition
+                    // 3. Hiển thị danh sách thiết bị và phân bổ cử chỉ Tap / Long-press Drag
                     deviceNodes.forEach { node ->
-                        key(node.id) { // Đăng ký khóa định danh duy nhất để tối ưu hóa quản lý phần tử động
+                        key(node.id) {
                             DraggableDeviceNodeItem(
                                 node = node,
                                 baseScale = baseScale,
@@ -402,8 +402,7 @@ fun DashboardScreen(
 }
 
 /**
- * Thành phần Composable tách biệt bao đóng trạng thái kéo thả cục bộ của từng thiết bị,
- * giúp tối ưu hóa hiệu năng render (Skippable) và chống ghi đè nhầm trạng thái trong lúc kéo.
+ * Thành phần Composable đóng gói kéo thả sau khi nhấn giữ (After Long Press) để phân tách chạm click.
  */
 @Composable
 fun DraggableDeviceNodeItem(
@@ -414,13 +413,9 @@ fun DraggableDeviceNodeItem(
     onNodeClick: (DeviceNode) -> Unit,
     onUpdatePosition: (String, Float, Float) -> Unit
 ) {
-    // Khởi tạo tọa độ kéo cục bộ, độc lập hoàn toàn với chu kỳ Recompose chính của màn hình
     var localPosition by remember(node.id) { mutableStateOf(Offset(node.x, node.y)) }
-    
-    // Cờ kiểm soát trạng thái đang thực hiện kéo thả
     var isDragging by remember(node.id) { mutableStateOf(false) }
 
-    // Đồng bộ lại vị trí cục bộ ngược từ Flow ngoài (chỉ kích hoạt khi người dùng KHÔNG thực hiện kéo thả)
     LaunchedEffect(node.x, node.y) {
         if (!isDragging) {
             localPosition = Offset(node.x, node.y)
@@ -430,45 +425,33 @@ fun DraggableDeviceNodeItem(
     Box(
         modifier = Modifier
             .offset {
-                // SỬ DỤNG LAMBDA OFFSET: Trì hoãn việc đọc localPosition sang Layout phase.
-                // Chỉ recompose cục bộ trong phạm vi Card thiết bị đang kéo, bỏ qua toàn bộ khung nền Canvas và các Node còn lại.
                 IntOffset(
                     (localPosition.x * baseScale).roundToInt(),
                     (localPosition.y * baseScale).roundToInt()
                 )
             }
+            // 1. Chạm nhanh (Short Tap) kích hoạt mở Bottom Sheet ngay lập tức kèm hiệu ứng Ripple
+            .clickable {
+                onNodeClick(node)
+            }
+            // 2. Nhấn giữ lâu (Long Press) kích hoạt chế độ kéo thả di chuyển tự do
             .pointerInput(node.id) {
-                detectDragGestures(
+                detectDragGesturesAfterLongPress(
                     onDragStart = { 
                         isDragging = true 
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        
-                        // Cập nhật vị trí mượt mà, trơn tru (chưa snap) theo hệ số thu phóng zoom và scale cơ sở
                         val nextX = localPosition.x + (dragAmount.x / (baseScale * zoomScale))
                         val nextY = localPosition.y + (dragAmount.y / (baseScale * zoomScale))
                         localPosition = Offset(nextX, nextY)
                     },
                     onDragEnd = {
                         isDragging = false
-                        
-                        // Tính toán độ lệch bình phương khoảng cách thực tế (pixel vật lý)
-                        val dx = (localPosition.x - node.x) * baseScale
-                        val dy = (localPosition.y - node.y) * baseScale
-                        val squaredDistance = dx * dx + dy * dy
-
-                        if (squaredDistance < 225f) { // 15^2 = 225, loại bỏ căn bậc hai (sqrt) để tối ưu hóa CPU
-                            onNodeClick(node)
-                            // Phục hồi nguyên trạng tọa độ hợp lệ từ Flow ngoài
-                            localPosition = Offset(node.x, node.y)
-                        } else {
-                            // Kéo thả thực tế: Tiến hành hút tọa độ kéo thô về lưới lề ô ly gần nhất
-                            val snappedX = snapToGrid(localPosition.x)
-                            val snappedY = snapToGrid(localPosition.y)
-                            localPosition = Offset(snappedX, snappedY)
-                            onUpdatePosition(node.id, snappedX, snappedY)
-                        }
+                        val snappedX = snapToGrid(localPosition.x)
+                        val snappedY = snapToGrid(localPosition.y)
+                        localPosition = Offset(snappedX, snappedY)
+                        onUpdatePosition(node.id, snappedX, snappedY)
                     },
                     onDragCancel = {
                         isDragging = false
