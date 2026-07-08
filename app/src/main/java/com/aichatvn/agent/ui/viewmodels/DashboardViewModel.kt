@@ -32,6 +32,11 @@ class DashboardViewModel @Inject constructor(
     private val _executionMessage = MutableStateFlow<String?>(null)
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
+    // ✅ ĐÃ THÊM: Khối khởi tạo ViewModel tự động làm mới sơ đồ thiết bị ngầm dưới nền khi mở màn hình
+    init {
+        refreshDashboardNodes()
+    }
+
     fun updateNodePosition(id: String, x: Float, y: Float) {
         deviceRegistry.updateNodeAndPersist(id) { current ->
             current.copy(x = x, y = y)
@@ -79,7 +84,7 @@ class DashboardViewModel @Inject constructor(
                             ?: "✅ Đã thực hiện thành công"
                         _executionMessage.value = msg
 
-                        // Sửa lỗi 3: Kiểm tra thuộc tính "state" từ finalParams đã gộp thay vì extraParams rỗng
+                        // Kiểm tra thuộc tính "state" từ finalParams đã gộp thay vì extraParams rỗng
                         val stateValue = finalParams["state"] as? Boolean
                         if (stateValue != null) {
                             deviceRegistry.updateNode(node.id) { current ->

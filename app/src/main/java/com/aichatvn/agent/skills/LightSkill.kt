@@ -84,7 +84,6 @@ class LightSkill @Inject constructor(
                 val finalX = if (savedX >= 0f) savedX else defaultX
                 val finalY = if (savedY >= 0f) savedY else defaultY
 
-                // Sửa lỗi 1: Trực tuyến (online) lấy từ dev.online thay vì getStatus()
                 val isOnline = dev.online 
                 
                 val isDeviceOn = try {
@@ -141,6 +140,21 @@ class LightSkill @Inject constructor(
         deferredNodes.awaitAll()
     }
 
+    // ✅ ĐÃ THÊM: Triển khai hàm khởi tạo vòng đời để tự động nạp thiết bị khi app mở lại từ nền
+    override suspend fun initialize() {
+        syncToDeviceRegistry()
+    }
+
+    private suspend fun syncToDeviceRegistry() {
+        try {
+            val initialNodes = getDashboardNodes()
+            deviceRegistry.registerNodes(initialNodes)
+            logger.i("LightSkill", "Khởi tạo sơ đồ đèn lên bản sao số thành công.")
+        } catch (e: Exception) {
+            logger.e("LightSkill", "Khởi tạo sơ đồ đèn lên bản sao số thất bại", e)
+        }
+    }
+
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         logger.d("LightSkill", "execute: action=$action, params=$params")
         
@@ -165,7 +179,6 @@ class LightSkill @Inject constructor(
                 tuyaManager.turnOff(deviceName)
             }
             
-            // Sửa lỗi 3: Cập nhật trực tiếp lên registry để các luồng điều khiển (tiếng nói/lịch trình) tự đồng bộ UI
             deviceRegistry.updateNode(deviceName) { current ->
                 current.copy(
                     online = true,
