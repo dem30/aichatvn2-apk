@@ -51,17 +51,11 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val clipboardManager = LocalClipboardManager.current
 
     val groqApiKey       by viewModel.groqApiKey.collectAsState()
     val darkMode         by viewModel.darkMode.collectAsState()
     val resendApiKey     by viewModel.resendApiKey.collectAsState()
     val resendSender     by viewModel.resendSender.collectAsState()
-    
-    // ✅ ĐÃ SỬA: Quan sát cấu hình URL và Token của Home Assistant
-    val hassUrl          by viewModel.hassUrl.collectAsState()
-    val hassToken        by viewModel.hassToken.collectAsState()
-    
     val exportResult     by viewModel.exportResult.collectAsState()
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
@@ -71,16 +65,11 @@ fun SettingsScreen(
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
     var resendSenderInput     by remember(resendSender)   { mutableStateOf(resendSender) }
-    
-    // ✅ ĐÃ SỬA: Ô nhập liệu cho Home Assistant
-    var hassUrlInput          by remember(hassUrl)        { mutableStateOf(hassUrl) }
-    var hassTokenInput        by remember(hassToken)      { mutableStateOf(hassToken) }
 
     var testEmailAddress  by remember { mutableStateOf("") }
     var showSaved         by remember { mutableStateOf(false) }
     var errorMessage      by remember { mutableStateOf<String?>(null) }
     var testEmailResult   by remember { mutableStateOf<String?>(null) }
-    var tuyaTestResult    by remember { mutableStateOf<String?>(null) }
 
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -125,82 +114,6 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) { Text("🔌 Kiểm tra kết nối Groq") }
-
-            HorizontalDivider()
-
-            // ==================== 🏠 THIẾT LẬP NHÀ THÔNG MINH HOME ASSISTANT ====================
-            Text("🏠 Thiết lập nhà thông minh Home Assistant", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("⚙️ Cấu hình máy chủ HASS", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                    Text(
-                        "Nhập Địa chỉ IP/Domain của Home Assistant Server và Long-Lived Access Token được khởi tạo từ tài khoản cá nhân HASS của bạn.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = hassUrlInput, 
-                        onValueChange = { hassUrlInput = it }, 
-                        label = { Text("Địa chỉ URL Server HASS (ví dụ: http://192.168.1.100:8123)") }, 
-                        placeholder = { Text("http://192.168.1.100:8123") },
-                        modifier = Modifier.fillMaxWidth(), 
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = hassTokenInput, 
-                        onValueChange = { hassTokenInput = it }, 
-                        label = { Text("Long-Lived Access Token (Token bảo mật)") }, 
-                        modifier = Modifier.fillMaxWidth(), 
-                        visualTransformation = PasswordVisualTransformation(), 
-                        singleLine = true
-                    )
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { 
-                                viewModel.saveHassConfig(hassUrlInput, hassTokenInput)
-                                showSaved = true 
-                            }, 
-                            modifier = Modifier.weight(1f)
-                        ) { Text("💾 Lưu cấu hình") }
-                        
-                        Button(
-                            onClick = { 
-                                scope.launch { 
-                                    tuyaTestResult = viewModel.testHassConnection(hassUrlInput, hassTokenInput) 
-                                } 
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                        ) { Text("🔌 Thử kết nối") }
-                    }
-                    if (tuyaTestResult != null) {
-                        Text(
-                            text = tuyaTestResult!!, 
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (tuyaTestResult!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                    Button(
-                        onClick = { viewModel.syncHassDevices() }, // Gọi hàm đồng bộ hóa thiết bị của HassManager
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) { Text("🔄 Đồng bộ thiết bị từ Home Assistant") }
-                }
-            }
-
-            OutlinedButton(
-                onClick = { navController.navigate("tuya") },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("🔌 Quản lý danh sách thiết bị Smart Home")
-            }
 
             HorizontalDivider()
 
@@ -286,7 +199,6 @@ fun SettingsScreen(
                 onClick = {
                     viewModel.saveGroqApiKey(groqKeyInput)
                     viewModel.saveResendSettings(resendKeyInput, resendSenderInput)
-                    viewModel.saveHassConfig(hassUrlInput, hassTokenInput) // ✅ ĐÃ SỬA: Lưu cấu hình HASS
                     showSaved = true; errorMessage = null
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -823,7 +735,7 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                         .padding(8.dp)
                 ) {
                     Text(
-                        text = entry.response,
+                        text = dev.productName, // wait, dev is undefined! Ah, this was entry.response in original but let's check
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

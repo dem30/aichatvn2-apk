@@ -21,13 +21,11 @@ import com.aichatvn.agent.data.model.CustomerEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
-import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
 import com.aichatvn.agent.skills.TrainingSkill
-import com.aichatvn.agent.skills.HassManager // ✅ ĐÃ SỬA: Thay thế TuyaManager bằng HassManager
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.utils.Logger
@@ -52,7 +50,6 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
-    private val hassManager: HassManager, // ✅ ĐÃ SỬA: Thay thế TuyaManager bằng HassManager
     private val cameraSkill: CameraSkill,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
@@ -65,16 +62,11 @@ class SettingsViewModel @Inject constructor(
         val RESEND_API_KEY = stringPreferencesKey("resend_api_key")
         val RESEND_SENDER  = stringPreferencesKey("resend_sender")
         val DARK_MODE      = booleanPreferencesKey("dark_mode")
-        
-        // ✅ ĐÃ SỬA: Các khóa lưu cấu hình Home Assistant
-        val HASS_URL = stringPreferencesKey("hass_url")
-        val HASS_TOKEN = stringPreferencesKey("hass_token")
 
         private val BACKUP_TABLES = listOf(
             "customers",
             "customer_settings",
             "cameras",
-            "tuya_devices",
             "facebook_pages",
             "qa_data",
             "schedules",
@@ -103,13 +95,6 @@ class SettingsViewModel @Inject constructor(
         .map { it[DARK_MODE] ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    // ===== ✅ ĐÃ SỬA: StateFlow lưu Địa chỉ URL và Token của Home Assistant =====
-    private val _hassUrl = MutableStateFlow("")
-    val hassUrl: StateFlow<String> = _hassUrl.asStateFlow()
-
-    private val _hassToken = MutableStateFlow("")
-    val hassToken: StateFlow<String> = _hassToken.asStateFlow()
-
     val isGroqKeyConfigured: StateFlow<Boolean> = groqApiKey
         .map { it.isNotBlank() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -128,14 +113,7 @@ class SettingsViewModel @Inject constructor(
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            val prefs = context.dataStore.data.first()
-            _hassUrl.value = prefs[HASS_URL] ?: ""
-            _hassToken.value = prefs[HASS_TOKEN] ?: ""
-            
-            // Tải lại đệm cache thiết bị từ SQLite lúc khởi chạy
-            hassManager.loadDevicesFromDB()
-        }
+        // Trống rỗng, không cần nạp Tuya hay Hass
     }
 
     fun saveConfig(key: String, value: String) {
@@ -180,37 +158,6 @@ class SettingsViewModel @Inject constructor(
             context.dataStore.edit {
                 it[RESEND_API_KEY] = apiKey.trim()
                 it[RESEND_SENDER] = sender.trim()
-            }
-        }
-    }
-
-    // ===== ✅ ĐÃ SỬA: Lưu cấu hình Home Assistant =====
-    fun saveHassConfig(url: String, token: String) {
-        viewModelScope.launch {
-            context.dataStore.edit { prefs ->
-                prefs[HASS_URL] = url.trim()
-                prefs[HASS_TOKEN] = token.trim()
-            }
-            _hassUrl.value = url.trim()
-            _hassToken.value = token.trim()
-            _configSaveResult.value = "💾 Đã lưu cấu hình Home Assistant!"
-            kotlinx.coroutines.delay(2000)
-            _configSaveResult.value = null
-        }
-    }
-
-    // ===== ✅ ĐÃ SỬA: Đồng bộ hóa danh sách thực thể từ Home Assistant =====
-    fun syncHassDevices() {
-        viewModelScope.launch {
-            _configSaveResult.value = "🔄 Đang đồng bộ từ Home Assistant..."
-            try {
-                hassManager.scanDevices()
-                _configSaveResult.value = "✅ Đồng bộ thiết bị thành công!"
-            } catch (e: Exception) {
-                _configSaveResult.value = "❌ Lỗi đồng bộ: ${e.message}"
-            } finally {
-                kotlinx.coroutines.delay(2500)
-                _configSaveResult.value = null
             }
         }
     }
@@ -284,22 +231,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ===== ✅ ĐÃ SỬA: Kiểm thử kết nối API Home Assistant =====
-    suspend fun testHassConnection(url: String, token: String): String {
-        return withContext(Dispatchers.IO) {
-            try {
-                context.dataStore.edit { prefs ->
-                    prefs[HASS_URL] = url.trim()
-                    prefs[HASS_TOKEN] = token.trim()
-                }
-                val devices = hassManager.scanDevices()
-                "✅ Kết nối OK — Tìm thấy ${devices.size} thiết bị trong Home Assistant"
-            } catch (e: Exception) {
-                "❌ Lỗi kết nối: ${e.message}"
-            }
-        }
-    }
-
     suspend fun exportSettings(context: Context): String {
         return withContext(Dispatchers.IO) {
             try {
@@ -309,8 +240,6 @@ class SettingsViewModel @Inject constructor(
                     put("groq_api_key",      prefs[GROQ_API_KEY] ?: "")
                     put("resend_api_key",    prefs[RESEND_API_KEY] ?: "")
                     put("resend_sender",     prefs[RESEND_SENDER] ?: "")
-                    put("hass_url",          prefs[HASS_URL] ?: "") // ✅ ĐÃ SỬA
-                    put("hass_token",        prefs[HASS_TOKEN] ?: "") // ✅ ĐÃ SỬA
                     put("dark_mode",         prefs[DARK_MODE] ?: false)
                 }
 
@@ -400,20 +329,14 @@ class SettingsViewModel @Inject constructor(
                 val groqKey         = settingsJson.optString("groq_api_key", "")
                 val resendKey       = settingsJson.optString("resend_api_key", "")
                 val resendSenderVal = settingsJson.optString("resend_sender", "")
-                val hassUrlVal      = settingsJson.optString("hass_url", "") // ✅ ĐÃ SỬA
-                val hassTokenVal    = settingsJson.optString("hass_token", "") // ✅ ĐÃ SỬA
                 val darkModeVal     = settingsJson.optBoolean("dark_mode", false)
 
                 context.dataStore.edit { prefs ->
                     if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]   = groqKey
                     if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY] = resendKey
                     if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]  = resendSenderVal
-                    if (hassUrlVal.isNotEmpty())      prefs[HASS_URL]       = hassUrlVal
-                    if (hassTokenVal.isNotEmpty())    prefs[HASS_TOKEN]     = hassTokenVal
                     prefs[DARK_MODE] = darkModeVal
                 }
-                _hassUrl.value = hassUrlVal
-                _hassToken.value = hassTokenVal
 
                 var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
@@ -529,7 +452,6 @@ class SettingsViewModel @Inject constructor(
 
                 try {
                     cameraSkill.initialize()
-                    hassManager.loadDevicesFromDB() // ✅ ĐÃ SỬA: Thay thế Tuya
                 } catch (e: Exception) {
                     logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ sau khi import thất bại", e)
                 }

@@ -24,17 +24,6 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    // ===== ✅ ĐÃ SỬA: Cung cấp HassManager thay thế cho TuyaManager cũ =====
-    @Provides
-    @Singleton
-    fun provideHassManager(
-        @ApplicationContext context: Context,
-        database: AppDatabase,
-        logger: Logger
-    ): HassManager {
-        return HassManager(context, database.tuyaDeviceDao(), logger)
-    }
-
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -45,17 +34,12 @@ object AppModule {
     @Singleton
     fun provideContext(@ApplicationContext context: Context): Context = context
 
-    // ===== ĐĂNG KÝ BỘ PLUGIN CHUẨN HOÁ TRUNG TÂM (Set<Plugin>) =====
+    // ===== ĐĂNG KÝ BỘ PLUGIN CHUẨN HOÁ TRUNG TÂM (Set<Plugin> đã dọn sạch LightSkill) =====
 
     @Provides
     @IntoSet
     @Singleton
     fun provideCameraSkill(skill: CameraSkill): Plugin = skill
-
-    @Provides
-    @IntoSet
-    @Singleton
-    fun provideLightSkill(skill: LightSkill): Plugin = skill
 
     @Provides
     @IntoSet
