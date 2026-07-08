@@ -1,5 +1,6 @@
 package com.aichatvn.agent.ui.screens
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
@@ -120,11 +121,19 @@ fun ScheduleCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                // ✅ Hiện "#1 · camera.scan" thay vì chỉ "camera.scan"
+                // ✅ ĐÃ SỬA: Hiện tên gợi nhớ (label) làm tiêu đề chính thay vì "pluginId.action" thô.
+                // Fallback về pluginId.action nếu label rỗng (lịch cũ tạo trước khi có field này).
                 Text(
-                    "#$index · ${schedule.pluginId}.${schedule.action}",
+                    "#$index · ${schedule.label.ifBlank { "${schedule.pluginId}.${schedule.action}" }}",
                     style = MaterialTheme.typography.titleSmall
                 )
+                if (schedule.label.isNotBlank()) {
+                    Text(
+                        "${schedule.pluginId}.${schedule.action}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Text(
                     when {
                         schedule.cron.isNotEmpty() -> "⏰ ${schedule.cron}"
@@ -171,8 +180,19 @@ fun AddScheduleDialog(
     val paramValues = remember { mutableStateMapOf<String, String>() }
     val paramBooleans = remember { mutableStateMapOf<String, Boolean>() }
 
-    var cron by remember { mutableStateOf("") }
-    var intervalMinutes by remember { mutableStateOf("") }
+    // ✅ MỚI: tên gợi nhớ cho lịch trình — xem ScheduleSkill.handleAdd() / label field trong Entity
+    var label by remember { mutableStateOf("") }
+
+    // ✅ MỚI: "Lặp lại" kiểu Smart Life — daily/weekly dùng TimePicker + weekday chips,
+    // interval giữ cách cũ (mỗi N phút), advanced để nhập cron thủ công cho trường hợp đặc biệt
+    // (không phá khả năng cron tuỳ ý sẵn có của hệ thống).
+    var repeatMode by remember { mutableStateOf("daily") } // "daily" | "weekly" | "interval" | "advanced"
+    val timePickerState = rememberTimePickerState(initialHour = 7, initialMinute = 0, is24Hour = true)
+    val selectedWeekdays = remember { mutableStateListOf<Int>() } // giá trị cron: 0=CN,1=T2...6=T7
+    val weekdayOptions = listOf("T2" to 1, "T3" to 2, "T4" to 3, "T5" to 4, "T6" to 5, "T7" to 6, "CN" to 0)
+
+    var cron by remember { mutableStateOf("") }          // dùng khi repeatMode == "advanced"
+    var intervalMinutes by remember { mutableStateOf("") } // dùng khi repeatMode == "interval"
 
     fun selectPlugin(p: Plugin) {
         selectedPlugin = p
@@ -195,10 +215,19 @@ fun AddScheduleDialog(
         ?.all { p -> p.type == "boolean" || !paramValues[p.name].isNullOrBlank() }
         ?: true
 
+    // ✅ ĐÃ SỬA: điều kiện "đã chọn thời gian" giờ phụ thuộc repeatMode thay vì chỉ check cron/interval thô
+    val timingFilled = when (repeatMode) {
+        "daily" -> true // TimePicker luôn có giá trị mặc định
+        "weekly" -> selectedWeekdays.isNotEmpty()
+        "interval" -> (intervalMinutes.toIntOrNull() ?: 0) > 0
+        "advanced" -> cron.isNotBlank() || (intervalMinutes.toIntOrNull() ?: 0) > 0
+        else -> false
+    }
+
     val canSave = selectedPlugin != null &&
         selectedAction != null &&
         requiredParamsFilled &&
-        (cron.isNotBlank() || (intervalMinutes.toIntOrNull() ?: 0) > 0)
+        timingFilled
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -210,6 +239,16 @@ fun AddScheduleDialog(
                     .heightIn(max = 480.dp)
                     .verticalScroll(rememberScrollState())
             ) {
+                // ✅ MỚI: tên gợi nhớ — optional, để trống sẽ fallback "pluginId.action" (ScheduleSkill)
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("Tên lịch trình (tuỳ chọn)") },
+                    placeholder = { Text("VD: Bật đèn phòng khách") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
                 ExposedDropdownMenuBox(
                     expanded = pluginExpanded,
                     onExpandedChange = { pluginExpanded = it }
@@ -308,22 +347,89 @@ fun AddScheduleDialog(
 
                 if (selectedAction != null) {
                     Divider(modifier = Modifier.padding(vertical = 4.dp))
-                    Text("Khi nào chạy (chọn 1 trong 2)", style = MaterialTheme.typography.labelMedium)
-                    OutlinedTextField(
-                        value = cron,
-                        onValueChange = { cron = it },
-                        label = { Text("Cron (VD: 0 8 * * *)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = intervalMinutes,
-                        onValueChange = { intervalMinutes = it },
-                        label = { Text("Hoặc khoảng cách (phút)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
+                    Text("Khi nào chạy", style = MaterialTheme.typography.labelMedium)
+
+                    // ✅ MỚI: chọn kiểu lặp lại — thay cho 2 ô nhập cron/interval thô trước đây
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        FilterChip(
+                            selected = repeatMode == "daily",
+                            onClick = { repeatMode = "daily" },
+                            label = { Text("Hàng ngày") }
+                        )
+                        FilterChip(
+                            selected = repeatMode == "weekly",
+                            onClick = { repeatMode = "weekly" },
+                            label = { Text("Theo tuần") }
+                        )
+                        FilterChip(
+                            selected = repeatMode == "interval",
+                            onClick = { repeatMode = "interval" },
+                            label = { Text("Lặp theo phút") }
+                        )
+                    }
+
+                    when (repeatMode) {
+                        "daily", "weekly" -> {
+                            // Giờ chạy chung cho cả 2 kiểu
+                            TimePicker(state = timePickerState)
+
+                            if (repeatMode == "weekly") {
+                                Text("Chọn ngày trong tuần", style = MaterialTheme.typography.labelSmall)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState())
+                                ) {
+                                    weekdayOptions.forEach { (dayLabel, cronValue) ->
+                                        FilterChip(
+                                            selected = cronValue in selectedWeekdays,
+                                            onClick = {
+                                                if (cronValue in selectedWeekdays) {
+                                                    selectedWeekdays.remove(cronValue)
+                                                } else {
+                                                    selectedWeekdays.add(cronValue)
+                                                }
+                                            },
+                                            label = { Text(dayLabel) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        "interval" -> {
+                            OutlinedTextField(
+                                value = intervalMinutes,
+                                onValueChange = { intervalMinutes = it },
+                                label = { Text("Khoảng cách (phút)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                            )
+                        }
+                    }
+
+                    // ✅ Giữ lối cũ (nhập cron tay) cho trường hợp đặc biệt picker chưa hỗ trợ —
+                    // không phá khả năng cron tuỳ ý sẵn có của hệ thống (TaskScheduler/DateTimeParser).
+                    var showAdvanced by remember { mutableStateOf(false) }
+                    TextButton(onClick = { showAdvanced = !showAdvanced }) {
+                        Text(if (showAdvanced) "Ẩn tuỳ chỉnh nâng cao" else "Tuỳ chỉnh nâng cao (cron thủ công)")
+                    }
+                    if (showAdvanced) {
+                        OutlinedTextField(
+                            value = cron,
+                            onValueChange = {
+                                cron = it
+                                if (it.isNotBlank()) repeatMode = "advanced"
+                            },
+                            label = { Text("Cron thủ công (VD: 0 8 * * *) — ghi đè lựa chọn ở trên") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+                    }
                 }
             }
         },
@@ -333,7 +439,31 @@ fun AddScheduleDialog(
                 onClick = {
                     val plugin = selectedPlugin ?: return@TextButton
                     val action = selectedAction ?: return@TextButton
-                    val interval = intervalMinutes.toIntOrNull() ?: 0
+
+                    // ✅ ĐÃ SỬA: build cron/intervalMinutes theo repeatMode thay vì đọc thẳng
+                    // 2 ô nhập tay — vẫn dùng đúng format cron cũ ("$minute $hour * * $days")
+                    // để tương thích 100% với TaskScheduler/DateTimeParser hiện có.
+                    val finalCron: String
+                    val finalInterval: Int
+                    when (repeatMode) {
+                        "daily" -> {
+                            finalCron = "${timePickerState.minute} ${timePickerState.hour} * * *"
+                            finalInterval = 0
+                        }
+                        "weekly" -> {
+                            val days = selectedWeekdays.sorted().joinToString(",")
+                            finalCron = "${timePickerState.minute} ${timePickerState.hour} * * $days"
+                            finalInterval = 0
+                        }
+                        "interval" -> {
+                            finalCron = ""
+                            finalInterval = intervalMinutes.toIntOrNull() ?: 0
+                        }
+                        else -> { // "advanced"
+                            finalCron = cron
+                            finalInterval = intervalMinutes.toIntOrNull() ?: 0
+                        }
+                    }
 
                     val paramsJson = JSONObject().apply {
                         action.parameters.forEach { p ->
@@ -345,16 +475,21 @@ fun AddScheduleDialog(
                         }
                     }.toString()
 
+                    // ✅ MỚI: fallback label giống hệt logic trong ScheduleSkill.handleAdd() —
+                    // để UI hiển thị nhất quán ngay cả trước khi round-trip qua DB.
+                    val finalLabel = label.trim().ifBlank { "${plugin.id}.${action.name}" }
+
                     val schedule = ScheduleEntity(
                         id = UUID.randomUUID().toString(),
                         pluginId = plugin.id,
                         action = action.name,
                         params = paramsJson,
-                        cron = cron,
-                        intervalMinutes = interval,
+                        cron = finalCron,
+                        intervalMinutes = finalInterval,
                         enabled = 1,
                         lastRunAt = 0,
-                        createdAt = System.currentTimeMillis()
+                        createdAt = System.currentTimeMillis(),
+                        label = finalLabel
                     )
                     onSave(schedule)
                 }

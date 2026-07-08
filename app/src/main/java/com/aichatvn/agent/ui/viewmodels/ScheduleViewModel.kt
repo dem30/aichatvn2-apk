@@ -55,7 +55,8 @@ class ScheduleViewModel @Inject constructor(
                     "action" to schedule.action,
                     "cron" to schedule.cron,
                     "intervalMinutes" to schedule.intervalMinutes,
-                    "params" to paramsMap
+                    "params" to paramsMap,
+                    "label" to schedule.label // ✅ MỚI: tên gợi nhớ nhập từ AddScheduleDialog
                 )
             )
             loadSchedules()
