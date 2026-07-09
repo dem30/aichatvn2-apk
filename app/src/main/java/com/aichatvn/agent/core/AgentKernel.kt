@@ -271,13 +271,14 @@ class AgentKernel @Inject constructor(
     // ✅ MỚI: cho phép xoá/toggle lịch trình bằng số thứ tự ("xoá lịch số 2") hoặc theo
     // tên gợi nhớ ("xoá lịch bật đèn") thay vì bắt buộc phải biết UUID thật của ScheduleEntity.
     "schedule_ref" to { _, currentValue, isPlh, context, _, _, _, _ ->
-    if (isPlh) {
-        // Nếu là placeholder, dùng toàn bộ câu lệnh của user để tìm nhãn/số thứ tự phù hợp
-        resolveScheduleReference(context.resolvedQuery)
-    } else {
-        resolveScheduleReference(currentValue.toString().trim())
+        if (isPlh) {
+            // Nếu là placeholder, dùng toàn bộ câu lệnh của user để tìm nhãn/số thứ tự
+            resolveScheduleReference(context.resolvedQuery) ?: ""
+        } else {
+            // Nếu ban đầu đã có một ID cụ thể, thử map nhãn, nếu không được thì giữ nguyên giá trị ID cũ
+            resolveScheduleReference(currentValue.toString().trim()) ?: currentValue ?: ""
+        }
     }
-}
 
     
 )
@@ -1560,8 +1561,9 @@ class AgentKernel @Inject constructor(
 
 
 
-    private suspend fun resolveScheduleReference(raw: String): String {
-    if (raw.isBlank()) return raw
+
+    private suspend fun resolveScheduleReference(raw: String): String? { // Đổi kiểu trả về thành String?
+    if (raw.isBlank()) return null
 
     val allSchedules = withContext(Dispatchers.IO) {
         database.scheduleDao().getAllSchedules()
@@ -1597,7 +1599,7 @@ class AgentKernel @Inject constructor(
     return if (bestMatchPair != null && bestMatchPair.second >= SIMILARITY_THRESHOLD) {
         bestMatchPair.first.id
     } else {
-        raw // Không vượt qua ngưỡng -> Trả về placeholder gốc để hệ thống hỏi lại
+        null // ── SỬA Ở ĐÂY: Trả về null nếu không khớp, tuyệt đối không trả về chuỗi câu lệnh gốc "raw" ──
     }
 }
     
