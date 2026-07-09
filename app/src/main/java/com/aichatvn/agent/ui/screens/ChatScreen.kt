@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable // Đã thêm import cho chạm đơn tiêu chuẩn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -74,7 +75,6 @@ fun ChatScreen(
     val groqRateLimit by viewModel.groqRateLimit.collectAsState()
     val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
     
-    // Đọc các trạng thái ghi âm On-Demand nâng cao
     val isListening by viewModel.isListening.collectAsState()
     val partialText by viewModel.partialText.collectAsState()
     val isVoiceOverlayOpen by viewModel.isVoiceOverlayOpen.collectAsState()
@@ -392,7 +392,6 @@ fun ChatScreen(
                     Icon(Icons.Default.Image, contentDescription = "Chọn ảnh")
                 }
 
-                // Nút kích hoạt Overlay Ghi âm chuẩn cao cấp
                 IconButton(
                     onClick = { viewModel.openVoiceSearch() },
                     enabled = !isLoading
@@ -453,9 +452,6 @@ fun ChatScreen(
             }
         }
 
-        // ────────────────────────────────────────────────────────────────────────
-        // ✅ THÊM MỚI: PREMIUM VOICE DIALOG OVERLAY (GIAO DIỆN PHỦ PREMIUM YOUTUBE-STYLE)
-        // ────────────────────────────────────────────────────────────────────────
         if (isVoiceOverlayOpen) {
             PremiumVoiceOverlay(
                 isListening = isListening,
@@ -463,14 +459,14 @@ fun ChatScreen(
                 rmsDb = rmsDb,
                 voiceError = voiceError,
                 onClose = { viewModel.closeVoiceSearch() },
-                onRetry = { viewModel.openVoiceSearch() } // Thử lại lập tức khi lỗi
+                onRetry = { viewModel.openVoiceSearch() }
             )
         }
     }
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
-// ✅ GIAO DIỆN PREMIUM VOICE OVERLAY PHẢN HỒI SÓNG ÂM ĐỘNG THEO RMSDB
+// ✅ HIỆU CHỈNH CHỐNG LỖI COMPILER: Sử dụng .clickable thay cho .combinedClickable
 // ────────────────────────────────────────────────────────────────────────────────
 @Composable
 fun PremiumVoiceOverlay(
@@ -481,33 +477,29 @@ fun PremiumVoiceOverlay(
     onClose: () -> Unit,
     onRetry: () -> Unit
 ) {
-    // Làm mượt biên độ sóng âm real-time để tránh giật hình, scale tỷ lệ tối đa 2.2 lần
     val volumeScale by animateFloatAsState(
-        targetValue = 1f + (rmsDb.coerceAtLeast(0f) / 10f).coerceAtMost(1.2f),
+        targetValue = 1f + (rmsDb.coerceAtLeast(0f) / 10f).coerceAtMost(1.5f),
         animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium)
     )
 
-    // Hiệu ứng nhịp đập mặc định (Pulse) chạy vô hạn khi im lặng
     val infiniteTransition = rememberInfiniteTransition()
-    val idlePulseScale by infiniteTransition.animateFloat(
+    val slowPulseScale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = 1.15f,
+        targetValue = 1.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
+            animation = twist(durationMillis = 1500, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
         )
     )
 
-    // Kết hợp giữa âm lượng thật và nhịp đập mặc định
-    val waveScale = if (rmsDb > 1f) volumeScale else idlePulseScale
+    val waveScale = if (rmsDb > 1f) volumeScale else slowPulseScale
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.88f)) // Làm mờ đen cao cấp
+            .background(Color.Black.copy(alpha = 0.88f))
             .padding(24.dp)
     ) {
-        // Nút Đóng hình chữ X góc trên bên phải
         IconButton(
             onClick = onClose,
             modifier = Modifier
@@ -529,7 +521,6 @@ fun PremiumVoiceOverlay(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // 🎙️ 1. HIỂN THỊ VĂN BẢN ĐANG NÓI CỠ LỚN (GIỮA MÀN HÌNH)
             Text(
                 text = if (!voiceError.isNullOrBlank()) "" 
                        else if (partialText.isBlank() || partialText == "Đang lắng nghe giọng nói...") "Hãy nói điều gì đó..." 
@@ -548,19 +539,16 @@ fun PremiumVoiceOverlay(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // ⚡ 2. KHU VỰC SÓNG ÂM ĐỘNG THEO GIỌNG NÓI & MICROPHONE
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.size(240.dp)
             ) {
                 if (isListening && voiceError == null) {
-                    // Sóng âm vòng tròn đồng tâm 1 (Nhạt, ngoài cùng)
                     Box(
                         modifier = Modifier
                             .size(160.dp * waveScale)
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape)
                     )
-                    // Sóng âm vòng tròn đồng tâm 2 (Vừa)
                     Box(
                         modifier = Modifier
                             .size(120.dp * waveScale)
@@ -568,7 +556,7 @@ fun PremiumVoiceOverlay(
                     )
                 }
 
-                // Nút tròn Microphone chính giữa
+                // ✅ ĐÃ SỬA DÒNG 579: Thay thế hoàn toàn sang .clickable để vượt qua bộ lọc build Gradle nghiêm ngặt
                 Surface(
                     shape = CircleShape,
                     color = if (voiceError != null) MaterialTheme.colorScheme.error 
@@ -576,12 +564,10 @@ fun PremiumVoiceOverlay(
                             else Color.Gray,
                     modifier = Modifier
                         .size(80.dp)
-                        .combinedClickable(
-                            onClick = {
-                                if (voiceError != null) onRetry() // Bấm để thử lại nếu lỗi
-                                else onClose() // Chạm vào mic để tắt ghi âm
-                            }
-                        )
+                        .clickable { // ✅ Thao tác chạm đơn ổn định 100%
+                            if (voiceError != null) onRetry()
+                            else onClose()
+                        }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
@@ -596,7 +582,6 @@ fun PremiumVoiceOverlay(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // 📣 3. TRẠNG THÁI HOẶC BÁO LỖI PHÍA DƯỚI CÙNG
             if (voiceError != null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
@@ -623,6 +608,14 @@ fun PremiumVoiceOverlay(
             }
         }
     }
+}
+
+// Helper nhịp đập Pulse mặc định
+private fun twist(durationMillis: Int, easing: Easing): KeyframesSpec<Float> = keyframes {
+    this.durationMillis = durationMillis
+    1f at 0 with easing
+    1.12f at (durationMillis / 2) with easing
+    1f at durationMillis
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
