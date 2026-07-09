@@ -193,7 +193,8 @@ class ScheduleSkill @Inject constructor(
             params = paramsJson,
             cron = cron,
             intervalMinutes = intervalMinutes,
-            label = label
+            label = label,
+            lastRunAt = 0L 
         )
 
         withContext(Dispatchers.IO) {

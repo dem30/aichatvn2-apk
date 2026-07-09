@@ -1,13 +1,18 @@
 package com.aichatvn.agent.ui.viewmodels
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Base64
-import androidx.lifecycle.SavedStateHandle // ✅ Đmax THÊM: Đọc tham số chuyển màn hình động
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
@@ -20,7 +25,6 @@ import com.aichatvn.agent.skills.ChatSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.utils.VoiceAssistantManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +33,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -42,21 +45,17 @@ import javax.inject.Inject
 data class QuickCommand(val label: String, val text: String)
 data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
 
-private const val MAX_CONSECUTIVE_ROUTER_FAILURES = 3
-
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
     private val agentKernel: AgentKernel,
     private val groqClient: GroqClientTool,
     private val database: AppDatabase,
-    val voiceManager: VoiceAssistantManager, // ✅ ĐÃ KHÔI PHỤC: Giữ nguyên tham số gốc của bạn
-    @ApplicationContext private val context: Context, // ✅ ĐÃ KHÔI PHỤC: Giữ nguyên tham số gốc của bạn
-    private val savedStateHandle: SavedStateHandle, // ✅ ĐÃ THÊM: SavedStateHandle tự lấy tham số từ NavController
+    @ApplicationContext private val context: Context,
+    private val savedStateHandle: SavedStateHandle,
     private val logger: Logger
 ) : ViewModel() {
 
-    // ✅ TỰ ĐỘNG NHẬN DIỆN: Đọc tên người dùng từ tham số truyền sang (mặc định là default_user)
     val username: String = savedStateHandle.get<String>("username") ?: "default_user"
 
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
@@ -67,41 +66,38 @@ class ChatViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    // ────────────────────────────────────────────────────────────────────────
+    // ✅ CHUYỂN ĐỔI: Hệ thống ghi âm thông minh On-Demand và sóng âm thời gian thực
+    // ────────────────────────────────────────────────────────────────────────
+    private var speechRecognizer: SpeechRecognizer? = null
+
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening.asStateFlow()
 
-    val partialText: StateFlow<String> = voiceManager.partialText
+    private val _partialText = MutableStateFlow("")
+    val partialText: StateFlow<String> = _partialText.asStateFlow()
 
-    // ✅ ĐÃ SỬA: Trước đây là MutableStateFlow(true) riêng của ViewModel — luôn mặc định "bật"
-    // mỗi khi ViewModel được tạo mới, hoàn toàn không biết trạng thái mic THẬT (do notification/
-    // Service điều khiển qua VoiceAssistantManager). Giờ đọc thẳng từ nguồn sự thật duy nhất
-    // (voiceManager.micEnabled, đã lưu bền) — banner "Hands-free bật/tắt" trên ChatScreen sẽ luôn
-    // khớp với trạng thái thật, dù bật/tắt từ notification, từ ChatScreen, hay sau khi app/Service
-    // khởi động lại. Với thread của khách ngoại kênh (không phải personal chat), luôn hiện "tắt"
-    // vì banner này chỉ có ý nghĩa với chat cá nhân của chủ app.
-    val voiceModeActive: StateFlow<Boolean> =
-        if (username == "default_user") voiceManager.micEnabled
-        else MutableStateFlow(false).asStateFlow()
+    private val _isVoiceOverlayOpen = MutableStateFlow(false)
+    val isVoiceOverlayOpen: StateFlow<Boolean> = _isVoiceOverlayOpen.asStateFlow()
 
-    private val _pausedDueToError = MutableStateFlow(false)
-    val pausedDueToError: StateFlow<Boolean> = _pausedDueToError.asStateFlow()
+    // Theo dõi biên độ sóng âm thời gian thực (0dB - 10dB+) để vẽ hiệu ứng co giãn
+    private val _rmsDb = MutableStateFlow(0f)
+    val rmsDb: StateFlow<Float> = _rmsDb.asStateFlow()
 
-    // Luồng quan sát trạng thái khóa cứng điều khiển phục vụ hiển thị nhãn lên UI
+    // Ghi nhận mã lỗi chi tiết khi không nghe rõ để hiển thị giao diện Thử lại
+    private val _voiceError = MutableStateFlow<String?>(null)
+    val voiceError: StateFlow<String?> = _voiceError.asStateFlow()
+
     private val _lockedPluginName = MutableStateFlow<String?>(null)
     val lockedPluginName: StateFlow<String?> = _lockedPluginName.asStateFlow()
 
-    private var consecutiveRouterFailures = 0
     private val isProcessingQuery = AtomicBoolean(false)
 
-    // ✅ ĐÃ THÊM: Luồng danh sách Hộp thư đến hiển thị ngoài InboxScreen
     val latestChatThreads: Flow<List<ChatMessageEntity>> = database.chatMessageDao().getLatestChatThreadsFlow()
 
-    // ✅ MỚI: Luồng số tin nhắn chưa đọc theo từng thread — InboxScreen dùng để vẽ badge đỏ
-    // và in đậm dòng có tin chưa đọc.
     val unreadCounts: Flow<List<com.aichatvn.agent.data.ThreadUnreadCount>> =
         database.chatMessageDao().getUnreadCountsFlow()
 
-    // ✅ ĐÃ THÊM: Quản lý biến gạt nút Cướp quyền ngầm (smartMode) của ID khách hiện tại
     private val _isBotEnabled = MutableStateFlow(true)
     val isBotEnabled: StateFlow<Boolean> = _isBotEnabled.asStateFlow()
 
@@ -117,80 +113,29 @@ class ChatViewModel @Inject constructor(
         )
     }
 
-    @Volatile private var isInForeground = true
-
-    // ✅ ĐÃ THÊM: mic/TTS tự động chỉ có ý nghĩa với chat cá nhân của chủ app (default_user).
-    // Khi ChatScreen được mở chỉ để XEM/trả lời hội thoại của 1 khách ngoại kênh
-    // (Facebook/Telegram/Website), instance ViewModel này không được đụng gì tới voiceManager.
-    private val isPersonalChat: Boolean = (username == "default_user")
-
     init {
-        // ✅ ĐÃ XÓA: trước đây gán tay "_voiceModeActive.value = false" ở đây cho thread khách
-        // ngoại kênh — không cần nữa vì voiceModeActive giờ đã tự tính theo username (xem khai
-        // báo property phía trên), không phải biến mutable riêng nữa.
-
-        activateThread() // Lần đầu tiên màn hình được tạo (mở khách này lần đầu)
-
+        activateThread()
         viewModelScope.launch {
-            loadBotSmartModeStatus() // ✅ ĐÃ THÊM: Tải cấu hình gạt nút cướp quyền của khách
-
-            if (isPersonalChat) {
-                // ✅ ĐÃ SỬA: Vòng lặp hands-free (nghe -> AI -> nói -> nghe lại) nay được
-                // VoiceAssistantService chạy ngầm ĐỘC LẬP với vòng đời ChatScreen/ViewModel
-                // này (xem VoiceAssistantService.kt, khởi chạy từ MainApplication.kt).
-                // ChatViewModel chỉ còn nhiệm vụ ĐỒNG BỘ HIỂN THỊ trạng thái mic hiện có lên
-                // UI và phát tiếng cho các câu trả lời phát sinh từ tin nhắn gõ tay khi màn
-                // hình đang mở — không tự khởi động/tắt vòng lặp nghe nữa.
-                observeVoiceManagerFlows()
-                observeAndSpeak()
-            }
-
-            updateLockedPluginStatus() // Khởi tạo nhãn điều khiển lúc khởi chạy
+            loadBotSmartModeStatus()
+            updateLockedPluginStatus()
         }
     }
 
-    // ✅ MỚI: Hàm RIÊNG "kích hoạt thread hiện tại lên hiển thị" — tách khỏi init{} để có thể
-    // gọi lại NHIỀU LẦN trong vòng đời của cùng 1 màn hình, không chỉ lúc tạo mới.
-    //
-    // Lý do cần tách: hiltViewModel() được scope theo NavBackStackEntry, nên khi Admin bấm
-    // nút back rời màn hình chat riêng (username=B) để quay lại màn chat admin (default_user),
-    // rồi bấm back/điều hướng trở lại chính route "chat_screen" (default_user) — đây là backstack
-    // entry ĐàTỒN TẠI TỪ TRƯỚC, ViewModel instance được TÁI SỬ DỤNG (không tạo mới), nên init{}
-    // KHÔNG chạy lại. Trong khi đó ChatSkill là Singleton dùng chung 1 _messages cho toàn app —
-    // nếu không có ai gọi lại openThread(default_user) lúc quay về, _messages vẫn còn giữ
-    // nguyên nội dung của khách B (do lần cuối openThread(B) chạy khi Admin mở thread B) ->
-    // đúng hiện tượng "quay về chat admin thì nội dung chat riêng vẫn còn nguyên".
-    //
-    // Cách gọi: ChatScreen.kt gọi hàm này trong 1 LaunchedEffect(Unit) đặt NGAY TRONG THÂN
-    // composable (không phải trong remember/derivedState) — Navigation Compose sẽ dispose và
-    // tái tạo composition của destination mỗi khi nó bị rời đi rồi quay lại (kể cả qua nút
-    // back hệ thống lẫn qua chuyển tab dưới cùng), nên LaunchedEffect(Unit) sẽ tự chạy lại
-    // đúng lúc màn hình thực sự hiện ra lại trên UI — bất kể ViewModel có bị tái sử dụng hay không.
     fun activateThread() {
         viewModelScope.launch {
-            // Mở lại/mở lần đầu ChatScreen của 1 khách = coi như Admin đã xem thread này —
-            // đánh dấu hết các tin nhắn khách CHƯA ĐỌC của username này thành đã đọc.
-            // Với default_user thì đây là no-op (không có tin nào bị đánh dấu unread).
             database.chatMessageDao().markThreadAsRead(username)
-
-            // ✅ Dùng openThread() thay vì processQuery(message = "", ...) — processQuery() còn
-            // được Webhook/SSE dùng để xử lý tin nhắn tự động của MỌI khách khác ở nền, dùng
-            // chung sẽ gây lẫn lộn tin nhắn giữa các khách (xem ChatSkill.openThread()).
             chatSkill.openThread(username)
         }
     }
 
-    // ✅ ĐÃ THÊM: Tải trạng thái Cướp quyền hiện tại của khách từ SQLite
     private fun loadBotSmartModeStatus() {
         val rawId = username.substringAfter("_")
         viewModelScope.launch(Dispatchers.IO) {
             val setting = database.cameraDao().getCustomerSetting(rawId)
-            // smartMode == 1: Bật Bot (mặc định), smartMode == 0: Người trực (Cướp quyền)
             _isBotEnabled.value = setting?.smartMode != 0
         }
     }
 
-    // ✅ ĐÃ THÊM: Lưu trạng thái bật/tắt Bot gạt Switch của khách vào SQLite
     fun toggleBotSmartMode(targetUsername: String, isBotEnabled: Boolean) {
         val rawId = targetUsername.substringAfter("_")
         _isBotEnabled.value = isBotEnabled
@@ -213,131 +158,118 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun observeVoiceManagerFlows() {
-        // 1. Đồng bộ trạng thái bật/tắt Micro lên UI Chat
-        viewModelScope.launch {
-            voiceManager.isListening.collect { listening ->
-                _isListening.value = listening
-            }
-        }
-
-        // 2. Đồng bộ văn bản nhận diện được từ giọng nói vào DB để hiển thị lên khung Chat (bỏ qua chuỗi rỗng)
-        viewModelScope.launch {
-            voiceManager.recognizedText.collect { text ->
-                if (text.isNotBlank()) {
-                    saveMessageToHistory(text, "user")
-                }
-            }
-        }
-
-        // 3. Đồng bộ câu trả lời AI của cuộc thoại giọng nói vào DB (gắn nhãn sourcePlugin = "voice_assistant")
-        viewModelScope.launch {
-            voiceManager.aiResponseText.collect { reply ->
-                if (reply.isNotBlank()) {
-                    saveMessageToHistory(reply, "assistant", sourcePlugin = "voice_assistant")
-                }
-            }
-        }
+    // ✅ THÊM MỚI: Mở giao diện Overlay và kích hoạt ghi âm
+    fun openVoiceSearch() {
+        _isVoiceOverlayOpen.value = true
+        _voiceError.value = null
+        _partialText.value = ""
+        _rmsDb.value = 0f
+        startSpeechRecognition()
     }
 
-    // Ghi nhật ký cuộc thoại giọng nói xuống SQLite và kích hoạt cập nhật lại UI Flow
-    private fun saveMessageToHistory(content: String, role: String, sourcePlugin: String? = null) {
-        viewModelScope.launch {
-            val msg = ChatMessageEntity(
-                id = UUID.randomUUID().toString(),
-                sessionToken = "session_$username", // ✅ CẬP NHẬT: Gắn theo username động
-                username = username,                 // ✅ CẬP NHẬT: Gắn theo username động
-                content = content,
-                role = role,
-                type = "text",
-                timestamp = System.currentTimeMillis(),
-                sourcePlugin = sourcePlugin
-            )
-            withContext(Dispatchers.IO) {
-                database.chatMessageDao().insertMessage(msg)
-            }
-            chatSkill.initialize()
-            updateLockedPluginStatus() // Cập nhật nhãn điều khiển sau phiên thoại giọng nói
-        }
+    // ✅ THÊM MỚI: Đóng giao diện Overlay và dừng ghi âm
+    fun closeVoiceSearch() {
+        stopSpeechRecognition()
+        _isVoiceOverlayOpen.value = false
+        _voiceError.value = null
+        _partialText.value = ""
+        _rmsDb.value = 0f
     }
 
-    // ✅ ĐÃ XÓA startVoiceSession(): việc chào mừng + khởi động nghe lần đầu nay do
-    // VoiceAssistantService thực hiện khi app khởi chạy, độc lập với ChatScreen có mở hay không.
-
-    private fun observeAndSpeak() {
+    private fun startSpeechRecognition() {
         viewModelScope.launch(Dispatchers.Main) {
-            messages.drop(1).collect { msgs ->
-                val last = msgs.lastOrNull() ?: return@collect
-                if (last.role != "assistant") return@collect
-                if (!voiceManager.micEnabled.value) return@collect
-
-                // Bỏ qua nếu tin nhắn đến từ cuộc thoại giọng nói tự động hoặc các plugin khác đã tự nói
-                if (last.sourcePlugin == "vision" || 
-                    last.sourcePlugin == "learn" || 
-                    last.sourcePlugin == "device_control" ||
-                    last.sourcePlugin == "voice_assistant") { // Chặn lặp tiếng/khựng tiếng tại đây
-                    return@collect
-                }
-
-                if (!voiceManager.ttsHelper.isReady) {
-                    logger.w("ChatViewModel", "TTS chưa sẵn sàng, kích hoạt nghe lại nhằm duy trì vòng lặp.")
-                    if (voiceManager.micEnabled.value && isInForeground) {
-                        voiceManager.startListening()
-                    }
-                    return@collect
-                }
-
-                if (last.sourcePlugin == "router_error") {
-                    consecutiveRouterFailures++
-                } else {
-                    consecutiveRouterFailures = 0
-                }
-
-                if (consecutiveRouterFailures >= MAX_CONSECUTIVE_ROUTER_FAILURES) {
-                    consecutiveRouterFailures = 0
-                    // ✅ ĐÃ SỬA: dùng setMicEnabled(false) thay vì gán cờ nội bộ — để trạng thái
-                    // "đã tắt do lỗi liên tiếp" cũng được lưu bền và đồng bộ ra notification luôn,
-                    // thay vì chỉ ẩn ở mỗi ViewModel này.
-                    voiceManager.setMicEnabled(false)
-                    _pausedDueToError.value = true
-                    voiceManager.speak(
-                        "Tôi đang gặp lỗi kết nối mạng nhiều lần liên tiếp. " +
-                            "Tôi sẽ tạm dừng nghe để tránh làm phiền bạn. " +
-                            "Nhờ người chăm sóc kiểm tra mạng và bật mic lại khi sẵn sàng."
-                    )
-                    return@collect
-                }
-
-                voiceManager.speak(last.content) {
-                    if (voiceManager.micEnabled.value && isInForeground) {
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            if (voiceManager.micEnabled.value && isInForeground) {
-                                voiceManager.startListening()
+            try {
+                _voiceError.value = null
+                if (speechRecognizer == null) {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                        setRecognitionListener(object : RecognitionListener {
+                            override fun onReadyForSpeech(params: Bundle?) {
+                                _isListening.value = true
+                                _partialText.value = "Đang lắng nghe giọng nói..."
                             }
-                        }, 300L)
+
+                            override fun onBeginningOfSpeech() {
+                                _partialText.value = ""
+                            }
+
+                            // Đo và truyền biên độ sóng âm dB thật về UI vẽ hiệu ứng co giãn
+                            override fun onRmsChanged(rmsdB: Float) {
+                                _rmsDb.value = rmsdB
+                            }
+
+                            override fun onBufferReceived(buffer: ByteArray?) {}
+                            
+                            override fun onEndOfSpeech() {
+                                _isListening.value = false
+                            }
+
+                            override fun onError(error: Int) {
+                                _isListening.value = false
+                                _rmsDb.value = 0f
+                                val errorMsg = when (error) {
+                                    SpeechRecognizer.ERROR_AUDIO -> "Lỗi thiết bị thu âm"
+                                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Chưa cấp quyền ghi âm"
+                                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Lỗi kết nối mạng"
+                                    SpeechRecognizer.ERROR_NO_MATCH -> "Tôi không nghe rõ. Vui lòng thử lại"
+                                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Bạn chưa nói gì cả"
+                                    else -> "Không thể nhận diện giọng nói"
+                                }
+                                _voiceError.value = errorMsg
+                                logger.w("ChatViewModel", "STT Error: $errorMsg ($error)")
+                            }
+
+                            override fun onResults(results: Bundle?) {
+                                _isListening.value = false
+                                _rmsDb.value = 0f
+                                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                val text = matches?.firstOrNull() ?: ""
+                                if (text.isNotBlank()) {
+                                    // Tự động đóng Overlay và gửi đi luôn (YouTube-like UX)
+                                    _isVoiceOverlayOpen.value = false
+                                    _partialText.value = ""
+                                    sendMessage(text)
+                                } else {
+                                    _voiceError.value = "Tôi không nghe rõ. Vui lòng thử lại"
+                                }
+                            }
+
+                            override fun onPartialResults(partialResults: Bundle?) {
+                                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                val currentText = matches?.firstOrNull() ?: ""
+                                if (currentText.isNotBlank()) {
+                                    _partialText.value = currentText
+                                }
+                            }
+
+                            override fun onEvent(eventType: Int, params: Bundle?) {}
+                        })
                     }
                 }
+
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "vi-VN")
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true) // Kích hoạt nhận diện thời gian thực (Streaming)
+                }
+
+                speechRecognizer?.startListening(intent)
+                _isListening.value = true
+            } catch (e: Exception) {
+                logger.e("ChatViewModel", "Lỗi khởi tạo STT: ${e.message}")
+                _isListening.value = false
+                _voiceError.value = "Thiết bị không hỗ trợ Google Speech Services"
             }
         }
     }
 
-    fun toggleVoiceMode() {
-        if (!isPersonalChat) return // ✅ ĐÃ THÊM: không cho bật/tắt mic cá nhân khi đang xem thread khách ngoại kênh
-        val next = !voiceManager.micEnabled.value
-        if (next) {
-            _pausedDueToError.value = false
-            consecutiveRouterFailures = 0
+    private fun stopSpeechRecognition() {
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                speechRecognizer?.stopListening()
+            } catch (_: Exception) {}
+            _isListening.value = false
+            _rmsDb.value = 0f
         }
-        // ✅ ĐÃ SỬA: đi qua setMicEnabled() duy nhất — cùng 1 đường với nút bấm trên notification,
-        // đảm bảo bật/tắt từ ChatScreen hay từ notification luôn nhất quán và được lưu bền.
-        voiceManager.setMicEnabled(next)
-        if (!next) {
-            voiceManager.ttsHelper.stop()
-        }
-    }
-
-    fun setChatMode(mode: ChatMode) {
-        chatSkill.setChatMode(mode)
     }
 
     fun updateLockedPluginStatus() {
@@ -350,8 +282,6 @@ class ChatViewModel @Inject constructor(
         sendMessageWithImage(message, null)
     }
 
-    
-
     fun sendMessageWithImage(message: String, imageUri: Uri?) {
         if (!isProcessingQuery.compareAndSet(false, true)) {
             logger.w("ChatViewModel", "Đang xử lý yêu cầu cũ, bỏ qua yêu cầu trùng lặp.")
@@ -360,7 +290,6 @@ class ChatViewModel @Inject constructor(
 
         viewModelScope.launch {
             _isLoading.value = true
-
             var fileUrl: String? = null
             var base64Image: String? = null
 
@@ -390,13 +319,12 @@ class ChatViewModel @Inject constructor(
                     else -> message
                 }
 
-                // ✅ CẬP NHẬT: Thêm tham số isManual = true báo hiệu người dùng gõ tay thủ công
                 val response = chatSkill.processQuery(
                     message = userMessageContent,
                     username = username,
                     fileUrl = fileUrl,
                     imageBase64 = base64Image,
-                    isManual = true // ✅ Báo hiệu cho ChatSkill
+                    isManual = true
                 )
 
                 if (response is PluginResult.Failure) {
@@ -405,12 +333,10 @@ class ChatViewModel @Inject constructor(
             } finally {
                 _isLoading.value = false
                 isProcessingQuery.set(false)
-                updateLockedPluginStatus() // Đồng bộ lại nhãn điều khiển sau khi nhận được phản hồi của Agent
+                updateLockedPluginStatus()
             }
         }
     }
-
-    
 
     private fun getDownscaledImageBytes(context: Context, uri: Uri, maxDimension: Int = 1024): ByteArray? {
         return try {
@@ -449,29 +375,20 @@ class ChatViewModel @Inject constructor(
 
     fun clearHistory() {
         viewModelScope.launch {
-            chatSkill.clearHistory(username) // ✅ CẬP NHẬT: Gắn theo username động
+            chatSkill.clearHistory(username)
             updateLockedPluginStatus()
         }
     }
 
-    fun onForeground() {
-        // ✅ ĐÃ SỬA: Không còn start/stop vòng lặp mic ở đây — VoiceAssistantService chạy
-        // vòng lặp hands-free độc lập với vòng đời màn hình. onForeground chỉ còn dùng để
-        // gạt cờ isInForeground, quyết định có phát tiếng trả lời cho tin nhắn gõ tay hay không.
-        isInForeground = true
-    }
-
-    fun onBackground() {
-        // ✅ ĐÃ SỬA: Rời màn hình KHÔNG được tắt mic nữa — người dùng hands-free cần ra lệnh
-        // thoại được cả khi tắt màn hình/rời app. Vòng lặp nghe do VoiceAssistantService quản lý,
-        // không phụ thuộc ChatScreen có đang mở hay không.
-        isInForeground = false
-    }
-
     override fun onCleared() {
         super.onCleared()
-        // ✅ ĐÃ SỬA: Không gọi voiceManager.stopListening()/ttsHelper.stop() ở đây nữa —
-        // vòng lặp voice sống độc lập trong VoiceAssistantService, ViewModel bị clear
-        // (rời màn hình) không còn ảnh hưởng tới nó.
+        Handler(Looper.getMainLooper()).post {
+            try {
+                speechRecognizer?.destroy()
+                speechRecognizer = null
+            } catch (e: Exception) {
+                logger.e("ChatViewModel", "Lỗi giải phóng bộ nhận diện giọng nói: ${e.message}")
+            }
+        }
     }
 }

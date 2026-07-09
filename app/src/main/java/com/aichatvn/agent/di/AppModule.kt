@@ -11,7 +11,7 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.utils.VoiceAssistantManager
+// ❌ ĐÃ GỠ BỎ: import com.aichatvn.agent.utils.VoiceAssistantManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -108,16 +108,7 @@ object AppModule {
         return DialogManagerImpl()
     }
 
-    // ===== ĐĂNG KÝ VOICE ASSISTANT MANAGER DẠNG SINGLETON =====
-    @Provides
-    @Singleton
-    fun provideVoiceAssistantManager(
-        @ApplicationContext context: Context,
-        agentKernel: AgentKernel,
-        logger: Logger
-    ): VoiceAssistantManager {
-        return VoiceAssistantManager(context, agentKernel, logger)
-    }
+    // ❌ ĐÃ GỠ BỎ: provideVoiceAssistantManager() cũ tại đây để tránh lỗi biên dịch do thiếu class vật lý
 
     // ===== AGENT KERNEL =====
     @Provides

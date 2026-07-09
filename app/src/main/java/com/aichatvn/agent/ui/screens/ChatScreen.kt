@@ -5,6 +5,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -15,14 +16,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -35,6 +34,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextAlign
 import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
@@ -46,10 +47,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-// Biến tĩnh cấp tiến trình để kiểm tra lần đầu mở app (Cold Start)
-private var isColdStart = true
-
-// ✅ ĐÃ THÊM: Tiêu đề động theo kênh/khách hàng đang chat, thay vì luôn ghi cứng "Trò chuyện với AI"
 private fun chatScreenTitle(username: String): String {
     if (username == "default_user") return "Trò chuyện với AI"
     val platform = username.substringBefore("_")
@@ -69,10 +66,6 @@ private fun chatScreenTitle(username: String): String {
 fun ChatScreen(
     navController: NavController,
     viewModel: ChatViewModel = hiltViewModel(),
-    // ✅ MỚI: Tổng số tin nhắn khách chưa đọc trên toàn app — trước đây hiện badge này ở icon
-    // tab "Trò chuyện" dưới BottomNavigation (xem AppNavigator.kt), nhưng đặt ở đó dễ gây hiểu
-    // lầm vì tab đó dẫn vào chat cá nhân AI (default_user), không phải Inbox khách hàng. Giờ
-    // truyền xuống đây để hiện đúng chỗ — ngay trên icon Hộp thư đa kênh (Forum) bên dưới.
     unreadInboxCount: Int = 0
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -80,13 +73,15 @@ fun ChatScreen(
     val chatMode by viewModel.chatMode.collectAsState()
     val groqRateLimit by viewModel.groqRateLimit.collectAsState()
     val groqRouterRateLimit by viewModel.groqRouterRateLimit.collectAsState()
+    
+    // Đọc các trạng thái ghi âm On-Demand nâng cao
     val isListening by viewModel.isListening.collectAsState()
     val partialText by viewModel.partialText.collectAsState()
-    val voiceModeActive by viewModel.voiceModeActive.collectAsState()
-    val pausedDueToError by viewModel.pausedDueToError.collectAsState()
-    val lockedPluginName by viewModel.lockedPluginName.collectAsState()
+    val isVoiceOverlayOpen by viewModel.isVoiceOverlayOpen.collectAsState()
+    val rmsDb by viewModel.rmsDb.collectAsState()
+    val voiceError by viewModel.voiceError.collectAsState()
     
-    // ✅ ĐÃ THÊM: Theo dõi cấu hình Cướp quyền (smartMode) của ID khách hiện tại
+    val lockedPluginName by viewModel.lockedPluginName.collectAsState()
     val isBotEnabled by viewModel.isBotEnabled.collectAsState()
     val username = viewModel.username
 
@@ -96,7 +91,6 @@ fun ChatScreen(
     var selectedChipTab by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
     
-    var typingMessage by remember { mutableStateOf("") }
     var isTyping by remember { mutableStateOf(false) }
     
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -107,13 +101,9 @@ fun ChatScreen(
             inputText = "[Hình ảnh]"
         }
     }
-    
-    val hasDraftBubble = isListening && partialText.isNotBlank()
 
-    LaunchedEffect(messages.size, typingMessage, hasDraftBubble, isTyping) {
-        val totalItems = messages.size +
-            (if (hasDraftBubble) 1 else 0) +
-            (if (isTyping) 1 else 0)
+    LaunchedEffect(messages.size, isTyping) {
+        val totalItems = messages.size + (if (isTyping) 1 else 0)
         if (totalItems > 0) {
             listState.animateScrollToItem(totalItems - 1)
         }
@@ -122,11 +112,9 @@ fun ChatScreen(
     LaunchedEffect(isLoading) {
         if (isLoading) {
             isTyping = true
-            typingMessage = ""
         } else {
             delay(300)
             isTyping = false
-            typingMessage = ""
         }
     }
 
@@ -134,49 +122,8 @@ fun ChatScreen(
         viewModel.updateLockedPluginStatus()
     }
 
-    // ✅ MỚI: Kích hoạt lại ĐÚNG thread của màn hình này (đổi currentUsername + nạp lại
-    // _messages của ChatSkill) MỖI KHI composable này thực sự hiện ra lại trên UI — không chỉ
-    // lúc ViewModel được tạo lần đầu. Cần thiết vì ViewModel scope theo NavBackStackEntry: khi
-    // Admin bấm back từ chat khách B quay lại route "chat_screen" (default_user) — đây là
-    // backstack entry CŨ, ViewModel bị TÁI SỬ DỤNG nên init{} không chạy lại — nếu không có dòng
-    // này, _messages (biến dùng chung toàn app trong ChatSkill) vẫn còn giữ nội dung của khách B.
-    // Composable này bị Navigation Compose dispose/tái tạo mỗi lần rời đi rồi quay lại (kể cả
-    // qua back hệ thống lẫn chuyển tab dưới cùng), nên LaunchedEffect(Unit) ở đây tự chạy lại
-    // đúng lúc cần, bất kể ViewModel có mới hay cũ.
     LaunchedEffect(Unit) {
         viewModel.activateThread()
-    }
-
-    // QUẢN LÝ LẦN ĐẦU KHỞI ĐỘNG (COLD START)
-    LaunchedEffect(Unit) {
-        delay(300) // Chờ 300ms đảm bảo preferences/database đã load xong dữ liệu cũ
-        if (isColdStart) {
-            if (voiceModeActive) {
-                viewModel.toggleVoiceMode() // Nếu bật từ phiên trước, chủ động tắt đi ở lần đầu mở app
-            }
-            isColdStart = false // Đánh dấu đã vượt qua bước khởi động lạnh thành công
-        }
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> {
-                    if (!isColdStart && voiceModeActive) {
-                        viewModel.onForeground()
-                    }
-                }
-                Lifecycle.Event.ON_STOP  -> viewModel.onBackground()
-                else -> {}
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { 
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            viewModel.onBackground() 
-        }
     }
     
     Box(
@@ -187,11 +134,6 @@ fun ChatScreen(
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            // ✅ ĐÃ SỬA: chat_screen giờ vừa là root của tab "Trò chuyện" vừa là startDestination
-            // của NavHost. Nếu luôn hiện mũi tên back và gọi popBackStack() vô điều kiện, lúc đứng
-            // ở root (không có gì phía sau để quay về) sẽ pop mất luôn destination duy nhất trên
-            // stack — có thể gây crash/màn trắng. Chỉ hiện back khi thực sự có màn trước đó
-            // (vd: mở từ Inbox → chat_screen?username=X).
             val canGoBack = navController.previousBackStackEntry != null
             TopAppBar(
                 title = { Text(chatScreenTitle(username)) },
@@ -205,19 +147,9 @@ fun ChatScreen(
                 actions = {
                     GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
-                    // ✅ ĐÃ THÊM: Lối vào Hộp thư đa kênh (Inbox) — trước đây Inbox chiếm luôn tab
-                    // "Trò chuyện" nên xung đột với màn chat mặc định. Giờ Inbox là màn con, mở từ đây.
-                    // ✅ ĐÃ SỬA: Thêm launchSingleTop = true — trước đây thiếu nên mỗi lần bấm icon
-                    // Inbox lại đẩy thêm 1 bản sao "inbox" mới chồng lên back stack (bấm 3 lần =
-                    // 3 tầng Inbox lồng nhau). Hậu quả: nút back của tab "Trò chuyện" ở AppNavigator
-                    // (popUpTo(Screen.Chat.route)) phải pop qua nhiều tầng trùng lặp mới về được
-                    // màn chat mặc định, tạo cảm giác "bấm tab không quay về màn mặc định".
                     IconButton(onClick = {
                         navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
                     }) {
-                        // ✅ MỚI: Badge đỏ hiện tổng số tin nhắn khách chưa đọc trên TOÀN APP,
-                        // ngay trên icon Hộp thư đa kênh — chuyển từ tab dưới cùng lên đây để
-                        // đúng ngữ cảnh (icon này chính là lối vào Inbox, nơi badge có ý nghĩa).
                         if (unreadInboxCount > 0) {
                             BadgedBox(
                                 badge = {
@@ -295,43 +227,7 @@ fun ChatScreen(
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
-            
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = when {
-                    pausedDueToError -> MaterialTheme.colorScheme.errorContainer
-                    isListening -> MaterialTheme.colorScheme.errorContainer
-                    voiceModeActive -> MaterialTheme.colorScheme.tertiaryContainer
-                    else -> MaterialTheme.colorScheme.surfaceVariant
-                }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = when {
-                            pausedDueToError -> "⚠️ Đã tạm dừng do lỗi mạng liên tục — kiểm tra mạng rồi bật lại"
-                            isListening -> "🎙️ Đang nghe..."
-                            voiceModeActive -> "✅ Hands-free bật — đang chờ"
-                            else -> "🔇 Hands-free tắt"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    TextButton(onClick = { viewModel.toggleVoiceMode() }) {
-                        Text(
-                            text = if (voiceModeActive) "Tắt mic" else "Bật mic",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                }
-            }
 
-            // ✅ ĐÃ THÊM: Giao diện bật gạt Switch "CƯỚP QUYỀN CHAT" (Chỉ hiện khi là khách hàng đa kênh)
             if (username != "default_user") {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -350,9 +246,8 @@ fun ChatScreen(
                             fontWeight = FontWeight.Bold,
                             color = if (isBotEnabled) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer
                         )
-                        // Nút gạt Switch để đổi chế độ cướp quyền trực tiếp [1]
                         Switch(
-                            checked = !isBotEnabled, // Gạt sang phải là Cướp quyền (tắt bot) [1]
+                            checked = !isBotEnabled,
                             onCheckedChange = { isTakeover ->
                                 viewModel.toggleBotSmartMode(username, isBotEnabled = !isTakeover)
                             },
@@ -413,25 +308,6 @@ fun ChatScreen(
                 items(messages, key = { it.id }) { message ->
                     ChatBubble(message = message)
                 }
-
-                if (isListening && partialText.isNotBlank()) {
-                    item(key = "partial_draft") {
-                        Box(modifier = Modifier.alpha(0.55f)) {
-                            ChatBubble(
-                                message = ChatMessageEntity(
-                                    id = "draft_partial",
-                                    sessionToken = "session_$username",
-                                    username = username,
-                                    content = partialText,
-                                    role = "user",
-                                    type = "text",
-                                    timestamp = System.currentTimeMillis(),
-                                    sourcePlugin = null
-                                )
-                            )
-                        }
-                    }
-                }
                 
                 if (isTyping) {
                     item {
@@ -457,7 +333,7 @@ fun ChatScreen(
                                         strokeWidth = 2.dp
                                     )
                                     Text(
-                                        text = if (typingMessage.isNotEmpty()) typingMessage else "Đang suy nghĩ...",
+                                        text = "Đang suy nghĩ...",
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                 }
@@ -516,18 +392,15 @@ fun ChatScreen(
                     Icon(Icons.Default.Image, contentDescription = "Chọn ảnh")
                 }
 
+                // Nút kích hoạt Overlay Ghi âm chuẩn cao cấp
                 IconButton(
-                    onClick = { viewModel.toggleVoiceMode() },
+                    onClick = { viewModel.openVoiceSearch() },
                     enabled = !isLoading
                 ) {
                     Icon(
-                        imageVector = if (voiceModeActive) Icons.Default.MicOff else Icons.Default.Mic,
-                        contentDescription = if (voiceModeActive) "Tắt hands-free" else "Bật hands-free",
-                        tint = when {
-                            isListening -> MaterialTheme.colorScheme.error
-                            voiceModeActive -> MaterialTheme.colorScheme.tertiary
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Chạm để nói",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
@@ -577,6 +450,176 @@ fun ChatScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────────────────
+        // ✅ THÊM MỚI: PREMIUM VOICE DIALOG OVERLAY (GIAO DIỆN PHỦ PREMIUM YOUTUBE-STYLE)
+        // ────────────────────────────────────────────────────────────────────────
+        if (isVoiceOverlayOpen) {
+            PremiumVoiceOverlay(
+                isListening = isListening,
+                partialText = partialText,
+                rmsDb = rmsDb,
+                voiceError = voiceError,
+                onClose = { viewModel.closeVoiceSearch() },
+                onRetry = { viewModel.openVoiceSearch() } // Thử lại lập tức khi lỗi
+            )
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// ✅ GIAO DIỆN PREMIUM VOICE OVERLAY PHẢN HỒI SÓNG ÂM ĐỘNG THEO RMSDB
+// ────────────────────────────────────────────────────────────────────────────────
+@Composable
+fun PremiumVoiceOverlay(
+    isListening: Boolean,
+    partialText: String,
+    rmsDb: Float,
+    voiceError: String?,
+    onClose: () -> Unit,
+    onRetry: () -> Unit
+) {
+    // Làm mượt biên độ sóng âm real-time để tránh giật hình, scale tỷ lệ tối đa 2.2 lần
+    val volumeScale by animateFloatAsState(
+        targetValue = 1f + (rmsDb.coerceAtLeast(0f) / 10f).coerceAtMost(1.2f),
+        animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium)
+    )
+
+    // Hiệu ứng nhịp đập mặc định (Pulse) chạy vô hạn khi im lặng
+    val infiniteTransition = rememberInfiniteTransition()
+    val idlePulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+
+    // Kết hợp giữa âm lượng thật và nhịp đập mặc định
+    val waveScale = if (rmsDb > 1f) volumeScale else idlePulseScale
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.88f)) // Làm mờ đen cao cấp
+            .padding(24.dp)
+    ) {
+        // Nút Đóng hình chữ X góc trên bên phải
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Đóng",
+                tint = Color.White.copy(alpha = 0.85f),
+                modifier = Modifier.size(28.dp)
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            // 🎙️ 1. HIỂN THỊ VĂN BẢN ĐANG NÓI CỠ LỚN (GIỮA MÀN HÌNH)
+            Text(
+                text = if (!voiceError.isNullOrBlank()) "" 
+                       else if (partialText.isBlank() || partialText == "Đang lắng nghe giọng nói...") "Hãy nói điều gì đó..." 
+                       else "“ $partialText ”",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    lineHeight = 36.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = if (partialText.startsWith("Đang")) Color.White.copy(alpha = 0.5f) else Color.White,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 32.dp)
+                    .heightIn(min = 120.dp)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ⚡ 2. KHU VỰC SÓNG ÂM ĐỘNG THEO GIỌNG NÓI & MICROPHONE
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(240.dp)
+            ) {
+                if (isListening && voiceError == null) {
+                    // Sóng âm vòng tròn đồng tâm 1 (Nhạt, ngoài cùng)
+                    Box(
+                        modifier = Modifier
+                            .size(160.dp * waveScale)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape)
+                    )
+                    // Sóng âm vòng tròn đồng tâm 2 (Vừa)
+                    Box(
+                        modifier = Modifier
+                            .size(120.dp * waveScale)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f), CircleShape)
+                    )
+                }
+
+                // Nút tròn Microphone chính giữa
+                Surface(
+                    shape = CircleShape,
+                    color = if (voiceError != null) MaterialTheme.colorScheme.error 
+                            else if (isListening) MaterialTheme.colorScheme.primary 
+                            else Color.Gray,
+                    modifier = Modifier
+                        .size(80.dp)
+                        .combinedClickable(
+                            onClick = {
+                                if (voiceError != null) onRetry() // Bấm để thử lại nếu lỗi
+                                else onClose() // Chạm vào mic để tắt ghi âm
+                            }
+                        )
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = if (voiceError != null) Icons.Default.Refresh else Icons.Default.Mic,
+                            contentDescription = "Microphone",
+                            tint = Color.White,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // 📣 3. TRẠNG THÁI HOẶC BÁO LỖI PHÍA DƯỚI CÙNG
+            if (voiceError != null) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = voiceError,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "Chạm vào biểu tượng Micro để thử lại",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.LightGray
+                    )
+                }
+            } else {
+                Text(
+                    text = if (isListening) "🎙️ Đang nghe... Hãy nói tròn vành rõ chữ" else "Đang xử lý...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray.copy(alpha = 0.8f),
+                    textAlign = TextAlign.Center
+                )
             }
         }
     }
@@ -700,7 +743,7 @@ private fun QuickCommandBar(
 }
 
 private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin) {
-    "human" -> "👤 Trực tiếp" // ✅ ĐÃ THÊM: Nhãn hiển thị cho tin nhắn của người trực tay thủ công
+    "human" -> "👤 Trực tiếp"
     "learn" -> "📚 Học"
     "camera" -> "📷 Camera"
     "light" -> "💡 Đèn"
@@ -771,49 +814,19 @@ fun ChatBubble(message: ChatMessageEntity) {
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = pluginBadgeLabel(message.sourcePlugin),
+                                pluginBadgeLabel(message.sourcePlugin),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
-                    Spacer(Modifier.height(4.dp))
                 }
 
-                if (message.type == "image" && bitmap != null) {
-                    Image(
-                        bitmap = bitmap!!.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(150.dp)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                }
-                
                 Text(
                     text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isUser)
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    else
-                        MaterialTheme.colorScheme.onSecondaryContainer
-                )
-                Text(
-                    text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-                        .format(message.timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isUser)
-                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                    else
-                        MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
-                    modifier = Modifier.padding(top = 4.dp)
+                    style = MaterialTheme.typography.bodyMedium
                 )
             }
         }

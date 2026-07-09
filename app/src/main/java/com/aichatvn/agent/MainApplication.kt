@@ -10,7 +10,7 @@ import androidx.work.Configuration
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.QAInitBuilder
 import com.aichatvn.agent.service.WebhookGatewayService
-import com.aichatvn.agent.service.VoiceAssistantService
+// ❌ Đfont ĐÃ GỠ BỎ: import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +38,7 @@ class MainApplication : Application(), Configuration.Provider {
     private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
-        super.onCreate()
+        super.super.onCreate()
         logger.d("MainApplication", "App khởi động - Khởi tạo plugins")
 
         initializePlugins()
@@ -56,27 +56,7 @@ class MainApplication : Application(), Configuration.Provider {
             logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
         }
 
-        // Khởi chạy vòng lặp mic thoại rảnh tay (nếu đã có quyền)
-        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            try {
-                val voiceServiceIntent = Intent(this, VoiceAssistantService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(voiceServiceIntent)
-                } else {
-                    startService(voiceServiceIntent)
-                }
-                logger.i("MainApplication", "🎤 VoiceAssistantService started successfully on App Launch")
-            } catch (e: Exception) {
-                logger.e("MainApplication", "❌ Failed to start VoiceAssistantService on App Launch", e)
-            }
-        } else {
-            logger.w(
-                "MainApplication",
-                "⚠️ Chưa có quyền RECORD_AUDIO -> bỏ qua khởi động VoiceAssistantService lần này."
-            )
-        }
+        // ❌ ĐÃ GỠ BỎ: Toàn bộ khối lệnh khởi động VoiceAssistantService cũ tại đây
     }
 
     private fun initializePlugins() {
