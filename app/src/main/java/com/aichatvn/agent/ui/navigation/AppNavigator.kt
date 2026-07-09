@@ -40,6 +40,9 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
         // ✅ MỚI: Diagnostics cũng là màn con — chưa từng được đăng ký route nên trước đây
         // không thể mở được từ bất cứ đâu trong app. Mở từ icon trong Settings/Logs.
         const val DIAGNOSTICS_ROUTE = "diagnostics"
+        // ✅ MỚI: Route cho màn Node-Graph trực quan hoá pipeline AgentKernel — màn con,
+        // mở từ card "🧠 Pipeline AI" trong DiagnosticsScreen.
+        const val PIPELINE_GRAPH_ROUTE = "pipeline_graph"
     }
 }
 
@@ -181,6 +184,9 @@ fun AppNavigator(
             // navController.navigate(Screen.DIAGNOSTICS_ROUTE) sẽ luôn crash (route không tồn
             // tại trong graph), và không có cách nào mở được màn hình này từ trong app.
             composable(Screen.DIAGNOSTICS_ROUTE) { DiagnosticsScreen(navController) }
+            // ✅ MỚI: Đăng ký route cho PipelineGraphScreen — màn con hiển thị call graph
+            // thật của AgentKernel (TraceNode) theo từng câu lệnh Admin gõ thử.
+            composable(Screen.PIPELINE_GRAPH_ROUTE) { PipelineGraphScreen(navController) }
 
             // ✅ ĐÃ THÊM: Cấu hình màn hình Chat chi tiết nhận tham số username động từ InboxScreen chuyển sang
             composable(

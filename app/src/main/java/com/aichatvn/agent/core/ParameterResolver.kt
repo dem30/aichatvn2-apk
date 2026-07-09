@@ -6,6 +6,20 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 object ParameterResolver {
     private val SPACE_REGEX = Regex("\\s+")
 
+    // ✅ MỚI: Các hằng số mô tả logic thuần (Pure Logic), đặt ngay cạnh hàm áp dụng
+    // để phục vụ CodeReference.hardcodedRules trong TraceNode (màn Diagnostics/Pipeline
+    // Graph) — khi sửa logic hàm bên dưới, nhớ cập nhật luôn mô tả ở đây, tránh 2 nơi lệch nhau.
+    internal const val RULE_SCHEDULE_INTERVAL_CHECK =
+        "Ràng buộc riêng schedule: interval = 0 (hoặc rỗng) chỉ được coi là 'chưa đặt lặp', KHÔNG áp dụng đặc cách này cho tham số số học khác"
+
+    internal const val RULE_SCHEDULE_TIME_CHECK =
+        "Ràng buộc thời gian Lập lịch (chỉ áp dụng cho schedule.add/create): cron rỗng VÀ interval = 0 đồng thời -> coi là thiếu thời gian, yêu cầu nhập lại cron"
+
+    internal const val RULE_BOOLEAN_EXTRACTION =
+        "Trích Boolean từ câu gốc: chứa 'mở/bật/on' -> true; chứa 'tắt/off' -> false; chứa cả 2 hoặc không có từ nào -> null (giữ giá trị cũ)"
+
+    /**
+     * Kiểm tra một giá trị có phải "chưa được điền" (placeholder) hay không.
     /**
      * Kiểm tra một giá trị có phải "chưa được điền" (placeholder) hay không.
      *

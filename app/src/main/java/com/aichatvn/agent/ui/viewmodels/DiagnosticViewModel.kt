@@ -2,6 +2,8 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.DiagnosticInfo
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,7 +35,8 @@ data class AuditMessageResult(
 @HiltViewModel
 class DiagnosticsViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
-    private val database: AppDatabase
+    private val database: AppDatabase,
+    private val agentKernel: AgentKernel // ✅ MỚI: phục vụ màn Pipeline Graph (explainDeviceCommand)
 ) : ViewModel() {
 
     private val _combinedStats = MutableStateFlow<Map<String, Any>>(emptyMap())
@@ -45,6 +48,36 @@ class DiagnosticsViewModel @Inject constructor(
 
     private val _isFilteringMessages = MutableStateFlow(false)
     val isFilteringMessages: StateFlow<Boolean> = _isFilteringMessages.asStateFlow()
+
+    // ───────────── Pipeline Graph (Node-Graph trực quan AgentKernel) ─────────────
+    private val _pipelineTrace = MutableStateFlow<DiagnosticInfo?>(null)
+    val pipelineTrace: StateFlow<DiagnosticInfo?> = _pipelineTrace.asStateFlow()
+
+    private val _isExplaining = MutableStateFlow(false)
+    val isExplaining: StateFlow<Boolean> = _isExplaining.asStateFlow()
+
+    /**
+     * Chạy thử 1 câu lệnh qua đúng pipeline chẩn đoán thật (explainDeviceCommand),
+     * lấy về danh sách traces để màn PipelineGraphScreen vẽ call graph.
+     * Không ảnh hưởng dữ liệu thật: dùng traceId "DIAGNOSTIC-TRACE" nội bộ trong
+     * AgentKernel, KHÔNG ghi vào lịch sử chat của khách hàng thật (đã tách biệt sẵn
+     * với ChatSkill.kt — xem quy tắc "chỉ ChatSkill ghi DB" đã thống nhất trước đó).
+     */
+    fun explainCommand(query: String, username: String = "default_user") {
+        if (query.isBlank()) return
+        viewModelScope.launch {
+            _isExplaining.value = true
+            try {
+                _pipelineTrace.value = agentKernel.explainDeviceCommand(query, username)
+            } finally {
+                _isExplaining.value = false
+            }
+        }
+    }
+
+    fun clearPipelineTrace() {
+        _pipelineTrace.value = null
+    }
 
     init {
         viewModelScope.launch {

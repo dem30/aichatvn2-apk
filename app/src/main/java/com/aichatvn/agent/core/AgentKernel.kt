@@ -33,6 +33,26 @@ data class DiagnosticTier(
     val score: Double = 0.0
 )
 
+// ✅ MỚI: Mô tả liên kết mã nguồn động — không gõ tay lại nội dung hằng số,
+// luôn nội suy trực tiếp từ biến sống tại thời điểm ghi vết.
+data class CodeReference(
+    val fileName: String,
+    val functionName: String,
+    val hardcodedRules: String,
+    val businessLogic: String
+)
+
+// ✅ MỚI: Một điểm ghi vết thực thi (1 hàm/1 quyết định trong pipeline)
+data class TraceNode(
+    val nodeId: String,
+    val label: String,
+    val input: String,
+    val output: String,
+    val matched: Boolean,
+    val codeRef: CodeReference,
+    val timestampNs: Long = System.nanoTime()
+)
+
 data class DiagnosticInfo(
     val query: String,
     val tiers: List<DiagnosticTier>,
@@ -43,7 +63,8 @@ data class DiagnosticInfo(
     val bestAliasMatches: Map<String, Pair<QAEntity, Double>> = emptyMap(),
     val intentThreshold: Float = 0.3f,
     val aliasThreshold: Float = 0.2f,
-    val executionOutcome: String? = null
+    val executionOutcome: String? = null,
+    val traces: List<TraceNode> = emptyList() // ✅ MỚI
 )
 
 data class LocalCandidate(
@@ -1166,6 +1187,25 @@ class AgentKernel @Inject constructor(
             val isIntentDouble = matchedIntents.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
             val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes
 
+            context.traces.add(TraceNode(
+                nodeId = "clause.branchSelect",
+                label = "Chọn nhánh xử lý mệnh đề (Clause Spotter)",
+                input = "Clause: '$clause' | intents=${matchedIntents.size}, aliases=${matchedAliases.size}, coverage=${String.format("%.2f", coverageRatio)}",
+                output = when {
+                    isIntentDouble -> "isIntentDouble: 1 ý định + nhiều alias cùng category '${uniqueTypes.firstOrNull()}'"
+                    isMultiIntent -> "isMultiIntent: ${matchedIntents.size} ý định độc lập, không trùng category"
+                    matchedIntents.size == 1 && matchedAliases.size <= 1 -> "Đơn lệnh chuẩn"
+                    else -> "Không khớp nhánh nào, bỏ qua clause"
+                },
+                matched = isIntentDouble || isMultiIntent || (matchedIntents.size == 1 && matchedAliases.size <= 1),
+                codeRef = CodeReference(
+                    fileName = "AgentKernel.kt",
+                    functionName = "processLayer3ClauseEntitySpotter",
+                    hardcodedRules = "coverageRatio >= 0.70 (ngưỡng bao phủ mệnh đề), isIntentDouble = 1 intent + >1 alias cùng category, isMultiIntent = >1 intent khác category",
+                    businessLogic = "Tách câu thành các mệnh đề rồi phân loại: 1 ý định lặp nhiều thiết bị cùng loại (isIntentDouble), nhiều ý định độc lập song song (isMultiIntent), hoặc đơn lệnh."
+                )
+            ))
+
             when {
                 isIntentDouble -> {
                     val singleIntentQA = matchedIntents.first()
@@ -1470,14 +1510,29 @@ class AgentKernel @Inject constructor(
             val isPlh = ParameterResolver.isPlaceholder(currentValue, param)
 
             val resolver = resolverTable[param.semanticType.lowercase()]
-            if (resolver != null) {
-                resolved[param.name] = resolver(
+            val resolvedValue: Any = if (resolver != null) {
+                resolver(
                     param, currentValue, isPlh, context,
                     secondaryIntentQA, plugins.toList(), excludeIntentId, depth
                 ) ?: ""
             } else {
-                resolved[param.name] = resolveAliasOrFallback(param, currentValue, isPlh, context)
+                resolveAliasOrFallback(param, currentValue, isPlh, context)
             }
+            resolved[param.name] = resolvedValue
+
+            context.traces.add(TraceNode(
+                nodeId = "param.resolve:${param.name}",
+                label = "Phân giải tham số: ${param.name}",
+                input = "Thô: '$currentValue', isPlaceholder=$isPlh",
+                output = "Kết quả: '$resolvedValue'",
+                matched = resolvedValue.toString().isNotBlank() && !ParameterResolver.isPlaceholder(resolvedValue, param),
+                codeRef = CodeReference(
+                    fileName = "AgentKernel.kt / ParameterResolver.kt",
+                    functionName = "resolveParametersWithMeta",
+                    hardcodedRules = "Param='${param.name}', SemanticType='${param.semanticType}', Required=${param.required}, Placeholder='${param.placeholder}'",
+                    businessLogic = "Nếu có resolver chuyên biệt theo semanticType thì dùng, không thì fallback sang resolveAliasOrFallback (bestAliasMatches ➔ containsMatch ➔ localEntities)."
+                )
+            ))
         }
 
         return resolved
@@ -1742,6 +1797,25 @@ class AgentKernel @Inject constructor(
 
         val missing = ParameterResolver.getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action, plugins)
 
+        context.traces.add(TraceNode(
+            nodeId = "pending.check",
+            label = "Kiểm tra tham số thiếu hụt (Pending Check)",
+            input = normalizedIntent.params.toString(),
+            output = if (missing.isNotEmpty()) "Thiếu: $missing" else "Đầy đủ, sẵn sàng thực thi",
+            matched = missing.isEmpty(),
+            codeRef = CodeReference(
+                fileName = "ParameterResolver.kt",
+                functionName = "getUnresolvedParams",
+
+              
+                hardcodedRules = "Required fields: [${plugin.manifest.actions.find { it.name == normalizedIntent.action }?.parameters?.filter { it.required }?.joinToString { it.name } ?: ""}]" +
+                    if (plugin.manifest.id == "schedule") "\n" + ParameterResolver.RULE_SCHEDULE_TIME_CHECK else "",
+                businessLogic = "Rà required fields của action; riêng plugin schedule áp thêm ràng buộc thời gian đặc thù."
+
+              
+            )
+        ))
+
         val executionResult = if (missing.isNotEmpty()) {
             val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
             PluginResult.NeedMoreInfo(missing, question, options)
@@ -1799,6 +1873,25 @@ class AgentKernel @Inject constructor(
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
+
+        context.traces.add(TraceNode(
+            nodeId = "execute.action",
+            label = "Kích hoạt thực thi Hành động",
+            input = "${plugin.manifest.id}.${normalizedIntent.action}",
+            output = when (executionResult) {
+                is PluginResult.Success -> "Thành công: ${(executionResult.data as? Map<*, *>)?.get("message") ?: "OK"}"
+                is PluginResult.Failure -> "Thất bại: ${executionResult.error}"
+                is PluginResult.NeedMoreInfo -> "Cần thêm: ${executionResult.question}"
+            },
+            matched = executionResult is PluginResult.Success,
+            codeRef = CodeReference(
+                fileName = "AgentKernel.kt",
+                functionName = "executeIntent",
+                hardcodedRules = "-",
+                businessLogic = "Chuẩn hóa params, cập nhật lastDevice/Focus, gọi plugin.execute() thật, cập nhật Pending nếu thiếu tham số."
+            )
+        ))
+
         chatHistoryManager.addTurn(context.originalQuery, replyForHistory)
 
         return executionResult
@@ -2296,14 +2389,62 @@ class AgentKernel @Inject constructor(
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
 
         val simulatedTiers = mutableListOf<DiagnosticTier>()
+        val traces = mutableListOf<TraceNode>() // ✅ MỚI: Bộ gom vết cho toàn bộ lượt request này
         var finalOutcome: String? = null
 
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.toPendingState() ?: emptyPendingState()
         val cancelDecision = dialogManager.resolveCancel(userMessage, pendingStateForCancel)
-        
+
+        traces.add(TraceNode(
+            nodeId = "dialog.resolveCancel",
+            label = "Xác nhận huỷ lệnh dở dang (Cancel Resolver)",
+            input = "Message: '$userMessage', Pending: ${currentPendingForCancel?.action}",
+            output = when (cancelDecision) {
+                is CancelDecision.CancelPending -> "Huỷ: ${cancelDecision.pluginId}.${cancelDecision.action}"
+                else -> "Không phát hiện tín hiệu huỷ hợp lệ"
+            },
+            matched = cancelDecision is CancelDecision.CancelPending,
+            codeRef = CodeReference(
+                fileName = "DialogManagerImpl.kt",
+                functionName = "resolveCancel",
+                hardcodedRules = "CANCEL_PHRASES = [${DialogManagerImpl.CANCEL_PHRASES.joinToString(", ")}]\n" +
+                                 "OBJECT_INDICATOR_WORDS = [${DialogManagerImpl.OBJECT_INDICATOR_WORDS.joinToString(", ")}]",
+                businessLogic = "Chỉ xác nhận huỷ khi đang có Pending. Nếu câu chứa từ khóa huỷ kèm vật thể cụ thể (vd 'hủy lịch') thì từ chối huỷ pending, đẩy xuống Router xử lý như lệnh riêng."
+            )
+        ))
+
         val pronounResult = dialogManager.resolvePronoun(userMessage, username, System.currentTimeMillis())
         val resolvedMessage = pronounResult.rewrittenMessage
+
+        traces.add(TraceNode(
+            nodeId = "dialog.resolvePronoun",
+            label = "Phân giải đại từ (Pronoun Resolver)",
+            input = userMessage,
+            output = if (pronounResult.wasResolved) "'${pronounResult.resolvedFrom}' ➔ '${pronounResult.resolvedTo}'. Câu mới: \"$resolvedMessage\"" else "Giữ nguyên, không có đại từ cần phân giải",
+            matched = pronounResult.wasResolved,
+            codeRef = CodeReference(
+                fileName = "DialogManagerImpl.kt",
+                functionName = "resolvePronoun",
+                hardcodedRules = "PRONOUN_MAP = [" + DialogManagerImpl.PRONOUN_MAP.joinToString(", ") { "${it.first}➔${it.second}" } + "]",
+                businessLogic = "Dò đại từ chỉ định tiếng Việt trong câu và thay bằng ID thiết bị/camera/lịch đang Focus, chỉ khi Focus còn 'tươi' (< 5 phút)."
+            )
+        ))
+
+        val potentialCmd = isPotentialCommand(resolvedMessage) // ✅ MỚI: chỉ để hiển thị trace, không đổi luồng cũ
+        traces.add(TraceNode(
+            nodeId = "gate.keywordFilter",
+            label = "Bộ lọc từ khóa (Keyword Filter)",
+            input = resolvedMessage,
+            output = if (potentialCmd) "Khớp từ khóa smarthome, cho đi tiếp" else "Không khớp — ở luồng thật (runPipeline) sẽ bypass thẳng về chat",
+            matched = potentialCmd,
+            codeRef = CodeReference(
+                fileName = "AgentKernel.kt",
+                functionName = "isPotentialCommand",
+                hardcodedRules = "COMMAND_TRIGGER_KEYWORDS = [${COMMAND_TRIGGER_KEYWORDS.joinToString(", ")}]",
+                businessLogic = "Chuẩn hóa bỏ dấu và kiểm tra tồn tại từ khóa smarthome đặc trưng, làm cổng lọc nhanh trước khi vào Router tĩnh."
+            )
+        ))
 
         if (cancelDecision is CancelDecision.CancelPending) {
             val cancelledPluginId = cancelDecision.pluginId ?: "không xác định"
@@ -2366,6 +2507,37 @@ class AgentKernel @Inject constructor(
             aliasThreshold = aliasThreshold
         )
 
+        traces.add(TraceNode(
+            nodeId = "qa.intentMatch",
+            label = "So khớp Ý định tĩnh (Intent Match)",
+            input = resolvedMessage,
+            output = if (matchResult.intentMatches.isNotEmpty())
+                "Khớp ${matchResult.intentMatches.size}: " + matchResult.intentMatches.joinToString { "${it.first.question} (${String.format("%.2f", it.second)})" }
+            else "Không khớp ý định nào",
+            matched = matchResult.intentMatches.isNotEmpty(),
+            codeRef = CodeReference(
+                fileName = "TrainingSkill.kt",
+                functionName = "fuzzyMatchCategorized",
+                hardcodedRules = "Intent Threshold = $intentThreshold (config GLOBAL_FUZZY_THRESHOLD)",
+                businessLogic = "So khớp Jaccard + Levenshtein giữa câu và các QA type=intent đã huấn luyện, loại các intent thuộc category story/knowledge/document hoặc answer dài >500 ký tự."
+            )
+        ))
+        traces.add(TraceNode(
+            nodeId = "qa.aliasMatch",
+            label = "So khớp Thực thể tĩnh (Alias Match)",
+            input = resolvedMessage,
+            output = if (matchResult.aliasMatches.isNotEmpty())
+                matchResult.aliasMatches.joinToString { "${it.first.question}➔${it.first.answer}" }
+            else "Không khớp alias nào",
+            matched = matchResult.aliasMatches.isNotEmpty(),
+            codeRef = CodeReference(
+                fileName = "TrainingSkill.kt",
+                functionName = "fuzzyMatchCategorized",
+                hardcodedRules = "Alias Threshold = $aliasThreshold (config GLOBAL_ALIAS_THRESHOLD)",
+                businessLogic = "Gom các alias khớp theo category, chỉ giữ điểm cao nhất mỗi category vào bestAliasMatches."
+            )
+        ))
+
         val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
         val clauses = clauseSeparator.split(resolvedMessage).map { it.trim() }.filter { it.isNotBlank() }
 
@@ -2380,7 +2552,8 @@ class AgentKernel @Inject constructor(
             username = username,
             clauses = clauses,
             globalMatchResult = matchResult,
-            localEntities = localEntities
+            localEntities = localEntities,
+            traces = traces // ✅ MỚI: dùng CHUNG list với biến traces phía trên (cùng reference)
         )
 
         val lowerMsg = resolvedMessage.lowercase().trim()
@@ -2404,7 +2577,8 @@ class AgentKernel @Inject constructor(
                 bestAliasMatches = matchResult.bestAliasMatches,
                 intentThreshold = intentThreshold,
                 aliasThreshold = aliasThreshold,
-                executionOutcome = finalOutcome
+                executionOutcome = finalOutcome,
+                traces = traces
             )
         }
 
@@ -2586,7 +2760,8 @@ class AgentKernel @Inject constructor(
             bestAliasMatches = matchResult.bestAliasMatches,
             intentThreshold = intentThreshold,
             aliasThreshold = aliasThreshold,
-            executionOutcome = finalOutcome
+            executionOutcome = finalOutcome,
+            traces = traces
         )
     }
 

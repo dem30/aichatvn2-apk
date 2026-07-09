@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.TextUnitType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.ui.viewmodels.AuditMessageResult
 import com.aichatvn.agent.ui.viewmodels.DiagnosticsViewModel
 
@@ -153,6 +154,34 @@ fun DiagnosticsScreen(
                             .clickable { navController.navigate("alert_history") }
                     )
                     StatSummaryCard("🗓 Lịch hoạt động", "$activeSchedules/$totalSchedules", modifier = Modifier.weight(1f))
+                }
+            }
+
+            // ✅ MỚI: Entry point cho màn Pipeline Graph (Node-Graph trực quan AgentKernel)
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { navController.navigate(Screen.PIPELINE_GRAPH_ROUTE) },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("🧠 Pipeline AI (Node-Graph)", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Xem trực quan luồng xử lý thật của AgentKernel theo từng câu lệnh",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        // Dùng emoji thay vì Icons.Default.AccountTree để tránh phụ thuộc
+                        // material-icons-extended (icon này KHÔNG có trong material-icons-core).
+                        Text("🧩", fontSize = TextUnit(24f, TextUnitType.Sp))
+                    }
                 }
             }
 

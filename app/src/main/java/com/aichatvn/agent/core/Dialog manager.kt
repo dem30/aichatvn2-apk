@@ -200,12 +200,16 @@ interface DialogManager {
 @Singleton
 class DialogManagerImpl @Inject constructor() : DialogManager {
 
-    companion object {
+
+  companion object {
         private val SPACE_REGEX = Regex("\\s+")
 
         // Các đại từ tham chiếu, sắp xếp từ dài -> ngắn để ưu tiên khớp cụm dài trước.
         // Mỗi entry map cụm đại từ -> loại đối tượng nó ám chỉ ("device" | "camera" | "schedule" | "generic").
-        private val PRONOUN_MAP: List<Pair<String, String>> = listOf(
+        // ✅ ĐÃ SỬA: private -> internal để AgentKernel đọc trực tiếp khi ghi TraceNode
+        // cho màn Diagnostics/Pipeline Graph — không có nghĩa vụ gì khác thay đổi,
+        // "internal" vẫn giới hạn truy cập trong cùng module app, không lộ ra bên ngoài.
+        internal val PRONOUN_MAP: List<Pair<String, String>> = listOf(
             "thiết bị đó" to "device",
             "thiết bị này" to "device",
             "thiết bị kia" to "device",
@@ -222,7 +226,8 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
         ).sortedByDescending { it.first.length }
 
         // Từ ngữ thể hiện ý định "hủy" — chỉ có hiệu lực khi đang Pending.
-        private val CANCEL_PHRASES = setOf(
+        // ✅ ĐÃ SỬA: private -> internal (lý do như trên)
+        internal val CANCEL_PHRASES = setOf(
             "hủy", "huỷ", "thôi", "bỏ qua", "không làm nữa", "đừng làm nữa", "dừng lại", "dừng"
         )
 
@@ -232,10 +237,13 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
         // đi kèm -> không phải lệnh hủy ngữ cảnh (context-free cancel).
         // LƯU Ý: không dùng Regex("\\b...\\b") vì \b không nhận đúng ranh giới với
         // ký tự tiếng Việt có dấu — dùng containsWholePhrase() tự viết bên dưới thay thế.
-        private val OBJECT_INDICATOR_WORDS = setOf(
+        // ✅ ĐÃ SỬA: private -> internal (lý do như trên)
+        internal val OBJECT_INDICATOR_WORDS = setOf(
             "lịch", "đèn", "quạt", "máy", "camera", "thông báo", "email", "báo thức", "hẹn giờ"
         )
     }
+
+    
 
     /** Focus theo từng username, threadsafe. */
     private val focusStore = ConcurrentHashMap<String, ConversationFocus>()
