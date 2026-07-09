@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.DiagnosticInfo
+import com.aichatvn.agent.core.ChatHistoryManager // ✅ BỔ SUNG IMPORT ĐỂ TRÁNH LỖI ĐỎ
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.CameraSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -36,7 +37,8 @@ data class AuditMessageResult(
 class DiagnosticsViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
     private val database: AppDatabase,
-    private val agentKernel: AgentKernel // ✅ MỚI: phục vụ màn Pipeline Graph (explainDeviceCommand)
+    private val agentKernel: AgentKernel,
+    private val chatHistoryManager: ChatHistoryManager // ✅ ĐÃ INJECT HỢP LỆ
 ) : ViewModel() {
 
     private val _combinedStats = MutableStateFlow<Map<String, Any>>(emptyMap())
@@ -59,9 +61,6 @@ class DiagnosticsViewModel @Inject constructor(
     /**
      * Chạy thử 1 câu lệnh qua đúng pipeline chẩn đoán thật (explainDeviceCommand),
      * lấy về danh sách traces để màn PipelineGraphScreen vẽ call graph.
-     * Không ảnh hưởng dữ liệu thật: dùng traceId "DIAGNOSTIC-TRACE" nội bộ trong
-     * AgentKernel, KHÔNG ghi vào lịch sử chat của khách hàng thật (đã tách biệt sẵn
-     * với ChatSkill.kt — xem quy tắc "chỉ ChatSkill ghi DB" đã thống nhất trước đó).
      */
     fun explainCommand(query: String, username: String = "default_user") {
         if (query.isBlank()) return
@@ -75,8 +74,24 @@ class DiagnosticsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Dọn dẹp tiến trình dở dang để kiểm tra luồng mới từ đầu.
+     */
+    fun resetPendingSession() {
+        viewModelScope.launch {
+            chatHistoryManager.clearPendingIntent()
+            _pipelineTrace.value = null
+        }
+    }
+
+    /**
+     * Xóa kết quả trace cũ và giải phóng session dở dang cùng lúc.
+     */
     fun clearPipelineTrace() {
         _pipelineTrace.value = null
+        viewModelScope.launch {
+            chatHistoryManager.clearPendingIntent()
+        }
     }
 
     init {
@@ -99,8 +114,7 @@ class DiagnosticsViewModel @Inject constructor(
                     )
                 }
 
-                // ✅ MỚI: Trạng thái Tuya/cảnh báo/lịch trình — gộp từ check_status của
-                // HousekeeperSkill cũ, để 1 màn Diagnostics vừa xem camera vừa xem toàn cảnh hệ thống.
+                // Trạng thái Tuya/cảnh báo/lịch trình — gộp từ check_status cũ
                 val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
                 val onlineTuya = tuyaDevices.count { it.online }
                 val unreadAlerts = database.alertDao().getUnreadCountFlow().first()
@@ -121,7 +135,6 @@ class DiagnosticsViewModel @Inject constructor(
                     "totalSchedules" to schedules.size
                 )
             }
-            // Tối ưu hóa lớn: Chuyển toàn bộ tác vụ ánh xạ mảng và tính toán đếm số lượng sang Dispatchers.Default
             .flowOn(Dispatchers.Default)
             .collect { _combinedStats.value = it }
         }
@@ -140,10 +153,6 @@ class DiagnosticsViewModel @Inject constructor(
     }
 
     // ───────────── Lọc tin nhắn khách hàng ─────────────
-    /**
-     * Lọc tin nhắn theo từ khóa / số điện thoại / theo từng khách. Chỉ gọi từ DiagnosticsScreen
-     * (màn Admin) — không có đường nào từ NLP/chat khách hàng chạm tới hàm này.
-     */
     fun filterMessages(
         username: String? = null,
         keyword: String? = null,
@@ -156,13 +165,10 @@ class DiagnosticsViewModel @Inject constructor(
                 val results = withContext(Dispatchers.IO) {
                     val cleanKeyword = keyword?.trim()?.takeIf { it.isNotEmpty() }
 
-                    // ⚠️ CẦN THÊM vào ChatMessageDao (chưa có trong các file đã gửi):
-                    //   @Query("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT :limit")
-                    //   suspend fun getAllMessagesRaw(limit: Int): List<ChatMessageEntity>
                     val pool = if (username != null) {
                         database.chatMessageDao().getMessages(username, limit)
                     } else {
-                        database.chatMessageDao().getAllMessagesRaw(limit * 5) // lấy dư để lọc tiếp
+                        database.chatMessageDao().getAllMessagesRaw(limit * 5)
                     }
 
                     pool.asSequence()
@@ -190,4 +196,4 @@ class DiagnosticsViewModel @Inject constructor(
     fun clearMessageFilter() {
         _messageFilterResults.value = emptyList()
     }
-}
+} // ── NGOẶC ĐÓNG TOÀN BỘ CLASS ĐƯỢC ĐẶT CHUẨN XÁC Ở ĐÂY ──

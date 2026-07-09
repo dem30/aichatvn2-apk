@@ -53,6 +53,9 @@ data class TraceNode(
     val timestampNs: Long = System.nanoTime()
 )
 
+
+
+
 data class DiagnosticInfo(
     val query: String,
     val tiers: List<DiagnosticTier>,
@@ -64,8 +67,14 @@ data class DiagnosticInfo(
     val intentThreshold: Float = 0.3f,
     val aliasThreshold: Float = 0.2f,
     val executionOutcome: String? = null,
-    val traces: List<TraceNode> = emptyList() // ✅ MỚI
+    val traces: List<TraceNode> = emptyList(),
+    
+    // ── BỔ SUNG THÊM BA TRƯỜNG NÀY ĐỂ UI BIẾT ĐANG CHỜ NHẬP GÌ ──
+    val missingParams: List<String> = emptyList(),
+    val options: Map<String, String> = emptyMap(),
+    val askedQuestion: String? = null
 )
+
 
 data class LocalCandidate(
     val pluginId: String,
@@ -2759,6 +2768,14 @@ class AgentKernel @Inject constructor(
             )
         )
 
+
+
+
+        // ── BỔ SUNG: Lấy thông tin dở dang thực tế (nếu có) từ chatHistoryManager ──
+        val activePending = chatHistoryManager.getActivePendingIntents().firstOrNull()
+        @Suppress("UNCHECKED_CAST")
+        val activeOptions = activePending?.knownParams?.get("_options") as? Map<String, String> ?: emptyMap()
+
         return DiagnosticInfo(
             query = userMessage,
             tiers = simulatedTiers,
@@ -2772,8 +2789,17 @@ class AgentKernel @Inject constructor(
             intentThreshold = intentThreshold,
             aliasThreshold = aliasThreshold,
             executionOutcome = finalOutcome,
-            traces = traces
+            traces = traces,
+            
+            // ── ĐIỀN THÔNG TIN HOÀN THIỆN ĐẦU RA ──
+            missingParams = activePending?.missingParams ?: emptyList(),
+            options = activeOptions,
+            askedQuestion = activePending?.askedQuestion
         )
+
+        
+
+        
     }
 
     private fun isExitLockPhrase(msg: String): Boolean {

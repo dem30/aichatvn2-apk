@@ -89,7 +89,7 @@ fun PipelineGraphScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
@@ -112,6 +112,55 @@ fun PipelineGraphScreen(
                         )
                     } else {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            // ── Hiển thị các lựa chọn nhanh nếu hệ thống đang cần hỏi thêm thông tin (NeedMoreInfo) ──
+            pipelineTrace?.let { info ->
+                if (info.options.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "💬 Hệ thống hỏi: ${info.askedQuestion ?: "Vui lòng chọn tiếp:"}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            
+                            // Hiển thị danh sách Suggestion Chips để chọn nhanh thông tin phản hồi
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                info.options.keys.forEach { optionKey ->
+                                    SuggestionChip(
+                                        onClick = {
+                                            query = optionKey // Điền tự động giá trị lựa chọn vào ô nhập
+                                            viewModel.explainCommand(optionKey) // Tiến hành kích hoạt kiểm tra tiếp lượt sau
+                                        },
+                                        label = { Text("Số $optionKey") }
+                                    )
+                                }
+                                
+                                // Nút Reset để xóa nhanh trạng thái dở dang và khởi động lại luồng chẩn đoán
+                                SuggestionChip(
+                                    onClick = {
+                                        query = ""
+                                        viewModel.resetPendingSession()
+                                    },
+                                    label = { Text("Reset luồng") }
+                                )
+                            }
+                        }
                     }
                 }
             }
