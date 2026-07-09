@@ -20,8 +20,6 @@ object ParameterResolver {
 
     /**
      * Kiểm tra một giá trị có phải "chưa được điền" (placeholder) hay không.
-    /**
-     * Kiểm tra một giá trị có phải "chưa được điền" (placeholder) hay không.
      *
      * QUAN TRỌNG: KHÔNG coi "0" / "0.0" là placeholder ở đây — vì nhiều tham số số học
      * hợp lệ có thể nhận giá trị 0 (độ sáng = 0, volume = 0, số lần lặp = 0...).
