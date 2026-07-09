@@ -1579,19 +1579,32 @@ class AgentKernel @Inject constructor(
         allSchedules.getOrNull(orderNumber - 1)?.let { return it.id }
     }
 
-    // 2. Nếu không phải số, thử so khớp theo nhãn (label) dựa trên độ tương tự cục bộ
-    // Hàm calculateLocalSimilarity của bạn sẽ tự động tìm kiếm nhãn nằm bên trong câu lệnh dài
-    val bestMatch = allSchedules
+    // 2. So khớp theo nhãn (label) kèm theo NGƯỠNG AN TOÀN (Threshold) để tránh khớp bừa
+    val bestMatchPair = allSchedules
         .filter { it.label.isNotBlank() }
-        .maxByOrNull { schedule ->
-            StringSimilarityUtil.calculateLocalSimilarity(
+        .map { schedule ->
+            val score = StringSimilarityUtil.calculateLocalSimilarity(
                 StringSimilarityUtil.normalizeVietnamese(schedule.label),
                 normalizedRaw
             )
+            schedule to score
         }
+        .maxByOrNull { it.second }
 
-    return bestMatch?.id ?: raw // Nếu không khớp gì thì trả về chuỗi gốc để hệ thống báo lỗi rõ ràng
+    // Ngưỡng tối thiểu chấp nhận khớp nhãn (ví dụ: 0.35)
+    val SIMILARITY_THRESHOLD = 0.35
+
+    return if (bestMatchPair != null && bestMatchPair.second >= SIMILARITY_THRESHOLD) {
+        bestMatchPair.first.id
+    } else {
+        raw // Không vượt qua ngưỡng -> Trả về placeholder gốc để hệ thống hỏi lại
+    }
 }
+    
+
+                
+
+
 
     
 
