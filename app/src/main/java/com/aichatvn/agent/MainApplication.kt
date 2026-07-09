@@ -10,7 +10,6 @@ import androidx.work.Configuration
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.QAInitBuilder
 import com.aichatvn.agent.service.WebhookGatewayService
-// ❌ Đfont ĐÃ GỠ BỎ: import com.aichatvn.agent.service.VoiceAssistantService
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -38,7 +37,7 @@ class MainApplication : Application(), Configuration.Provider {
     private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     override fun onCreate() {
-        super.super.onCreate()
+        super.onCreate() // ✅ ĐÃ SỬA: Thay thế super.super.onCreate() bị lỗi cú pháp
         logger.d("MainApplication", "App khởi động - Khởi tạo plugins")
 
         initializePlugins()
@@ -55,8 +54,6 @@ class MainApplication : Application(), Configuration.Provider {
         } catch (e: Exception) {
             logger.e("MainApplication", "❌ Failed to start WebhookGatewayService on App Launch", e)
         }
-
-        // ❌ ĐÃ GỠ BỎ: Toàn bộ khối lệnh khởi động VoiceAssistantService cũ tại đây
     }
 
     private fun initializePlugins() {

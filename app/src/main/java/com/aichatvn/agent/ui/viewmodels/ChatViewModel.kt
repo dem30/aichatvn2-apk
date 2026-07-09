@@ -66,9 +66,6 @@ class ChatViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    // ────────────────────────────────────────────────────────────────────────
-    // ✅ CHUYỂN ĐỔI: Hệ thống ghi âm thông minh On-Demand và sóng âm thời gian thực
-    // ────────────────────────────────────────────────────────────────────────
     private var speechRecognizer: SpeechRecognizer? = null
 
     private val _isListening = MutableStateFlow(false)
@@ -80,11 +77,9 @@ class ChatViewModel @Inject constructor(
     private val _isVoiceOverlayOpen = MutableStateFlow(false)
     val isVoiceOverlayOpen: StateFlow<Boolean> = _isVoiceOverlayOpen.asStateFlow()
 
-    // Theo dõi biên độ sóng âm thời gian thực (0dB - 10dB+) để vẽ hiệu ứng co giãn
     private val _rmsDb = MutableStateFlow(0f)
     val rmsDb: StateFlow<Float> = _rmsDb.asStateFlow()
 
-    // Ghi nhận mã lỗi chi tiết khi không nghe rõ để hiển thị giao diện Thử lại
     private val _voiceError = MutableStateFlow<String?>(null)
     val voiceError: StateFlow<String?> = _voiceError.asStateFlow()
 
@@ -158,7 +153,11 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    // ✅ THÊM MỚI: Mở giao diện Overlay và kích hoạt ghi âm
+    // ✅ KHÔI PHỤC: Cài đặt chế độ Chat truyền xuống cho ChatSkill
+    fun setChatMode(mode: ChatMode) {
+        chatSkill.setChatMode(mode)
+    }
+
     fun openVoiceSearch() {
         _isVoiceOverlayOpen.value = true
         _voiceError.value = null
@@ -167,7 +166,6 @@ class ChatViewModel @Inject constructor(
         startSpeechRecognition()
     }
 
-    // ✅ THÊM MỚI: Đóng giao diện Overlay và dừng ghi âm
     fun closeVoiceSearch() {
         stopSpeechRecognition()
         _isVoiceOverlayOpen.value = false
@@ -192,7 +190,6 @@ class ChatViewModel @Inject constructor(
                                 _partialText.value = ""
                             }
 
-                            // Đo và truyền biên độ sóng âm dB thật về UI vẽ hiệu ứng co giãn
                             override fun onRmsChanged(rmsdB: Float) {
                                 _rmsDb.value = rmsdB
                             }
@@ -224,7 +221,6 @@ class ChatViewModel @Inject constructor(
                                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                                 val text = matches?.firstOrNull() ?: ""
                                 if (text.isNotBlank()) {
-                                    // Tự động đóng Overlay và gửi đi luôn (YouTube-like UX)
                                     _isVoiceOverlayOpen.value = false
                                     _partialText.value = ""
                                     sendMessage(text)
@@ -249,7 +245,7 @@ class ChatViewModel @Inject constructor(
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, "vi-VN")
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true) // Kích hoạt nhận diện thời gian thực (Streaming)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 }
 
                 speechRecognizer?.startListening(intent)
