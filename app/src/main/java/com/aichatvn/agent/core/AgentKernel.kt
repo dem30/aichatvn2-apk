@@ -1334,14 +1334,9 @@ class AgentKernel @Inject constructor(
         if (scheduleManageSignal) return null
     }
 
-    val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
-        .firstOrNull() ?: return null
 
 
-
-
-            
-
+        
         val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
             .firstOrNull() ?: return null
 
