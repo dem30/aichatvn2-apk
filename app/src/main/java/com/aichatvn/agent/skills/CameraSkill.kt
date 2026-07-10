@@ -313,6 +313,11 @@ class CameraSkill @Inject constructor(
         PluginResult.Success(mapOf("cameras" to list, "message" to "Danh sách camera:\n$summary"))
     }
 
+
+
+
+
+    
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = (params["cameraId"] as? String)?.trim()
         val result = scanCamera(cameraId, false)
@@ -327,6 +332,13 @@ class CameraSkill @Inject constructor(
                 val warning = data?.get("warning") as? String
 
                 if (warning != null) return PluginResult.Success(mapOf("message" to warning))
+
+                // ✅ MỚI: chỉ đính kèm ảnh khi user chỉ định đúng 1 camera cụ thể (vd. "chụp ảnh camera X")
+                var imagePath: String? = null
+                if (cameraId != null) {
+                    val single = results.firstOrNull() as? Map<*, *>
+                    (single?.get("imageBytes") as? ByteArray)?.let { imagePath = saveChatImage(it) }
+                }
 
                 val summary = buildString {
                     append("📷 Đã quét $processed camera")
@@ -356,12 +368,19 @@ class CameraSkill @Inject constructor(
                     }
                 }.trimEnd()
 
-                PluginResult.Success(mapOf("message" to summary))
+                PluginResult.Success(mapOf("message" to summary, "imagePath" to imagePath))
             }
             is PluginResult.Failure -> PluginResult.Failure(result.error)
             else -> PluginResult.Failure("Quét thất bại")
         }
     }
+
+
+
+
+    
+
+
     
     private suspend fun handleStatus(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
         val cameraId = (params["cameraId"] as? String)?.trim()
@@ -1020,7 +1039,9 @@ class CameraSkill @Inject constructor(
                     "delta" to delta,
                     "drift" to drift,
                     "deltaTrigger" to deltaTrigger,
-                    "absDiffTrigger" to absDiffTrigger
+                    "absDiffTrigger" to absDiffTrigger,
+                    "imageBytes" to optimizedBytes   // ✅ MỚI: mang ảnh theo để chat có thể hiển thị
+                
                 )
                 
             } catch (e: Exception) {
@@ -1410,6 +1431,20 @@ class CameraSkill @Inject constructor(
             file.absolutePath
         } catch (e: Exception) {
             logger.e("CameraSkill", "saveAlertImage error: ${e.message}", e)
+            null
+        }
+    }
+
+    // ✅ MỚI: Lưu ảnh chụp riêng cho hiển thị trong khung chat — thư mục riêng, không lẫn với alert_images
+    private fun saveChatImage(bytes: ByteArray): String? {
+        return try {
+            val dir = File(context.filesDir, "chat_images")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "${UUID.randomUUID()}.jpg")
+            FileOutputStream(file).use { it.write(bytes) }
+            file.absolutePath
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveChatImage error: ${e.message}", e)
             null
         }
     }

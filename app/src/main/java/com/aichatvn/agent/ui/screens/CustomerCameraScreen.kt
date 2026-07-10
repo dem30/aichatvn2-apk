@@ -279,6 +279,7 @@ fun CustomerCameraScreen(
     if (showAddDialog || selectedCamera != null) {
         CameraDialog(
             camera = selectedCamera,
+            customer = customer,
             onDismiss = { showAddDialog = false; selectedCamera = null },
             onSave = { config ->
                 val merged = config.toMutableMap().apply { put("customerId", viewModel.customerId.trim()) }

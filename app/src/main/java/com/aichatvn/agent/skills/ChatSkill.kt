@@ -297,6 +297,9 @@ class ChatSkill @Inject constructor(
                     )
                 )
 
+
+
+                
                 val assistantMessageId = UUID.randomUUID().toString()
                 val assistantMessage = ChatMessageEntity(
                     id = assistantMessageId,
@@ -304,10 +307,13 @@ class ChatSkill @Inject constructor(
                     username = username,
                     content = response.responseText,
                     role = "assistant",
-                    type = "text",
+                    type = if (response.imagePath != null) "image" else "text",   // ✅ SỬA
+                    fileUrl = response.imagePath,                                  // ✅ MỚI
                     timestamp = System.currentTimeMillis(),
                     sourcePlugin = response.usedPluginId
                 )
+
+                
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(assistantMessage)
                 }

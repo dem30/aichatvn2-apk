@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aichatvn.agent.data.model.CameraConfigEntity
+import com.aichatvn.agent.data.model.CustomerEntity
 
 @Composable
 fun CameraCard(
@@ -168,16 +169,25 @@ fun CameraCard(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+
+
+
+
 @Composable
 fun CameraDialog(
     camera: CameraConfigEntity?,
+    customer: CustomerEntity?,          // ✅ MỚI
     onDismiss: () -> Unit,
     onSave: (Map<String, Any>) -> Unit
 ) {
     var id by remember { mutableStateOf(camera?.id ?: java.util.UUID.randomUUID().toString()) }
-    var customerId by remember { mutableStateOf(camera?.customerId ?: "") }
-    var customerName by remember { mutableStateOf(camera?.customername ?: "") }
-    var customerEmail by remember { mutableStateOf(camera?.customeremail ?: "") }
+    // ✅ SỬA: luôn lấy từ Customer thật, không cho gõ tay để tránh lệch dữ liệu
+    val customerId = customer?.id ?: camera?.customerId ?: ""
+    val customerName = customer?.name ?: camera?.customername ?: ""
+    val customerEmail = customer?.email ?: camera?.customeremail ?: ""
+
+
+    
     var snapshotUrl by remember { mutableStateOf(camera?.snapshoturl ?: "") }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
     var aiPrompt by remember { mutableStateOf(camera?.aiPrompt ?: "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả.") }
@@ -200,9 +210,9 @@ fun CameraDialog(
                     .verticalScroll(rememberScrollState())
             ) {
                 OutlinedTextField(value = id, onValueChange = { id = it }, label = { Text("Mã camera") }, modifier = Modifier.fillMaxWidth(), enabled = camera == null)
-                OutlinedTextField(value = customerId, onValueChange = { customerId = it }, label = { Text("Mã khách hàng") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = customerName, onValueChange = { customerName = it }, label = { Text("Tên khách hàng") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = customerEmail, onValueChange = { customerEmail = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+                Text("Khách hàng: $customerName ($customerId)", style = MaterialTheme.typography.bodyMedium)
+if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTheme.typography.bodySmall)
+
                 OutlinedTextField(value = snapshotUrl, onValueChange = { snapshotUrl = it }, label = { Text("URL ảnh chụp") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = landInfo, onValueChange = { landInfo = it }, label = { Text("Thông tin thửa đất") }, modifier = Modifier.fillMaxWidth())
 

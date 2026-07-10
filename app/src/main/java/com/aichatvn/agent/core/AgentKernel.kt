@@ -132,7 +132,8 @@ data class ChatRequest(
 data class ChatResponse(
     val responseText: String,
     val usedMode: String,
-    val usedPluginId: String?
+    val usedPluginId: String?,
+    val imagePath: String? = null   // ✅ MỚI — default null nên các chỗ gọi ChatResponse(...) cũ khác không cần sửa
 )
 
 @Singleton
@@ -382,20 +383,33 @@ class AgentKernel @Inject constructor(
                 return ChatResponse("⚠️ Thiết bị hiện không hỗ trợ phân tích hình ảnh (chưa cài đặt Vision Plugin).", "vision_error", null)
             }
         }
+
+
+
+
+        
         
         val outcome = if (request.allowDeviceControl) tryDeviceCommand(message, username) else null
         if (outcome is RouterOutcome.Matched) {
-            val responseText = when (val result = outcome.result.result) {
+            val deviceResult = outcome.result.result
+            val responseText = when (deviceResult) {
                 is PluginResult.Success -> {
-                    val data = result.data as? Map<*, *>?
+                    val data = deviceResult.data as? Map<*, *>?
                     data?.get("message") as? String ?: "✅ Đã thực hiện thành công."
                 }
-                is PluginResult.Failure -> result.error
-                is PluginResult.NeedMoreInfo -> result.question
+                is PluginResult.Failure -> deviceResult.error
+                is PluginResult.NeedMoreInfo -> deviceResult.question
             }
+            // ✅ MỚI: nếu plugin trả kèm ảnh (vd. CameraSkill.scan), lấy ra để gắn vào ChatResponse
+            val imagePath = (deviceResult as? PluginResult.Success)?.data
+                ?.let { (it as? Map<*, *>)?.get("imagePath") as? String }
             val finalMsg = if (expiredNotification != null) "$expiredNotification\n\n$responseText" else responseText
-            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId)
+            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId, imagePath)
         }
+
+
+
+        
         
         val routerFailed = outcome is RouterOutcome.RouterFailed
         val usedMode = request.chatMode

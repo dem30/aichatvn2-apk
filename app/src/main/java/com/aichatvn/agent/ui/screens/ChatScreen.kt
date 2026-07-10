@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -799,7 +800,10 @@ fun ChatBubble(message: ChatMessageEntity) {
                     }
                 )
         ) {
-            Column(
+            
+          
+          
+          Column(
                 modifier = Modifier.padding(12.dp)
             ) {
                 if (!isUser && message.sourcePlugin != null) {
@@ -817,11 +821,29 @@ fun ChatBubble(message: ChatMessageEntity) {
                     }
                 }
 
+                // ✅ MỚI: thực sự vẽ ảnh ra — trước đây bitmap được decode xong nhưng không dùng ở đâu cả
+                bitmap?.let {
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .padding(bottom = 6.dp)
+                    )
+                }
+
                 Text(
                     text = message.content,
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
+
+
+
+
+          
         }
     }
 }
