@@ -7,16 +7,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
-import com.aichatvn.agent.core.AgentKernel // Import AgentKernel mới
-import com.aichatvn.agent.core.DiagnosticTier // Import mô hình chẩn đoán từ core
-import com.aichatvn.agent.core.DiagnosticInfo // Import mô hình chẩn đoán từ core
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.skills.TrainingSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job // ĐÃ THÊM: Import sửa lỗi
-import kotlinx.coroutines.delay // ĐÃ THÊM: Import sửa lỗi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,8 +27,7 @@ import javax.inject.Inject
 @HiltViewModel
 class TrainingViewModel @Inject constructor(
     private val trainingSkill: TrainingSkill,
-    private val configProvider: AppConfigProvider,
-    private val agentKernel: AgentKernel // Inject AgentKernel điều phối thực tế
+    private val configProvider: AppConfigProvider
 ) : ViewModel() {
 
     // Lấy luồng dữ liệu Q&A trực tiếp từ Skill
@@ -43,9 +39,6 @@ class TrainingViewModel @Inject constructor(
     private val _searchResults = MutableStateFlow<List<QAEntity>>(emptyList())
     val searchResults: StateFlow<List<QAEntity>> = _searchResults.asStateFlow()
 
-    private val _diagnosticInfo = MutableStateFlow<DiagnosticInfo?>(null)
-    val diagnosticInfo: StateFlow<DiagnosticInfo?> = _diagnosticInfo.asStateFlow()
-
     private val _exportResult = MutableStateFlow<String?>(null)
     val exportResult: StateFlow<String?> = _exportResult.asStateFlow()
 
@@ -53,7 +46,7 @@ class TrainingViewModel @Inject constructor(
     val importResult: StateFlow<String?> = _importResult.asStateFlow()
 
     private var activeSearchQuery: String = ""
-    private var searchJob: Job? = null // ĐÃ THÊM: Job kiểm soát debounce gõ chữ
+    private var searchJob: Job? = null // Job kiểm soát debounce gõ chữ
 
     init {
         reloadQAs()
@@ -118,24 +111,23 @@ class TrainingViewModel @Inject constructor(
         }
     }
 
-    // Đug c chế DEBOUNCE (Trì hoãn 500ms): Chỉ gọi Groq kiểm thử khi người dùng đã dừng gõ
+    // Debounce (trì hoãn 300ms): chỉ tìm kiếm khi người dùng đã dừng gõ.
+    // ✅ ĐÃ GỠ BỎ: gọi agentKernel.explainDeviceCommand() (chạy lại toàn bộ pipeline
+    // Tầng 0-5 chỉ để tìm Q&A đã có -> trùng lặp với panel chẩn đoán đầy đủ đã có ở
+    // PipelineGraphScreen/DiagnosticsViewModel). Giờ dùng thẳng fuzzy match nhẹ của
+    // TrainingSkill, nhanh hơn và không tốn tài nguyên chạy pipeline vô ích.
     fun searchQAs(query: String) {
         activeSearchQuery = query
         searchJob?.cancel() // Huỷ ngay yêu cầu tìm kiếm cũ nếu người dùng vẫn đang gõ tiếp
-        
+
         searchJob = viewModelScope.launch {
-            delay(500) // Đợi 500 mili-giây để người dùng hoàn tất câu gõ
+            delay(300)
             _isLoading.value = true
 
-            // Gọi hàm giải thích thực tế từ nhân AgentKernel đã cập nhật
-            val realTrace = agentKernel.explainDeviceCommand(query, "default_user")
-            _diagnosticInfo.value = realTrace
-
-            val intentThreshold = realTrace.intentThreshold
-            val aliasThreshold = realTrace.aliasThreshold
-            val filteredIntents = realTrace.intentMatches.filter { it.second >= intentThreshold }
-            val filteredAliases = realTrace.aliasMatches.filter { it.second >= aliasThreshold }
-            _searchResults.value = (filteredIntents + filteredAliases).map { it.first }
+            val matchResult = trainingSkill.fuzzyMatchCategorized(query, "default_user")
+            _searchResults.value = (matchResult.intentMatches + matchResult.aliasMatches)
+                .sortedByDescending { it.second }
+                .map { it.first }
 
             _isLoading.value = false
         }
@@ -145,7 +137,6 @@ class TrainingViewModel @Inject constructor(
         searchJob?.cancel()
         activeSearchQuery = ""
         _searchResults.value = emptyList()
-        _diagnosticInfo.value = null
     }
 
     fun exportQAToJson(context: Context) {
@@ -223,10 +214,10 @@ class TrainingViewModel @Inject constructor(
                 var skipped = 0
 
                 for (line in csvLines) {
-                    // SỬA: Phân tách thông minh dựa trên Regex để không vỡ cột khi nội dung có dấu phẩy nằm trong ngoặc kép
+                    // Phân tách thông minh dựa trên Regex để không vỡ cột khi nội dung có dấu phẩy nằm trong ngoặc kép
                     val cols = line.split(Regex(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)"))
                         .map { it.trim().removeSurrounding("\"") }
-                    
+
                     if (cols.size >= 2 && cols[0].isNotBlank() && cols[1].isNotBlank()) {
                         val obj = JSONObject().apply {
                             put("question", cols[0])

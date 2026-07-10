@@ -29,8 +29,6 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.QAEntity
-import com.aichatvn.agent.core.DiagnosticInfo // Import từ core
-import com.aichatvn.agent.core.DiagnosticTier // Import từ core
 import com.aichatvn.agent.ui.viewmodels.TrainingViewModel
 
 val PRESET_CATEGORIES = listOf("chat", "email", "device", "camera", "faq", "general", "alert")
@@ -44,7 +42,6 @@ fun TrainingScreen(
     val context = LocalContext.current
     val qaList by viewModel.qaList.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
-    val diagnosticInfo by viewModel.diagnosticInfo.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val exportResult by viewModel.exportResult.collectAsState()
     val importResult by viewModel.importResult.collectAsState()
@@ -117,7 +114,7 @@ fun TrainingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                placeholder = { Text("Nhập thử nghiệm câu lệnh thiết bị...") },
+                placeholder = { Text("Tìm trong Q&A đã lưu...") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 trailingIcon = {
                     if (searchQuery.isNotBlank()) {
@@ -198,12 +195,6 @@ fun TrainingScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        if (searchQuery.isNotBlank() && diagnosticInfo != null) {
-                            item {
-                                AgentKernelDiagnosticsPanel(diagnosticInfo!!)
-                            }
-                        }
-
                         if (displayList.isEmpty()) {
                             item {
                                 Box(
@@ -213,7 +204,7 @@ fun TrainingScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = if (searchQuery.isNotBlank()) "Không có kết quả nào đạt ngưỡng cấu hình tĩnh (Kiểm tra luồng LLM Tầng 5 ở Panel phía trên)" else "Chưa có dữ liệu huấn luyện",
+                                        text = if (searchQuery.isNotBlank()) "Không tìm thấy Q&A nào khớp" else "Chưa có dữ liệu huấn luyện",
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         style = MaterialTheme.typography.bodyMedium
                                     )
@@ -284,384 +275,6 @@ fun TrainingScreen(
                 showAddDialog = false; editingQA = null
             }
         )
-    }
-}
-
-@Composable
-fun AgentKernelDiagnosticsPanel(info: DiagnosticInfo) {
-    var isExpanded by remember { mutableStateOf(true) }
-    val rotationState by animateFloatAsState(targetValue = if (isExpanded) 180f else 0f)
-
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 6.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Header Panel
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { isExpanded = !isExpanded },
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Analytics,
-                        contentDescription = "Diagnostics",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "LUỒNG KIỂM TRA 5 TẦNG AGENT KERNEL",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                IconButton(onClick = { isExpanded = !isExpanded }, modifier = Modifier.size(24.dp)) {
-                    Icon(
-                        Icons.Default.ArrowDropDown,
-                        contentDescription = null,
-                        modifier = Modifier.rotate(rotationState)
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = isExpanded) {
-                Column(modifier = Modifier.padding(top = 10.dp)) {
-                    
-                    // Hiển thị kết quả thực thi live outcome
-                    if (info.executionOutcome != null) {
-                        val outcome = info.executionOutcome
-                        val isSuccess = outcome.startsWith("✅")
-                        val isWarning = outcome.startsWith("⚠️")
-                        val isFailure = outcome.startsWith("❌")
-                        
-                        val containerColor = when {
-                            isSuccess -> Color(0xFF2E7D32).copy(alpha = 0.08f)
-                            isWarning -> Color(0xFFFFB300).copy(alpha = 0.08f)
-                            isFailure -> Color(0xFFC62828).copy(alpha = 0.08f)
-                            else -> MaterialTheme.colorScheme.surface
-                        }
-                        val borderColor = when {
-                            isSuccess -> Color(0xFF2E7D32).copy(alpha = 0.3f)
-                            isWarning -> Color(0xFFFFB300).copy(alpha = 0.3f)
-                            isFailure -> Color(0xFFC62828).copy(alpha = 0.3f)
-                            else -> MaterialTheme.colorScheme.outlineVariant
-                        }
-                        val titleColor = when {
-                            isSuccess -> Color(0xFF2E7D32)
-                            isWarning -> Color(0xFFE65100)
-                            isFailure -> Color(0xFFC62828)
-                            else -> MaterialTheme.colorScheme.onSurface
-                        }
-
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 12.dp)
-                                .background(containerColor, RoundedCornerShape(8.dp))
-                                .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-                                .padding(12.dp)
-                        ) {
-                            Text(
-                                text = "KẾT QUẢ THỰC THI THỰC TẾ (LIVE OUTCOME):",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = titleColor
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = outcome,
-                                fontSize = 12.5.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-
-                    // Trạng thái cấu hình hiện tại
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
-                                .padding(8.dp)
-                        ) {
-                            Column {
-                                Text("Ngưỡng Lọc Tầng 2 (Intent)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${info.intentThreshold}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
-                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(6.dp))
-                                .padding(8.dp)
-                        ) {
-                            Column {
-                                Text("Ngưỡng Lọc Tầng 3 (Alias)", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${info.aliasThreshold}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // PHẦN 1: DÒNG THỜI GIAN LÀM VIỆC CỦA 5 TẦNG PIPELINE
-                    Text(
-                        "1. Sơ đồ xử lý tuần tự 5 tầng:",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        info.tiers.forEach { tier ->
-                            TierRow(tier)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // PHẦN 2: CHI TIẾT DỮ LIỆU ĐỐI KHỚP DƯỚI TẦNG THẤP
-                    Text(
-                        "2. Các thực thể trích xuất tốt nhất (Best Aliases):",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-                    
-                    if (info.bestAliasMatches.isEmpty()) {
-                        Text(
-                            "Không nhận diện được từ khóa hoặc thực thể nào khớp tĩnh.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
-                        )
-                    } else {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(bottom = 12.dp)
-                        ) {
-                            info.bestAliasMatches.forEach { (category, pair) ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF2E7D32).copy(alpha = 0.05f), RoundedCornerShape(6.dp))
-                                        .border(0.5.dp, Color(0xFF2E7D32).copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column {
-                                        Text(
-                                            text = "Danh mục (semanticType): $category",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "Từ khóa: \"${pair.first.question}\" → Mã ID: \"${pair.first.answer}\"",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Text(
-                                        text = String.format("%.2f", pair.second),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = Color(0xFF2E7D32)
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Text(
-                        "3. Điểm khớp mẫu (Tĩnh & Heuristic):",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-
-                    var showRawScores by remember { mutableStateOf(false) }
-                    TextButton(
-                        onClick = { showRawScores = !showRawScores },
-                        contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text(if (showRawScores) "Ẩn chi tiết" else "Xem chi tiết điểm số đối khớp...", fontSize = 11.sp)
-                    }
-
-                    AnimatedVisibility(visible = showRawScores) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-                            Text("Ý định (Intent Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            if (info.intentMatches.isEmpty()) {
-                                Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            } else {
-                                info.intentMatches.take(3).forEach { (qa, score) ->
-                                    val isPassed = score >= info.intentThreshold
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            "Q: \"${qa.question}\" -> A: \"${qa.answer}\"",
-                                            fontSize = 10.sp,
-                                            maxLines = 1,
-                                            color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(
-                                            String.format("%.2f [%s]", score, if (isPassed) "ĐẠT" else "LOẠI"),
-                                            fontSize = 10.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
-                                        )
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            Text("Thực thể thô (Alias Match list):", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            if (info.aliasMatches.isEmpty()) {
-                                Text("Trống", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            } else {
-                                info.aliasMatches.take(3).forEach { (qa, score) ->
-                                    val isPassed = score >= info.aliasThreshold
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            "\"${qa.question}\" (${qa.category}) -> \"${qa.answer}\"",
-                                            fontSize = 10.sp,
-                                            maxLines = 1,
-                                            color = if (isPassed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(
-                                            String.format("%.2f [%s]", score, if (isPassed) "ĐẠT" else "LOẠI"),
-                                            fontSize = 10.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isPassed) Color(0xFF2E7D32) else Color(0xFFC62828)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun TierRow(tier: DiagnosticTier) {
-    val isMatched = tier.matched
-    val activeBgColor = if (isMatched) Color(0xFF2E7D32).copy(alpha = 0.08f) else Color.Transparent
-    val borderStrokeWidth = if (isMatched) 1.5.dp else 0.5.dp
-    val borderColor = if (isMatched) Color(0xFF2E7D32).copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = activeBgColor),
-        shape = RoundedCornerShape(8.dp),
-        border = androidx.compose.foundation.BorderStroke(borderStrokeWidth, borderColor)
-    ) {
-        Row(
-            modifier = Modifier.padding(10.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .background(
-                        color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(12.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "${tier.tierNum}",
-                    color = if (isMatched) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(modifier = Modifier.width(10.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = tier.tierName,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
-                    )
-                    
-                    Surface(
-                        shape = RoundedCornerShape(4.dp),
-                        color = (if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline).copy(alpha = 0.1f)
-                    ) {
-                        Text(
-                            text = if (isMatched) "KÍCH HOẠT" else "BỎ QUA",
-                            fontSize = 8.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-
-                if (tier.score > 0) {
-                    Text(
-                        text = "Score: ${String.format("%.2f", tier.score)}",
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = if (isMatched) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(vertical = 2.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Text(
-                    text = tier.details,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontSize = 10.5.sp,
-                    color = if (isMatched) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
     }
 }
 
