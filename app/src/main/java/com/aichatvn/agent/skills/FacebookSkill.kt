@@ -47,8 +47,9 @@ class FacebookSkill @Inject constructor(
                 examples = listOf("gửi tin nhắn facebook cho", "inbox messenger"),
                 parameters = listOf(
                     PluginParameter("recipient_id", "string", "ID người nhận (PSID)", true, "string"),
-                    PluginParameter("message", "string", "Nội dung tin nhắn cần gửi", true, "string"),
-                    PluginParameter("page_id", "string", "ID của Fanpage gửi tin", false, "string") // ✅ ĐÃ THÊM: Nhận diện Page ID động
+                    PluginParameter("message", "string", "Nội dung tin nhắn cần gửi", false, "string"), // ✅ SỬA: không còn bắt buộc — cho phép gửi CHỈ ảnh, không kèm text
+                    PluginParameter("page_id", "string", "ID của Fanpage gửi tin", false, "string"), // ✅ ĐÃ THÊM: Nhận diện Page ID động
+                    PluginParameter("image_base64", "string", "Ảnh đính kèm mã hoá Base64 (tuỳ chọn)", false, "string") // ✅ MỚI
                 )
             )
         )
@@ -65,9 +66,12 @@ class FacebookSkill @Inject constructor(
                 val recipientId = params["recipient_id"] as? String ?: ""
                 val message = params["message"] as? String ?: ""
                 val pageId = params["page_id"] as? String ?: "" // ✅ ĐÃ THÊM: Lấy pageId truyền sang
+                // ✅ MỚI: Ảnh đính kèm (đã được đọc bytes cục bộ + mã hoá base64 từ nơi gọi,
+                // vd. WebhookGatewayService/ChatSkill khi trả lời khách bằng ảnh chụp camera).
+                val imageBase64 = params["image_base64"] as? String
 
-                if (recipientId.isBlank() || message.isBlank()) {
-                    return failure("Thiếu recipient_id hoặc nội dung tin nhắn.")
+                if (recipientId.isBlank() || (message.isBlank() && imageBase64.isNullOrEmpty())) {
+                    return failure("Thiếu recipient_id hoặc nội dung tin nhắn/ảnh cần gửi.")
                 }
 
                 val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
@@ -101,6 +105,11 @@ class FacebookSkill @Inject constructor(
                             put("recipientId", recipientId)
                             put("message", message)
                             put("pageAccessToken", pageAccessToken)
+                            // ✅ MỚI: chỉ đính kèm field ảnh khi thực sự có, tránh phá JSON payload
+                            // của các lời gọi cũ (text-only) vốn không mong đợi field này.
+                            if (!imageBase64.isNullOrEmpty()) {
+                                put("imageBase64", imageBase64)
+                            }
                         }.toString()
 
                         connection.outputStream.use { os ->
@@ -113,7 +122,8 @@ class FacebookSkill @Inject constructor(
                             val jsonResp = JSONObject(responseBody)
                             
                             if (jsonResp.optString("status") == "success") {
-                                success("✅ Gửi tin nhắn qua Messenger thành công!")
+                                val sentDesc = if (!imageBase64.isNullOrEmpty()) "tin nhắn kèm ảnh" else "tin nhắn"
+                                success("✅ Gửi $sentDesc qua Messenger thành công!")
                             } else {
                                 failure("❌ Lỗi từ máy chủ: ${jsonResp.optString("message", "Unknown error")}")
                             }

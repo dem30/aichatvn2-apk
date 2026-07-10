@@ -113,14 +113,19 @@ class ChatSkill @Inject constructor(
     }
 
     // Lưu nhanh tin nhắn khách hàng gửi từ Webhook vào SQLite dưới vai trò USER (Không trả lời tự động)
-    suspend fun saveExternalUserMessage(message: String, username: String) {
+    // ✅ MỚI: nhận thêm fileUrl (dùng thẳng cho URL ảnh Facebook/Instagram CDN) hoặc imageBase64
+    // (Telegram/Website — không có URL công khai nên lưu file cục bộ rồi lấy đường dẫn) — trước
+    // đây khi Admin bật "Người Trực" (bot tắt), ảnh khách gửi tới bị bỏ qua hoàn toàn, chỉ còn text.
+    suspend fun saveExternalUserMessage(message: String, username: String, fileUrl: String? = null, imageBase64: String? = null) {
+        val resolvedFileUrl = fileUrl ?: imageBase64?.let { saveIncomingChatImage(it) }
         val userMessage = ChatMessageEntity(
             id = UUID.randomUUID().toString(),
             sessionToken = "session_$username",
             username = username,
             content = message,
             role = "user", // ✅ SỬA: Đảm bảo lưu đúng vai trò khách gửi là "user" chứ không phải "assistant"
-            type = "text",
+            type = if (resolvedFileUrl != null) "image" else "text",
+            fileUrl = resolvedFileUrl,
             timestamp = System.currentTimeMillis(),
             // ✅ MỚI: Tin nhắn khách gửi tới từ Webhook luôn bắt đầu ở trạng thái CHƯA ĐỌC —
             // sẽ được đánh dấu đã đọc khi Admin thực sự mở ChatScreen của khách này
@@ -134,6 +139,22 @@ class ChatSkill @Inject constructor(
             if (currentUsername == username) {
                 _messages.value = _messages.value + userMessage
             }
+        }
+    }
+
+    // ✅ MỚI: Lưu ảnh khách gửi tới (base64, không kèm URL công khai — trường hợp Telegram/Website)
+    // vào bộ nhớ cục bộ, cùng thư mục "chat_images" mà CameraSkill dùng cho ảnh chat của Admin.
+    private fun saveIncomingChatImage(imageBase64: String): String? {
+        return try {
+            val bytes = android.util.Base64.decode(imageBase64, android.util.Base64.NO_WRAP)
+            val dir = java.io.File(context.filesDir, "chat_images")
+            if (!dir.exists()) dir.mkdirs()
+            val file = java.io.File(dir, "${UUID.randomUUID()}.jpg")
+            java.io.FileOutputStream(file).use { it.write(bytes) }
+            file.absolutePath
+        } catch (e: Exception) {
+            logger.e("ChatSkill", "Lỗi lưu ảnh khách gửi tới: ${e.message}")
+            null
         }
     }
 
@@ -193,6 +214,10 @@ class ChatSkill @Inject constructor(
 
             if (isExternal && isManual) {
                 // 👤 LUỒNG 1: NGƯỜI TRỰC CHAT THỦ CÔNG (ADMIN GÕ TAY TỪ ĐIỆN THOẠI)
+                // ✅ MỚI: trước đây imageBase64/fileUrl của chính lời gọi này chưa từng được đọc ở
+                // nhánh LUỒNG 1 — admin đính kèm ảnh khi trả lời khách ngoại kênh chỉ lưu được
+                // chuỗi placeholder "[Hình ảnh]" cục bộ, ảnh thật không hề được gửi ra ngoài.
+                val hasImage = !imageBase64.isNullOrEmpty()
                 val adminMessageId = UUID.randomUUID().toString()
                 val adminMessage = ChatMessageEntity(
                     id = adminMessageId,
@@ -200,7 +225,8 @@ class ChatSkill @Inject constructor(
                     username = username,
                     content = message,
                     role = "assistant", // Ghi nhận là người trực trả lời
-                    type = "text",
+                    type = if (hasImage) "image" else "text",
+                    fileUrl = if (hasImage) fileUrl else null,
                     timestamp = System.currentTimeMillis(),
                     sourcePlugin = "human"
                 )
@@ -224,20 +250,26 @@ class ChatSkill @Inject constructor(
                     val pageId = withContext(Dispatchers.IO) {
                         database.cameraDao().getCustomerSetting(rawSenderId)?.lastFacebookPageId
                     } ?: extraContext.removePrefix("page_id:")
-                    agentKernel.executePluginAction(
-                        "facebook",
-                        "send_messenger",
-                        mapOf("recipient_id" to rawSenderId, "message" to message, "page_id" to pageId)
+                    val fbParams = mutableMapOf<String, Any>(
+                        "recipient_id" to rawSenderId,
+                        "message" to message,
+                        "page_id" to pageId
                     )
+                    if (hasImage) fbParams["image_base64"] = imageBase64!!
+                    agentKernel.executePluginAction("facebook", "send_messenger", fbParams)
                 } else if (username.startsWith("telegram_")) {
                     val botToken = configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim()
-                    sendTelegramMessage(botToken, rawSenderId, message)
+                    if (hasImage) {
+                        sendTelegramPhoto(botToken, rawSenderId, imageBase64!!, message)
+                    } else {
+                        sendTelegramMessage(botToken, rawSenderId, message)
+                    }
                 } else if (username.startsWith("website_")) {
                     // ✅ ĐÃ THÊM: Trước đây rơi vào đây là hết — tin nhắn admin gõ tay chỉ lưu local,
                     // không có gì gửi ra ngoài cho khách Website đang chờ trên widget.
                     val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
                     val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
-                    sendWebsiteReply(gatewayUrl, gatewayToken, rawSenderId, message)
+                    sendWebsiteReply(gatewayUrl, gatewayToken, rawSenderId, message, if (hasImage) imageBase64 else null)
                 }
 
                 return PluginResult.Success(
@@ -328,7 +360,11 @@ class ChatSkill @Inject constructor(
                     mapOf(
                         "response" to response.responseText,
                         "messageId" to assistantMessageId,
-                        "mode" to response.usedMode
+                        "mode" to response.usedMode,
+                        // ✅ MỚI: trước đây imagePath bị cắt mất ở đây — bot/plugin (vd. CameraSkill
+                        // quét camera trả ảnh) không bao giờ có cách gửi ảnh đó ra kênh ngoại (FB/
+                        // Telegram/Website), vì WebhookGatewayService chỉ đọc field "response".
+                        "imagePath" to response.imagePath
                     )
                 )
             }
@@ -340,7 +376,9 @@ class ChatSkill @Inject constructor(
 
     // ✅ ĐÃ THÊM: Đẩy tin nhắn admin gõ tay ra khách Website qua Gateway (không có Graph API như
     // Facebook/Telegram nên phải đi qua hàng đợi SSE riêng /send/{token} platform=website).
-    private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, text: String) {
+    // ✅ MỚI: nhận thêm imageBase64 tuỳ chọn — Render sẽ đẩy nguyên field này vào hàng đợi SSE
+    // của khách, widget Website tự giải mã và hiển thị <img>.
+    private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, text: String, imageBase64: String? = null) {
         withContext(Dispatchers.IO) {
             var conn: HttpURLConnection? = null
             try {
@@ -354,6 +392,9 @@ class ChatSkill @Inject constructor(
                     put("platform", "website")
                     put("recipientId", senderId)
                     put("message", text)
+                    if (!imageBase64.isNullOrEmpty()) {
+                        put("imageBase64", imageBase64)
+                    }
                 }.toString()
 
                 conn.outputStream.use { os ->
@@ -391,6 +432,47 @@ class ChatSkill @Inject constructor(
                 logger.e("ChatSkill", "Gửi phản hồi về Telegram thất bại: ${e.message}")
             } finally {
                 conn?.disconnect()
+            }
+        }
+    }
+
+    // ✅ MỚI: Gửi ảnh (kèm caption tuỳ chọn) trực tiếp cho Telegram bằng multipart/form-data —
+    // Telegram Bot API "sendPhoto" nhận file nhị phân trực tiếp, không cần ảnh có URL công khai.
+    // Gọi thẳng api.telegram.org (giống sendTelegramMessage), KHÔNG đi qua Render Gateway.
+    private suspend fun sendTelegramPhoto(token: String, chatId: String, imageBase64: String, caption: String = "") {
+        withContext(Dispatchers.IO) {
+            try {
+                val imageBytes = android.util.Base64.decode(imageBase64, android.util.Base64.NO_WRAP)
+                val boundary = "----AIChatVNBoundary${System.currentTimeMillis()}"
+                val url = URL("https://api.telegram.org/bot$token/sendPhoto")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+
+                conn.outputStream.use { os ->
+                    fun writeField(name: String, value: String) {
+                        os.write("--$boundary\r\n".toByteArray(Charsets.UTF_8))
+                        os.write("Content-Disposition: form-data; name=\"$name\"\r\n\r\n".toByteArray(Charsets.UTF_8))
+                        os.write("$value\r\n".toByteArray(Charsets.UTF_8))
+                    }
+                    writeField("chat_id", chatId)
+                    if (caption.isNotBlank()) writeField("caption", caption)
+
+                    os.write("--$boundary\r\n".toByteArray(Charsets.UTF_8))
+                    os.write("Content-Disposition: form-data; name=\"photo\"; filename=\"image.jpg\"\r\n".toByteArray(Charsets.UTF_8))
+                    os.write("Content-Type: image/jpeg\r\n\r\n".toByteArray(Charsets.UTF_8))
+                    os.write(imageBytes)
+                    os.write("\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8))
+                }
+
+                val code = conn.responseCode
+                if (code != 200) {
+                    logger.w("ChatSkill", "⚠️ Gửi ảnh Telegram thất bại, HTTP: $code")
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                logger.e("ChatSkill", "Gửi ảnh về Telegram thất bại: ${e.message}")
             }
         }
     }

@@ -362,8 +362,14 @@ class WebhookGatewayService : Service() {
                                                 val senderId = jsonObj.optString("senderId", "external_user")
                                                 val text = jsonObj.optString("text", "")
                                                 val incomingPageId = jsonObj.optString("pageId", "")
+                                                // ✅ MỚI: URL ảnh do Meta CDN host (Facebook/Instagram) hoặc base64 ảnh
+                                                // do widget Website gửi trực tiếp — Render gateway forward nguyên 2 field này.
+                                                val incomingImageUrl = jsonObj.optString("imageUrl", "").takeIf { it.isNotBlank() }
+                                                val incomingImageBase64Raw = jsonObj.optString("imageBase64", "").takeIf { it.isNotBlank() }
 
-                                                if (text.isNotBlank()) {
+                                                // ✅ SỬA: trước đây chỉ xử lý khi có text — tin nhắn CHỈ có ảnh (không kèm
+                                                // caption) bị bỏ qua hoàn toàn. Giờ xử lý khi có text HOẶC có ảnh.
+                                                if (text.isNotBlank() || incomingImageUrl != null || incomingImageBase64Raw != null) {
                                                     val unifiedUsername = "${platform}_$senderId"
 
                                                     if (platform == "facebook" && incomingPageId.isNotBlank()) {
@@ -386,6 +392,12 @@ class WebhookGatewayService : Service() {
                                                         }
                                                     }
 
+                                                    // ✅ MỚI: Tải ảnh về máy (nếu là URL của Meta CDN) rồi mã hoá base64 để
+                                                    // truyền tiếp cho AgentKernel (Vision Plugin dùng imageBase64 để phân tích).
+                                                    // Website đã gửi sẵn base64 nên dùng thẳng, không cần tải lại.
+                                                    val resolvedImageBase64 = incomingImageBase64Raw
+                                                        ?: incomingImageUrl?.let { downloadImageAsBase64(it) }
+
                                                     val setting = withContext(Dispatchers.IO) {
                                                         database.cameraDao().getCustomerSetting(senderId)
                                                     }
@@ -395,32 +407,40 @@ class WebhookGatewayService : Service() {
                                                         val result = chatSkill.processQuery(
                                                             message = text,
                                                             username = unifiedUsername,
-                                                            extraContext = "page_id:$incomingPageId"
+                                                            extraContext = "page_id:$incomingPageId",
+                                                            fileUrl = incomingImageUrl,
+                                                            imageBase64 = resolvedImageBase64
                                                         )
 
                                                         if (result is AgentKernel.PluginResult.Success) {
                                                             val replyMap = result.data as? Map<*, *>
                                                             val replyText = (replyMap?.get("response") as? String) ?: ""
-                                                            if (replyText.isNotEmpty()) {
+                                                            // ✅ MỚI: nếu bot/plugin trả kèm ảnh (vd. CameraSkill quét camera),
+                                                            // đọc bytes cục bộ để gửi kèm ra đúng kênh.
+                                                            val replyImagePath = replyMap?.get("imagePath") as? String
+                                                            val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
+
+                                                            if (replyText.isNotEmpty() || replyImageBase64 != null) {
                                                                 when (platform) {
                                                                     "facebook" -> {
-                                                                        findPlugin("facebook")?.execute(
-                                                                            "send_messenger",
-                                                                            mapOf(
-                                                                                "recipient_id" to senderId,
-                                                                                "message" to replyText,
-                                                                                "page_id" to incomingPageId
-                                                                            )
+                                                                        val fbParams = mutableMapOf<String, Any>(
+                                                                            "recipient_id" to senderId,
+                                                                            "message" to replyText,
+                                                                            "page_id" to incomingPageId
                                                                         )
+                                                                        if (replyImageBase64 != null) fbParams["image_base64"] = replyImageBase64
+                                                                        findPlugin("facebook")?.execute("send_messenger", fbParams)
                                                                     }
                                                                     "instagram" -> {
-                                                                        findPlugin("instagram")?.execute(
-                                                                            "send_messenger",
-                                                                            mapOf("recipient_id" to senderId, "message" to replyText)
+                                                                        val igParams = mutableMapOf<String, Any>(
+                                                                            "recipient_id" to senderId,
+                                                                            "message" to replyText
                                                                         )
+                                                                        if (replyImageBase64 != null) igParams["image_base64"] = replyImageBase64
+                                                                        findPlugin("instagram")?.execute("send_messenger", igParams)
                                                                     }
                                                                     "website" -> {
-                                                                        sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText)
+                                                                        sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText, replyImageBase64)
                                                                     }
                                                                 }
                                                             }
@@ -483,9 +503,18 @@ class WebhookGatewayService : Service() {
                                     val message = update.optJSONObject("message") ?: continue
                                     val text = message.optString("text", "")
                                     val chatId = message.getJSONObject("chat").getLong("id").toString()
+                                    // ✅ MỚI: Telegram gửi ảnh dưới dạng mảng "photo" gồm nhiều kích cỡ (file_id
+                                    // khác nhau) — trước đây hoàn toàn không được đọc, chỉ "text" mới được xử lý.
+                                    // Lấy phần tử CUỐI (kích thước lớn nhất) trong mảng.
+                                    val photoArray = message.optJSONArray("photo")
+                                    val largestPhotoFileId = if (photoArray != null && photoArray.length() > 0) {
+                                        photoArray.getJSONObject(photoArray.length() - 1).optString("file_id", "")
+                                    } else null
+                                    val caption = message.optString("caption", "")
 
-                                    if (text.isNotBlank()) {
-                                        logger.i("TelegramPoll", "📥 Nhận tin nhắn Telegram mới: '$text' từ ChatId: $chatId")
+                                    if (text.isNotBlank() || !largestPhotoFileId.isNullOrEmpty()) {
+                                        val effectiveText = if (text.isNotBlank()) text else caption
+                                        logger.i("TelegramPoll", "📥 Nhận tin nhắn Telegram mới: '$effectiveText' từ ChatId: $chatId (ảnh: ${!largestPhotoFileId.isNullOrEmpty()})")
                                         val unifiedUsername = "telegram_$chatId"
 
                                         val setting = withContext(Dispatchers.IO) {
@@ -494,20 +523,28 @@ class WebhookGatewayService : Service() {
                                         val isBotEnabled = setting?.smartMode != 0
 
                                         serviceScope.launch {
+                                            // ✅ MỚI: Tải ảnh từ Telegram (getFile -> URL file thật -> tải bytes -> base64)
+                                            val imageBase64 = largestPhotoFileId?.let { downloadTelegramPhotoAsBase64(botToken, it) }
+
                                             if (isBotEnabled) {
                                                 val result = chatSkill.processQuery(
-                                                    message = text,
-                                                    username = unifiedUsername
+                                                    message = effectiveText,
+                                                    username = unifiedUsername,
+                                                    imageBase64 = imageBase64
                                                 )
                                                 if (result is AgentKernel.PluginResult.Success) {
                                                     val replyMap = result.data as? Map<*, *>
                                                     val replyText = (replyMap?.get("response") as? String) ?: ""
-                                                    if (replyText.isNotEmpty()) {
+                                                    val replyImagePath = replyMap?.get("imagePath") as? String
+                                                    val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
+                                                    if (replyImageBase64 != null) {
+                                                        sendTelegramPhoto(botToken, chatId, replyImageBase64, replyText)
+                                                    } else if (replyText.isNotEmpty()) {
                                                         sendTelegramMessage(botToken, chatId, replyText)
                                                     }
                                                 }
                                             } else {
-                                                chatSkill.saveExternalUserMessage(text, unifiedUsername)
+                                                chatSkill.saveExternalUserMessage(effectiveText, unifiedUsername)
                                             }
                                         }
                                     }
@@ -523,13 +560,17 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, message: String) {
+    // ✅ MỚI: nhận thêm imageBase64 tuỳ chọn để đẩy kèm ảnh vào hàng đợi SSE của widget Website.
+    private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, message: String, imageBase64: String? = null) {
         withContext(Dispatchers.IO) {
             try {
                 val payload = org.json.JSONObject().apply {
                     put("platform", "website")
                     put("recipientId", senderId)
                     put("message", message)
+                    if (!imageBase64.isNullOrEmpty()) {
+                        put("imageBase64", imageBase64)
+                    }
                 }.toString()
 
                 val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -546,6 +587,114 @@ class WebhookGatewayService : Service() {
                 }
             } catch (e: Exception) {
                 logger.e("CloudGateway", "Gửi phản hồi cho khách Website thất bại: ${e.message}")
+            }
+        }
+    }
+
+    // ✅ MỚI: Tải 1 ảnh từ URL công khai (vd. Facebook/Instagram CDN) về bộ nhớ rồi mã hoá base64,
+    // để đưa vào ChatRequest.imageBase64 cho Vision Plugin phân tích. Trả về null nếu lỗi bất kỳ
+    // (mạng lỗi, ảnh quá lớn...) — không được để lỗi tải ảnh làm rớt luôn cả phần text đi kèm.
+    private suspend fun downloadImageAsBase64(imageUrl: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder().url(imageUrl).get().build()
+                okHttpClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("CloudGateway", "⚠️ Tải ảnh đính kèm thất bại, HTTP: ${response.code}")
+                        return@withContext null
+                    }
+                    val bytes = response.body?.bytes() ?: return@withContext null
+                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                }
+            } catch (e: Exception) {
+                logger.e("CloudGateway", "Lỗi tải ảnh đính kèm: ${e.message}")
+                null
+            }
+        }
+    }
+
+    // ✅ MỚI: Đọc 1 file ảnh đã lưu cục bộ trên máy (vd. context.filesDir/chat_images/*.jpg do
+    // CameraSkill tạo ra) rồi mã hoá base64 để gửi ra kênh ngoài. Trả về null nếu file không tồn
+    // tại hoặc đọc lỗi — không làm crash toàn bộ luồng trả lời.
+    private fun readLocalFileAsBase64(absolutePath: String): String? {
+        return try {
+            val file = java.io.File(absolutePath)
+            if (!file.exists()) return null
+            val bytes = file.readBytes()
+            android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            logger.e("CloudGateway", "Lỗi đọc file ảnh cục bộ '$absolutePath': ${e.message}")
+            null
+        }
+    }
+
+    // ✅ MỚI: Telegram chỉ gửi "file_id" trong webhook/getUpdates, phải gọi thêm "getFile" để lấy
+    // "file_path" thật, rồi mới tải được bytes từ https://api.telegram.org/file/bot<token>/<file_path>.
+    private suspend fun downloadTelegramPhotoAsBase64(botToken: String, fileId: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val getFileRequest = Request.Builder()
+                    .url("https://api.telegram.org/bot$botToken/getFile?file_id=$fileId")
+                    .get()
+                    .build()
+
+                val filePath = pollingClient.newCall(getFileRequest).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
+                    val body = response.body?.string() ?: return@use null
+                    val json = org.json.JSONObject(body)
+                    if (!json.optBoolean("ok", false)) return@use null
+                    json.optJSONObject("result")?.optString("file_path")
+                } ?: return@withContext null
+
+                val fileRequest = Request.Builder()
+                    .url("https://api.telegram.org/file/bot$botToken/$filePath")
+                    .get()
+                    .build()
+
+                okHttpClient.newCall(fileRequest).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    val bytes = response.body?.bytes() ?: return@withContext null
+                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                }
+            } catch (e: Exception) {
+                logger.e("TelegramPoll", "Lỗi tải ảnh Telegram: ${e.message}")
+                null
+            }
+        }
+    }
+
+    // ✅ MỚI: Gửi ảnh (kèm caption tuỳ chọn) trực tiếp cho Telegram bằng multipart/form-data —
+    // "sendPhoto" nhận file nhị phân trực tiếp, không cần ảnh có URL công khai. Gọi thẳng
+    // api.telegram.org, KHÔNG đi qua Render Gateway (giống sendTelegramMessage hiện có).
+    private suspend fun sendTelegramPhoto(token: String, chatId: String, imageBase64: String, caption: String = "") {
+        withContext(Dispatchers.IO) {
+            try {
+                val imageBytes = android.util.Base64.decode(imageBase64, android.util.Base64.NO_WRAP)
+                val captionSafe = caption.take(1024) // Giới hạn caption của Telegram Bot API
+
+                val multipartBuilder = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
+                    .addFormDataPart("chat_id", chatId)
+                if (captionSafe.isNotBlank()) {
+                    multipartBuilder.addFormDataPart("caption", captionSafe)
+                }
+                multipartBuilder.addFormDataPart(
+                    "photo",
+                    "image.jpg",
+                    imageBytes.toRequestBody("image/jpeg".toMediaType())
+                )
+
+                val request = Request.Builder()
+                    .url("https://api.telegram.org/bot$token/sendPhoto")
+                    .post(multipartBuilder.build())
+                    .build()
+
+                apiClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("TelegramPoll", "⚠️ Gửi ảnh Telegram thất bại, HTTP: ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                logger.e("TelegramPoll", "Gửi ảnh về Telegram thất bại: ${e.message}")
             }
         }
     }
