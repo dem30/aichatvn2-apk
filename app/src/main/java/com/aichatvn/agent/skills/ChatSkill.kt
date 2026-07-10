@@ -117,7 +117,12 @@ class ChatSkill @Inject constructor(
     // (Telegram/Website — không có URL công khai nên lưu file cục bộ rồi lấy đường dẫn) — trước
     // đây khi Admin bật "Người Trực" (bot tắt), ảnh khách gửi tới bị bỏ qua hoàn toàn, chỉ còn text.
     suspend fun saveExternalUserMessage(message: String, username: String, fileUrl: String? = null, imageBase64: String? = null) {
-        val resolvedFileUrl = fileUrl ?: imageBase64?.let { saveIncomingChatImage(it) }
+        // ✅ THAY ĐỔI: Ưu tiên chuyển đổi Base64 thành file ảnh cục bộ thực tế để hiển thị được trên UI
+        val resolvedFileUrl = if (!imageBase64.isNullOrEmpty()) {
+            saveIncomingChatImage(imageBase64)
+        } else {
+            fileUrl
+        }
         val userMessage = ChatMessageEntity(
             id = UUID.randomUUID().toString(),
             sessionToken = "session_$username",
@@ -282,6 +287,14 @@ class ChatSkill @Inject constructor(
 
             } else {
                 // 🤖 LUỒNG 2: AI TỰ ĐỘNG PHẢN HỒI (MÁY CHỦ SSE HOẶC default_user GỌI)
+
+                // ✅ THAY ĐỔI: Tự động ghi ảnh Base64 thu về từ Website/Facebook thành file vật lý cục bộ
+                val resolvedFileUrl = if (!imageBase64.isNullOrEmpty()) {
+                    saveIncomingChatImage(imageBase64)
+                } else {
+                    fileUrl
+                }
+
                 val userMessageId = UUID.randomUUID().toString()
                 val userMessage = ChatMessageEntity(
                     id = userMessageId,
@@ -289,8 +302,8 @@ class ChatSkill @Inject constructor(
                     username = username,
                     content = message,
                     role = "user", // Lưu dạng tin khách hỏi
-                    type = if (!fileUrl.isNullOrEmpty() || !imageBase64.isNullOrEmpty()) "image" else "text",
-                    fileUrl = fileUrl,
+                    type = if (!resolvedFileUrl.isNullOrEmpty()) "image" else "text", // ✅ SỬA
+                    fileUrl = resolvedFileUrl, // ✅ SỬA: Lưu đường dẫn cục bộ thật để giao diện hiển thị được ảnh
                     timestamp = System.currentTimeMillis(),
                     // ✅ MỚI: Tin nhắn khách ngoại kênh gửi tới (kể cả khi AI tự động trả lời ngay)
                     // vẫn tính là "chưa đọc" cho tới khi Admin thực sự mở thread — default_user
@@ -329,9 +342,6 @@ class ChatSkill @Inject constructor(
                     )
                 )
 
-
-
-                
                 val assistantMessageId = UUID.randomUUID().toString()
                 val assistantMessage = ChatMessageEntity(
                     id = assistantMessageId,
@@ -345,7 +355,6 @@ class ChatSkill @Inject constructor(
                     sourcePlugin = response.usedPluginId
                 )
 
-                
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(assistantMessage)
                 }
