@@ -1322,6 +1322,26 @@ class AgentKernel @Inject constructor(
                 }
             }
 
+            // ✅ FIX: câu có tín hiệu quản lý lịch (huỷ/xoá/sửa/xem lịch...) nhưng không khớp
+    // QA "schedule" trực tiếp thì KHÔNG được fallback qua best-intent bất kỳ (dễ khớp nhầm
+    // sang plugin khác như email.send). Trả null để nhường quyền cho Tầng 2.5, nơi
+    // detectScheduleAction() xử lý đúng action cancel/list/update.
+    if (wrapperIntentPair == null) {
+        val queryNorm = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
+        val scheduleManageSignal = (queryNorm.contains("lich") || queryNorm.contains("hen gio")) &&
+            setOf("huy", "xoa", "bo", "ngung", "dung lich", "sua", "doi", "cap nhat",
+                  "xem", "liet ke", "danh sach", "kiem tra").any { queryNorm.contains(it) }
+        if (scheduleManageSignal) return null
+    }
+
+    val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
+        .firstOrNull() ?: return null
+
+
+
+
+            
+
         val bestIntentPair = wrapperIntentPair ?: context.globalMatchResult.intentMatches
             .firstOrNull() ?: return null
 
