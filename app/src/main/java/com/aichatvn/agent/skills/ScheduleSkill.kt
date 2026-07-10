@@ -168,9 +168,12 @@ class ScheduleSkill @Inject constructor(
         } ?: return failure("Không tìm thấy lịch trình cần sửa")
 
         val pluginId = params["pluginId"] as? String ?: existing.pluginId
-        val action = params["action"] as? String ?: existing.action
-        val cron = params["cron"] as? String ?: ""
-        val intervalMinutes = (params["intervalMinutes"] as? Number)?.toInt() ?: 0
+val action = params["action"] as? String ?: existing.action
+// ✅ FIX: nếu người dùng không nói rõ giờ/khoảng lặp mới, PHẢI giữ nguyên giá trị cũ
+// (giống hệt cách pluginId/action/label đã fallback ở trên). Trước đây cron/intervalMinutes
+// luôn bị reset về ""/0 khi thiếu tham số -> "cập nhật" vô tình xóa mất giờ chạy hiện có.
+val cron = params["cron"] as? String ?: existing.cron
+val intervalMinutes = (params["intervalMinutes"] as? Number)?.toInt() ?: existing.intervalMinutes
 
         @Suppress("UNCHECKED_CAST")
         val nestedParams: Map<String, Any> = when (val raw = params["params"]) {

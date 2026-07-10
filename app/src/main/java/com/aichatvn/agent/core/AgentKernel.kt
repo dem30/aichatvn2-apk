@@ -165,17 +165,21 @@ class AgentKernel @Inject constructor(
     }
 
     private fun detectScheduleAction(queryNormalized: String): String {
-        val cancelVerbs = setOf("huy", "xoa", "bo", "tat lich", "ngung", "tat hen gio", "dung lich")
-        val listVerbs = setOf("xem", "liet ke", "danh sach", "kiem tra", "hien thi")
-        val updateVerbs = setOf("sua", "doi", "cap nhat", "thay doi", "dat lai", "chinh sua")
-        
-        return when {
-            cancelVerbs.any { queryNormalized.contains(it) } -> "cancel"
-            listVerbs.any { queryNormalized.contains(it) } -> "list"
-            updateVerbs.any { queryNormalized.contains(it) } -> "update"
-            else -> "add"
-        }
+    val toggleOffVerbs = setOf("tat lich", "vo hieu hoa", "ngung kich hoat", "tat hen gio")
+    val toggleOnVerbs = setOf("bat lich", "kich hoat", "bat hen gio")
+    val deleteVerbs = setOf("huy", "xoa", "bo lich", "dung lich")
+    val listVerbs = setOf("xem", "liet ke", "danh sach", "kiem tra", "hien thi")
+    val updateVerbs = setOf("sua", "doi", "cap nhat", "thay doi", "dat lai", "chinh sua")
+
+    return when {
+        toggleOffVerbs.any { queryNormalized.contains(it) } -> "toggle"
+        toggleOnVerbs.any { queryNormalized.contains(it) } -> "toggle"
+        deleteVerbs.any { queryNormalized.contains(it) } -> "delete"
+        listVerbs.any { queryNormalized.contains(it) } -> "list"
+        updateVerbs.any { queryNormalized.contains(it) } -> "update"
+        else -> "add"
     }
+}
 
     private fun buildPendingBanner(pending: PendingIntent, pluginName: String, actionDesc: String): String {
         val targetPlugin = plugins.find { it.manifest.id == pending.pluginId }
@@ -1330,7 +1334,8 @@ class AgentKernel @Inject constructor(
         val queryNorm = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
         val scheduleManageSignal = (queryNorm.contains("lich") || queryNorm.contains("hen gio")) &&
             setOf("huy", "xoa", "bo", "ngung", "dung lich", "sua", "doi", "cap nhat",
-                  "xem", "liet ke", "danh sach", "kiem tra").any { queryNorm.contains(it) }
+      "xem", "liet ke", "danh sach", "kiem tra",
+      "tat lich", "bat lich", "kich hoat", "vo hieu hoa").any { queryNorm.contains(it) }
         if (scheduleManageSignal) return null
     }
 
