@@ -353,22 +353,39 @@ class AgentKernel @Inject constructor(
                 }
             }
         }
-        
+
+
+
+
+
         if (!imageBase64.isNullOrEmpty() || !fileUrl.isNullOrEmpty()) {
-            val visionPlugin = plugins.find { it.manifest.capabilities.vision }
-            if (visionPlugin != null) {
-                val actionName = visionPlugin.manifest.actions.firstOrNull()?.name ?: "analyze"
-                val visionResult = executePluginAction(
-                    pluginId = visionPlugin.manifest.id,
-                    action = actionName,
-                    params = mapOf(
-                        "message" to message,
-                        "username" to username,
-                        "imageBase64" to (imageBase64 ?: ""),
-                        "fileUrl" to (fileUrl ?: ""),
-                        "extraContext" to extraContext
-                    )
-                )
+    val visionPlugin = plugins.find { it.manifest.capabilities.vision }
+    if (visionPlugin != null) {
+        val actionName = visionPlugin.manifest.actions.firstOrNull()?.name ?: "analyze"
+        
+        // ✅ THAY ĐỔI: Nếu người dùng gửi ảnh không kèm chữ, tự động gán câu hỏi mặc định bằng tiếng Việt.
+        // Nếu có kèm chữ, bổ sung hậu tố nhắc nhở AI bắt buộc phải trả lời bằng tiếng Việt.
+        val optimizedMessage = if (message.isBlank()) {
+            "Hãy mô tả nội dung của hình ảnh này bằng tiếng Việt."
+        } else {
+            "$message (Hãy trả lời hoàn toàn bằng tiếng Việt)"
+        }
+
+        val visionResult = executePluginAction(
+            pluginId = visionPlugin.manifest.id,
+            action = actionName,
+            params = mapOf(
+                "message" to optimizedMessage, // ✅ THAY ĐỔI: Sử dụng tin nhắn đã tối ưu hóa ngôn ngữ
+                "username" to username,
+                "imageBase64" to (imageBase64 ?: ""),
+                "fileUrl" to (fileUrl ?: ""),
+                "extraContext" to extraContext
+            )
+        )
+
+
+
+                
                 val responseText = when (visionResult) {
                     is PluginResult.Success -> {
                         val data = visionResult.data as? Map<*, *>?

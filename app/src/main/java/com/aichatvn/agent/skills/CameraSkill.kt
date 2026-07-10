@@ -120,7 +120,9 @@ class CameraSkill @Inject constructor(
                     PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo", false, "string"),
                     PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường", false, "string"),
                     PluginParameter("snapshotUrl", "string", "URL ảnh chụp", false, "string"),
-                    PluginParameter("landInfo", "string", "Thông tin vị trí", false, "string")
+                    PluginParameter("landInfo", "string", "Thông tin vị trí", false, "string"),
+                    PluginParameter("enableCooldown", "number", "Bật/Tắt cooldown hoãn quét", false, "number"),
+                    PluginParameter("enableNotification", "number", "Bật/Tắt gửi thông báo", false, "number")
                 )
             ),
             PluginAction(
@@ -278,7 +280,10 @@ class CameraSkill @Inject constructor(
             aiPositiveKeywords = (params["aiPositiveKeywords"] as? String)?.trim() ?: cam.aiPositiveKeywords,
             aiNegativeKeywords = (params["aiNegativeKeywords"] as? String)?.trim() ?: cam.aiNegativeKeywords,
             snapshoturl = (params["snapshotUrl"] as? String)?.trim() ?: cam.snapshoturl,
-            landinfo = (params["landInfo"] as? String)?.trim() ?: cam.landinfo
+            landinfo = (params["landInfo"] as? String)?.trim() ?: cam.landinfo,
+            // ✅ MỚI: Cập nhật cấu hình cooldown / thông báo qua action "configure"
+            enableCooldown = (params["enableCooldown"] as? Int) ?: (params["enableCooldown"] as? Number)?.toInt() ?: cam.enableCooldown,
+            enableNotification = (params["enableNotification"] as? Int) ?: (params["enableNotification"] as? Number)?.toInt() ?: cam.enableNotification
         )
         database.cameraDao().updateCamera(updated)
 
@@ -288,6 +293,8 @@ class CameraSkill @Inject constructor(
             if (updated.aiNegativeKeywords != cam.aiNegativeKeywords) add("từ khoá bình thường")
             if (updated.snapshoturl != cam.snapshoturl) add("URL ảnh chụp")
             if (updated.landinfo != cam.landinfo) add("vị trí")
+            if (updated.enableCooldown != cam.enableCooldown) add("hoãn quét (cooldown)")
+            if (updated.enableNotification != cam.enableNotification) add("gửi thông báo")
         }
         val summary = if (changed.isEmpty()) "Không có thay đổi" else "Đã cập nhật: ${changed.joinToString(", ")}"
         logger.i("CameraSkill", "configure OK cameraId=$cameraId changed=$changed")
@@ -306,7 +313,9 @@ class CameraSkill @Inject constructor(
                 "name" to c.customername,
                 "url" to c.snapshoturl,
                 "active" to (c.manualOff == 0),
-                "online" to (c.isOnline == 1)
+                "online" to (c.isOnline == 1),
+                "enableCooldown" to (c.enableCooldown == 1),
+                "enableNotification" to (c.enableNotification == 1)
             )
         }
         val summary = cameras.joinToString("\n") { "• ${it.customername} (id: ${it.id.trim()})" }
@@ -329,6 +338,7 @@ class CameraSkill @Inject constructor(
                 val results = data?.get("results") as? List<*> ?: emptyList<Any>()
                 val skippedCb = data?.get("skippedCircuitBreaker") as? Int ?: 0
                 val skippedIn = data?.get("skippedInactive") as? Int ?: 0
+                val skippedCooldown = data?.get("skippedCooldown") as? Int ?: 0
                 val warning = data?.get("warning") as? String
 
                 if (warning != null) return PluginResult.Success(mapOf("message" to warning))
@@ -344,6 +354,7 @@ class CameraSkill @Inject constructor(
                     append("📷 Đã quét $processed camera")
                     if (skippedCb > 0) append(" ($skippedCb camera bị bỏ qua do lỗi liên tiếp)")
                     if (skippedIn > 0) append(" ($skippedIn camera không hoạt động)")
+                    if (skippedCooldown > 0) append(" ($skippedCooldown camera bị hoãn quét do đang cooldown)")
                     append(".\n")
 
                     for (r in results) {
@@ -359,7 +370,7 @@ class CameraSkill @Inject constructor(
                         val isSuspicious = cam["isSuspicious"] as? Boolean ?: false
                         val aiComment = cam["aiComment"] as? String
                         when {
-                            isSuspicious -> append("• Camera $id: 🚨 CẢNH BÁO — ${aiComment ?: "phát hiện bất thường"} (email đã gửi)\n")
+                            isSuspicious -> append("• Camera $id: 🚨 CẢNH BÁO — ${aiComment ?: "phát hiện bất thường"} (email đã gửi nếu bật thông báo)\n")
                             hasChange && aiComment != null && aiComment != "No analysis" ->
                                 append("• Camera $id: 🔄 Có biến động — $aiComment\n")
                             hasChange -> append("• Camera $id: 🔄 Có biến động nhỏ, AI đánh giá bình thường\n")
@@ -399,6 +410,8 @@ class CameraSkill @Inject constructor(
             append("• Theo dõi: ${if (cam.manualOff == 0) "Bật" else "Tắt (thủ công)"}\n")
             append("• Khách hàng: ${cam.customerId.trim()} — ${if (setting?.isActive == 1) "Active" else "Inactive"}\n")
             append("• AI Smart Mode: ${if (setting?.smartMode == 1) "Bật" else "Tắt"}\n")
+            append("• Bật Cooldown hoãn quét: ${if (cam.enableCooldown == 1) "Bật" else "Tắt"}\n")
+            append("• Nhận cảnh báo: ${if (cam.enableNotification == 1) "Bật" else "Tắt"}\n")
             if (cam.landinfo != null) append("• Vị trí: ${cam.landinfo}\n")
             if (diag != null) {
                 append("• Ngưỡng học (delta/diff): ${diag.deltaTrigger}/${diag.absDiffTrigger}\n")
@@ -771,12 +784,24 @@ class CameraSkill @Inject constructor(
             val results = mutableListOf<Map<String, Any>>()
             var skippedCircuitBreaker = 0
             var skippedInactive = 0
+            var skippedCooldown = 0
 
             for (camera in cameras) {
                 val tid = camera.id.trim()
                 if (!isDailyReport && isCircuitBreakerOpen(tid)) {
                     logger.w("CameraSkill", "⏭️ Circuit Breaker OPEN - skipping camera $tid")
                     skippedCircuitBreaker++
+                    continue
+                }
+
+                // ✅ MỚI: Nếu camera bật Cooldown (enableCooldown == 1) và đang trong giai đoạn
+                // cooldown, bỏ qua hẳn lượt quét định kỳ này để tiết kiệm băng thông mạng và
+                // tài nguyên hệ thống (không fetch snapshot, không gọi AI).
+                val state = learningStates[tid]
+                val now = System.currentTimeMillis()
+                if (!isDailyReport && camera.enableCooldown == 1 && state != null && now < state.cooldownUntil) {
+                    logger.d("CameraSkill", "⏭️ Camera $tid đang trong trạng thái cooldown - bỏ qua lượt quét.")
+                    skippedCooldown++
                     continue
                 }
 
@@ -801,7 +826,7 @@ class CameraSkill @Inject constructor(
 
             if (results.isEmpty() && cameras.isNotEmpty()) {
                 logger.w("CameraSkill", "scanCamera: có ${cameras.size} camera nhưng 0 được xử lý " +
-                    "(skippedCircuitBreaker=$skippedCircuitBreaker, skippedInactive=$skippedInactive)")
+                    "(skippedCircuitBreaker=$skippedCircuitBreaker, skippedInactive=$skippedInactive, skippedCooldown=$skippedCooldown)")
             }
 
             PluginResult.Success(
@@ -809,7 +834,8 @@ class CameraSkill @Inject constructor(
                     "processed" to results.size,
                     "results" to results,
                     "skippedCircuitBreaker" to skippedCircuitBreaker,
-                    "skippedInactive" to skippedInactive
+                    "skippedInactive" to skippedInactive,
+                    "skippedCooldown" to skippedCooldown
                 )
             )
 
@@ -899,7 +925,9 @@ class CameraSkill @Inject constructor(
                     )
                 }
                 
-                val shouldCallAi = isSuddenChange && isSmartMode && now >= state.cooldownUntil
+                // ✅ MỚI: Nếu camera cấu hình TẮT Cooldown (enableCooldown == 0), luôn gọi AI
+                // ngay khi có biến động đột biến, bỏ qua thời gian hoãn (cooldownUntil).
+                val shouldCallAi = isSuddenChange && isSmartMode && (camera.enableCooldown == 0 || now >= state.cooldownUntil)
                 
                 var aiComment: String? = null
                 var isSuspicious = false
@@ -942,9 +970,12 @@ class CameraSkill @Inject constructor(
                             cameraDailyEvents.removeAt(0)
                         }
                         
+                        // ✅ MỚI: Chỉ gửi Email cảnh báo nếu camera bật cấu hình nhận thông báo
+                        // (enableNotification == 1). Khi tắt, hệ thống vẫn phân tích AI và vẫn
+                        // lưu lịch sử cảnh báo, chỉ không làm phiền bằng Email/Push.
                         val customerEmail = camera.customeremail
                         var emailSent = false
-                        if (customerEmail.isNotEmpty()) {
+                        if (camera.enableNotification == 1 && customerEmail.isNotEmpty()) {
                             emailSkill.sendEmail(
                                 to = customerEmail,
                                 subject = "🚨 CẢNH BÁO AN NINH KHẨN CẤP!",
@@ -962,13 +993,18 @@ class CameraSkill @Inject constructor(
                         // của camera này, và huỷ được đúng notification khi Admin đánh dấu đã
                         // đọc/xoá alert tương ứng (xem AlertHistoryViewModel).
                         val alertId = UUID.randomUUID().toString()
-                        notificationSkill.sendNotification(
-                            title = "Cảnh Báo Camera ${camera.customername}",
-                            message = aiComment.take(100),
-                            notificationId = NotificationSkill.notificationIdForAlert(alertId),
-                            deepLinkRoute = "alert_history?cameraId=$tid"
-                        )
+
+                        // ✅ MỚI: Chỉ gửi Push notification nếu camera bật cấu hình nhận thông báo
+                        if (camera.enableNotification == 1) {
+                            notificationSkill.sendNotification(
+                                title = "Cảnh Báo Camera ${camera.customername}",
+                                message = aiComment.take(100),
+                                notificationId = NotificationSkill.notificationIdForAlert(alertId),
+                                deepLinkRoute = "alert_history?cameraId=$tid"
+                            )
+                        }
                         
+                        // ✅ Luôn lưu vào lịch sử DB để Admin xem lại trong app, bất kể có tắt thông báo hay không
                         saveAlertToHistory(
                             alertId = alertId,
                             camera = camera,
@@ -1186,7 +1222,10 @@ class CameraSkill @Inject constructor(
                 manualOff = (config["manualOff"] as? Int) ?: (config["manualOff"] as? Number)?.toInt() ?: existing?.manualOff ?: 0,
                 aiPrompt = (config["aiPrompt"] as? String ?: existing?.aiPrompt ?: "").trim(),
                 aiPositiveKeywords = (config["aiPositiveKeywords"] as? String ?: existing?.aiPositiveKeywords ?: "").trim(),
-                aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim()
+                aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim(),
+                // ✅ MỚI: Đồng bộ cấu hình cooldown / gửi thông báo, mặc định giữ nguyên (hoặc 1 nếu camera mới)
+                enableCooldown = (config["enableCooldown"] as? Int) ?: (config["enableCooldown"] as? Number)?.toInt() ?: existing?.enableCooldown ?: 1,
+                enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1
             )
             
             withContext(Dispatchers.IO) {

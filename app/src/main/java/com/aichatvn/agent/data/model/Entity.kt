@@ -86,7 +86,9 @@ data class CameraConfigEntity(
     val smartMode: Int = 1,        // per-camera AI flag; master = CustomerSettingEntity.smartMode
     val aiPrompt: String = "",
     val aiPositiveKeywords: String = "",
-    val aiNegativeKeywords: String = ""
+    val aiNegativeKeywords: String = "",
+    val enableCooldown: Int = 1,       // ✅ MỚI: 1 = Bật, 0 = Tắt hoãn kiểm tra AI
+    val enableNotification: Int = 1    // ✅ MỚI: 1 = Bật, 0 = Tắt gửi Email/Push
 )
 
 @Entity(tableName = "customer_settings")

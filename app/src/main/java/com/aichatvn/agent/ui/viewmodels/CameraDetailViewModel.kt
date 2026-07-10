@@ -32,7 +32,9 @@ data class CameraConfigDraft(
     val landInfo: String = "",
     val aiPrompt: String = "",
     val aiPositiveKeywords: String = "",
-    val aiNegativeKeywords: String = ""
+    val aiNegativeKeywords: String = "",
+    val enableCooldown: Boolean = true,     // ✅ MỚI
+    val enableNotification: Boolean = true  // ✅ MỚI
 )
 
 data class ScheduleDraft(
@@ -130,7 +132,9 @@ class CameraDetailViewModel @Inject constructor(
             landInfo = cam.landinfo ?: "",
             aiPrompt = cam.aiPrompt,
             aiPositiveKeywords = cam.aiPositiveKeywords,
-            aiNegativeKeywords = cam.aiNegativeKeywords
+            aiNegativeKeywords = cam.aiNegativeKeywords,
+            enableCooldown = cam.enableCooldown == 1,
+            enableNotification = cam.enableNotification == 1
         )
     }
 
@@ -154,7 +158,9 @@ class CameraDetailViewModel @Inject constructor(
                     landinfo = draft.landInfo.trim().ifEmpty { null },
                     aiPrompt = draft.aiPrompt.trim(),
                     aiPositiveKeywords = draft.aiPositiveKeywords.trim(),
-                    aiNegativeKeywords = draft.aiNegativeKeywords.trim()
+                    aiNegativeKeywords = draft.aiNegativeKeywords.trim(),
+                    enableCooldown = if (draft.enableCooldown) 1 else 0,
+                    enableNotification = if (draft.enableNotification) 1 else 0
                 )
                 withContext(Dispatchers.IO) {
                     database.cameraDao().updateCamera(updated)
@@ -335,6 +341,32 @@ class CameraDetailViewModel @Inject constructor(
             }
             _smartMode.value = newMode
             logger.i("CameraDetailViewModel", "CameraSmartMode ${cam.id} → $newMode")
+        }
+    }
+
+    // ✅ MỚI: Chuyển đổi nhanh trạng thái Cooldown hoãn quét từ UI chi tiết (không qua configDraft)
+    fun toggleCooldown() {
+        viewModelScope.launch {
+            val cam = _camera.value ?: return@launch
+            val newCooldown = if (cam.enableCooldown == 1) 0 else 1
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCamera(cam.copy(enableCooldown = newCooldown))
+            }
+            loadCamera()
+            logger.i("CameraDetailViewModel", "toggleCooldown ${cam.id} → $newCooldown")
+        }
+    }
+
+    // ✅ MỚI: Chuyển đổi nhanh trạng thái Nhận thông báo từ UI chi tiết (không qua configDraft)
+    fun toggleNotification() {
+        viewModelScope.launch {
+            val cam = _camera.value ?: return@launch
+            val newNotification = if (cam.enableNotification == 1) 0 else 1
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCamera(cam.copy(enableNotification = newNotification))
+            }
+            loadCamera()
+            logger.i("CameraDetailViewModel", "toggleNotification ${cam.id} → $newNotification")
         }
     }
 

@@ -280,6 +280,46 @@ fun CameraDetailScreen(
                             Switch(checked = smartMode, onCheckedChange = { viewModel.toggleSmartMode() })
                         }
 
+                        Spacer(Modifier.height(4.dp))
+
+                        // ✅ MỚI: Switch bật/tắt Cooldown hoãn quét
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Bật Cooldown hoãn quét", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    if (cam.enableCooldown == 1) "Bật — Bỏ qua lượt quét ảnh khi đang trong cooldown"
+                                    else "Tắt — Quét ảnh liên tục bất kể cooldown",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(checked = cam.enableCooldown == 1, onCheckedChange = { viewModel.toggleCooldown() })
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+
+                        // ✅ MỚI: Switch bật/tắt gửi thông báo Email/Push
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Nhận thông báo cảnh báo", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    if (cam.enableNotification == 1) "Bật — Nhận Email và thông báo Push khẩn cấp"
+                                    else "Tắt — Chỉ lưu lịch sử âm thầm trong ứng dụng",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(checked = cam.enableNotification == 1, onCheckedChange = { viewModel.toggleNotification() })
+                        }
+
                         Spacer(Modifier.height(8.dp))
 
                         Button(
@@ -365,6 +405,8 @@ fun CameraDetailScreen(
                                 DetailRow("AI Prompt", cam.aiPrompt.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (+)", cam.aiPositiveKeywords.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (−)", cam.aiNegativeKeywords.ifBlank { "(mặc định)" })
+                                DetailRow("Bật Cooldown hoãn quét", if (cam.enableCooldown == 1) "Bật" else "Tắt") // ✅ MỚI
+                                DetailRow("Cho phép gửi thông báo", if (cam.enableNotification == 1) "Bật" else "Tắt") // ✅ MỚI
                             }
                         }
 
@@ -452,6 +494,35 @@ fun CameraDetailScreen(
                                         modifier = Modifier.fillMaxWidth(),
                                         singleLine = true
                                     )
+
+                                    // ✅ MỚI: Toggle Cooldown hoãn quét trong trình chỉnh sửa cấu hình
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Kích hoạt Cooldown hoãn quét")
+                                        Switch(
+                                            checked = draft.enableCooldown,
+                                            onCheckedChange = { v -> viewModel.updateConfigDraft { copy(enableCooldown = v) } }
+                                        )
+                                    }
+
+                                    // ✅ MỚI: Toggle gửi thông báo trong trình chỉnh sửa cấu hình
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Cho phép gửi thông báo")
+                                        Switch(
+                                            checked = draft.enableNotification,
+                                            onCheckedChange = { v -> viewModel.updateConfigDraft { copy(enableNotification = v) } }
+                                        )
+                                    }
+
                                     Spacer(Modifier.height(10.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(
