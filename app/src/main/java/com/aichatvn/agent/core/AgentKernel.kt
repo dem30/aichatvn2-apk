@@ -2082,6 +2082,30 @@ class AgentKernel @Inject constructor(
         val activeOptions = pending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
         val askedParamNow = pending.missingParams.firstOrNull()
 
+
+        // ── Nhận diện câu trả lời theo TÊN option (vd gõ "email send" thay vì gõ "1") ──
+        // pending.askedQuestion đang chứa nguyên văn "Số 1. email.send (...)\nSố 2. notification.send (...)"
+        // -> parse lại label từ chính câu hỏi đã hỏi, so khớp với câu trả lời để bypass LLM,
+        // vì LLM không có ID thật trong prompt nên không thể tự suy ra được tham số này.
+        if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
+            val userNorm = StringSimilarityUtil.normalizeVietnamese(userMessage.lowercase().trim())
+            if (userNorm.isNotBlank()) {
+                val labelByIndex = Regex("Số (\\d+)\\.\\s*(.+)").findAll(pending.askedQuestion ?: "")
+                    .associate { it.groupValues[1] to it.groupValues[2] }
+                val matchedIndex = labelByIndex.entries.firstOrNull { (_, label) ->
+                    val labelNorm = StringSimilarityUtil.normalizeVietnamese(label.lowercase().replace(".", " "))
+                    labelNorm.contains(userNorm) || userNorm.contains(labelNorm.substringBefore(" ("))
+                }?.key
+                matchedIndex?.let { idx ->
+                    activeOptions[idx]?.let { resolvedValue ->
+                        heuristicFilled[askedParamNow] = resolvedValue
+                        logger.d("AgentKernel", "[$traceId] Người dùng chọn theo tên \"$userNorm\" -> option #$idx -> \"$resolvedValue\" (bypass LLM)")
+                    }
+                }
+            }
+        }
+
+        
         if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
             val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.lowercase().trim())
             // Tìm số đứng riêng lẻ hoặc kèm các cụm tiền tố thông dụng như "so 1", "chon 1", "thu 1"
