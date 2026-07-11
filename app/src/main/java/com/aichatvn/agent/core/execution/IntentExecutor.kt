@@ -1,0 +1,270 @@
+package com.aichatvn.agent.core.execution
+
+import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.core.AgentKernel.Intent
+import com.aichatvn.agent.core.*
+import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class IntentExecutor @Inject constructor(
+    private val plugins: Set<@JvmSuppressWildcards Plugin>,
+    private val database: AppDatabase,
+    private val chatHistoryManager: ChatHistoryManager,
+    private val dialogManager: DialogManager,
+    private val logger: Logger
+) {
+
+    suspend fun executeIntent(
+        plugin: Plugin,
+        intent: Intent,
+        context: RoutingContext,
+        traceId: String
+    ): PluginResult {
+        val normalizedParams = ParameterResolver.normalizeParams(intent.params, plugin, intent.action, plugins, context.resolvedQuery)
+        val normalizedIntent = intent.copy(params = normalizedParams)
+
+        val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
+        device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
+
+        val missing = ParameterResolver.getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action, plugins)
+
+        context.traces.add(TraceNode(
+            nodeId = "pending.check",
+            label = "Kiểm tra tham số thiếu hụt (Pending Check)",
+            input = normalizedIntent.params.toString(),
+            output = if (missing.isNotEmpty()) "Thiếu: $missing" else "Đầy đủ, sẵn sàng thực thi",
+            matched = missing.isEmpty(),
+            codeRef = CodeReference(
+                fileName = "ParameterResolver.kt",
+                functionName = "getUnresolvedParams",
+                hardcodedRules = "Required fields: [${plugin.manifest.actions.find { it.name == normalizedIntent.action }?.parameters?.filter { it.required }?.joinToString { it.name } ?: ""}]" +
+                    if (plugin.manifest.id == "schedule") "\n" + ParameterResolver.RULE_SCHEDULE_TIME_CHECK else "",
+                businessLogic = "Rà required fields của action; riêng plugin schedule áp thêm ràng buộc thời gian đặc thù."
+            )
+        ))
+
+        val executionResult = if (missing.isNotEmpty()) {
+            val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
+            PluginResult.NeedMoreInfo(missing, question, options)
+        } else {
+            try {
+                logger.d("IntentExecutor", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}")
+                plugin.execute(normalizedIntent.action, normalizedIntent.params)
+            } catch (e: Exception) {
+                logger.e("IntentExecutor", "[$traceId] Execute error: ${e.message}", e)
+                PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
+            }
+        }
+
+        when (executionResult) {
+            is PluginResult.NeedMoreInfo -> chatHistoryManager.addPendingIntent(
+                PendingIntent(
+                    pluginId = plugin.manifest.id,
+                    action = normalizedIntent.action,
+                    knownParams = normalizedIntent.params + mapOf(
+                        "_noProgressCount" to 0,
+                        "_options" to executionResult.options
+                    ),
+                    missingParams = executionResult.missingParams,
+                    askedQuestion = executionResult.question,
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            is PluginResult.Success -> {
+                chatHistoryManager.removePendingIntent(plugin.manifest.id, intent.action)
+                dialogManager.updateFocus(
+                    "default_user",
+                    ConversationFocus(
+                        pluginId = plugin.manifest.id,
+                        action = normalizedIntent.action,
+                        deviceId = normalizedIntent.params["device"]?.toString()
+                            ?: normalizedIntent.params["device_id"]?.toString()
+                            ?: normalizedIntent.params["deviceId"]?.toString(),
+                        cameraId = normalizedIntent.params["camera"]?.toString()
+                            ?: normalizedIntent.params["camera_id"]?.toString()
+                            ?: normalizedIntent.params["cameraId"]?.toString(),
+                        scheduleId = normalizedIntent.params["schedule_id"]?.toString()
+                            ?: normalizedIntent.params["scheduleId"]?.toString(),
+                        params = normalizedIntent.params,
+                        timestamp = System.currentTimeMillis(),
+                        confidence = 1.0
+                    )
+                )
+            }
+            else -> chatHistoryManager.removePendingIntent(plugin.manifest.id, intent.action)
+        }
+
+        val replyForHistory = when (executionResult) {
+            is PluginResult.Success ->
+                (executionResult.data as? Map<*, *>? )?.get("message") as? String ?: "Đã thực hiện."
+            is PluginResult.Failure -> executionResult.error
+            is PluginResult.NeedMoreInfo -> executionResult.question
+        }
+
+        context.traces.add(TraceNode(
+            nodeId = "execute.action",
+            label = "Kích hoạt thực thi Hành động",
+            input = "${plugin.manifest.id}.${normalizedIntent.action}",
+            output = when (executionResult) {
+                is PluginResult.Success -> "Thành công: ${(executionResult.data as? Map<*, *>)?.get("message") ?: "OK"}"
+                is PluginResult.Failure -> "Thất bại: ${executionResult.error}"
+                is PluginResult.NeedMoreInfo -> "Cần thêm: ${executionResult.question}"
+            },
+            matched = executionResult is PluginResult.Success,
+            codeRef = CodeReference(
+                fileName = "IntentExecutor.kt",
+                functionName = "executeIntent",
+                hardcodedRules = "-",
+                businessLogic = "Chuẩn hóa params, cập nhật lastDevice/Focus, gọi plugin.execute() thật, cập nhật Pending nếu thiếu tham số."
+            )
+        ))
+
+        chatHistoryManager.addTurn(context.originalQuery, replyForHistory)
+
+        return executionResult
+    }
+
+    suspend fun executePluginAction(
+        pluginId: String,
+        action: String,
+        params: Map<String, Any>
+    ): PluginResult {
+        val plugin = plugins.find { it.manifest.id == pluginId }
+            ?: return PluginResult.Failure("Không tìm thấy plugin: $pluginId")
+
+        val normalizedParams = ParameterResolver.normalizeParams(params, plugin, action, plugins, null)
+
+        return try {
+            plugin.execute(action, normalizedParams)
+        } catch (e: Exception) {
+            logger.e("IntentExecutor", "Lỗi Dashboard", e)
+            PluginResult.Failure(e.message ?: "Unknown error")
+        }
+    }
+
+    fun getQuestionForMissingParamDiagnostic(
+        param: String, 
+        plugin: Plugin? = null, 
+        actionName: String? = null
+    ): String {
+        val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
+        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
+        val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
+        val semanticType = paramMeta?.semanticType?.lowercase() ?: ""
+
+        val isCronField = semanticType == "time" || actualKey == "cron" || actualKey == "time"
+        if (isCronField) {
+            return "Bạn muốn thiết lập hẹn giờ/lên lịch vào lúc mấy giờ, ngày nào? (Ví dụ: 8h sáng mai, hoặc mỗi ngày lúc 18h)"
+        }
+        
+        val isIntervalField = semanticType == "interval" || actualKey == "interval" || actualKey == "intervalMinutes"
+        if (isIntervalField) {
+            return "Bạn muốn hoạt động này được lặp lại định kỳ sau mỗi bao nhiêu phút? (Ví dụ: mỗi 10 phút)"
+        }
+
+        if (paramMeta != null && paramMeta.description.isNotBlank()) {
+            return "Bạn vui lòng cung cấp thông tin cho ${paramMeta.description} nhé?"
+        }
+
+        return when (actualKey) {
+            "device", "device_id", "deviceId"          -> "Bạn muốn điều khiển thiết bị nào?"
+            "camera", "camera_id", "cameraId"          -> "Bạn muốn xem camera nào?"
+            "to", "email", "recipient"                 -> "Bạn muốn gửi đến email nào?"
+            "subject"                                  -> "Tiêu đề email là gì thế bạn?"
+            "body"                                     -> "Nội dung email bạn muốn viết gì?"
+            "title"                                    -> "Tiêu đề thông báo là gì vậy bạn?"
+            "message"                                  -> "Nội dung thông báo bạn muốn gửi là gì?"
+            "pluginId", "plugin_id"                    -> "Bạn muốn lên lịch cho chức năng nào?"
+            else                                       -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
+        }
+    }
+
+    suspend fun getQuestionForMissingParam(
+        param: String, 
+        plugin: Plugin? = null, 
+        actionName: String? = null
+    ): Pair<String, Map<String, String>> {
+        val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
+        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
+        val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
+        val semanticType = paramMeta?.semanticType?.lowercase() ?: ""
+
+        if (actualKey in setOf("camera", "camera_id", "cameraId")) {
+            val cameras = database.cameraDao().getActiveCameras()
+            if (cameras.isNotEmpty()) {
+                return buildNumberedQuestion(
+                    "Bạn muốn thao tác với camera nào?",
+                    cameras.map { 
+                        val displayName = if (!it.landinfo.isNullOrBlank()) {
+                            "${it.landinfo} (${it.id})"
+                        } else {
+                            it.id
+                        }
+                        displayName to it.id 
+                    }
+                )
+            }
+        }
+
+        if (actualKey in setOf("device", "device_id", "deviceId")) {
+            val devices = database.tuyaDeviceDao().getAllDevices()
+            if (devices.isNotEmpty()) {
+                val duplicateNames = devices.groupBy { it.name }.filterValues { it.size > 1 }.keys
+                return buildNumberedQuestion(
+                    "Bạn muốn điều khiển thiết bị nào?",
+                    devices.map { d ->
+                        val label = if (d.name in duplicateNames) "${d.name} (${d.id.takeLast(4)})" else d.name
+                        label to d.id
+                    }
+                )
+            }
+        }
+        if (actualKey == "id" && plugin?.manifest?.id == "schedule") {
+            val schedules = database.scheduleDao().getAllSchedules()
+            if (schedules.isNotEmpty()) {
+                return buildNumberedQuestion(
+                    "Bạn muốn thao tác với lịch trình nào?",
+                    schedules.map { "${it.pluginId}.${it.action} (${if (it.cron.isNotEmpty()) it.cron else "${it.intervalMinutes} phút"})" to it.id }
+                )
+            }
+        }
+
+        val isCronField = semanticType == "time" || actualKey == "cron" || actualKey == "time"
+        if (isCronField) {
+            return ("Bạn muốn thiết lập hẹn giờ/lên lịch vào lúc mấy giờ, ngày nào? (Ví dụ: 8h sáng mai, hoặc mỗi ngày lúc 18h)" to emptyMap())
+        }
+        
+        val isIntervalField = semanticType == "interval" || actualKey == "interval" || actualKey == "intervalMinutes"
+        if (isIntervalField) {
+            return ("Bạn muốn hoạt động này được lặp lại định kỳ sau mỗi bao nhiêu phút? (Ví dụ: mỗi 10 phút)" to emptyMap())
+        }
+
+        if (paramMeta != null && paramMeta.description.isNotBlank()) {
+            return ("Bạn vui lòng cung cấp thông tin cho ${paramMeta.description} nhé?" to emptyMap())
+        }
+
+        val text = when (actualKey) {
+            "to", "email", "recipient"                 -> "Bạn muốn gửi đến email nào?"
+            "subject"                                  -> "Tiêu đề email là gì thế bạn?"
+            "body"                                     -> "Nội dung email bạn muốn viết gì?"
+            "title"                                    -> "Tiêu đề thông báo là gì vậy bạn?"
+            "message"                                  -> "Nội dung thông báo bạn muốn gửi là gì?"
+            "pluginId", "plugin_id"                    -> "Bạn muốn lên lịch cho chức năng nào?"
+            else                                       -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
+        }
+        return (text to emptyMap())
+    }
+
+    private fun buildNumberedQuestion(prompt: String, candidates: List<Pair<String, String>>): Pair<String, Map<String, String>> {
+        val listText = candidates.mapIndexed { i, (label, _) -> "Số ${i + 1}. $label" }.joinToString("\n")
+        val options = candidates.mapIndexed { i, (_, value) -> (i + 1).toString() to value }.toMap()
+        return "$prompt\n$listText" to options
+    }
+}
