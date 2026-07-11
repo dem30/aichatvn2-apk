@@ -466,12 +466,16 @@ class CameraSkill @Inject constructor(
         database.cameraDao().updateCamera(updatedCam)
         logger.i("CameraSkill", "set_active cameraId=$cameraId active=$active (manualOff=$newManualOff)")
 
+        // ✅ SỬA LỖI BUILD: buildCameraStatusText là suspend fun, không thể gọi trực tiếp bên trong
+        // lambda thường của deviceRegistry.updateNode() → tính trước rồi mới truyền giá trị vào.
+        val newStatusText = buildCameraStatusText(updatedCam)
+
         // ✅ SỬA LỖI: trước đây gán online = active, khiến "Tắt giám sát" bị hiển thị nhầm
         // thành mất kết nối mạng (chấm đỏ) dù camera vẫn online bình thường.
         // "Giám sát" (manualOff) và "kết nối mạng" (online) là 2 khái niệm độc lập.
         deviceRegistry.updateNode(cam.id.trim()) { current ->
             current.copy(
-                status = buildCameraStatusText(updatedCam),
+                status = newStatusText,
                 lastSeen = System.currentTimeMillis()
             )
         }
@@ -522,9 +526,11 @@ class CameraSkill @Inject constructor(
             cameras.forEach { camera ->
                 // ✅ SỬA LỖI: trước đây ghi đè status = "AI Đang bật/tắt", làm mất thông tin
                 // giám sát (manualOff) đang hiển thị. Dùng buildCameraStatusText() để tổng hợp lại đầy đủ.
+                // ✅ SỬA LỖI BUILD: tính status (suspend) TRƯỚC, ngoài lambda thường của updateNode.
+                val newStatusText = buildCameraStatusText(camera)
                 deviceRegistry.updateNode(camera.id.trim()) { current ->
                     current.copy(
-                        status = buildCameraStatusText(camera)
+                        status = newStatusText
                     )
                 }
             }
