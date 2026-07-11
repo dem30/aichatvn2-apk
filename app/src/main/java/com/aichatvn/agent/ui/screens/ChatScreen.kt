@@ -48,6 +48,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.window.Dialog
 
 private fun chatScreenTitle(username: String): String {
     if (username == "default_user") return "Trò chuyện với AI"
@@ -749,6 +751,9 @@ private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin)
     else -> "⚡ ${sourcePlugin.replaceFirstChar { it.uppercase() }}"
 }
 
+
+
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(message: ChatMessageEntity) {
@@ -756,27 +761,26 @@ fun ChatBubble(message: ChatMessageEntity) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
+    var bitmap by remember(message.fileUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var showFullImage by remember { mutableStateOf(false) }
+
+    LaunchedEffect(message.fileUrl) {
+        if (message.type == "image" && message.fileUrl != null) {
+            bitmap = withContext(Dispatchers.IO) {
+                try {
+                    val file = java.io.File(message.fileUrl)
+                    if (file.exists()) BitmapFactory.decodeFile(message.fileUrl) else null
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        var bitmap by remember(message.fileUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
-        
-        LaunchedEffect(message.fileUrl) {
-            if (message.type == "image" && message.fileUrl != null) {
-                bitmap = withContext(Dispatchers.IO) {
-                    try {
-                        val file = java.io.File(message.fileUrl)
-                        if (file.exists()) {
-                            BitmapFactory.decodeFile(message.fileUrl)
-                        } else null
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-            }
-        }
-
         Card(
             shape = RoundedCornerShape(
                 topStart = 16.dp,
@@ -785,65 +789,61 @@ fun ChatBubble(message: ChatMessageEntity) {
                 bottomEnd = if (isUser) 4.dp else 16.dp
             ),
             colors = CardDefaults.cardColors(
-                containerColor = if (isUser) 
-                    MaterialTheme.colorScheme.primaryContainer 
-                else 
+                containerColor = if (isUser)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
                     MaterialTheme.colorScheme.secondaryContainer
             ),
-            modifier = Modifier
-                .widthIn(max = 280.dp)
-                .combinedClickable(
-                    onClick = {},
-                    onLongClick = {
-                        clipboardManager.setText(AnnotatedString(message.content))
-                        Toast.makeText(context, "Đã sao chép tin nhắn", Toast.LENGTH_SHORT).show()
-                    }
-                )
+            modifier = Modifier.widthIn(max = 280.dp)
         ) {
-            
-          
-          
-          Column(
-                modifier = Modifier.padding(12.dp)
-            ) {
+            Column(modifier = Modifier.padding(12.dp)) {
                 if (!isUser && message.sourcePlugin != null) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                pluginBadgeLabel(message.sourcePlugin),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        Text(
+                            pluginBadgeLabel(message.sourcePlugin),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
 
-                // ✅ MỚI: thực sự vẽ ảnh ra — trước đây bitmap được decode xong nhưng không dùng ở đâu cả
-                bitmap?.let {
+                bitmap?.let { bmp ->
                     Image(
-                        bitmap = it.asImageBitmap(),
+                        bitmap = bmp.asImageBitmap(),
                         contentDescription = null,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 240.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .padding(bottom = 6.dp)
+                            .clickable { showFullImage = true }
                     )
                 }
 
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium
+                SelectionContainer {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+
+    if (showFullImage) {
+        bitmap?.let { bmp ->
+            Dialog(onDismissRequest = { showFullImage = false }) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showFullImage = false }
                 )
             }
-
-
-
-
-          
         }
     }
 }
