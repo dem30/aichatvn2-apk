@@ -547,6 +547,7 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
+    
 
     override fun onCleared() {
         super.onCleared()
