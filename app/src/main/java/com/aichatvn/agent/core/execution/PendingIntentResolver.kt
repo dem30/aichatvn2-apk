@@ -7,6 +7,7 @@ import com.aichatvn.agent.core.AgentKernel.DeviceCommandResult
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.QAEntity // ✅ THÊM IMPORT
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
@@ -210,7 +211,7 @@ class PendingIntentResolver @Inject constructor(
                 logger.d("PendingIntentResolver", "[$traceId] 🔵 [DIAGNOSTIC] Chặn gọi Groq thực tế cho Tầng 1 dở dang.")
                 return DeviceCommandResult(
                     pluginId = pending.pluginId,
-                    result = PluginResult.NeedMoreInfo(pending.missingParams, "[Simulated] Đang chờ nhập thêm thông tin.")
+                    result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
                 )
             }
 

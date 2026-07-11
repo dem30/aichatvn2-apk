@@ -12,6 +12,8 @@ import com.aichatvn.agent.core.execution.PendingIntentResolver
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
+import com.aichatvn.agent.data.AppDatabase // ✅ THÊM IMPORT
+import com.aichatvn.agent.data.model.QAEntity // ✅ THÊM IMPORT
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
@@ -927,7 +929,7 @@ class RoutingPipeline @Inject constructor(
                 is Layer3Result.Single -> "• Khớp 1 lệnh thông qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
                 is Layer3Result.Nested -> "• Khớp cấu trúc lập lịch qua Meta Manifest: ${layer4Result.intent.pluginId}.${layer4Result.intent.action}"
                 is Layer3Result.Multi -> "• Khớp đa lệnh qua Meta Manifest: ${layer4Result.intents.joinToString { "${it.first.manifest.id}.${it.second.action}" }}"
-                else -> "• Không khớp với mô tả action hoặc nhãn ví dụ trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
+                else -> "• Không khớp với mô tả action hoặc nhãn ví dẫn trong Manifest của các Plugin hoặc độ bao phủ mệnh đề chưa đạt 80%."
             }
             simulatedTiers.add(
                 DiagnosticTier(
@@ -945,7 +947,7 @@ class RoutingPipeline @Inject constructor(
             val t5Details = if (isT5Matched) {
                 "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
             } else {
-                "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải quyết xong."
+                "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải xong."
             }
             simulatedTiers.add(
                 DiagnosticTier(
