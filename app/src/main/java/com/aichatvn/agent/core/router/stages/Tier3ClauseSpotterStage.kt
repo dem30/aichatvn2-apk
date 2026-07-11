@@ -11,6 +11,7 @@ import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.aichatvn.agent.utils.toMap
+import com.aichatvn.agent.data.model.QAEntity
 
 @Singleton
 class Tier3ClauseSpotterStage @Inject constructor(
