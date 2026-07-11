@@ -504,10 +504,9 @@ fun AddScheduleDialog(
                         param.semanticType == "camera" -> {
                             var cameraExpanded by remember { mutableStateOf(false) }
                             val selectedCameraId = paramValues[param.name] ?: ""
-                            val selectedCamera = activeCameras.find { it.id.trim() == selectedCameraId.trim() }
-                            val displayText = selectedCamera?.let { cam ->
-                                if (!cam.landinfo.isNullOrBlank()) "${cam.landinfo} (${cam.id})" else cam.id
-                            } ?: selectedCameraId
+val selectedCamera = activeCameras.find { it.id.trim() == selectedCameraId.trim() }
+val displayText = selectedCamera?.id ?: selectedCameraId
+
 
                             ExposedDropdownMenuBox(
                                 expanded = cameraExpanded,
@@ -528,8 +527,9 @@ fun AddScheduleDialog(
                                     onDismissRequest = { cameraExpanded = false }
                                 ) {
                                     activeCameras.forEach { cam ->
-                                        val itemLabel = if (!cam.landinfo.isNullOrBlank()) "${cam.landinfo} (${cam.id})" else cam.id
-                                        DropdownMenuItem(
+                                        val itemLabel = cam.id                            
+                                      
+                                      DropdownMenuItem(
                                             text = { Text(itemLabel) },
                                             onClick = {
                                                 paramValues[param.name] = cam.id
