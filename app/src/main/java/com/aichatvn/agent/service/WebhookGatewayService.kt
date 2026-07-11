@@ -446,8 +446,17 @@ class WebhookGatewayService : Service() {
                                                             }
                                                         }
                                                     } else {
-                                                        chatSkill.saveExternalUserMessage(text, unifiedUsername)
-                                                        logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời.")
+                                                        // ✅ ĐÃ SỬA: trước đây gọi saveExternalUserMessage() chỉ với (text, unifiedUsername) —
+                                                        // resolvedImageBase64/incomingImageUrl đã tải/giải mã xong ở trên nhưng KHÔNG được
+                                                        // truyền vào, nên ảnh khách gửi tới khi Admin đang ở chế độ Người Trực bị rớt mất
+                                                        // hoàn toàn, chỉ còn lại tin nhắn text rỗng (hoặc mất hẳn nếu text cũng rỗng).
+                                                        chatSkill.saveExternalUserMessage(
+                                                            message = text,
+                                                            username = unifiedUsername,
+                                                            fileUrl = incomingImageUrl,
+                                                            imageBase64 = resolvedImageBase64
+                                                        )
+                                                        logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời. (ảnh: ${resolvedImageBase64 != null})")
                                                     }
                                                 }
                                             }
@@ -544,7 +553,14 @@ class WebhookGatewayService : Service() {
                                                     }
                                                 }
                                             } else {
-                                                chatSkill.saveExternalUserMessage(effectiveText, unifiedUsername)
+                                                // ✅ ĐÃ SỬA: cùng lỗi như nhánh Website/FB — imageBase64 đã tải xong ở trên
+                                                // (downloadTelegramPhotoAsBase64) nhưng không được truyền vào, khiến ảnh khách
+                                                // gửi qua Telegram lúc Admin đang Người Trực bị rớt, chỉ còn tin nhắn rỗng.
+                                                chatSkill.saveExternalUserMessage(
+                                                    message = effectiveText,
+                                                    username = unifiedUsername,
+                                                    imageBase64 = imageBase64
+                                                )
                                             }
                                         }
                                     }
@@ -594,22 +610,38 @@ class WebhookGatewayService : Service() {
     // ✅ MỚI: Tải 1 ảnh từ URL công khai (vd. Facebook/Instagram CDN) về bộ nhớ rồi mã hoá base64,
     // để đưa vào ChatRequest.imageBase64 cho Vision Plugin phân tích. Trả về null nếu lỗi bất kỳ
     // (mạng lỗi, ảnh quá lớn...) — không được để lỗi tải ảnh làm rớt luôn cả phần text đi kèm.
-    private suspend fun downloadImageAsBase64(imageUrl: String): String? {
+    // ✅ ĐÃ SỬA: trước đây thất bại (timeout/mạng chập chờn/HTTP lỗi) là bỏ luôn ngay lần đầu,
+    // không có retry — trong khi các hàm gửi đi (safe_post_request_async bên Gateway Python)
+    // đều có retry 3 lần + backoff. Đây là nguyên nhân ảnh khách gửi "lúc được lúc không" ở
+    // chế độ bot tự động: mạng chập chờn thoáng qua là ảnh rớt âm thầm, bot vẫn trả lời (chỉ
+    // dựa trên text nếu có) như không có gì xảy ra.
+    private suspend fun downloadImageAsBase64(imageUrl: String, maxRetries: Int = 3): String? {
         return withContext(Dispatchers.IO) {
-            try {
-                val request = Request.Builder().url(imageUrl).get().build()
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        logger.w("CloudGateway", "⚠️ Tải ảnh đính kèm thất bại, HTTP: ${response.code}")
-                        return@withContext null
+            var lastErrorMessage: String? = null
+            repeat(maxRetries) { attempt ->
+                try {
+                    val request = Request.Builder().url(imageUrl).get().build()
+                    okHttpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            lastErrorMessage = "HTTP ${response.code}"
+                            return@use
+                        }
+                        val bytes = response.body?.bytes()
+                        if (bytes != null) {
+                            return@withContext android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                        }
+                        lastErrorMessage = "Body rỗng"
                     }
-                    val bytes = response.body?.bytes() ?: return@withContext null
-                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                } catch (e: Exception) {
+                    lastErrorMessage = e.message
                 }
-            } catch (e: Exception) {
-                logger.e("CloudGateway", "Lỗi tải ảnh đính kèm: ${e.message}")
-                null
+                if (attempt < maxRetries - 1) {
+                    logger.w("CloudGateway", "⚠️ Tải ảnh đính kèm thất bại (lần ${attempt + 1}/$maxRetries): $lastErrorMessage. Đang thử lại...")
+                    delay(1500L * (attempt + 1))
+                }
             }
+            logger.e("CloudGateway", "❌ Tải ảnh đính kèm thất bại sau $maxRetries lần thử: $lastErrorMessage")
+            null
         }
     }
 
@@ -630,36 +662,78 @@ class WebhookGatewayService : Service() {
 
     // ✅ MỚI: Telegram chỉ gửi "file_id" trong webhook/getUpdates, phải gọi thêm "getFile" để lấy
     // "file_path" thật, rồi mới tải được bytes từ https://api.telegram.org/file/bot<token>/<file_path>.
-    private suspend fun downloadTelegramPhotoAsBase64(botToken: String, fileId: String): String? {
+    // ✅ ĐÃ SỬA: thêm retry cho CẢ 2 bước (getFile lấy file_path, rồi tải bytes thật) — trước đây
+    // chỉ cần 1 trong 2 request bị trễ/lỗi thoáng qua là mất ảnh ngay lập tức, không có cơ hội
+    // thử lại, gây hiện tượng ảnh Telegram "lúc được lúc không" ở chế độ bot tự động.
+    private suspend fun getTelegramFilePath(botToken: String, fileId: String, maxRetries: Int = 3): String? {
         return withContext(Dispatchers.IO) {
-            try {
-                val getFileRequest = Request.Builder()
-                    .url("https://api.telegram.org/bot$botToken/getFile?file_id=$fileId")
-                    .get()
-                    .build()
+            var lastErrorMessage: String? = null
+            repeat(maxRetries) { attempt ->
+                try {
+                    val getFileRequest = Request.Builder()
+                        .url("https://api.telegram.org/bot$botToken/getFile?file_id=$fileId")
+                        .get()
+                        .build()
 
-                val filePath = pollingClient.newCall(getFileRequest).execute().use { response ->
-                    if (!response.isSuccessful) return@use null
-                    val body = response.body?.string() ?: return@use null
-                    val json = org.json.JSONObject(body)
-                    if (!json.optBoolean("ok", false)) return@use null
-                    json.optJSONObject("result")?.optString("file_path")
-                } ?: return@withContext null
-
-                val fileRequest = Request.Builder()
-                    .url("https://api.telegram.org/file/bot$botToken/$filePath")
-                    .get()
-                    .build()
-
-                okHttpClient.newCall(fileRequest).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext null
-                    val bytes = response.body?.bytes() ?: return@withContext null
-                    android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    pollingClient.newCall(getFileRequest).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            lastErrorMessage = "HTTP ${response.code}"
+                            return@use
+                        }
+                        val body = response.body?.string()
+                        val json = body?.let { org.json.JSONObject(it) }
+                        if (json?.optBoolean("ok", false) == true) {
+                            val path = json.optJSONObject("result")?.optString("file_path")
+                            if (!path.isNullOrEmpty()) return@withContext path
+                        }
+                        lastErrorMessage = "Phản hồi getFile không hợp lệ"
+                    }
+                } catch (e: Exception) {
+                    lastErrorMessage = e.message
                 }
-            } catch (e: Exception) {
-                logger.e("TelegramPoll", "Lỗi tải ảnh Telegram: ${e.message}")
-                null
+                if (attempt < maxRetries - 1) {
+                    logger.w("TelegramPoll", "⚠️ getFile thất bại (lần ${attempt + 1}/$maxRetries): $lastErrorMessage. Đang thử lại...")
+                    delay(1500L * (attempt + 1))
+                }
             }
+            logger.e("TelegramPoll", "❌ getFile thất bại sau $maxRetries lần thử: $lastErrorMessage")
+            null
+        }
+    }
+
+    private suspend fun downloadTelegramPhotoAsBase64(botToken: String, fileId: String, maxRetries: Int = 3): String? {
+        val filePath = getTelegramFilePath(botToken, fileId, maxRetries) ?: return null
+
+        return withContext(Dispatchers.IO) {
+            var lastErrorMessage: String? = null
+            repeat(maxRetries) { attempt ->
+                try {
+                    val fileRequest = Request.Builder()
+                        .url("https://api.telegram.org/file/bot$botToken/$filePath")
+                        .get()
+                        .build()
+
+                    okHttpClient.newCall(fileRequest).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            lastErrorMessage = "HTTP ${response.code}"
+                            return@use
+                        }
+                        val bytes = response.body?.bytes()
+                        if (bytes != null) {
+                            return@withContext android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                        }
+                        lastErrorMessage = "Body rỗng"
+                    }
+                } catch (e: Exception) {
+                    lastErrorMessage = e.message
+                }
+                if (attempt < maxRetries - 1) {
+                    logger.w("TelegramPoll", "⚠️ Tải ảnh Telegram thất bại (lần ${attempt + 1}/$maxRetries): $lastErrorMessage. Đang thử lại...")
+                    delay(1500L * (attempt + 1))
+                }
+            }
+            logger.e("TelegramPoll", "❌ Tải ảnh Telegram thất bại sau $maxRetries lần thử: $lastErrorMessage")
+            null
         }
     }
 
