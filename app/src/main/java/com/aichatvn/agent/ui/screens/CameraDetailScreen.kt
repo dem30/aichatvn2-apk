@@ -249,7 +249,7 @@ fun CameraDetailScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text("Theo dõi", style = MaterialTheme.typography.labelMedium)
                                 Text(
                                     if (isTracking) "Đang bật — camera được quét tự động"
@@ -258,6 +258,7 @@ fun CameraDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            Spacer(Modifier.width(12.dp))
                             Switch(checked = isTracking, onCheckedChange = { viewModel.toggleActive() })
                         }
 
@@ -268,7 +269,7 @@ fun CameraDetailScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text("AI Smart Mode", style = MaterialTheme.typography.labelMedium)
                                 Text(
                                     if (smartMode) "Bật — AI phân tích & gửi email khi có biến động"
@@ -277,6 +278,7 @@ fun CameraDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            Spacer(Modifier.width(12.dp))
                             Switch(checked = smartMode, onCheckedChange = { viewModel.toggleSmartMode() })
                         }
 
@@ -288,7 +290,7 @@ fun CameraDetailScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text("Bật Cooldown hoãn quét", style = MaterialTheme.typography.labelMedium)
                                 Text(
                                     if (cam.enableCooldown == 1) "Bật — Bỏ qua lượt quét ảnh khi đang trong cooldown"
@@ -297,6 +299,7 @@ fun CameraDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            Spacer(Modifier.width(12.dp))
                             Switch(checked = cam.enableCooldown == 1, onCheckedChange = { viewModel.toggleCooldown() })
                         }
 
@@ -308,7 +311,7 @@ fun CameraDetailScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text("Nhận thông báo cảnh báo", style = MaterialTheme.typography.labelMedium)
                                 Text(
                                     if (cam.enableNotification == 1) "Bật — Nhận Email và thông báo Push khẩn cấp"
@@ -317,6 +320,7 @@ fun CameraDetailScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            Spacer(Modifier.width(12.dp))
                             Switch(checked = cam.enableNotification == 1, onCheckedChange = { viewModel.toggleNotification() })
                         }
 

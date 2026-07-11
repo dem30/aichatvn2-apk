@@ -338,7 +338,6 @@ class CameraSkill @Inject constructor(
                 val results = data?.get("results") as? List<*> ?: emptyList<Any>()
                 val skippedCb = data?.get("skippedCircuitBreaker") as? Int ?: 0
                 val skippedIn = data?.get("skippedInactive") as? Int ?: 0
-                val skippedCooldown = data?.get("skippedCooldown") as? Int ?: 0
                 val warning = data?.get("warning") as? String
 
                 if (warning != null) return PluginResult.Success(mapOf("message" to warning))
@@ -354,7 +353,6 @@ class CameraSkill @Inject constructor(
                     append("📷 Đã quét $processed camera")
                     if (skippedCb > 0) append(" ($skippedCb camera bị bỏ qua do lỗi liên tiếp)")
                     if (skippedIn > 0) append(" ($skippedIn camera không hoạt động)")
-                    if (skippedCooldown > 0) append(" ($skippedCooldown camera bị hoãn quét do đang cooldown)")
                     append(".\n")
 
                     for (r in results) {
@@ -784,7 +782,6 @@ class CameraSkill @Inject constructor(
             val results = mutableListOf<Map<String, Any>>()
             var skippedCircuitBreaker = 0
             var skippedInactive = 0
-            var skippedCooldown = 0
 
             for (camera in cameras) {
                 val tid = camera.id.trim()
@@ -794,16 +791,13 @@ class CameraSkill @Inject constructor(
                     continue
                 }
 
-                // ✅ MỚI: Nếu camera bật Cooldown (enableCooldown == 1) và đang trong giai đoạn
-                // cooldown, bỏ qua hẳn lượt quét định kỳ này để tiết kiệm băng thông mạng và
-                // tài nguyên hệ thống (không fetch snapshot, không gọi AI).
-                val state = learningStates[tid]
-                val now = System.currentTimeMillis()
-                if (!isDailyReport && camera.enableCooldown == 1 && state != null && now < state.cooldownUntil) {
-                    logger.d("CameraSkill", "⏭️ Camera $tid đang trong trạng thái cooldown - bỏ qua lượt quét.")
-                    skippedCooldown++
-                    continue
-                }
+                // ✅ ĐÃ SỬA: KHÔNG bỏ qua toàn bộ lượt quét khi camera đang cooldown nữa.
+                // Trước đây bỏ qua hẳn fetch snapshot khiến trạng thái isOnline không được
+                // refresh (chỉ được cập nhật bên trong processImageWithLearning), dẫn đến
+                // camera bị kẹt ở "Mất kết nối" nhiều giờ dù thực tế vẫn xem ảnh trực tiếp
+                // bình thường. Đúng theo thiết kế: vẫn quét pHash + cập nhật baseline +
+                // trạng thái online mỗi chu kỳ, chỉ hoãn bước GỌI AI (xử lý trong
+                // processImageWithLearning qua biến shouldCallAi dựa trên camera.enableCooldown).
 
                 val customerSetting = withContext(Dispatchers.IO) {
                     database.cameraDao().getCustomerSetting(camera.customerId.trim())
@@ -826,7 +820,7 @@ class CameraSkill @Inject constructor(
 
             if (results.isEmpty() && cameras.isNotEmpty()) {
                 logger.w("CameraSkill", "scanCamera: có ${cameras.size} camera nhưng 0 được xử lý " +
-                    "(skippedCircuitBreaker=$skippedCircuitBreaker, skippedInactive=$skippedInactive, skippedCooldown=$skippedCooldown)")
+                    "(skippedCircuitBreaker=$skippedCircuitBreaker, skippedInactive=$skippedInactive)")
             }
 
             PluginResult.Success(
@@ -834,8 +828,7 @@ class CameraSkill @Inject constructor(
                     "processed" to results.size,
                     "results" to results,
                     "skippedCircuitBreaker" to skippedCircuitBreaker,
-                    "skippedInactive" to skippedInactive,
-                    "skippedCooldown" to skippedCooldown
+                    "skippedInactive" to skippedInactive
                 )
             )
 
