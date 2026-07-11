@@ -120,8 +120,9 @@ object AppModule {
         chatHistoryManager: ChatHistoryManager,
         configProvider: AppConfigProvider,
         database: AppDatabase,
-        logger: Logger,
-        dialogManager: DialogManager
+        routingPipeline: com.aichatvn.agent.core.router.RoutingPipeline,
+        intentExecutor: com.aichatvn.agent.core.execution.IntentExecutor,
+        logger: Logger
     ): AgentKernel {
         return AgentKernel(
             plugins,
@@ -130,8 +131,9 @@ object AppModule {
             chatHistoryManager,
             configProvider,
             database,
-            logger,
-            dialogManager
+            routingPipeline,
+            intentExecutor,
+            logger
         )
     }
 }
