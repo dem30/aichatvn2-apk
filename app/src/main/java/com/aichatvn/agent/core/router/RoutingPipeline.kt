@@ -1421,4 +1421,64 @@ class RoutingPipeline @Inject constructor(
 
         return RouterOutcome.Matched(DeviceCommandResult(targetPlugin.manifest.id, result))
     }
+
+
+    private fun matchResultCopyForSingleAlias(
+        original: TrainingSkill.MatchResult, 
+        forcedAlias: QAEntity
+    ): TrainingSkill.MatchResult {
+        val updatedBest = original.bestAliasMatches.toMutableMap()
+        updatedBest[forcedAlias.category] = forcedAlias to 1.0
+        return original.copy(bestAliasMatches = updatedBest)
+    }
+
+    private fun rankRelevantPlugins(queryNormalized: String, devicePlugins: List<Plugin>): List<Plugin> {
+        val hasScheduleSignal = queryNormalized.contains("cron") || 
+            queryNormalized.contains("lich") || 
+            queryNormalized.contains("hen gio") || 
+            queryNormalized.contains("dat lich") || 
+            queryNormalized.contains("setup")
+
+        val queryTokens = queryNormalized.split(" ", "\t", "\n").filter { it.length >= 2 }.toSet()
+        if (queryTokens.isEmpty() && !hasScheduleSignal) return emptyList()
+
+        val scoreByPluginId = mutableMapOf<String, Int>()
+
+        if (hasScheduleSignal) {
+            scoreByPluginId["schedule"] = 999
+        }
+
+        normalizedActionMetadataList.forEach { meta ->
+            if (!meta.plugin.manifest.routable || !meta.action.enabled) return@forEach
+            val haystack = (listOf(meta.normalizedDescription) + meta.normalizedExamples + meta.normalizedTags)
+                .flatMap { it.split(" ", "\t", "\n") }
+                .toSet()
+            val overlap = queryTokens.count { token -> haystack.any { it.contains(token) || token.contains(it) } }
+            if (overlap > 0) {
+                val pluginId = meta.plugin.manifest.id
+                scoreByPluginId[pluginId] = maxOf(scoreByPluginId[pluginId] ?: 0, overlap)
+            }
+        }
+
+        return scoreByPluginId.entries
+            .sortedByDescending { it.value }
+            .take(MAX_FALLBACK_PLUGINS)
+            .mapNotNull { entry -> devicePlugins.find { it.manifest.id == entry.key } }
+    }
+
+    private fun parseIntentResponse(response: String): Intent? {
+        return try {
+            val cleaned = response.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            val json = JSONObject(cleaned)
+            Intent(
+                pluginId = json.getString("plugin"),
+                action = json.getString("action"),
+                params = json.optJSONObject("params")?.toMap() ?: emptyMap()
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    
 }
