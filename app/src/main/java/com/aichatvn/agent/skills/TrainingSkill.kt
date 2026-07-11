@@ -637,16 +637,12 @@ suspend fun fuzzyMatchChatCatalog(
         }
     }
 
-    private fun normalizeVietnamese(text: String): String {
-        val temp = java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
-        val regex = "\\p{InCombiningDiacriticalMarks}+".toRegex()
-        return regex.replace(temp, "")
-            .replace("đ", "d")
-            .replace("Đ", "D")
-            .lowercase()
-            .trim()
-            .replace(SPACE_REGEX, " ")
-    }
+    // ✅ ĐÃ SỬA: Ủy quyền sang VietnameseTextNormalizer (nguồn chân lý duy nhất) thay vì
+    // tự viết lại logic bỏ dấu — xem chi tiết lý do trong VietnameseTextNormalizer.kt.
+    // Giữ nguyên tên hàm + chữ ký private để không phải sửa các lời gọi normalizeVietnamese(...)
+    // khác trong chính file này (calculateSimilarity, fuzzyMatchChatCatalog, fuzzyMatchCategorized...).
+    private fun normalizeVietnamese(text: String): String =
+        com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(text)
 
     private fun calculateSimilarity(s1: String, s2: String): Float {
         val clean1 = normalizeVietnamese(s1)

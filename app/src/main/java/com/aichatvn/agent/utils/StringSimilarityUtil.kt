@@ -1,20 +1,15 @@
 package com.aichatvn.agent.utils
 
-import java.text.Normalizer
+import com.aichatvn.agent.core.text.VietnameseTextNormalizer
 
 object StringSimilarityUtil {
     private val SPACE_REGEX = Regex("\\s+")
 
-    fun normalizeVietnamese(text: String): String {
-        val temp = Normalizer.normalize(text, Normalizer.Form.NFD)
-        val regex = "\\p{InCombiningDiacriticalMarks}+".toRegex()
-        return regex.replace(temp, "")
-            .replace("đ", "d")
-            .replace("Đ", "D")
-            .lowercase()
-            .trim()
-            .replace(SPACE_REGEX, " ")
-    }
+    // ✅ ĐÃ SỬA: Ủy quyền sang VietnameseTextNormalizer (nguồn chân lý duy nhất) thay vì
+    // tự viết lại logic bỏ dấu — trước đây file này, TrainingSkill và DialogManagerImpl
+    // có 3 bản normalizeVietnamese() giống hệt nhau, dễ lệch nhau khi sửa bug.
+    // Giữ nguyên tên hàm + chữ ký để KHÔNG phải sửa bất kỳ nơi gọi nào khác trong dự án.
+    fun normalizeVietnamese(text: String): String = VietnameseTextNormalizer.normalize(text)
 
     fun calculateLocalSimilarity(clean1: String, clean2: String): Double {
         if (clean1.isEmpty() || clean2.isEmpty()) return 0.0

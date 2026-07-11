@@ -1,6 +1,5 @@
 package com.aichatvn.agent.core
 
-import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -428,81 +427,23 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
 
     // ------------------------------------------------------------------
     // HELPERS — Unicode-safe Vietnamese text matching
-    // (Tự cài đặt riêng trong file này, KHÔNG phụ thuộc helper của AgentKernel)
+    // ✅ ĐÃ SỬA: Toàn bộ 4 hàm (normalizeVietnamese, containsWholePhrase,
+    // findWholePhraseRange, replaceWholePhraseInOriginal) trước đây cài đặt riêng
+    // trong file này. Giờ ủy quyền sang VietnameseTextNormalizer (nguồn chân lý
+    // duy nhất, dùng chung với StringSimilarityUtil và TrainingSkill) — logic giữ
+    // NGUYÊN VẸN, chỉ đổi nơi cài đặt. Giữ nguyên tên hàm private để không phải
+    // sửa các lời gọi khác trong file này (resolveCancel, resolvePronoun...).
     // ------------------------------------------------------------------
 
-    /** Chuẩn hóa: bỏ dấu, hạ chữ thường, gộp khoảng trắng. */
-    private fun normalizeVietnamese(text: String): String {
-        val temp = Normalizer.normalize(text, Normalizer.Form.NFD)
-        val noDiacritics = "\\p{InCombiningDiacriticalMarks}+".toRegex().replace(temp, "")
-        return noDiacritics
-            .replace("đ", "d")
-            .replace("Đ", "D")
-            .lowercase()
-            .trim()
-            .replace(SPACE_REGEX, " ")
-    }
+    private fun normalizeVietnamese(text: String): String =
+        com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(text)
 
-    /**
-     * Kiểm tra `phrase` có xuất hiện trong `text` như một CỤM TỪ TRỌN VẸN hay không
-     * (có khoảng trắng/đầu-cuối chuỗi bao quanh), không dùng `\b` của Regex vì
-     * `\b` không nhận diện đúng ranh giới từ với ký tự tiếng Việt đã bỏ dấu lẫn có dấu.
-     */
-    private fun containsWholePhrase(text: String, phrase: String): Boolean {
-        return findWholePhraseRange(text, phrase) != null
-    }
+    private fun containsWholePhrase(text: String, phrase: String): Boolean =
+        com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(text, phrase)
 
-    /** Trả về range (start, end) nếu `phrase` khớp trọn vẹn trong `text`, ngược lại null. */
-    private fun findWholePhraseRange(text: String, phrase: String): IntRange? {
-        if (phrase.isBlank()) return null
-        var searchFrom = 0
-        while (true) {
-            val idx = text.indexOf(phrase, searchFrom)
-            if (idx == -1) return null
+    private fun findWholePhraseRange(text: String, phrase: String): IntRange? =
+        com.aichatvn.agent.core.text.VietnameseTextNormalizer.findWholePhraseRange(text, phrase)
 
-            val before = if (idx > 0) text[idx - 1] else ' '
-            val afterIdx = idx + phrase.length
-            val after = if (afterIdx < text.length) text[afterIdx] else ' '
-
-            val isBoundaryBefore = !before.isLetterOrDigit()
-            val isBoundaryAfter = !after.isLetterOrDigit()
-
-            if (isBoundaryBefore && isBoundaryAfter) {
-                return idx..(idx + phrase.length - 1)
-            }
-            searchFrom = idx + 1
-        }
-    }
-
-    /**
-     * Thay thế cụm `pronoun` (so khớp không phân biệt dấu/hoa-thường) bằng `replacement`
-     * ngay trên chuỗi GỐC (giữ nguyên dấu của các phần còn lại của câu).
-     * Trả về null nếu không tìm thấy.
-     */
-    private fun replaceWholePhraseInOriginal(original: String, pronoun: String, replacement: String): String? {
-        val normalizedOriginal = normalizeVietnamese(original)
-        val normalizedPronoun = normalizeVietnamese(pronoun)
-        val range = findWholePhraseRange(normalizedOriginal, normalizedPronoun) ?: return null
-
-        // Vì normalizeVietnamese chỉ bỏ dấu/lowercase và KHÔNG thay đổi độ dài ký tự
-        // (1 ký tự có dấu -> 1 ký tự không dấu) hay số lượng khoảng trắng (gộp nhiều
-        // space thành 1 có thể lệch độ dài nếu input có nhiều space liên tiếp), ta
-        // chỉ an toàn tuyệt đối khi input gốc không có khoảng trắng thừa. Để tránh
-        // lệch offset trong trường hợp hiếm, kiểm tra lại bằng cách so sánh length.
-        if (normalizedOriginal.length != original.length) {
-            // Fallback an toàn: dùng case-insensitive replace trực tiếp trên bản gốc
-            // nếu không đảm bảo được offset 1-1 (vd nhiều khoảng trắng liên tiếp).
-            val regexSafe = Regex(
-                "(?<![\\p{L}\\p{N}])${Regex.escape(pronoun)}(?![\\p{L}\\p{N}])",
-                RegexOption.IGNORE_CASE
-            )
-            return if (regexSafe.containsMatchIn(original)) {
-                regexSafe.replaceFirst(original, replacement)
-            } else null
-        }
-
-        val before = original.substring(0, range.first)
-        val after = original.substring(range.last + 1)
-        return before + replacement + after
-    }
+    private fun replaceWholePhraseInOriginal(original: String, pronoun: String, replacement: String): String? =
+        com.aichatvn.agent.core.text.VietnameseTextNormalizer.replaceWholePhraseInOriginal(original, pronoun, replacement)
 }
