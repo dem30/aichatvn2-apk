@@ -277,7 +277,12 @@ class SettingsViewModel @Inject constructor(
                     prefs[TUYA_UID] = uid.trim()
                 }
                 val devices = tuyaManager.scanDevices()
-                "✅ Kết nối Tuya OK — ${devices.size} thiết bị"
+                // ✅ ĐÃ SỬA: "Kết nối OK" chỉ có nghĩa API auth + liệt kê thiết bị thành công,
+                // KHÔNG đồng nghĩa thiết bị đang online. Hiển thị thêm số lượng online thực tế
+                // (theo field "online" mà chính Tuya Cloud trả về) để tránh hiểu lầm với Dashboard,
+                // nơi hiển thị đúng giá trị "online" này cho từng thiết bị.
+                val onlineCount = devices.values.count { it.online }
+                "✅ Kết nối Tuya OK — ${devices.size} thiết bị ($onlineCount đang online)"
             } catch (e: Exception) {
                 "❌ Lỗi Tuya: ${e.message}"
             }

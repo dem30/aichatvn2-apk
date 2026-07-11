@@ -30,7 +30,9 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -59,6 +61,7 @@ fun DashboardScreen(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
 
     // Quản lý trạng thái Canvas vô cực (Zoom & Pan)
     var zoomScale by remember { mutableStateOf(1f) }
@@ -322,9 +325,34 @@ fun DashboardScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
+                            // ✅ MỚI: Cho phép copy mã định danh dài & khó nhớ để dán vào Huấn luyện (tạo alias QA)
                             Column {
                                 Text("Mã định danh", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(node.id, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = node.id,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 90.dp)
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            clipboardManager.setText(AnnotatedString(node.id))
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar("📋 Đã sao chép mã: ${node.id}")
+                                            }
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Sao chép mã định danh",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
