@@ -439,6 +439,12 @@ class CameraDetailViewModel @Inject constructor(
                     }
                 }
 
+                // ✅ SỬA: "Test ngay" là hành động thủ công của người dùng — luôn bỏ qua
+                // Circuit Breaker, nếu không camera sẽ bị skip âm thầm (continue trong
+                // scanCamera) khi breaker đang OPEN, khiến testResult hiển thị sai
+                // "✅ Bình thường" dù thực chất không hề có lượt scan nào xảy ra.
+                cameraSkill.resetCircuitBreaker(cameraId)
+
                 logger.d("CameraDetailViewModel", "testCamera: bắt đầu scan id=$cameraId, url=${cam.snapshoturl}")
                 val response = cameraSkill.scanCamera(cameraId, isDailyReport = false)
 
@@ -449,7 +455,18 @@ class CameraDetailViewModel @Inject constructor(
                         val first = results?.firstOrNull() as? Map<*, *>
 
                         val fetchError = first?.get("error") as? String
-                        if (fetchError != null) {
+                        if (first == null) {
+                            // ✅ SỬA: results rỗng nghĩa là camera bị bỏ qua (inactive hoặc
+                            // vẫn còn bị breaker chặn) — KHÔNG được coi là "Bình thường".
+                            val skippedCb = (data?.get("skippedCircuitBreaker") as? Int) ?: 0
+                            val skippedInactive = (data?.get("skippedInactive") as? Int) ?: 0
+                            _testResult.value = when {
+                                skippedCb > 0 -> "⛔ Camera đang bị tạm ngưng do lỗi kết nối liên tiếp trước đó. Đã thử reset, vui lòng bấm Test lại."
+                                skippedInactive > 0 -> "⏸️ Camera hoặc khách hàng đang tắt theo dõi (isActive=0), nên không quét."
+                                else -> "❌ Không nhận được kết quả quét từ camera"
+                            }
+                            logger.w("CameraDetailViewModel", "testCamera: results rỗng | id=$cameraId | skippedCb=$skippedCb skippedInactive=$skippedInactive")
+                        } else if (fetchError != null) {
                             _testResult.value = "❌ Không thể chụp ảnh: $fetchError\nKiểm tra URL camera hoặc kết nối mạng"
                             logger.e("CameraDetailViewModel", "testCamera: fetchError=$fetchError | id=$cameraId")
                         } else {

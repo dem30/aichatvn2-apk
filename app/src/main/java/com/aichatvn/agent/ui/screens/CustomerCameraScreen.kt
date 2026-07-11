@@ -185,6 +185,10 @@ class CustomerCameraViewModel @Inject constructor(
                     }
                 }
                 
+                // ✅ SỬA: bỏ qua Circuit Breaker khi người dùng chủ động bấm Test, tránh
+                // bị skip âm thầm rồi hiển thị nhầm "Bình thường" khi results rỗng.
+                cameraSkill.resetCircuitBreaker(trimmedId)
+
                 val result = cameraSkill.scanCamera(trimmedId, isDailyReport = false)
                 
                 when (result) {
@@ -193,7 +197,15 @@ class CustomerCameraViewModel @Inject constructor(
                         val results = data?.get("results") as? List<*>
                         val first = results?.firstOrNull() as? Map<*, *>
                         val fetchError = first?.get("error") as? String
-                        if (fetchError != null) {
+                        if (first == null) {
+                            val skippedCb = (data?.get("skippedCircuitBreaker") as? Int) ?: 0
+                            val skippedInactive = (data?.get("skippedInactive") as? Int) ?: 0
+                            _testResult.value = when {
+                                skippedCb > 0 -> "⛔ Camera đang bị tạm ngưng do lỗi kết nối liên tiếp trước đó. Vui lòng bấm Test lại."
+                                skippedInactive > 0 -> "⏸️ Camera hoặc khách hàng đang tắt theo dõi, nên không quét."
+                                else -> "❌ Không nhận được kết quả quét từ camera"
+                            }
+                        } else if (fetchError != null) {
                             _testResult.value = "❌ Không thể chụp ảnh: $fetchError"
                         } else {
                             val hasChange = first?.get("hasChange") as? Boolean ?: false

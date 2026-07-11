@@ -193,6 +193,18 @@ fun ScheduleCard(
     }
 }
 
+// ✅ MỚI: Phục hồi cameraId/deviceId "sạch" từ giá trị đã lưu, phòng trường hợp dữ liệu cũ
+// từng bị lưu nhầm thành chuỗi hiển thị "landInfo (id)" hoặc "name (id)" thay vì ID thuần,
+// hoặc lệch khoảng trắng đầu/cuối khiến so khớp exact-match thất bại. Nếu không trích được
+// gì khớp, trả về nguyên giá trị gốc (đã trim) để không làm mất dữ liệu người dùng đã nhập.
+private fun normalizeLegacyRefId(raw: String, validIds: List<String>): String {
+    val trimmed = raw.trim()
+    if (validIds.any { it.trim() == trimmed }) return trimmed
+    val extracted = Regex("\\(([^()]+)\\)\\s*$").find(trimmed)?.groupValues?.get(1)?.trim()
+    if (extracted != null && validIds.any { it.trim() == extracted }) return extracted
+    return trimmed
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddScheduleDialog(
@@ -298,7 +310,14 @@ fun AddScheduleDialog(
                     if (p.type == "boolean") {
                         paramBooleans[p.name] = json.optBoolean(p.name, false)
                     } else {
-                        paramValues[p.name] = json.opt(p.name)?.toString() ?: ""
+                        val raw = json.opt(p.name)?.toString() ?: ""
+                        paramValues[p.name] = when (p.semanticType) {
+                            // ✅ SỬA: tự phục hồi ID sạch nếu dữ liệu cũ bị lưu nhầm dạng
+                            // "landInfo (id)" / "name (id)", tránh hiển thị nhầm và gửi sai cameraId
+                            "camera" -> normalizeLegacyRefId(raw, activeCameras.map { it.id })
+                            "device" -> normalizeLegacyRefId(raw, tuyaDevices.map { it.id })
+                            else -> raw
+                        }
                     }
                 }
             } catch (_: Exception) {}
@@ -443,7 +462,7 @@ fun AddScheduleDialog(
                         param.semanticType == "device" -> {
                             var deviceExpanded by remember { mutableStateOf(false) }
                             val selectedDeviceId = paramValues[param.name] ?: ""
-                            val selectedDevice = tuyaDevices.find { it.id == selectedDeviceId }
+                            val selectedDevice = tuyaDevices.find { it.id.trim() == selectedDeviceId.trim() }
                             val displayText = selectedDevice?.let { dev ->
                                 val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
                                 if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
@@ -485,7 +504,7 @@ fun AddScheduleDialog(
                         param.semanticType == "camera" -> {
                             var cameraExpanded by remember { mutableStateOf(false) }
                             val selectedCameraId = paramValues[param.name] ?: ""
-                            val selectedCamera = activeCameras.find { it.id == selectedCameraId }
+                            val selectedCamera = activeCameras.find { it.id.trim() == selectedCameraId.trim() }
                             val displayText = selectedCamera?.let { cam ->
                                 if (!cam.landinfo.isNullOrBlank()) "${cam.landinfo} (${cam.id})" else cam.id
                             } ?: selectedCameraId
@@ -655,7 +674,9 @@ fun AddScheduleDialog(
                             when (p.type) {
                                 "boolean" -> put(p.name, paramBooleans[p.name] ?: false)
                                 "number" -> paramValues[p.name]?.toDoubleOrNull()?.let { put(p.name, it) }
-                                else -> paramValues[p.name]?.takeIf { it.isNotBlank() }?.let { put(p.name, it) }
+                                // ✅ SỬA: trim() để không lưu lại khoảng trắng thừa (đặc biệt với
+                                // cameraId/deviceId — nguồn gốc của nhiều lỗi so khớp trong app này)
+                                else -> paramValues[p.name]?.trim()?.takeIf { it.isNotBlank() }?.let { put(p.name, it) }
                             }
                         }
                     }.toString()
