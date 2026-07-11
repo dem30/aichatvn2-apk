@@ -446,4 +446,5 @@ class DialogManagerImpl @Inject constructor() : DialogManager {
 
     private fun replaceWholePhraseInOriginal(original: String, pronoun: String, replacement: String): String? =
         com.aichatvn.agent.core.text.VietnameseTextNormalizer.replaceWholePhraseInOriginal(original, pronoun, replacement)
+        
 }
