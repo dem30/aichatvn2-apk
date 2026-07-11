@@ -212,6 +212,22 @@ class CameraSkill @Inject constructor(
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
 
+    // ✅ MỚI: Tổng hợp trạng thái hiển thị Dashboard từ 3 nguồn độc lập (kết nối mạng,
+    // giám sát thủ công manualOff, AI Smart Mode của khách hàng) thay vì chỉ dựa vào isOnline.
+    // Trước đây getDashboardNodes/handleSetActive/handleSetSmartMode mỗi nơi tự ghi đè status
+    // theo cách riêng, khiến "Làm mới" xoá mất thông tin giám sát/AI vừa đổi.
+    private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
+        if (cam.isOnline != 1) return "Mất kết nối"
+        val setting = database.cameraDao().getCustomerSetting(cam.customerId.trim())
+        val watching = cam.manualOff == 0
+        val aiOn = setting?.smartMode == 1
+        return when {
+            !watching -> "Đã tắt giám sát"
+            aiOn -> "Đang giám sát • AI bật"
+            else -> "Đang giám sát • AI tắt"
+        }
+    }
+
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
         cameras.mapIndexed { index, cam ->
@@ -240,7 +256,9 @@ class CameraSkill @Inject constructor(
                     DashboardDeviceAction(id = "status", title = "Trạng thái", icon = "ℹ️"),
                     DashboardDeviceAction(id = "set_active", title = "Bật giám sát", icon = "🔔", defaultParams = mapOf("active" to true)),
                     DashboardDeviceAction(id = "set_active", title = "Tắt giám sát", icon = "🔕", defaultParams = mapOf("active" to false)),
-                    DashboardDeviceAction(id = "set_smart_mode", title = "Bật AI", icon = "🧠", defaultParams = mapOf("enabled" to true))
+                    DashboardDeviceAction(id = "set_smart_mode", title = "Bật AI", icon = "🧠", defaultParams = mapOf("enabled" to true)),
+                    // ✅ MỚI: Trước đây chỉ có nút bật AI, không có cách tắt AI từ Dashboard
+                    DashboardDeviceAction(id = "set_smart_mode", title = "Tắt AI", icon = "🚫", defaultParams = mapOf("enabled" to false))
                 ),
                 
                 x = finalX,
@@ -249,7 +267,8 @@ class CameraSkill @Inject constructor(
                 icon = "📷",
                 ip = "192.168.1.${10 + index}",
                 battery = null,
-                status = if (isOnline) "Đang hoạt động" else "Mất kết nối",
+                // ✅ SỬA: dùng buildCameraStatusText() để phản ánh đúng cả giám sát + AI, không chỉ online
+                status = buildCameraStatusText(cam),
                 room = "Thửa Đất"
             )
         }
@@ -443,13 +462,16 @@ class CameraSkill @Inject constructor(
             return@withContext PluginResult.Success(mapOf("message" to "📷 Camera \"${cam.customername}\" đã $state rồi, không cần thay đổi."))
         }
 
-        database.cameraDao().updateCamera(cam.copy(manualOff = newManualOff))
+        val updatedCam = cam.copy(manualOff = newManualOff)
+        database.cameraDao().updateCamera(updatedCam)
         logger.i("CameraSkill", "set_active cameraId=$cameraId active=$active (manualOff=$newManualOff)")
 
+        // ✅ SỬA LỖI: trước đây gán online = active, khiến "Tắt giám sát" bị hiển thị nhầm
+        // thành mất kết nối mạng (chấm đỏ) dù camera vẫn online bình thường.
+        // "Giám sát" (manualOff) và "kết nối mạng" (online) là 2 khái niệm độc lập.
         deviceRegistry.updateNode(cam.id.trim()) { current ->
             current.copy(
-                online = active,
-                status = if (active) "Đang hoạt động" else "Đã tắt",
+                status = buildCameraStatusText(updatedCam),
                 lastSeen = System.currentTimeMillis()
             )
         }
@@ -498,9 +520,11 @@ class CameraSkill @Inject constructor(
         if (result is PluginResult.Success) {
             val cameras = database.cameraDao().getCamerasByCustomer(resolvedCustomerId)
             cameras.forEach { camera ->
+                // ✅ SỬA LỖI: trước đây ghi đè status = "AI Đang bật/tắt", làm mất thông tin
+                // giám sát (manualOff) đang hiển thị. Dùng buildCameraStatusText() để tổng hợp lại đầy đủ.
                 deviceRegistry.updateNode(camera.id.trim()) { current ->
                     current.copy(
-                        status = if (enabled) "AI Đang bật" else "AI Đang tắt"
+                        status = buildCameraStatusText(camera)
                     )
                 }
             }

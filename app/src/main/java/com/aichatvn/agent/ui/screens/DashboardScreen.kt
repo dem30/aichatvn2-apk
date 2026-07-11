@@ -390,11 +390,21 @@ fun DashboardScreen(
                                                 isNegative -> ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                                                 else -> ButtonDefaults.buttonColors()
                                             },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                                             modifier = Modifier.weight(1f)
                                         ) {
                                             Text(action.icon, fontSize = 16.sp)
                                             Spacer(Modifier.width(6.dp))
-                                            Text(action.title, maxLines = 1)
+                                            // ✅ SỬA: trước đây maxLines=1 không có overflow khiến chữ dài
+                                            // ("Bật giám sát" → "Bật giám") bị cắt cứng, khó hiểu.
+                                            // Cho phép xuống 2 dòng, font nhỏ hơn, có "…" khi vẫn dài quá.
+                                            Text(
+                                                text = action.title,
+                                                fontSize = 12.sp,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                lineHeight = 14.sp
+                                            )
                                         }
                                     }
                                     if (rowActions.size < 2) {
@@ -531,7 +541,8 @@ fun DeviceNodeCardWidget(
     Card(
         modifier = modifier
             .width(150.dp)
-            .height(115.dp)
+            // Camera cần thêm chiều cao để chứa dòng mã định danh mới thêm bên dưới tên
+            .height(if (node.type == DeviceType.CAMERA) 128.dp else 115.dp)
             .drawBehind {
                 if (isOnline && isActive) {
                     drawIntoCanvas { canvas ->
@@ -612,6 +623,17 @@ fun DeviceNodeCardWidget(
                     overflow = TextOverflow.Ellipsis,
                     color = if (isOnline) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
+                // ✅ MỚI: Hiển thị mã định danh (node.id) bên dưới tên khách hàng, chỉ áp dụng cho Camera
+                // để phân biệt các camera trùng tên khách hàng (vd nhiều "vinh") ngay trên sơ đồ
+                if (node.type == DeviceType.CAMERA) {
+                    Text(
+                        text = node.id,
+                        fontSize = 9.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = if (isOnline) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
+                }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = node.status.ifBlank { if (isOnline) "Bình thường" else "Ngoại tuyến" },
