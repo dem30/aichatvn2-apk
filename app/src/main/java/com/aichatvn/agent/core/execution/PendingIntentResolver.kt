@@ -17,6 +17,7 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aichatvn.agent.utils.toMap
 
 private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
 
@@ -336,27 +337,9 @@ class PendingIntentResolver @Inject constructor(
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
 
-    private fun JSONObject.toMap(): Map<String, Any> {
-        val map = mutableMapOf<String, Any>()
-        keys().forEach { key ->
-            val value = get(key)
-            if (value != org.json.JSONObject.NULL) {
-                map[key] = when (value) {
-                    is JSONObject -> value.toMap()
-                    is org.json.JSONArray -> {
-                        val list = mutableListOf<Any>()
-                        for (i in 0 until value.length()) {
-                            val item = value.get(i)
-                            if (item != org.json.JSONObject.NULL) {
-                                list.add(if (item is JSONObject) item.toMap() else item)
-                            }
-                        }
-                        list
-                    }
-                    else -> value
-                }
-            }
-        }
-        return map
-    }
+    
+
+
+
+    
 }

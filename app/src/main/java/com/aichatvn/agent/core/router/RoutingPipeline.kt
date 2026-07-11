@@ -22,6 +22,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
+import com.aichatvn.agent.utils.toMap // Sử dụng hàm mở rộng dùng chung
 import org.json.JSONObject
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
@@ -150,7 +151,7 @@ class RoutingPipeline @Inject constructor(
         }
     }
 
-    private val resolverTable: Map<String, suspend (
+    internal val resolverTable: Map<String, suspend (
         param: PluginParameter,
         currentValue: Any?,
         isPlh: Boolean,
@@ -360,30 +361,6 @@ class RoutingPipeline @Inject constructor(
         return resolved
     }
 
-    private fun JSONObject.toMap(): Map<String, Any> {
-        val map = mutableMapOf<String, Any>()
-        keys().forEach { key ->
-            val value = get(key)
-            if (value != org.json.JSONObject.NULL) {
-                map[key] = when (value) {
-                    is JSONObject -> value.toMap()
-                    is org.json.JSONArray -> {
-                        val list = mutableListOf<Any>()
-                        for (i in 0 until value.length()) {
-                            val item = value.get(i)
-                            if (item != org.json.JSONObject.NULL) {
-                                list.add(if (item is JSONObject) item.toMap() else item)
-                            }
-                        }
-                        list
-                    }
-                    else -> value
-                }
-            }
-        }
-        return map
-    }
-
     suspend fun process(
         userMessage: String,
         username: String,
@@ -451,7 +428,13 @@ class RoutingPipeline @Inject constructor(
 
         if (mode == PipelineMode.EXECUTE) {
             if (pendings.isNotEmpty()) {
-                val resolvedResult = pendingIntentResolver.tryResolvePendingIntent(activePending = pendings.first(), userMessage = userMessage, devicePlugins = devicePlugins, traceId = traceId, mode = mode)
+                val resolvedResult = pendingIntentResolver.tryResolvePendingIntent(
+                    pending = pendings.first(), // ✅ Sửa thành 'pending' đúng chữ ký gốc
+                    userMessage = userMessage,
+                    devicePlugins = devicePlugins,
+                    traceId = traceId,
+                    mode = mode
+                )
 
                 if (resolvedResult != null) {
                     val r = resolvedResult.result
@@ -977,240 +960,6 @@ class RoutingPipeline @Inject constructor(
                 traces = context.traces
             )
         }
-    }
-
-    internal val resolverTable: Map<String, suspend (
-        param: PluginParameter,
-        currentValue: Any?,
-        isPlh: Boolean,
-        context: RoutingContext,
-        secondaryIntentQA: QAEntity?,
-        devicePlugins: List<Plugin>,
-        excludeIntentId: String?,
-        depth: Int
-    ) -> Any?> = mapOf(
-        "time" to { _, currentValue, _, context, _, _, _, _ ->
-            context.localEntities["cron"] ?: currentValue ?: ""
-        },
-        "interval" to { _, currentValue, _, context, _, _, _, _ ->
-            context.localEntities["intervalMinutes"] ?: currentValue ?: 0
-        },
-        "plugin_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
-            if (isPlh && secondaryIntent != null) resolvePluginIdFromSecondary(secondaryIntent) else currentValue ?: ""
-        },
-        "action_id" to { _, currentValue, isPlh, _, secondaryIntent, _, _, _ ->
-            if (isPlh && secondaryIntent != null) resolveActionIdFromSecondary(secondaryIntent) else currentValue ?: ""
-        },
-        "params" to { param, currentValue, _, context, secondaryIntent, devicePlugins, excludeId, depth ->
-            resolveNestedParams(param, currentValue, context, secondaryIntent, devicePlugins, excludeId, depth)
-        },
-        "schedule_ref" to { _, currentValue, isPlh, context, _, _, _, _ ->
-            if (isPlh) {
-                resolveScheduleReference(context.resolvedQuery) ?: ""
-            } else {
-                resolveScheduleReference(currentValue.toString().trim()) ?: currentValue ?: ""
-            }
-        }
-    )
-
-    private fun resolvePluginIdFromSecondary(secondaryIntent: QAEntity): String {
-        return try { JSONObject(secondaryIntent.answer).optString("plugin", "") } catch (_: Exception) { "" }
-    }
-
-    private fun resolveActionIdFromSecondary(secondaryIntent: QAEntity): String {
-        return try { JSONObject(secondaryIntent.answer).optString("action", "") } catch (_: Exception) { "" }
-    }
-
-    private suspend fun resolveScheduleReference(raw: String): String? {
-        if (raw.isBlank()) return null
-
-        val allSchedules = withContext(Dispatchers.IO) {
-            database.scheduleDao().getAllSchedules()
-        }.sortedBy { it.createdAt }
-
-        val normalizedRaw = StringSimilarityUtil.normalizeVietnamese(raw.lowercase().trim())
-
-        val numberPattern = Regex("\\b(?:so|chon|cau|thu|lich|\\s+)?\\s*(\\d+)\\b")
-        val matchResult = numberPattern.find(normalizedRaw)
-        val extractedNumberStr = matchResult?.groupValues?.get(1) 
-            ?: Regex("\\b(\\d+)\\b").find(normalizedRaw)?.value
-            
-        extractedNumberStr?.toIntOrNull()?.let { orderNumber ->
-            allSchedules.getOrNull(orderNumber - 1)?.let { return it.id }
-        }
-
-        val bestMatchPair = allSchedules
-            .filter { it.label.isNotBlank() }
-            .map { schedule ->
-                val score = StringSimilarityUtil.calculateLocalSimilarity(
-                    StringSimilarityUtil.normalizeVietnamese(schedule.label),
-                    normalizedRaw
-                )
-                schedule to score
-            }
-            .maxByOrNull { it.second }
-
-        val SIMILARITY_THRESHOLD = 0.35
-
-        return if (bestMatchPair != null && bestMatchPair.second >= SIMILARITY_THRESHOLD) {
-            bestMatchPair.first.id
-        } else {
-            null
-        }
-    }
-
-    private suspend fun resolveNestedParams(
-        param: PluginParameter,
-        currentValue: Any?,
-        context: RoutingContext,
-        secondaryIntentQA: QAEntity?,
-        devicePlugins: List<Plugin>,
-        excludeIntentId: String?,
-        depth: Int
-    ): Any {
-        if (secondaryIntentQA == null) return currentValue ?: emptyMap<String, Any>()
-        return try {
-            val secJson = JSONObject(secondaryIntentQA.answer)
-            val secPluginId = secJson.optString("plugin", "")
-            val secActionName = secJson.optString("action", "")
-            val secParams = secJson.optJSONObject("params")?.toMap() ?: emptyMap()
-
-            val secPlugin = devicePlugins.find { it.manifest.id == secPluginId }
-            val secAction = secPlugin?.manifest?.actions?.find { it.name == secActionName }
-
-            if (secAction != null) {
-                resolveParametersWithMeta(
-                    parameters = secAction.parameters,
-                    inputParams = secParams,
-                    context = context,
-                    excludeIntentId = excludeIntentId,
-                    depth = depth + 1
-                )
-            } else {
-                secParams
-            }
-        } catch (e: Exception) {
-            currentValue ?: emptyMap<String, Any>()
-        }
-    }
-
-    private suspend fun resolveAliasOrFallback(
-        param: PluginParameter,
-        currentValue: Any?,
-        isPlh: Boolean,
-        context: RoutingContext
-    ): Any {
-        var finalIsPlh = isPlh
-        
-        if (!finalIsPlh && currentValue != null) {
-            val isAliasVal = context.globalMatchResult.aliasMatches.any { 
-                it.first.category == param.semanticType && 
-                it.first.question.equals(currentValue.toString().trim(), ignoreCase = true) 
-            }
-            if (isAliasVal) {
-                finalIsPlh = true
-            }
-        }
-
-        if (!finalIsPlh) return currentValue ?: ""
-
-        val matchedAliasValue = aliasMatchesForType(context.globalMatchResult, param.semanticType)
-        if (matchedAliasValue != null) return matchedAliasValue
-
-        if (context.resolvedQuery.isNotBlank()) {
-            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
-            val containsMatch = context.globalMatchResult.aliasMatches
-                .filter { it.first.category == param.semanticType && it.second >= configAliasThreshold }
-                .sortedByDescending { it.first.question.length }
-                .firstOrNull { context.resolvedQuery.contains(it.first.question, ignoreCase = true) }
-                ?.first?.answer
-            if (containsMatch != null) return containsMatch
-        }
-
-        val localMatch = context.localEntities[param.semanticType]
-        if (localMatch != null) return localMatch
-
-        return currentValue ?: ""
-    }
-
-    private fun aliasMatchesForType(
-        matchResult: TrainingSkill.MatchResult,
-        semanticType: String
-    ): String? {
-        return matchResult.bestAliasMatches[semanticType]?.first?.answer
-    }
-
-    internal suspend fun resolveParametersWithMeta(
-        parameters: List<PluginParameter>,
-        inputParams: Map<String, Any>,
-        context: RoutingContext,
-        excludeIntentId: String? = null,
-        depth: Int = 0
-    ): Map<String, Any> {
-        if (depth > MAX_DEPTH) return emptyMap()
-
-        val secondaryIntentQA = context.globalMatchResult.intentMatches
-            .filter { it.first.type == "intent" }
-            .map { it.first }
-            .firstOrNull { it.id != excludeIntentId }
-
-        val resolved = mutableMapOf<String, Any>()
-
-        parameters.forEach { param ->
-            val currentValue = inputParams[param.name]
-            val isPlh = ParameterResolver.isPlaceholder(currentValue, param)
-
-            val resolver = resolverTable[param.semanticType.lowercase()]
-            val resolvedValue: Any = if (resolver != null) {
-                resolver(
-                    param, currentValue, isPlh, context,
-                    secondaryIntentQA, plugins.toList(), excludeIntentId, depth
-                ) ?: ""
-            } else {
-                resolveAliasOrFallback(param, currentValue, isPlh, context)
-            }
-            resolved[param.name] = resolvedValue
-
-            context.traces.add(TraceNode(
-                nodeId = "param.resolve:${param.name}",
-                label = "Phân giải tham số: ${param.name}",
-                input = "Thô: '$currentValue', isPlaceholder=$isPlh",
-                output = "Kết quả: '$resolvedValue'",
-                matched = resolvedValue.toString().isNotBlank() && !ParameterResolver.isPlaceholder(resolvedValue, param),
-                codeRef = CodeReference(
-                    fileName = "RoutingPipeline.kt / ParameterResolver.kt",
-                    functionName = "resolveParametersWithMeta",
-                    hardcodedRules = "Param='${param.name}', SemanticType='${param.semanticType}', Required=${param.required}, Placeholder='${param.placeholder}'",
-                    businessLogic = "Nếu có resolver chuyên biệt theo semanticType thì dùng, không thì fallback sang resolveAliasOrFallback (bestAliasMatches ➔ containsMatch ➔ localEntities)."
-                )
-            ))
-        }
-
-        return resolved
-    }
-
-    private fun JSONObject.toMap(): Map<String, Any> {
-        val map = mutableMapOf<String, Any>()
-        keys().forEach { key ->
-            val value = get(key)
-            if (value != org.json.JSONObject.NULL) {
-                map[key] = when (value) {
-                    is JSONObject -> value.toMap()
-                    is org.json.JSONArray -> {
-                        val list = mutableListOf<Any>()
-                        for (i in 0 until value.length()) {
-                            val item = value.get(i)
-                            if (item != org.json.JSONObject.NULL) {
-                                list.add(if (item is JSONObject) item.toMap() else item)
-                            }
-                        }
-                        list
-                    }
-                    else -> value
-                }
-            }
-        }
-        return map
     }
 
     internal fun matchResultCopyForSingleAlias(

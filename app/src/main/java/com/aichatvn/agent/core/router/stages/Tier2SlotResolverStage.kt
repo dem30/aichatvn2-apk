@@ -9,6 +9,7 @@ import com.aichatvn.agent.utils.StringSimilarityUtil
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aichatvn.agent.utils.toMap
 
 @Singleton
 class Tier2SlotResolverStage @Inject constructor() : RouterStage<Layer2Result?> {
@@ -64,27 +65,7 @@ class Tier2SlotResolverStage @Inject constructor() : RouterStage<Layer2Result?> 
         return Layer2Result(rootPlugin, AgentKernel.Intent(rootPluginId, rootActionName, resolvedParams), confidence)
     }
 
-    private fun JSONObject.toMap(): Map<String, Any> {
-        val map = mutableMapOf<String, Any>()
-        keys().forEach { key ->
-            val value = get(key)
-            if (value != org.json.JSONObject.NULL) {
-                map[key] = when (value) {
-                    is JSONObject -> value.toMap()
-                    is org.json.JSONArray -> {
-                        val list = mutableListOf<Any>()
-                        for (i in 0 until value.length()) {
-                            val item = value.get(i)
-                            if (item != org.json.JSONObject.NULL) {
-                                list.add(if (item is JSONObject) item.toMap() else item)
-                            }
-                        }
-                        list
-                    }
-                    else -> value
-                }
-            }
-        }
-        return map
-    }
+
+
+    
 }

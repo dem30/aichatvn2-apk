@@ -6,7 +6,6 @@ import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.router.RoutingPipeline
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
-import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
