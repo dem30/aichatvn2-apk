@@ -1,8 +1,14 @@
 package com.aichatvn.agent.ui.screens
 
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,19 +25,24 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,8 +55,32 @@ import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.viewmodels.DashboardViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.roundToInt
+
+/**
+ * ✅ MỚI: Copy ảnh sơ đồ nhà người dùng chọn (Uri từ Photo Picker, có thể mất quyền truy cập
+ * sau khi khởi động lại app) vào bộ nhớ nội bộ app để lưu trữ ổn định lâu dài.
+ * Xoá ảnh cũ trước khi lưu ảnh mới để tránh tích tụ dung lượng.
+ */
+private fun saveFloorplanImageToInternalStorage(context: android.content.Context, uri: Uri): String? {
+    return try {
+        val dir = File(context.filesDir, "floorplan")
+        if (!dir.exists()) dir.mkdirs()
+        dir.listFiles()?.forEach { it.delete() }
+        val file = File(dir, "floorplan_${System.currentTimeMillis()}.jpg")
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(file).use { output -> input.copyTo(output) }
+        } ?: return null
+        file.absolutePath
+    } catch (e: Exception) {
+        null
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,12 +91,48 @@ fun DashboardScreen(
     val deviceNodes by viewModel.deviceNodes.collectAsState()
     val isProcessing by viewModel.isProcessing.collectAsState()
     val executionMessage by viewModel.executionMessage.collectAsState()
+    val floorplanPath by viewModel.floorplanPath.collectAsState()
 
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    // ✅ MỚI: Giải mã ảnh sơ đồ nhà từ file thành ImageBitmap ngầm dưới nền (IO thread),
+    // tránh giật lag UI khi ảnh có kích thước lớn.
+    var floorplanBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(floorplanPath) {
+        floorplanBitmap = floorplanPath?.let { path ->
+            withContext(Dispatchers.IO) {
+                try {
+                    BitmapFactory.decodeFile(path)?.asImageBitmap()
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+    }
+
+    // ✅ MỚI: Photo Picker hệ thống — không cần xin quyền READ_MEDIA_IMAGES runtime
+    val pickFloorplanImage = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                val savedPath = withContext(Dispatchers.IO) {
+                    saveFloorplanImageToInternalStorage(context, uri)
+                }
+                if (savedPath != null) {
+                    viewModel.setFloorplanPath(savedPath)
+                } else {
+                    snackbarHostState.showSnackbar("❌ Không thể lưu ảnh sơ đồ nhà, thử lại")
+                }
+            }
+        }
+    }
+    var showFloorplanMenu by remember { mutableStateOf(false) }
 
     // Quản lý trạng thái Canvas vô cực (Zoom & Pan)
     var zoomScale by remember { mutableStateOf(1f) }
@@ -91,6 +162,44 @@ fun DashboardScreen(
             TopAppBar(
                 title = { Text("Sơ đồ điều khiển thiết bị") },
                 actions = {
+                    // ✅ MỚI: Tải / đổi / xoá ảnh sơ đồ nhà làm nền cho Dashboard
+                    Box {
+                        IconButton(onClick = {
+                            if (floorplanPath == null) {
+                                pickFloorplanImage.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            } else {
+                                showFloorplanMenu = true
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Image,
+                                contentDescription = "Tải ảnh sơ đồ nhà"
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showFloorplanMenu,
+                            onDismissRequest = { showFloorplanMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Đổi ảnh sơ đồ nhà") },
+                                onClick = {
+                                    showFloorplanMenu = false
+                                    pickFloorplanImage.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Xoá ảnh sơ đồ nhà") },
+                                onClick = {
+                                    showFloorplanMenu = false
+                                    viewModel.clearFloorplanPath()
+                                }
+                            )
+                        }
+                    }
                     // Sửa lỗi 2: Chuyển icon khôi phục thu phóng thành biểu tượng Home (Ngôi nhà) để tránh trùng lặp
                     IconButton(onClick = {
                         zoomScale = 1f
@@ -120,6 +229,8 @@ fun DashboardScreen(
                 .padding(padding)
         ) {
             // Lớp vẽ mạng lưới nền (Grid Background Canvas)
+            // ✅ SỬA: làm mờ lưới đi khi đã có ảnh sơ đồ nhà, tránh che ảnh
+            val gridAlpha = if (floorplanBitmap != null) 0.06f else 0.2f
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val gridSpacing = 40.dp.toPx()
                 val pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
@@ -129,7 +240,7 @@ fun DashboardScreen(
                 while (x < size.width) {
                     if (x >= 0) {
                         drawLine(
-                            color = Color.LightGray.copy(alpha = 0.2f),
+                            color = Color.LightGray.copy(alpha = gridAlpha),
                             start = Offset(x, 0f),
                             end = Offset(x, size.height),
                             strokeWidth = 1.dp.toPx(),
@@ -144,7 +255,7 @@ fun DashboardScreen(
                 while (y < size.height) {
                     if (y >= 0) {
                         drawLine(
-                            color = Color.LightGray.copy(alpha = 0.2f),
+                            color = Color.LightGray.copy(alpha = gridAlpha),
                             start = Offset(0f, y),
                             end = Offset(size.width, y),
                             strokeWidth = 1.dp.toPx(),
@@ -176,7 +287,24 @@ fun DashboardScreen(
                             translationY = panOffset.y
                         )
                 ) {
-                    // Biểu tượng ngôi nhà trung tâm sơ đồ
+                    // ✅ MỚI: Ảnh sơ đồ nhà do người dùng tải lên, làm nền tham chiếu trực quan
+                    // để kéo thả icon thiết bị đúng vị trí thật. Neo tại gốc toạ độ (0,0) — trùng
+                    // hệ toạ độ mà node.x/node.y đang dùng để định vị các thẻ thiết bị.
+                    floorplanBitmap?.let { bmp ->
+                        Image(
+                            bitmap = bmp,
+                            contentDescription = "Sơ đồ nhà",
+                            contentScale = ContentScale.FillBounds,
+                            modifier = Modifier
+                                .offset { IntOffset(0, 0) }
+                                .width((FLOORPLAN_DESIGN_WIDTH * baseScale).dp)
+                                .height((FLOORPLAN_DESIGN_HEIGHT * baseScale).dp)
+                                .alpha(0.9f)
+                        )
+                    }
+
+                    // Biểu tượng ngôi nhà trung tâm sơ đồ — chỉ hiện khi CHƯA có ảnh sơ đồ nhà thật
+                    if (floorplanBitmap == null) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -190,6 +318,7 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.padding(top = 90.dp)
                         )
+                    }
                     }
 
                     // 2. Vẽ phân vùng không gian các phòng mờ ảo (Room bounding boundary)
@@ -439,6 +568,14 @@ fun DashboardScreen(
         }
     }
 }
+
+/**
+ * ✅ MỚI: Kích thước khung ảnh sơ đồ nhà theo "design units" — cùng hệ toạ độ với node.x/node.y
+ * (được nhân với baseScale khi vẽ, giống cách các DeviceNode đang định vị).
+ * TODO: có thể cho người dùng tự kéo giãn khung này ở phiên bản sau nếu ảnh không vừa vặn.
+ */
+private const val FLOORPLAN_DESIGN_WIDTH = 1024f
+private const val FLOORPLAN_DESIGN_HEIGHT = 1024f
 
 /**
  * Thành phần Composable đóng gói kéo thả sau khi nhấn giữ (After Long Press) để phân tách chạm click.

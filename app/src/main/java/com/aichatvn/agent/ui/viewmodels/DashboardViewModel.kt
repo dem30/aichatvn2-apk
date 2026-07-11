@@ -2,6 +2,7 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.ui.dashboard.DeviceAction
@@ -15,12 +16,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val deviceRegistry: DeviceRegistry,
     private val agentKernel: AgentKernel,
+    private val configProvider: AppConfigProvider,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -32,9 +35,60 @@ class DashboardViewModel @Inject constructor(
     private val _executionMessage = MutableStateFlow<String?>(null)
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
+    // ✅ MỚI: Đường dẫn file ảnh sơ đồ nhà do người dùng tự tải lên, làm nền cho Dashboard.
+    // null nghĩa là chưa có ảnh -> UI sẽ hiển thị canvas lưới + icon 🏠 mặc định như trước.
+    private val _floorplanPath = MutableStateFlow<String?>(null)
+    val floorplanPath: StateFlow<String?> = _floorplanPath.asStateFlow()
+
     // ✅ ĐÃ THÊM: Khối khởi tạo ViewModel tự động làm mới sơ đồ thiết bị ngầm dưới nền khi mở màn hình
     init {
         refreshDashboardNodes()
+        loadFloorplanPath()
+    }
+
+    private fun loadFloorplanPath() {
+        viewModelScope.launch {
+            val savedPath = configProvider.getString(FLOORPLAN_PATH_KEY, "")
+            // Kiểm tra file còn tồn tại trên đĩa để tránh hiển thị ảnh vỡ nếu file bị xoá thủ công
+            _floorplanPath.value = savedPath.takeIf { it.isNotBlank() && File(it).exists() }
+        }
+    }
+
+    /**
+     * Lưu đường dẫn ảnh sơ đồ nhà mới (đã được copy vào bộ nhớ nội bộ app từ UI) và persist qua AppConfigProvider.
+     */
+    fun setFloorplanPath(path: String) {
+        viewModelScope.launch {
+            val oldPath = _floorplanPath.value
+            configProvider.set(FLOORPLAN_PATH_KEY, path)
+            _floorplanPath.value = path
+            // Dọn file ảnh cũ để tránh tích tụ dung lượng bộ nhớ trong theo thời gian
+            if (!oldPath.isNullOrBlank() && oldPath != path) {
+                withContext(Dispatchers.IO) {
+                    try { File(oldPath).delete() } catch (e: Exception) {
+                        logger.e("DashboardViewModel", "Xoá ảnh sơ đồ nhà cũ thất bại", e)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Xoá ảnh sơ đồ nhà hiện tại, quay lại canvas lưới mặc định.
+     */
+    fun clearFloorplanPath() {
+        viewModelScope.launch {
+            val oldPath = _floorplanPath.value
+            configProvider.delete(FLOORPLAN_PATH_KEY)
+            _floorplanPath.value = null
+            if (!oldPath.isNullOrBlank()) {
+                withContext(Dispatchers.IO) {
+                    try { File(oldPath).delete() } catch (e: Exception) {
+                        logger.e("DashboardViewModel", "Xoá file ảnh sơ đồ nhà thất bại", e)
+                    }
+                }
+            }
+        }
     }
 
     fun updateNodePosition(id: String, x: Float, y: Float) {
@@ -120,5 +174,9 @@ class DashboardViewModel @Inject constructor(
 
     fun clearExecutionMessage() {
         _executionMessage.value = null
+    }
+
+    companion object {
+        private const val FLOORPLAN_PATH_KEY = "dashboard_floorplan_path"
     }
 }
