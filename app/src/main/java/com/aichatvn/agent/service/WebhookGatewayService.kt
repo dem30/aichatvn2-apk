@@ -357,13 +357,12 @@ class WebhookGatewayService : Service() {
                                                         logger.i("CloudGateway", "🔑 Đã đồng bộ động Instagram Page Access Token thành công!")
                                                     }
                                                 }
-                                            } else {
-                                                val platform = jsonObj.optString("platform", "web")
-                                                val senderId = jsonObj.optString("senderId", "external_user")
-                                                val text = jsonObj.optString("text", "")
-                                                val incomingPageId = jsonObj.optString("pageId", "")
-                                                // ✅ MỚI: URL ảnh do Meta CDN host (Facebook/Instagram) hoặc base64 ảnh
-                                                // do widget Website gửi trực tiếp — Render gateway forward nguyên 2 field này.
+                                           } else {
+    val platform = jsonObj.optString("platform", "website") // ✅ Đổi từ "web" thành "website"
+    val senderId = jsonObj.optString("senderId", "external_user")
+    val text = jsonObj.optString("text", "")
+    val incomingPageId = jsonObj.optString("pageId", "")
+                                              // do widget Website gửi trực tiếp — Render gateway forward nguyên 2 field này.
                                                 val incomingImageUrl = jsonObj.optString("imageUrl", "").takeIf { it.isNotBlank() }
                                                 val incomingImageBase64Raw = jsonObj.optString("imageBase64", "").takeIf { it.isNotBlank() }
 
