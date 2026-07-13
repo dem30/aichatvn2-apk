@@ -810,6 +810,7 @@ private fun ScheduleRow(
     }
 }
 
+
 @Composable
 private fun ScheduleFormSheet(
     draft: ScheduleDraft,
@@ -817,15 +818,19 @@ private fun ScheduleFormSheet(
     onUpdate: (ScheduleDraft.() -> ScheduleDraft) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
-    onAddAlertAction: () -> Unit = {},        // ✅ MỚI
-    onRemoveAlertAction: (Int) -> Unit = {}   // ✅ MỚI
+    onAddAlertAction: () -> Unit = {},        
+    onRemoveAlertAction: (Int) -> Unit = {}   
 ) {
     val isEdit = draft.id.isNotBlank()
+    // ✅ Khởi tạo trạng thái cuộn dọc
+    val scrollState = rememberScrollState()
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
-            .padding(bottom = 32.dp),
+            .padding(bottom = 32.dp)
+            .verticalScroll(scrollState), // ✅ KÍCH HOẠT CUỘN DỌC Ở ĐÂY
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
@@ -839,6 +844,10 @@ private fun ScheduleFormSheet(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
+        // ... các thành phần bên trong giữ nguyên ...
+
+        
+        
 
         
         Text("Action", style = MaterialTheme.typography.labelMedium)
