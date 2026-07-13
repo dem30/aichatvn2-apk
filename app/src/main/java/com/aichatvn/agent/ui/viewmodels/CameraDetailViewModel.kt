@@ -1,5 +1,6 @@
 package com.aichatvn.agent.ui.viewmodels
 
+import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -57,6 +58,13 @@ class CameraDetailViewModel @Inject constructor(
     private val logger: Logger
 ) : ViewModel() {
 
+  // ✅ MỚI: Danh sách thiết bị/camera để dropdown trong AlertActionFormSheet chọn thay vì gõ ID tay
+    private val _tuyaDevicesForAlertAction = MutableStateFlow<List<TuyaDeviceEntity>>(emptyList())
+    val tuyaDevicesForAlertAction: StateFlow<List<TuyaDeviceEntity>> = _tuyaDevicesForAlertAction.asStateFlow()
+
+    private val _camerasForAlertAction = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
+    val camerasForAlertAction: StateFlow<List<CameraConfigEntity>> = _camerasForAlertAction.asStateFlow()
+    
   // ✅ MỚI: Danh sách plugin routable để dropdown chọn (loại "camera" nếu muốn tránh tự-trigger đệ quy,
     // nhưng vẫn cho phép vì use-case hợp lệ: cam A phát hiện → bật smart_mode cam B)
     val alertActionPlugins: List<com.aichatvn.agent.core.plugin.Plugin> =
@@ -105,9 +113,13 @@ class CameraDetailViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
+
+
+        
     init {
         loadCamera()
         loadSchedules()
+        loadAlertActionOptions() // ✅ MỚI: Nạp danh sách cho dropdown
         viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 val diagMap = cameraSkill.getDiagnostics()
@@ -116,6 +128,10 @@ class CameraDetailViewModel @Inject constructor(
             }
         }
     }
+
+
+
+    
 
     fun loadCamera() {
         viewModelScope.launch {
@@ -556,6 +572,19 @@ class CameraDetailViewModel @Inject constructor(
     fun clearTestResult() {
         _testResult.value = null
     }
+
+
+
+    // ✅ MỚI: Hàm nạp danh sách thiết bị/camera từ cơ sở dữ liệu
+    private fun loadAlertActionOptions() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _tuyaDevicesForAlertAction.value = database.tuyaDeviceDao().getAllDevices()
+            _camerasForAlertAction.value = database.cameraDao().getActiveCameras()
+        }
+    }
+
+
+    
 }
 
 // ✅ MỚI: Cấu hình 1 hành động chéo-plugin được kích hoạt khi camera phát hiện cảnh báo thật.

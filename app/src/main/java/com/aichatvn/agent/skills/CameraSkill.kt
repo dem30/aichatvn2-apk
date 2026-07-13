@@ -1,5 +1,6 @@
 package com.aichatvn.agent.skills
 
+import com.aichatvn.agent.utils.toMap
 import javax.inject.Provider
 import com.aichatvn.agent.core.execution.IntentExecutor
 
@@ -1505,7 +1506,7 @@ private suspend fun executeAlertActions(camera: CameraConfigEntity, aiComment: S
             if (targetPluginId.isBlank() || targetActionName.isBlank()) continue
 
             val paramsJson = actionObj.optJSONObject("params")
-            val params: Map<String, Any> = paramsJson?.let { com.aichatvn.agent.utils.toMap(it) } ?: emptyMap()
+            val params: Map<String, Any> = paramsJson?.toMap() ?: emptyMap()
 
             try {
                 val result = intentExecutorProvider.get().executePluginAction(targetPluginId, targetActionName, params)
