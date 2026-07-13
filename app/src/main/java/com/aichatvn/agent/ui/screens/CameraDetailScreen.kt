@@ -28,7 +28,7 @@ import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.ui.viewmodels.AlertActionConfig
+import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
 import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
 import kotlinx.coroutines.Dispatchers
@@ -944,6 +944,8 @@ private fun ScheduleFormSheet(
     }
 }
 
+
+
 @Composable
 private fun MiniAlertRow(alert: AlertEntity) {
     val timeText = remember(alert.timestamp) {
@@ -961,10 +963,28 @@ private fun MiniAlertRow(alert: AlertEntity) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(timeText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(alert.aiComment, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                
+                // ✅ MỚI: Hiển thị nhãn lịch trình nếu có
+                if (!alert.scheduleLabel.isNullOrBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                    ) {
+                        Text(
+                            text = "Nguồn: ${alert.scheduleLabel}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
             }
         }
     }
 }
+
+
 
 // ✅ MỚI: Form thêm 1 hành động tự động chéo-plugin (pluginId + action + params) sẽ được
 // CameraSkill.executeAlertActions() gọi ngay khi camera phát hiện cảnh báo THẬT (isSuspicious=true).

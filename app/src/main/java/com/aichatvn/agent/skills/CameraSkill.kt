@@ -1507,47 +1507,72 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
         }
         _diagnostics.value = stats
     }
+
     
+
+
+
     private suspend fun saveAlertToHistory(
-        alertId: String,
-        camera: CameraConfigEntity,
-        aiComment: String,
-        imageBytes: ByteArray?,
-        diff: Int,
-        deltaTrigger: Int,
-        absDiffTrigger: Int,
-        emailSent: Boolean,
-        scheduleId: String? = null   // ✅ MỚI — null nếu từ quét ngầm tự động, có giá trị nếu từ 1 lịch cụ thể
-    ) {
-        val tid = camera.id.trim()
-        try {
-            val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
+    alertId: String,
+    camera: CameraConfigEntity,
+    aiComment: String,
+    imageBytes: ByteArray?,
+    diff: Int,
+    deltaTrigger: Int,
+    absDiffTrigger: Int,
+    emailSent: Boolean,
+    scheduleId: String? = null
+) {
+    val tid = camera.id.trim()
+    try {
+        val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
 
-            val alert = AlertEntity(
-                id = alertId,
-                cameraId = tid,
-                customerId = camera.customerId.trim(),
-                cameraName = camera.customername,
-                timestamp = System.currentTimeMillis(),
-                aiComment = aiComment,
-                diff = diff,
-                deltaTrigger = deltaTrigger,
-                absDiffTrigger = absDiffTrigger,
-                imagePath = imagePath,
-                emailSent = if (emailSent) 1 else 0,
-                isSuspicious = 1,
-                isRead = 0,
-                scheduleId = scheduleId   // ✅ MỚI
-            )
+        // ✅ MỚI: Truy vấn lịch trình để tạo nhãn hiển thị thân thiện
+        val scheduleLabel = scheduleId?.let { id ->
             withContext(Dispatchers.IO) {
-                database.alertDao().insertAlert(alert)
+                val sched = database.scheduleDao().getScheduleById(id)
+                sched?.let {
+                    // Nếu lịch có đặt tên riêng (label) thì dùng label
+                    if (!it.label.isNullOrBlank()) {
+                        it.label
+                    } else if (it.cron.isNotBlank()) {
+                        "⏰ ${it.cron}"
+                    } else {
+                        "🔁 mỗi ${it.intervalMinutes} phút"
+                    }
+                }
             }
-        } catch (e: Exception) {
-            logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
         }
+
+        val alert = AlertEntity(
+            id = alertId,
+            cameraId = tid,
+            customerId = camera.customerId.trim(),
+            cameraName = camera.customername,
+            timestamp = System.currentTimeMillis(),
+            aiComment = aiComment,
+            diff = diff,
+            deltaTrigger = deltaTrigger,
+            absDiffTrigger = absDiffTrigger,
+            imagePath = imagePath,
+            emailSent = if (emailSent) 1 else 0,
+            isSuspicious = 1,
+            isRead = 0,
+            scheduleId = scheduleId,
+            scheduleLabel = scheduleLabel // ✅ MỚI: Lưu trực tiếp nhãn thân thiện
+        )
+        withContext(Dispatchers.IO) {
+            database.alertDao().insertAlert(alert)
+        }
+    } catch (e: Exception) {
+        logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
     }
+}
 
 
+
+
+    
 
     // ✅ MỚI: Thực thi các hành động chéo-plugin đã cấu hình cho camera này khi phát hiện cảnh báo THẬT.
 // Mỗi action bọc try/catch riêng — 1 action lỗi không được chặn action khác hay làm hỏng luồng scan chính.

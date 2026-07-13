@@ -270,22 +270,47 @@ private fun AlertCard(
 
                 Spacer(Modifier.height(4.dp))
 
+
+
+
+                
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "diff=${alert.diff} (ngưỡng ${alert.absDiffTrigger})",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (alert.emailSent == 1) {
-                        Spacer(Modifier.width(8.dp))
-                        Icon(
-                            Icons.Default.Email,
-                            contentDescription = "Đã gửi email",
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
+    Text(
+        "diff=${alert.diff} (ngưỡng ${alert.absDiffTrigger})",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    
+    // ✅ MỚI: Hiển thị nhãn lịch trình nếu có
+    if (!alert.scheduleLabel.isNullOrBlank()) {
+        Spacer(Modifier.width(8.dp))
+        Surface(
+            shape = MaterialTheme.shapes.extraSmall,
+            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+        ) {
+            Text(
+                text = alert.scheduleLabel,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        }
+    }
+
+    if (alert.emailSent == 1) {
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            Icons.Default.Email,
+            contentDescription = "Đã gửi email",
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+
+
+                
             }
         }
     }

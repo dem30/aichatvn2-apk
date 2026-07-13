@@ -127,7 +127,11 @@ data class AlertEntity(
     val emailSent: Int = 0,
     val isSuspicious: Int = 1,
     val isRead: Int = 0,
-    val scheduleId: String? = null
+    val scheduleId: String? = null,
+    val scheduleLabel: String? = null
+
+
+  
 )
 
 // ==================== SCHEDULE ====================

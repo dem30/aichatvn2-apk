@@ -270,6 +270,10 @@ interface ScheduleDao {
     @Query("SELECT * FROM schedules ORDER BY createdAt DESC")
     suspend fun getAllSchedules(): List<ScheduleEntity>
     
+    // ✅ BỔ SUNG: Lấy thông tin lịch trình theo ID để sinh nhãn hiển thị cho Alert
+    @Query("SELECT * FROM schedules WHERE id = :id LIMIT 1")
+    suspend fun getScheduleById(id: String): ScheduleEntity?
+    
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSchedule(schedule: ScheduleEntity)
     
