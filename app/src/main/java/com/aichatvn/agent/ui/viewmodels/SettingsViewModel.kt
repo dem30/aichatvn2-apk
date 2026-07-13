@@ -1,5 +1,6 @@
 package com.aichatvn.agent.ui.viewmodels
 
+import com.aichatvn.agent.skills.ScheduleSkill
 import android.content.Context
 import android.database.Cursor
 import android.os.Environment
@@ -53,6 +54,7 @@ class SettingsViewModel @Inject constructor(
     private val emailSkill: EmailSkill,
     private val tuyaManager: TuyaManager,
     private val cameraSkill: CameraSkill,
+    private val scheduleSkill: ScheduleSkill,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
     private val trainingSkill: TrainingSkill,
@@ -408,16 +410,20 @@ class SettingsViewModel @Inject constructor(
                 _tuyaClientSecret.value = tuyaSecretVal
                 _tuyaUid.value = tuyaUidVal
 
-                var restoredCount = 0
+               
+              
+              
+              var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
                 
                 if (dataJson != null) {
                     val sdb = database.openHelper.writableDatabase
                     
+                    // ✅ MỚI: Tắt foreign_keys TRƯỚC khi bắt đầu Transaction (bắt buộc theo chuẩn SQLite)
+                    sdb.execSQL("PRAGMA foreign_keys=OFF;")
+                    
                     sdb.beginTransaction()
                     try {
-                        sdb.execSQL("PRAGMA foreign_keys=OFF;")
-
                         for (tableName in BACKUP_TABLES) {
                             val rowsArray = dataJson.optJSONArray(tableName) ?: continue
 
@@ -465,27 +471,38 @@ class SettingsViewModel @Inject constructor(
 
                             if (columnsToInsert.isEmpty()) continue
 
-                            val columnsStr = columnsToInsert.joinToString(",") { "`$it`" }
-                            val placeholdersStr = columnsToInsert.joinToString(",") { "?" }
-                            val sql = "INSERT OR REPLACE INTO `$tableName` ($columnsStr) VALUES ($placeholdersStr)"
-
+                            // ✅ TỐI ƯU HÓA LỚN: Sử dụng sdb.insert kết hợp ContentValues thay cho sdb.execSQL thô.
+                            // Cách này giúp SQLite tự động ánh xạ chính xác kiểu dữ liệu (Int, Long, Float, String, Blob)
+                            // tránh tuyệt đối các lỗi silent-fail hoặc mismatch dữ liệu thô trên các thiết bị cũ/mới.
                             for (rowIndex in 0 until rowsArray.length()) {
                                 val rowObj = rowsArray.getJSONObject(rowIndex)
-                                val bindArgs = arrayOfNulls<Any>(columnsToInsert.size)
-                                for (colIndex in columnsToInsert.indices) {
-                                    val colName = columnsToInsert[colIndex]
+                                val values = android.content.ContentValues()
+                                
+                                for (colName in columnsToInsert) {
                                     val value = rowObj.opt(colName)
-
-                                    bindArgs[colIndex] = when {
-                                        value == JSONObject.NULL -> null
-                                        value is JSONObject && value.optString("_type") == "blob" -> {
-                                            val base64Data = value.getString("data")
-                                            android.util.Base64.decode(base64Data, android.util.Base64.NO_WRAP)
+                                    if (value == JSONObject.NULL || value == null) {
+                                        values.putNull(colName)
+                                    } else {
+                                        when (value) {
+                                            is Boolean -> values.put(colName, value)
+                                            is Int -> values.put(colName, value)
+                                            is Long -> values.put(colName, value)
+                                            is Double -> values.put(colName, value)
+                                            is String -> values.put(colName, value)
+                                            is JSONObject -> {
+                                                if (value.optString("_type") == "blob") {
+                                                    val base64Data = value.getString("data")
+                                                    val bytes = android.util.Base64.decode(base64Data, android.util.Base64.NO_WRAP)
+                                                    values.put(colName, bytes)
+                                                } else {
+                                                    values.put(colName, value.toString())
+                                                }
+                                            }
+                                            else -> values.put(colName, value.toString())
                                         }
-                                        else -> value
                                     }
                                 }
-                                sdb.execSQL(sql, bindArgs)
+                                sdb.insert(tableName, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE, values)
                                 restoredCount++
                             }
 
@@ -499,10 +516,14 @@ class SettingsViewModel @Inject constructor(
                                         checkCursor.close()
                                         if (!exists) {
                                             val now = System.currentTimeMillis()
-                                            sdb.execSQL(
-                                                "INSERT OR REPLACE INTO `customer_settings` (`customerId`, `smartMode`, `isActive`, `updatedAt`, `timestamp`) VALUES (?, 0, 1, ?, ?)",
-                                                arrayOf<Any?>(customerId, now, now)
-                                            )
+                                            val customerValues = android.content.ContentValues().apply {
+                                                put("customerId", customerId)
+                                                put("smartMode", 0)
+                                                put("isActive", 1)
+                                                put("updatedAt", now)
+                                                put("timestamp", now)
+                                            }
+                                            sdb.insert("customer_settings", android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE, customerValues)
                                             restoredCount++
                                         }
                                     } while (cursor.moveToNext())
@@ -511,25 +532,28 @@ class SettingsViewModel @Inject constructor(
                             }
                         }
                         
-                        sdb.execSQL("PRAGMA foreign_keys=ON;")
                         sdb.setTransactionSuccessful()
                     } finally {
                         sdb.endTransaction()
+                        // ✅ MỚI: Bật lại kiểm tra khóa ngoại sau khi kết thúc Transaction
+                        sdb.execSQL("PRAGMA foreign_keys=ON;")
                     }
                 }
+
+                // ✅ MỚI: Yêu cầu Room InvalidationTracker ép tất cả các Flow/LiveData quan sát
+                // danh sách camera, thiết bị, khách hàng, QA... làm mới dữ liệu lập tức lên UI.
+                database.invalidationTracker.refreshVersionsAsync()
 
                 trainingSkill.refreshQAList("default_user")
 
                 try {
                     cameraSkill.initialize()
                     tuyaManager.loadDevicesFromDB()
+                    scheduleSkill.loadSchedules() // ✅ MỚI: Đồng bộ nạp lại lịch trình vào bộ nhớ đệm cache của Skill
                 } catch (e: Exception) {
-                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya sau khi import thất bại", e)
+                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya/lịch trình sau khi import thất bại", e)
                 }
 
-                // ✅ ĐÃ SỬA: Thay thế dòng gọi com.aichatvn.agent.scheduler.TaskScheduler.runNow(context) cũ.
-                // Do chúng ta đã chuyển hoàn toàn luồng tự động hoá sang quét cục bộ mỗi 1 phút dưới Service tiền cảnh,
-                // hệ thống sẽ tự động quét nhận diện các lịch trình vừa import mà không cần gọi WorkManager kích hoạt.
                 if (dataJson?.has("schedules") == true || dataJson?.has("ScheduleEntity") == true) {
                     logger.i("SettingsViewModel", "🔄 Đã đồng bộ danh sách lịch trình vừa nạp từ bản sao lưu thành công.")
                 }
@@ -540,6 +564,22 @@ class SettingsViewModel @Inject constructor(
                     "✅ Import thành công! (chỉ có settings, không có dữ liệu DB)"
                 _importResult.value = message
                 message
+              
+              
+              
+              
+              
+              
+
+                
+
+
+
+
+
+
+
+              
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Import error: ${e.message}", e)
                 _importResult.value = "❌ Lỗi: ${e.message}"
