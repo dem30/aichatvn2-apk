@@ -61,9 +61,12 @@ fun CameraDetailScreen(
     val camerasForAlertAction by viewModel.camerasForAlertAction.collectAsState()
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // ✅ MỚI: Sheet riêng cho form thêm hành động tự động
+    // ✅ MỚI: Sheet riêng cho form thêm hành động tự động (cấp camera)
     val alertActionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showAlertActionSheet by remember { mutableStateOf(false) }
+    // ✅ MỚI: Sheet riêng để thêm hành động cảnh báo RIÊNG cho 1 lịch trình cụ thể
+    val scheduleAlertActionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showScheduleAlertActionSheet by remember { mutableStateOf(false) }
 
     var showTestDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -94,12 +97,14 @@ fun CameraDetailScreen(
                 isLoading = isLoading,
                 onUpdate = { viewModel.updateScheduleDraft(it) },
                 onSave = { viewModel.saveSchedule() },
-                onCancel = { viewModel.closeScheduleEditor() }
+                onCancel = { viewModel.closeScheduleEditor() },
+                onAddAlertAction = { showScheduleAlertActionSheet = true },       // ✅ MỚI
+                onRemoveAlertAction = { i -> viewModel.removeScheduleAlertAction(i) } // ✅ MỚI
             )
         }
     }
 
-    // ✅ MỚI: Sheet thêm hành động tự động chéo-plugin khi camera phát hiện cảnh báo thật
+    // ✅ MỚI: Sheet thêm hành động tự động chéo-plugin khi camera phát hiện cảnh báo thật (cấp camera)
     if (showAlertActionSheet) {
         ModalBottomSheet(
             onDismissRequest = { showAlertActionSheet = false },
@@ -114,6 +119,26 @@ fun CameraDetailScreen(
                     showAlertActionSheet = false
                 },
                 onCancel = { showAlertActionSheet = false }
+            )
+        }
+    }
+
+    // ✅ MỚI: Sheet thêm hành động tự động RIÊNG cho lịch đang sửa — tái dùng đúng
+    // AlertActionFormSheet, chỉ đổi nơi lưu (addScheduleAlertAction thay vì addAlertAction)
+    if (showScheduleAlertActionSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showScheduleAlertActionSheet = false },
+            sheetState = scheduleAlertActionSheetState
+        ) {
+            AlertActionFormSheet(
+                plugins = alertActionPlugins,
+                tuyaDevices = tuyaDevicesForAlertAction,
+                activeCameras = camerasForAlertAction,
+                onSave = { cfg ->
+                    viewModel.addScheduleAlertAction(cfg)
+                    showScheduleAlertActionSheet = false
+                },
+                onCancel = { showScheduleAlertActionSheet = false }
             )
         }
     }
@@ -787,7 +812,9 @@ private fun ScheduleFormSheet(
     isLoading: Boolean,
     onUpdate: (ScheduleDraft.() -> ScheduleDraft) -> Unit,
     onSave: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onAddAlertAction: () -> Unit = {},        // ✅ MỚI
+    onRemoveAlertAction: (Int) -> Unit = {}   // ✅ MỚI
 ) {
     val isEdit = draft.id.isNotBlank()
     Column(
@@ -842,6 +869,65 @@ private fun ScheduleFormSheet(
                 checked = draft.enabled,
                 onCheckedChange = { onUpdate { copy(enabled = it) } }
             )
+        }
+
+        // ✅ MỚI: Ép buộc AI phân tích — bỏ qua pHash & cooldown, đảm bảo AI luôn được
+        // gọi đúng chu kỳ lịch này (dùng cho báo cáo định kỳ, khác với quét ngầm tiết kiệm token)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Ép buộc AI phân tích", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    "Bỏ qua pHash & cooldown, luôn gọi AI đúng giờ lịch này",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = draft.force,
+                onCheckedChange = { onUpdate { copy(force = it) } }
+            )
+        }
+
+        // ✅ MỚI: Hành động khi có cảnh báo thật — RIÊNG cho lịch này (không phải cấu hình
+        // chung của camera). Để trống thì dùng mặc định của camera (xem CameraSkill.executeAlertActions)
+        Spacer(Modifier.height(4.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Hành động khi có cảnh báo thật (riêng lịch này)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onAddAlertAction) {
+                Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Thêm")
+            }
+        }
+        if (draft.alertActions.isEmpty()) {
+            Text(
+                "Chưa có — mặc định dùng hành động chung của camera.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            draft.alertActions.forEachIndexed { index, cfg ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔗 ${cfg.pluginId}.${cfg.action}", style = MaterialTheme.typography.bodySmall)
+                    IconButton(onClick = { onRemoveAlertAction(index) }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Xoá", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

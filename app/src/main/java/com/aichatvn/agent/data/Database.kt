@@ -351,7 +351,7 @@ interface FacebookPageDao {
         CustomerEntity::class,
         FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
     ],
-    version = 12, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 11 lên 12 (thêm isRead cho chat_messages)
+    version = 13, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 12 lên 13 (thêm scheduleId cho AlertEntity)
 
     exportSchema = false
 )

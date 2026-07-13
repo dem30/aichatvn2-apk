@@ -13,6 +13,8 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.AlertActionConfig
+import com.aichatvn.agent.data.model.alertActionsFromJson
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
@@ -78,7 +80,11 @@ class CameraSkill @Inject constructor(
                 description = "Quét camera để phát hiện thay đổi và phân tích AI",
                 examples = listOf("quét camera", "chụp ảnh camera"),
                 parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", true, "camera")
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
+                    // ✅ MỚI: force + alertActions/scheduleId thực chất được ScheduleFormSheet
+                    // ghi trực tiếp vào ScheduleEntity.params (xem CameraDetailViewModel.saveSchedule),
+                    // khai báo ở đây chỉ để nhất quán manifest và cho phép gọi qua lệnh chat nếu cần.
+                    PluginParameter("force", "boolean", "Ép buộc AI phân tích (bỏ qua pHash & cooldown)", false, "boolean")
                 )
             ),
             PluginAction(
@@ -354,7 +360,22 @@ class CameraSkill @Inject constructor(
     
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = (params["cameraId"] as? String)?.trim()
-        val result = scanCamera(cameraId, false)
+        // ✅ MỚI: đọc force + scheduleId + alertActions riêng do ScheduleFormSheet ghi vào params
+        val force = params["force"] as? Boolean
+            ?: (params["force"] as? String)?.lowercase()?.let { it == "true" }
+            ?: false
+        val scheduleId = (params["scheduleId"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        val overrideAlertActions = (params["alertActions"] as? String)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && it != "[]" }
+            ?.let { alertActionsFromJson(it) }
+        val result = scanCamera(
+            cameraId,
+            false,
+            scheduleId = scheduleId,
+            forceAi = force,
+            overrideAlertActions = overrideAlertActions
+        )
 
         return when (result) {
             is PluginResult.Success -> {
@@ -791,7 +812,13 @@ class CameraSkill @Inject constructor(
         return false
     }
     
-    suspend fun scanCamera(cameraId: String?, isDailyReport: Boolean): PluginResult {
+    suspend fun scanCamera(
+        cameraId: String?,
+        isDailyReport: Boolean,
+        scheduleId: String? = null,
+        forceAi: Boolean = false,
+        overrideAlertActions: List<AlertActionConfig>? = null
+    ): PluginResult {
         return try {
             val cameras = if (!cameraId.isNullOrBlank() && cameraId != "null") {
                 withContext(Dispatchers.IO) {
@@ -849,7 +876,13 @@ class CameraSkill @Inject constructor(
                 val result = if (isDailyReport) {
                     scanForDailyReport(camera)
                 } else {
-                    scanWithLearning(camera, customerSetting.smartMode == 1 && camera.smartMode == 1)
+                    scanWithLearning(
+                        camera,
+                        customerSetting.smartMode == 1 && camera.smartMode == 1,
+                        scheduleId = scheduleId,
+                        forceAi = forceAi,
+                        overrideAlertActions = overrideAlertActions
+                    )
                 }
                 results.add(result)
             }
@@ -904,7 +937,10 @@ class CameraSkill @Inject constructor(
     private suspend fun processImageWithLearning(
         camera: CameraConfigEntity,
         imageBytes: ByteArray,
-        isSmartMode: Boolean
+        isSmartMode: Boolean,
+        scheduleId: String? = null,
+        forceAi: Boolean = false,
+        overrideAlertActions: List<AlertActionConfig>? = null
     ): Map<String, Any> {
         val tid = camera.id.trim()
         return getMutexForCamera(tid).withLock {
@@ -956,7 +992,10 @@ class CameraSkill @Inject constructor(
                 
                 // ✅ MỚI: Nếu camera cấu hình TẮT Cooldown (enableCooldown == 0), luôn gọi AI
                 // ngay khi có biến động đột biến, bỏ qua thời gian hoãn (cooldownUntil).
-                val shouldCallAi = isSuddenChange && isSmartMode && (camera.enableCooldown == 0 || now >= state.cooldownUntil)
+                // ✅ MỚI: forceAi=true bỏ qua cả điều kiện biến động (isSuddenChange) lẫn cooldown,
+                // đảm bảo AI luôn được gọi đúng chu kỳ của lịch trình "ép buộc"
+                val shouldCallAi = (isSuddenChange || forceAi) && isSmartMode &&
+                    (forceAi || camera.enableCooldown == 0 || now >= state.cooldownUntil)
                 
                 var aiComment: String? = null
                 var isSuspicious = false
@@ -1042,10 +1081,11 @@ class CameraSkill @Inject constructor(
                             diff = currentDiff,
                             deltaTrigger = deltaTrigger,
                             absDiffTrigger = absDiffTrigger,
-                            emailSent = emailSent
+                            emailSent = emailSent,
+                            scheduleId = scheduleId   // ✅ MỚI — truy vết cảnh báo này đến từ lịch nào
                         )
                         
- executeAlertActions(camera, aiComment) // ✅ MỚI
+                        executeAlertActions(camera, aiComment, overrideAlertActions) // ✅ MỚI: ưu tiên hành động riêng của lịch nếu có
                        logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
                         
                     } else {
@@ -1121,7 +1161,13 @@ class CameraSkill @Inject constructor(
         }
     }
     
-    private suspend fun scanWithLearning(camera: CameraConfigEntity, isSmartMode: Boolean): Map<String, Any> {
+    private suspend fun scanWithLearning(
+        camera: CameraConfigEntity,
+        isSmartMode: Boolean,
+        scheduleId: String? = null,
+        forceAi: Boolean = false,
+        overrideAlertActions: List<AlertActionConfig>? = null
+    ): Map<String, Any> {
         val tid = camera.id.trim()
         try {
             val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
@@ -1135,7 +1181,14 @@ class CameraSkill @Inject constructor(
                 )
             }
 
-            return processImageWithLearning(camera, imageBytes, isSmartMode)
+            return processImageWithLearning(
+                camera,
+                imageBytes,
+                isSmartMode,
+                scheduleId = scheduleId,
+                forceAi = forceAi,
+                overrideAlertActions = overrideAlertActions
+            )
 
         } catch (e: Exception) {
             logger.e("CameraSkill", "Error in scanWithLearning: ${e.message}", e)
@@ -1463,7 +1516,8 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
         diff: Int,
         deltaTrigger: Int,
         absDiffTrigger: Int,
-        emailSent: Boolean
+        emailSent: Boolean,
+        scheduleId: String? = null   // ✅ MỚI — null nếu từ quét ngầm tự động, có giá trị nếu từ 1 lịch cụ thể
     ) {
         val tid = camera.id.trim()
         try {
@@ -1482,7 +1536,8 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
                 imagePath = imagePath,
                 emailSent = if (emailSent) 1 else 0,
                 isSuspicious = 1,
-                isRead = 0
+                isRead = 0,
+                scheduleId = scheduleId   // ✅ MỚI
             )
             withContext(Dispatchers.IO) {
                 database.alertDao().insertAlert(alert)
@@ -1496,28 +1551,34 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
 
     // ✅ MỚI: Thực thi các hành động chéo-plugin đã cấu hình cho camera này khi phát hiện cảnh báo THẬT.
 // Mỗi action bọc try/catch riêng — 1 action lỗi không được chặn action khác hay làm hỏng luồng scan chính.
-private suspend fun executeAlertActions(camera: CameraConfigEntity, aiComment: String) {
-    if (camera.alertActions.isBlank() || camera.alertActions == "[]") return
-    try {
-        val jsonArray = org.json.JSONArray(camera.alertActions)
-        for (i in 0 until jsonArray.length()) {
-            val actionObj = jsonArray.getJSONObject(i)
-            val targetPluginId = actionObj.optString("pluginId")
-            val targetActionName = actionObj.optString("action")
-            if (targetPluginId.isBlank() || targetActionName.isBlank()) continue
+private suspend fun executeAlertActions(
+    camera: CameraConfigEntity,
+    aiComment: String,
+    overrideAlertActions: List<AlertActionConfig>? = null   // ✅ MỚI — hành động riêng của lịch, ưu tiên hơn camera-level
+) {
+    // ✅ MỚI: nếu lịch trình có cấu hình alertActions riêng thì dùng nó, KHÔNG đụng
+    // tới camera.alertActions — đảm bảo tính độc lập tuyệt đối giữa các lịch khác nhau.
+    val actionsToExecute: List<AlertActionConfig> = if (!overrideAlertActions.isNullOrEmpty()) {
+        overrideAlertActions
+    } else {
+        if (camera.alertActions.isBlank() || camera.alertActions == "[]") return
+        alertActionsFromJson(camera.alertActions)
+    }
+    if (actionsToExecute.isEmpty()) return
 
-            val paramsJson = actionObj.optJSONObject("params")
-            val params: Map<String, Any> = paramsJson?.toMap() ?: emptyMap()
+    for (cfg in actionsToExecute) {
+        val targetPluginId = cfg.pluginId
+        val targetActionName = cfg.action
+        if (targetPluginId.isBlank() || targetActionName.isBlank()) continue
 
-            try {
-                val result = intentExecutorProvider.get().executePluginAction(targetPluginId, targetActionName, params)
-                logger.i("CameraSkill", "🔗 Alert-action ${camera.id.trim()} -> $targetPluginId.$targetActionName: $result")
-            } catch (e: Exception) {
-                logger.e("CameraSkill", "🔗 Alert-action lỗi ($targetPluginId.$targetActionName): ${e.message}", e)
-            }
+        val params: Map<String, Any> = cfg.params
+
+        try {
+            val result = intentExecutorProvider.get().executePluginAction(targetPluginId, targetActionName, params)
+            logger.i("CameraSkill", "🔗 Alert-action ${camera.id.trim()} -> $targetPluginId.$targetActionName: $result")
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "🔗 Alert-action lỗi ($targetPluginId.$targetActionName): ${e.message}", e)
         }
-    } catch (e: Exception) {
-        logger.e("CameraSkill", "executeAlertActions: parse alertActions lỗi: ${e.message}", e)
     }
 }
 

@@ -6,6 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.AlertActionConfig
+import com.aichatvn.agent.data.model.alertActionsFromJson
+import com.aichatvn.agent.data.model.alertActionsToJson
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
@@ -45,7 +48,9 @@ data class ScheduleDraft(
     val action: String = "scan",
     val cron: String = "",
     val intervalMinutes: Int = 0,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val force: Boolean = false,                              // ✅ MỚI — ép buộc AI phân tích, bỏ qua pHash & cooldown
+    val alertActions: List<AlertActionConfig> = emptyList()   // ✅ MỚI — hành động cảnh báo riêng cho lịch này, để trống = dùng mặc định của camera
 )
 
 @HiltViewModel
@@ -256,12 +261,16 @@ class CameraDetailViewModel @Inject constructor(
     }
 
     fun openEditSchedule(schedule: ScheduleEntity) {
+        // ✅ MỚI: đọc lại force + alertActions riêng đã lưu trong params JSON của lịch
+        val p = try { JSONObject(schedule.params) } catch (e: Exception) { JSONObject() }
         _scheduleDraft.value = ScheduleDraft(
             id = schedule.id,
             action = schedule.action,
             cron = schedule.cron,
             intervalMinutes = schedule.intervalMinutes,
-            enabled = schedule.enabled == 1
+            enabled = schedule.enabled == 1,
+            force = p.optBoolean("force", false),
+            alertActions = alertActionsFromJson(p.optString("alertActions", "[]"))
         )
         _scheduleResult.value = null
     }
@@ -275,6 +284,16 @@ class CameraDetailViewModel @Inject constructor(
         _scheduleDraft.value = _scheduleDraft.value?.update()
     }
 
+    // ✅ MỚI: thêm/xoá 1 hành động cảnh báo riêng cho lịch đang sửa (song song với
+    // addAlertAction/removeAlertAction ở cấp camera bên trên)
+    fun addScheduleAlertAction(cfg: AlertActionConfig) {
+        updateScheduleDraft { copy(alertActions = alertActions + cfg) }
+    }
+
+    fun removeScheduleAlertAction(index: Int) {
+        updateScheduleDraft { copy(alertActions = alertActions.filterIndexed { i, _ -> i != index }) }
+    }
+
     fun saveSchedule() {
         val draft = _scheduleDraft.value ?: return
         if (draft.cron.isBlank() && draft.intervalMinutes <= 0) {
@@ -284,13 +303,22 @@ class CameraDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
+                val isNew = draft.id.isBlank()
+                // ✅ MỚI: sinh scheduleId TRƯỚC để nhét luôn vào params — nhờ vậy
+                // CameraSkill có thể tag scheduleId vào AlertEntity khi lưu lịch sử cảnh báo
+                val scheduleId = if (isNew) UUID.randomUUID().toString() else draft.id
+
                 val params = JSONObject().apply {
                     put("cameraId", cameraId.trim())
+                    put("scheduleId", scheduleId)                 // ✅ MỚI
+                    put("force", draft.force)                     // ✅ MỚI
+                    if (draft.alertActions.isNotEmpty()) {
+                        put("alertActions", alertActionsToJson(draft.alertActions)) // ✅ MỚI
+                    }
                 }.toString()
 
-                val isNew = draft.id.isBlank()
                 val schedule = ScheduleEntity(
-                    id = if (isNew) UUID.randomUUID().toString() else draft.id,
+                    id = scheduleId,
                     pluginId = "camera",
                     action = draft.action,
                     params = params,
@@ -587,41 +615,6 @@ class CameraDetailViewModel @Inject constructor(
     
 }
 
-// ✅ MỚI: Cấu hình 1 hành động chéo-plugin được kích hoạt khi camera phát hiện cảnh báo thật.
-// Dùng lại đúng schema {pluginId, action, params} như ScheduleSkill để nhất quán với hệ thống.
-data class AlertActionConfig(
-    val pluginId: String,
-    val action: String,
-    val params: Map<String, String> = emptyMap() // Giữ String cho UI đơn giản, ép kiểu lúc lưu vào DB
-)
-
-internal fun alertActionsToJson(list: List<AlertActionConfig>): String {
-    val arr = org.json.JSONArray()
-    list.forEach { cfg ->
-        arr.put(org.json.JSONObject().apply {
-            put("pluginId", cfg.pluginId)
-            put("action", cfg.action)
-            put("params", org.json.JSONObject(cfg.params))
-        })
-    }
-    return arr.toString()
-}
-
-internal fun alertActionsFromJson(json: String): List<AlertActionConfig> {
-    return try {
-        val arr = org.json.JSONArray(json.ifBlank { "[]" })
-        (0 until arr.length()).map { i ->
-            val obj = arr.getJSONObject(i)
-            val paramsObj = obj.optJSONObject("params") ?: org.json.JSONObject()
-            val paramsMap = mutableMapOf<String, String>()
-            paramsObj.keys().forEach { k -> paramsMap[k] = paramsObj.optString(k) }
-            AlertActionConfig(
-                pluginId = obj.optString("pluginId"),
-                action = obj.optString("action"),
-                params = paramsMap
-            )
-        }
-    } catch (e: Exception) {
-        emptyList()
-    }
-}
+// ✅ MỚI: AlertActionConfig + alertActionsToJson/FromJson đã chuyển sang
+// com.aichatvn.agent.data.model.AlertActionConfig.kt để tránh CameraSkill (core/skills)
+// phải phụ thuộc ngược vào ui.viewmodels. Xem import ở đầu file.
