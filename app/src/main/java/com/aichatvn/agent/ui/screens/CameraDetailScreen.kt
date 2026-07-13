@@ -590,21 +590,22 @@ fun CameraDetailScreen(
                                     Spacer(Modifier.height(10.dp))
                                     HorizontalDivider()
                                     Spacer(Modifier.height(10.dp))
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text("Hành động khi có cảnh báo thật", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Text(
+                                            "Hành động khi có cảnh báo thật",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Spacer(Modifier.height(6.dp))
                                         OutlinedButton(
-    onClick = { showAlertActionSheet = true },
-    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp) // Tăng vùng đệm
-) {
-    Icon(Icons.Default.Add, null, modifier = Modifier.size(20.dp)) // Tăng kích thước Icon lên 20.dp
-    Spacer(Modifier.width(4.dp))
-    Text("Thêm hành động", style = MaterialTheme.typography.labelLarge) // Đổi chữ thành "Thêm hành động" cho rõ nghĩa
-}
-                                        
+                                            onClick = { showAlertActionSheet = true },
+                                            modifier = Modifier.align(Alignment.End),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                        ) {
+                                            Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Thêm hành động", style = MaterialTheme.typography.labelLarge)
+                                        }
                                     }
                                     if (draft.alertActions.isEmpty()) {
                                         Text(
@@ -918,25 +919,22 @@ private fun ScheduleFormSheet(
         Spacer(Modifier.height(4.dp))
         HorizontalDivider()
         Spacer(Modifier.height(4.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Hành động khi có cảnh báo thật (riêng lịch này)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            
-          
-          OutlinedButton(
-    onClick = onAddAlertAction,
-    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-) {
-    Icon(Icons.Default.Add, null, modifier = Modifier.size(20.dp))
-    Spacer(Modifier.width(4.dp))
-    Text("Thêm hành động", style = MaterialTheme.typography.labelLarge)
-}
-
-
-          
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "Hành động khi có cảnh báo thật (riêng lịch này)",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = onAddAlertAction,
+                modifier = Modifier.align(Alignment.End),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Thêm hành động", style = MaterialTheme.typography.labelLarge)
+            }
         }
         if (draft.alertActions.isEmpty()) {
             Text(
