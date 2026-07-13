@@ -1,5 +1,9 @@
 package com.aichatvn.agent.skills
 
+import javax.inject.Provider
+import com.aichatvn.agent.core.execution.IntentExecutor
+
+
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
@@ -57,6 +61,7 @@ class CameraSkill @Inject constructor(
     private val notificationSkill: NotificationSkill,
     private val configProvider: AppConfigProvider,
     private val deviceRegistry: DeviceRegistry,
+    private val intentExecutorProvider: Provider<IntentExecutor>, // ✅ MỚI — Provider phá cycle CameraSkill→IntentExecutor→Set<Plugin>→CameraSkill
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
@@ -1039,7 +1044,8 @@ class CameraSkill @Inject constructor(
                             emailSent = emailSent
                         )
                         
-                        logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
+ executeAlertActions(camera, aiComment) // ✅ MỚI
+                       logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
                         
                     } else {
                         if (isMature && isSuddenChange) {
@@ -1483,6 +1489,35 @@ class CameraSkill @Inject constructor(
             logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
         }
     }
+
+
+
+    // ✅ MỚI: Thực thi các hành động chéo-plugin đã cấu hình cho camera này khi phát hiện cảnh báo THẬT.
+// Mỗi action bọc try/catch riêng — 1 action lỗi không được chặn action khác hay làm hỏng luồng scan chính.
+private suspend fun executeAlertActions(camera: CameraConfigEntity, aiComment: String) {
+    if (camera.alertActions.isBlank() || camera.alertActions == "[]") return
+    try {
+        val jsonArray = org.json.JSONArray(camera.alertActions)
+        for (i in 0 until jsonArray.length()) {
+            val actionObj = jsonArray.getJSONObject(i)
+            val targetPluginId = actionObj.optString("pluginId")
+            val targetActionName = actionObj.optString("action")
+            if (targetPluginId.isBlank() || targetActionName.isBlank()) continue
+
+            val paramsJson = actionObj.optJSONObject("params")
+            val params: Map<String, Any> = paramsJson?.let { com.aichatvn.agent.utils.toMap(it) } ?: emptyMap()
+
+            try {
+                val result = intentExecutorProvider.get().executePluginAction(targetPluginId, targetActionName, params)
+                logger.i("CameraSkill", "🔗 Alert-action ${camera.id.trim()} -> $targetPluginId.$targetActionName: $result")
+            } catch (e: Exception) {
+                logger.e("CameraSkill", "🔗 Alert-action lỗi ($targetPluginId.$targetActionName): ${e.message}", e)
+            }
+        }
+    } catch (e: Exception) {
+        logger.e("CameraSkill", "executeAlertActions: parse alertActions lỗi: ${e.message}", e)
+    }
+}
 
     private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
         return try {

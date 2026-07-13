@@ -34,7 +34,9 @@ data class CameraConfigDraft(
     val aiPositiveKeywords: String = "",
     val aiNegativeKeywords: String = "",
     val enableCooldown: Boolean = true,     // ✅ MỚI
-    val enableNotification: Boolean = true  // ✅ MỚI
+    val enableNotification: Boolean = true,  // ✅ MỚI
+  val alertActions: List<AlertActionConfig> = emptyList() // ✅ MỚI
+
 )
 
 data class ScheduleDraft(
@@ -51,8 +53,14 @@ class CameraDetailViewModel @Inject constructor(
     private val database: AppDatabase,
     private val cameraSkill: CameraSkill,
     private val snapshotFetcher: SnapshotFetcher,
+    private val agentKernel: com.aichatvn.agent.core.AgentKernel, // ✅ MỚI — lấy danh sách plugin cho dropdown, giống ScheduleViewModel
     private val logger: Logger
 ) : ViewModel() {
+
+  // ✅ MỚI: Danh sách plugin routable để dropdown chọn (loại "camera" nếu muốn tránh tự-trigger đệ quy,
+    // nhưng vẫn cho phép vì use-case hợp lệ: cam A phát hiện → bật smart_mode cam B)
+    val alertActionPlugins: List<com.aichatvn.agent.core.plugin.Plugin> =
+        agentKernel.getAvailablePluginsForUI()
 
     val cameraId: String = (savedStateHandle.get<String>("cameraId") ?: "").trim()
 
@@ -134,10 +142,24 @@ class CameraDetailViewModel @Inject constructor(
             aiPositiveKeywords = cam.aiPositiveKeywords,
             aiNegativeKeywords = cam.aiNegativeKeywords,
             enableCooldown = cam.enableCooldown == 1,
-            enableNotification = cam.enableNotification == 1
+            enableNotification = cam.enableNotification == 1,
+
+          alertActions = alertActionsFromJson(cam.alertActions) // ✅ MỚI
+        
+
+          
         )
     }
 
+    fun addAlertAction(cfg: AlertActionConfig) {
+        updateConfigDraft { copy(alertActions = alertActions + cfg) }
+    }
+
+    // ✅ MỚI
+    fun removeAlertAction(index: Int) {
+        updateConfigDraft { copy(alertActions = alertActions.filterIndexed { i, _ -> i != index }) }
+    }
+    
     fun closeConfigEditor() {
         _configDraft.value = null
         _configSaveResult.value = null
@@ -160,7 +182,12 @@ class CameraDetailViewModel @Inject constructor(
                     aiPositiveKeywords = draft.aiPositiveKeywords.trim(),
                     aiNegativeKeywords = draft.aiNegativeKeywords.trim(),
                     enableCooldown = if (draft.enableCooldown) 1 else 0,
-                    enableNotification = if (draft.enableNotification) 1 else 0
+                    enableNotification = if (draft.enableNotification) 1 else 0,
+
+
+                  alertActions = alertActionsToJson(draft.alertActions) // ✅ MỚI
+                
+                  
                 )
                 withContext(Dispatchers.IO) {
                     database.cameraDao().updateCamera(updated)
@@ -528,5 +555,44 @@ class CameraDetailViewModel @Inject constructor(
 
     fun clearTestResult() {
         _testResult.value = null
+    }
+}
+
+// ✅ MỚI: Cấu hình 1 hành động chéo-plugin được kích hoạt khi camera phát hiện cảnh báo thật.
+// Dùng lại đúng schema {pluginId, action, params} như ScheduleSkill để nhất quán với hệ thống.
+data class AlertActionConfig(
+    val pluginId: String,
+    val action: String,
+    val params: Map<String, String> = emptyMap() // Giữ String cho UI đơn giản, ép kiểu lúc lưu vào DB
+)
+
+internal fun alertActionsToJson(list: List<AlertActionConfig>): String {
+    val arr = org.json.JSONArray()
+    list.forEach { cfg ->
+        arr.put(org.json.JSONObject().apply {
+            put("pluginId", cfg.pluginId)
+            put("action", cfg.action)
+            put("params", org.json.JSONObject(cfg.params))
+        })
+    }
+    return arr.toString()
+}
+
+internal fun alertActionsFromJson(json: String): List<AlertActionConfig> {
+    return try {
+        val arr = org.json.JSONArray(json.ifBlank { "[]" })
+        (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            val paramsObj = obj.optJSONObject("params") ?: org.json.JSONObject()
+            val paramsMap = mutableMapOf<String, String>()
+            paramsObj.keys().forEach { k -> paramsMap[k] = paramsObj.optString(k) }
+            AlertActionConfig(
+                pluginId = obj.optString("pluginId"),
+                action = obj.optString("action"),
+                params = paramsMap
+            )
+        }
+    } catch (e: Exception) {
+        emptyList()
     }
 }

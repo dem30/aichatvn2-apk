@@ -88,7 +88,8 @@ data class CameraConfigEntity(
     val aiPositiveKeywords: String = "",
     val aiNegativeKeywords: String = "",
     val enableCooldown: Int = 1,       // ✅ MỚI: 1 = Bật, 0 = Tắt hoãn kiểm tra AI
-    val enableNotification: Int = 1    // ✅ MỚI: 1 = Bật, 0 = Tắt gửi Email/Push
+    val enableNotification: Int = 1,    // ✅ MỚI: 1 = Bật, 0 = Tắt gửi Email/Push
+    val alertActions: String = "[]"   // ✅ MỚI: JSON array [{pluginId, action, params}] chạy khi isSuspicious=true
 )
 
 @Entity(tableName = "customer_settings")

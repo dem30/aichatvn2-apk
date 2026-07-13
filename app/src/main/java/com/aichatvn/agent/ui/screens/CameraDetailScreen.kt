@@ -6,8 +6,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -17,12 +19,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.AlertEntity
+import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
+import com.aichatvn.agent.data.model.TuyaDeviceEntity
+import com.aichatvn.agent.ui.viewmodels.AlertActionConfig
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
 import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +55,15 @@ fun CameraDetailScreen(
     val scheduleDraft by viewModel.scheduleDraft.collectAsState()
     val scheduleResult by viewModel.scheduleResult.collectAsState()
 
+    // ✅ MỚI: Danh sách plugin/thiết bị/camera phục vụ dropdown chọn hành động tự động khi có cảnh báo thật
+    val alertActionPlugins = viewModel.alertActionPlugins
+    val tuyaDevicesForAlertAction by viewModel.tuyaDevicesForAlertAction.collectAsState()
+    val camerasForAlertAction by viewModel.camerasForAlertAction.collectAsState()
+
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // ✅ MỚI: Sheet riêng cho form thêm hành động tự động
+    val alertActionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showAlertActionSheet by remember { mutableStateOf(false) }
 
     var showTestDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -81,6 +95,25 @@ fun CameraDetailScreen(
                 onUpdate = { viewModel.updateScheduleDraft(it) },
                 onSave = { viewModel.saveSchedule() },
                 onCancel = { viewModel.closeScheduleEditor() }
+            )
+        }
+    }
+
+    // ✅ MỚI: Sheet thêm hành động tự động chéo-plugin khi camera phát hiện cảnh báo thật
+    if (showAlertActionSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAlertActionSheet = false },
+            sheetState = alertActionSheetState
+        ) {
+            AlertActionFormSheet(
+                plugins = alertActionPlugins,
+                tuyaDevices = tuyaDevicesForAlertAction,
+                activeCameras = camerasForAlertAction,
+                onSave = { cfg ->
+                    viewModel.addAlertAction(cfg)
+                    showAlertActionSheet = false
+                },
+                onCancel = { showAlertActionSheet = false }
             )
         }
     }
@@ -527,6 +560,44 @@ fun CameraDetailScreen(
                                         )
                                     }
 
+                                    // ✅ MỚI: Danh sách hành động tự động chéo-plugin khi camera phát hiện cảnh báo THẬT
+                                    // (isSuspicious = true) — thực thi ngay trong CameraSkill.processImageWithLearning()
+                                    Spacer(Modifier.height(10.dp))
+                                    HorizontalDivider()
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Hành động khi có cảnh báo thật", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                        TextButton(onClick = { showAlertActionSheet = true }) {
+                                            Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Thêm")
+                                        }
+                                    }
+                                    if (draft.alertActions.isEmpty()) {
+                                        Text(
+                                            "Chưa có hành động tự động nào — camera chỉ gửi email/thông báo như bình thường.",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    } else {
+                                        draft.alertActions.forEachIndexed { index, cfg ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text("🔗 ${cfg.pluginId}.${cfg.action}", style = MaterialTheme.typography.bodySmall)
+                                                IconButton(onClick = { viewModel.removeAlertAction(index) }, modifier = Modifier.size(28.dp)) {
+                                                    Icon(Icons.Default.Close, contentDescription = "Xoá", modifier = Modifier.size(16.dp))
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     Spacer(Modifier.height(10.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         OutlinedButton(
@@ -805,6 +876,251 @@ private fun MiniAlertRow(alert: AlertEntity) {
                 Text(timeText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(alert.aiComment, style = MaterialTheme.typography.bodySmall, maxLines = 2)
             }
+        }
+    }
+}
+
+// ✅ MỚI: Form thêm 1 hành động tự động chéo-plugin (pluginId + action + params) sẽ được
+// CameraSkill.executeAlertActions() gọi ngay khi camera phát hiện cảnh báo THẬT (isSuspicious=true).
+// Tái dùng đúng pattern dropdown "device"/"camera" như AddScheduleDialog trong ScheduleScreen.kt
+// để người dùng chọn thiết bị/camera đích thay vì phải gõ tay ID.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AlertActionFormSheet(
+    plugins: List<com.aichatvn.agent.core.plugin.Plugin>,
+    tuyaDevices: List<TuyaDeviceEntity>,
+    activeCameras: List<CameraConfigEntity>,
+    onSave: (AlertActionConfig) -> Unit,
+    onCancel: () -> Unit
+) {
+    var pluginExpanded by remember { mutableStateOf(false) }
+    var actionExpanded by remember { mutableStateOf(false) }
+    var selectedPlugin by remember { mutableStateOf<com.aichatvn.agent.core.plugin.Plugin?>(null) }
+    var selectedAction by remember { mutableStateOf<com.aichatvn.agent.core.plugin.PluginAction?>(null) }
+    val paramValues = remember { mutableStateMapOf<String, String>() }
+    val paramBooleans = remember { mutableStateMapOf<String, Boolean>() }
+
+    LaunchedEffect(selectedAction) {
+        paramValues.clear()
+        paramBooleans.clear()
+        selectedAction?.parameters?.forEach { p ->
+            if (p.type == "boolean") paramBooleans[p.name] = false else paramValues[p.name] = ""
+        }
+    }
+
+    val requiredFilled = selectedAction?.parameters
+        ?.filter { it.required }
+        ?.all { p -> p.type == "boolean" || !paramValues[p.name].isNullOrBlank() }
+        ?: false
+    val canSave = selectedPlugin != null && selectedAction != null && requiredFilled
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 32.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Thêm hành động tự động", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Sẽ được gọi ngay khi camera này phát hiện cảnh báo thật (isSuspicious).",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        // ── Chọn Plugin đích ──
+        ExposedDropdownMenuBox(
+            expanded = pluginExpanded,
+            onExpandedChange = { pluginExpanded = it }
+        ) {
+            OutlinedTextField(
+                value = selectedPlugin?.name ?: "",
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Plugin") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = pluginExpanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor()
+            )
+            ExposedDropdownMenu(
+                expanded = pluginExpanded,
+                onDismissRequest = { pluginExpanded = false }
+            ) {
+                plugins.forEach { p ->
+                    DropdownMenuItem(
+                        text = { Text(p.name) },
+                        onClick = {
+                            selectedPlugin = p
+                            selectedAction = null
+                            pluginExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+
+        // ── Chọn Action của Plugin đã chọn ──
+        selectedPlugin?.let { plugin ->
+            ExposedDropdownMenuBox(
+                expanded = actionExpanded,
+                onExpandedChange = { actionExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = selectedAction?.let { "${it.name} — ${it.description}" } ?: "",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Hành động") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = actionExpanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor()
+                )
+                ExposedDropdownMenu(
+                    expanded = actionExpanded,
+                    onDismissRequest = { actionExpanded = false }
+                ) {
+                    plugin.getActions().forEach { act ->
+                        DropdownMenuItem(
+                            text = { Text("${act.name} — ${act.description}") },
+                            onClick = {
+                                selectedAction = act
+                                actionExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── Điền tham số cho Action đã chọn (boolean/device/camera có UI riêng, còn lại là text) ──
+        selectedAction?.parameters?.forEach { param ->
+            when {
+                param.type == "boolean" -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("${param.name}${if (param.required) " *" else ""}")
+                        Switch(
+                            checked = paramBooleans[param.name] ?: false,
+                            onCheckedChange = { paramBooleans[param.name] = it }
+                        )
+                    }
+                }
+
+                // ✅ Dropdown chọn thiết bị Tuya thay vì gõ ID tay
+                param.semanticType == "device" -> {
+                    var deviceExpanded by remember { mutableStateOf(false) }
+                    val selectedDeviceId = paramValues[param.name] ?: ""
+                    val selectedDevice = tuyaDevices.find { it.id.trim() == selectedDeviceId.trim() }
+                    val displayText = selectedDevice?.let { dev ->
+                        val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
+                        if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
+                    } ?: selectedDeviceId
+
+                    ExposedDropdownMenuBox(
+                        expanded = deviceExpanded,
+                        onExpandedChange = { deviceExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = displayText,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("${param.name}${if (param.required) " *" else ""} — Chọn thiết bị") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = deviceExpanded) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = deviceExpanded,
+                            onDismissRequest = { deviceExpanded = false }
+                        ) {
+                            if (tuyaDevices.isEmpty()) {
+                                DropdownMenuItem(text = { Text("Chưa có thiết bị Tuya nào") }, onClick = {}, enabled = false)
+                            }
+                            tuyaDevices.forEach { dev ->
+                                val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
+                                val itemLabel = if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
+                                DropdownMenuItem(
+                                    text = { Text(itemLabel) },
+                                    onClick = {
+                                        paramValues[param.name] = dev.id
+                                        deviceExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ✅ Dropdown chọn camera thay vì gõ ID tay
+                param.semanticType == "camera" -> {
+                    var cameraExpanded by remember { mutableStateOf(false) }
+                    val selectedCameraId = paramValues[param.name] ?: ""
+                    val selectedCam = activeCameras.find { it.id.trim() == selectedCameraId.trim() }
+                    val displayText = selectedCam?.let { "${it.customername} (${it.id.trim()})" } ?: selectedCameraId
+
+                    ExposedDropdownMenuBox(
+                        expanded = cameraExpanded,
+                        onExpandedChange = { cameraExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = displayText,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("${param.name}${if (param.required) " *" else ""} — Chọn camera") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cameraExpanded) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = cameraExpanded,
+                            onDismissRequest = { cameraExpanded = false }
+                        ) {
+                            if (activeCameras.isEmpty()) {
+                                DropdownMenuItem(text = { Text("Chưa có camera nào") }, onClick = {}, enabled = false)
+                            }
+                            activeCameras.forEach { cam ->
+                                DropdownMenuItem(
+                                    text = { Text("${cam.customername} (${cam.id.trim()})") },
+                                    onClick = {
+                                        paramValues[param.name] = cam.id.trim()
+                                        cameraExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                else -> {
+                    OutlinedTextField(
+                        value = paramValues[param.name] ?: "",
+                        onValueChange = { paramValues[param.name] = it },
+                        label = { Text("${param.name}${if (param.required) " *" else ""} — ${param.description}") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Huỷ") }
+            Button(
+                onClick = {
+                    val allParams = paramValues.filterValues { it.isNotBlank() } +
+                        paramBooleans.mapValues { it.value.toString() }
+                    onSave(AlertActionConfig(selectedPlugin!!.id, selectedAction!!.name, allParams))
+                },
+                enabled = canSave,
+                modifier = Modifier.weight(1f)
+            ) { Text("Lưu") }
         }
     }
 }
