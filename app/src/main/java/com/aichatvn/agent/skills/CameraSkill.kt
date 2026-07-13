@@ -1255,7 +1255,8 @@ class CameraSkill @Inject constructor(
                 aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim(),
                 // ✅ MỚI: Đồng bộ cấu hình cooldown / gửi thông báo, mặc định giữ nguyên (hoặc 1 nếu camera mới)
                 enableCooldown = (config["enableCooldown"] as? Int) ?: (config["enableCooldown"] as? Number)?.toInt() ?: existing?.enableCooldown ?: 1,
-                enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1
+                enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1,
+alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]" 
             )
             
             withContext(Dispatchers.IO) {
