@@ -49,7 +49,9 @@ data class ScheduleDraft(
     val cron: String = "",
     val intervalMinutes: Int = 0,
     val enabled: Boolean = true,
-    val force: Boolean = false,                              // ✅ MỚI — ép buộc AI phân tích, bỏ qua pHash & cooldown
+    val force: Boolean = false,
+    val label: String = "",
+  // ✅ MỚI — ép buộc AI phân tích, bỏ qua pHash & cooldown
     val alertActions: List<AlertActionConfig> = emptyList()   // ✅ MỚI — hành động cảnh báo riêng cho lịch này, để trống = dùng mặc định của camera
 )
 
@@ -261,19 +263,22 @@ class CameraDetailViewModel @Inject constructor(
     }
 
     fun openEditSchedule(schedule: ScheduleEntity) {
-        // ✅ MỚI: đọc lại force + alertActions riêng đã lưu trong params JSON của lịch
-        val p = try { JSONObject(schedule.params) } catch (e: Exception) { JSONObject() }
-        _scheduleDraft.value = ScheduleDraft(
-            id = schedule.id,
-            action = schedule.action,
-            cron = schedule.cron,
-            intervalMinutes = schedule.intervalMinutes,
-            enabled = schedule.enabled == 1,
-            force = p.optBoolean("force", false),
-            alertActions = alertActionsFromJson(p.optString("alertActions", "[]"))
-        )
-        _scheduleResult.value = null
-    }
+    val p = try { JSONObject(schedule.params) } catch (e: Exception) { JSONObject() }
+    _scheduleDraft.value = ScheduleDraft(
+        id = schedule.id,
+        action = schedule.action,
+        cron = schedule.cron,
+        intervalMinutes = schedule.intervalMinutes,
+        enabled = schedule.enabled == 1,
+        force = p.optBoolean("force", false),
+        label = schedule.label ?: "",                        // ✅ MỚI: Đọc nhãn cũ lên Draft
+        alertActions = alertActionsFromJson(p.optString("alertActions", "[]"))
+    )
+    _scheduleResult.value = null
+}
+
+
+    
 
     fun closeScheduleEditor() {
         _scheduleDraft.value = null
@@ -317,19 +322,26 @@ class CameraDetailViewModel @Inject constructor(
                     }
                 }.toString()
 
+
+
+                
                 val schedule = ScheduleEntity(
-                    id = scheduleId,
-                    pluginId = "camera",
-                    action = draft.action,
-                    params = params,
-                    cron = draft.cron.trim(),
-                    intervalMinutes = draft.intervalMinutes,
-                    enabled = if (draft.enabled) 1 else 0,
-                    createdAt = if (isNew) System.currentTimeMillis() else {
-                        _schedules.value.find { it.id == draft.id }?.createdAt
-                            ?: System.currentTimeMillis()
-                    }
-                )
+    id = scheduleId,
+    pluginId = "camera",
+    action = draft.action,
+    params = params,
+    cron = draft.cron.trim(),
+    intervalMinutes = draft.intervalMinutes,
+    enabled = if (draft.enabled) 1 else 0,
+    label = draft.label.trim(),                             // ✅ MỚI: Giữ lại hoặc cập nhật label mới
+    createdAt = if (isNew) System.currentTimeMillis() else {
+        _schedules.value.find { it.id == draft.id }?.createdAt
+            ?: System.currentTimeMillis()
+    }
+)
+
+
+                
 
                 withContext(Dispatchers.IO) {
                     if (isNew) {

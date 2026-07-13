@@ -63,35 +63,64 @@ class ScheduleViewModel @Inject constructor(
         saveSchedule(schedule, isEdit = true)
     }
 
+
+
+    
     private fun saveSchedule(schedule: ScheduleEntity, isEdit: Boolean) {
-        viewModelScope.launch {
-            val paramsMap: Map<String, Any> = withContext(Dispatchers.Default) {
+    viewModelScope.launch {
+        // ✅ GIẢI PHÁP PHÒNG THỦ: Nếu là chỉnh sửa (isEdit = true), truy xuất bản ghi cũ
+        // trong DB để giữ lại các trường cấu hình nâng cao (alertActions, force), tránh việc UI lịch chung ghi đè làm mất.
+        val existingParamsMap = if (isEdit) {
+            withContext(Dispatchers.IO) {
+                database.scheduleDao().getScheduleById(schedule.id)
+            }?.params?.let { existingJson ->
                 try {
-                    val json = JSONObject(schedule.params.ifBlank { "{}" })
+                    val json = JSONObject(existingJson)
                     jsonToMap(json)
                 } catch (_: Exception) {
-                    emptyMap()
+                    null
                 }
             }
+        } else null
 
-            val actionName = if (isEdit) "update" else "add"
-            val executionParams = mutableMapOf<String, Any>(
-                "pluginId" to schedule.pluginId,
-                "action" to schedule.action,
-                "cron" to schedule.cron,
-                "intervalMinutes" to schedule.intervalMinutes,
-                "params" to paramsMap,
-                "label" to schedule.label
-            )
-            if (isEdit) {
-                executionParams["id"] = schedule.id
+        val paramsMap: Map<String, Any> = withContext(Dispatchers.Default) {
+            try {
+                val json = JSONObject(schedule.params.ifBlank { "{}" })
+                val newMap = jsonToMap(json).toMutableMap()
+                
+                // Trộn cấu hình alertActions và force cũ từ database vào nếu bản ghi mới từ UI bị thiếu
+                existingParamsMap?.forEach { (key, value) ->
+                    if (!newMap.containsKey(key)) {
+                        newMap[key] = value
+                    }
+                }
+                newMap
+            } catch (_: Exception) {
+                existingParamsMap ?: emptyMap()
             }
-
-            scheduleSkill.execute(actionName, executionParams)
-            loadSchedules()
         }
-    }
 
+        val actionName = if (isEdit) "update" else "add"
+        val executionParams = mutableMapOf<String, Any>(
+            "pluginId" to schedule.pluginId,
+            "action" to schedule.action,
+            "cron" to schedule.cron,
+            "intervalMinutes" to schedule.intervalMinutes,
+            "params" to paramsMap, // ✅ Gửi đi paramsMap đã được bảo vệ cấu hình
+            "label" to schedule.label
+        )
+        if (isEdit) {
+            executionParams["id"] = schedule.id
+        }
+
+        scheduleSkill.execute(actionName, executionParams)
+        loadSchedules()
+    }
+}
+
+
+
+    
     private fun jsonToMap(json: JSONObject): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
         json.keys().forEach { key ->

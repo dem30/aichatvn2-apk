@@ -596,11 +596,15 @@ fun CameraDetailScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text("Hành động khi có cảnh báo thật", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                        TextButton(onClick = { showAlertActionSheet = true }) {
-                                            Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
-                                            Spacer(Modifier.width(4.dp))
-                                            Text("Thêm")
-                                        }
+                                        OutlinedButton(
+    onClick = { showAlertActionSheet = true },
+    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp) // Tăng vùng đệm
+) {
+    Icon(Icons.Default.Add, null, modifier = Modifier.size(20.dp)) // Tăng kích thước Icon lên 20.dp
+    Spacer(Modifier.width(4.dp))
+    Text("Thêm hành động", style = MaterialTheme.typography.labelLarge) // Đổi chữ thành "Thêm hành động" cho rõ nghĩa
+}
+                                        
                                     }
                                     if (draft.alertActions.isEmpty()) {
                                         Text(
@@ -828,7 +832,15 @@ private fun ScheduleFormSheet(
             if (isEdit) "Sửa lịch trình" else "Thêm lịch trình",
             style = MaterialTheme.typography.titleMedium
         )
+        OutlinedTextField(
+            value = draft.label,
+            onValueChange = { onUpdate { copy(label = it) } },
+            label = { Text("Tên lịch trình / Ghi chú (vd: Quét ban đêm)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
 
+        
         Text("Action", style = MaterialTheme.typography.labelMedium)
         val actions = listOf("scan")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -903,11 +915,19 @@ private fun ScheduleFormSheet(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Hành động khi có cảnh báo thật (riêng lịch này)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-            TextButton(onClick = onAddAlertAction) {
-                Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Thêm")
-            }
+            
+          
+          OutlinedButton(
+    onClick = onAddAlertAction,
+    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+) {
+    Icon(Icons.Default.Add, null, modifier = Modifier.size(20.dp))
+    Spacer(Modifier.width(4.dp))
+    Text("Thêm hành động", style = MaterialTheme.typography.labelLarge)
+}
+
+
+          
         }
         if (draft.alertActions.isEmpty()) {
             Text(
