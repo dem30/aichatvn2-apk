@@ -311,7 +311,7 @@ private fun PluginConfigSection(
     }
 
     val grouped = configs.groupBy { it.pluginId }
-    val pluginOrder = listOf("global", "groq", "camera", "email", "schedule", "facebook", "instagram", "telegram", "zalo", "website")
+    val pluginOrder = listOf("global", "groq", "camera", "email", "schedule", "facebook", "telegram", "website")
     val sortedGroups = (pluginOrder.mapNotNull { pid -> grouped[pid]?.let { pid to it } } +
         grouped.entries.filter { it.key !in pluginOrder }.map { it.toPair() })
 
@@ -540,28 +540,6 @@ private fun PluginGroupCard(
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
                         Text("🔌 Kết nối Fanpage Facebook (1-Click)", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-
-                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Zalo
-                if (pluginId == "zalo") {
-                    val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
-                    val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
-                    val authUrl = "$gatewayUrl/auth/zalo?token=$gatewayToken"
-
-                    Button(
-                        onClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(authUrl))
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "❌ Không thể mở trình duyệt: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                    ) {
-                        Text("💬 Kết nối Zalo Official Account (1-Click)", style = MaterialTheme.typography.labelMedium)
                     }
                 }
 

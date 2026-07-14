@@ -55,11 +55,7 @@ object AppConfigDefaults {
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
     
   
-    const val INSTAGRAM_PAGE_ACCESS_TOKEN   = "instagram.page_access_token"
-    const val INSTAGRAM_PAGE_ID             = "instagram.page_id"
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
-    const val ZALO_ACCESS_TOKEN             = "zalo.access_token"
-    const val ZALO_REFRESH_TOKEN            = "zalo.refresh_token"
     const val WEBSITE_ALLOWED_ORIGINS       = "website.allowed_origins"
     // ✅ ĐÃ THÊM: widget_key công khai — an toàn để nhúng vào HTML website khách xem được, KHÁC
     // với GLOBAL_GATEWAY_TOKEN (bí mật, không bao giờ lộ ra ngoài app). Được tự sinh và đăng ký lên
@@ -99,21 +95,6 @@ object AppConfigDefaults {
             label = "Facebook Page Access Token",
             description = "Mã token kết nối của Fanpage Facebook dùng để gửi tin nhắn phản hồi cho người dùng."
         ),
-
-
-      
-        
-
-        // ── INSTAGRAM MESSENGER ──
-        AppConfigEntity(
-            key = INSTAGRAM_PAGE_ACCESS_TOKEN,
-            value = "",
-            type = "string",
-            pluginId = "instagram",
-            label = "Instagram Page Access Token",
-            description = "Mã token kết nối của tài khoản chuyên nghiệp Instagram dùng để gửi tin nhắn phản hồi."
-        ),
-
         // ── TELEGRAM ──
         AppConfigEntity(
             key = TELEGRAM_BOT_TOKEN,
@@ -122,24 +103,6 @@ object AppConfigDefaults {
             pluginId = "telegram",
             label = "Telegram Bot Token",
             description = "Mã token của Bot Telegram (do @BotFather cấp) dùng để kết nối nhận/gửi tin nhắn."
-        ),
-
-        // ── ZALO OA ──
-        AppConfigEntity(
-            key = ZALO_ACCESS_TOKEN,
-            value = "",
-            type = "string",
-            pluginId = "zalo",
-            label = "Zalo OA Access Token",
-            description = "Mã truy cập tạm thời của Zalo Official Account (hết hạn sau mỗi 25 giờ)."
-        ),
-        AppConfigEntity(
-            key = ZALO_REFRESH_TOKEN,
-            value = "",
-            type = "string",
-            pluginId = "zalo",
-            label = "Zalo OA Refresh Token",
-            description = "Mã dùng để tự động làm mới (refresh) Zalo Access Token khi hết hạn."
         ),
 
         // ── WEBSITE CHAT WIDGET ──
@@ -351,7 +314,7 @@ object AppConfigDefaults {
             type = "boolean",
             pluginId = "global",
             label = "Chặn điều khiển thiết bị từ kênh ngoài",
-            description = "Khi BẬT: khách chat từ Facebook/Telegram/Instagram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào (kể cả khóa điều khiển riêng). Không ảnh hưởng đến chat nội bộ (default_user)."
+            description = "Khi BẬT: khách chat từ Facebook/Telegram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào (kể cả khóa điều khiển riêng). Không ảnh hưởng đến chat nội bộ (default_user)."
         )
     )
 }
