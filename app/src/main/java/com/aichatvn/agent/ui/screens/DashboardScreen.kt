@@ -315,6 +315,7 @@ fun DashboardScreen(
                         )
                 ) {
                     // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
+                    // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
                     floorplanBitmap?.let { bmp ->
                         Image(
                             bitmap = bmp,
@@ -327,6 +328,9 @@ fun DashboardScreen(
                                 .alpha(0.9f)
                         )
                     }
+
+
+                    
 
                     if (floorplanBitmap == null) {
                         Box(
@@ -403,6 +407,10 @@ fun DashboardScreen(
                 }
             }
 
+
+
+
+            
             // Nút Căn giữa (Home) thông minh dạng Floating Action Button
             FloatingActionButton(
                 onClick = {
@@ -439,6 +447,19 @@ fun DashboardScreen(
                             x = (viewportWidth / 2f) - (contentCenterX * zoomScale),
                             y = (viewportHeight / 2f) - (contentCenterY * zoomScale)
                         )
+                    } else if (floorplanBitmap != null) {
+                        // Nâng cấp: Nếu chưa có node, tự động Fit ảnh sơ đồ nền vừa vặn vào màn hình
+                        val imageWidth = (FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale
+                        val imageHeight = (FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale
+
+                        val scaleX = viewportWidth / imageWidth
+                        val scaleY = viewportHeight / imageHeight
+                        zoomScale = minOf(scaleX, scaleY).coerceIn(0.5f, 2.5f)
+
+                        panOffset = Offset(
+                            x = (viewportWidth / 2f) - ((imageWidth / 2f) * zoomScale),
+                            y = (viewportHeight / 2f) - ((imageHeight / 2f) * zoomScale)
+                        )
                     } else {
                         zoomScale = 1f
                         panOffset = Offset.Zero
@@ -455,6 +476,9 @@ fun DashboardScreen(
                     contentDescription = "Căn giữa sơ đồ nhà"
                 )
             }
+
+
+            
 
             if (isProcessing) {
                 CircularProgressIndicator(

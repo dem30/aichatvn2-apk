@@ -29,9 +29,9 @@ class FacebookSkill @Inject constructor(
         id = id,
         name = name,
         capabilities = PluginCapabilities(background = true),
-        routable = true,
+        routable = false,
         visibleOnDashboard = false,
-        autoGenerateQA = true,
+        autoGenerateQA = false,
         actions = listOf(
             PluginAction(
                 name = "post_status",

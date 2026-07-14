@@ -68,14 +68,18 @@ class DashboardViewModel @Inject constructor(
     }
 
     /**
-     * ✅ MỚI: Cập nhật tỷ lệ kích thước sơ đồ nền và lưu lại cấu hình.
-     * Range khớp với valueRange 0.5f..4.0f của Slider trong DashboardScreen.
+     * Cập nhật tỷ lệ kích thước sơ đồ nền và lưu lại cấu hình.
+     * Cập nhật bộ nhớ đệm trước để UI thay đổi tức thời, sau đó ghi bất đồng bộ vào DB.
      */
     fun setFloorplanScale(scale: Float) {
+        val clampedScale = scale.coerceIn(0.5f, 4.0f)
+        _floorplanScale.value = clampedScale // Cập nhật UI ngay lập tức
         viewModelScope.launch {
-            val clampedScale = scale.coerceIn(0.5f, 4.0f)
-            configProvider.set(FLOORPLAN_SCALE_KEY, clampedScale.toString())
-            _floorplanScale.value = clampedScale
+            try {
+                configProvider.set(FLOORPLAN_SCALE_KEY, clampedScale.toString())
+            } catch (e: Exception) {
+                logger.e("DashboardViewModel", "Lỗi lưu floorplan scale", e)
+            }
         }
     }
 
