@@ -188,10 +188,7 @@ class WebhookGatewayService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             try {
                 val dbPages = database.facebookPageDao().getAllPages()
-                val dbPageIds = dbPages.map { it.id }
-
-                val igPageId = configProvider.getString(AppConfigDefaults.INSTAGRAM_PAGE_ID).trim()
-                val pageIds = dbPageIds + listOfNotNull(igPageId.takeIf { it.isNotEmpty() })
+                val pageIds = dbPages.map { it.id }
 
                 if (pageIds.isEmpty()) return@launch
 
@@ -346,16 +343,6 @@ class WebhookGatewayService : Service() {
                                                         }
                                                         logger.i("CloudGateway", "🔑 Đã lưu ${pagesList.size} Facebook Pages vào cơ sở dữ liệu thành công!")
                                                     }
-                                                } else if (plat == "instagram") {
-                                                    val tokenValue = jsonObj.optString("pageAccessToken", "")
-                                                    val pageIdValue = jsonObj.optString("pageId", "")
-                                                    if (tokenValue.isNotEmpty()) {
-                                                        configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ACCESS_TOKEN, tokenValue)
-                                                        if (pageIdValue.isNotEmpty()) {
-                                                            configProvider.set(AppConfigDefaults.INSTAGRAM_PAGE_ID, pageIdValue)
-                                                        }
-                                                        logger.i("CloudGateway", "🔑 Đã đồng bộ động Instagram Page Access Token thành công!")
-                                                    }
                                                 }
                                            } else {
     val platform = jsonObj.optString("platform", "website") // ✅ Đổi từ "web" thành "website"
@@ -429,14 +416,6 @@ class WebhookGatewayService : Service() {
                                                                         )
                                                                         if (replyImageBase64 != null) fbParams["image_base64"] = replyImageBase64
                                                                         findPlugin("facebook")?.execute("send_messenger", fbParams)
-                                                                    }
-                                                                    "instagram" -> {
-                                                                        val igParams = mutableMapOf<String, Any>(
-                                                                            "recipient_id" to senderId,
-                                                                            "message" to replyText
-                                                                        )
-                                                                        if (replyImageBase64 != null) igParams["image_base64"] = replyImageBase64
-                                                                        findPlugin("instagram")?.execute("send_messenger", igParams)
                                                                     }
                                                                     "website" -> {
                                                                         sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText, replyImageBase64)
@@ -606,7 +585,7 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI: Tải 1 ảnh từ URL công khai (vd. Facebook/Instagram CDN) về bộ nhớ rồi mã hoá base64,
+    // ✅ MỚI: Tải 1 ảnh từ URL công khai (vd. Facebook CDN) về bộ nhớ rồi mã hoá base64,
     // để đưa vào ChatRequest.imageBase64 cho Vision Plugin phân tích. Trả về null nếu lỗi bất kỳ
     // (mạng lỗi, ảnh quá lớn...) — không được để lỗi tải ảnh làm rớt luôn cả phần text đi kèm.
     // ✅ ĐÃ SỬA: trước đây thất bại (timeout/mạng chập chờn/HTTP lỗi) là bỏ luôn ngay lần đầu,
