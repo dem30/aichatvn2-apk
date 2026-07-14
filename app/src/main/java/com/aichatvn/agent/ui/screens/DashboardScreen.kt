@@ -323,8 +323,11 @@ fun DashboardScreen(
                             contentScale = ContentScale.FillBounds,
                             modifier = Modifier
                                 .offset { IntOffset(0, 0) }
-                                .width(((FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale).dp)
-                                .height(((FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale).dp)
+                                // ✅ FIX: dùng requiredWidth/requiredHeight thay vì width/height
+                                // để bỏ qua giới hạn constraint của Box(fillMaxSize) cha,
+                                // cho phép ảnh phình to thật sự vượt khung màn hình khi tăng floorplanScale.
+                                .requiredWidth(((FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale).dp)
+                                .requiredHeight(((FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale).dp)
                                 .alpha(0.9f)
                         )
                     }
@@ -367,8 +370,8 @@ fun DashboardScreen(
                             Box(
                                 modifier = Modifier
                                     .offset { IntOffset(minX.roundToInt(), minY.roundToInt()) }
-                                    .width(width.dp)
-                                    .height(height.dp)
+                                    .requiredWidth(width.dp)
+                                    .requiredHeight(height.dp)
                             ) {
                                 Canvas(modifier = Modifier.fillMaxSize()) {
                                     drawRoundRect(
