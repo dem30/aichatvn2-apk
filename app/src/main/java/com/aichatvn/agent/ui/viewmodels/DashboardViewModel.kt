@@ -40,10 +40,15 @@ class DashboardViewModel @Inject constructor(
     private val _floorplanPath = MutableStateFlow<String?>(null)
     val floorplanPath: StateFlow<String?> = _floorplanPath.asStateFlow()
 
+    // ✅ MỚI: Tỷ lệ co giãn của ảnh sơ đồ nền, chỉnh qua Slider trong Menu (0.5x - 4.0x)
+    private val _floorplanScale = MutableStateFlow(1f)
+    val floorplanScale: StateFlow<Float> = _floorplanScale.asStateFlow()
+
     // ✅ ĐÃ THÊM: Khối khởi tạo ViewModel tự động làm mới sơ đồ thiết bị ngầm dưới nền khi mở màn hình
     init {
         refreshDashboardNodes()
         loadFloorplanPath()
+        loadFloorplanScale()
     }
 
     private fun loadFloorplanPath() {
@@ -51,6 +56,26 @@ class DashboardViewModel @Inject constructor(
             val savedPath = configProvider.getString(FLOORPLAN_PATH_KEY, "")
             // Kiểm tra file còn tồn tại trên đĩa để tránh hiển thị ảnh vỡ nếu file bị xoá thủ công
             _floorplanPath.value = savedPath.takeIf { it.isNotBlank() && File(it).exists() }
+        }
+    }
+
+    // ✅ MỚI: Nạp tỷ lệ sơ đồ đã lưu, mặc định 1.0x nếu chưa từng chỉnh
+    private fun loadFloorplanScale() {
+        viewModelScope.launch {
+            val savedScaleStr = configProvider.getString(FLOORPLAN_SCALE_KEY, "1.0")
+            _floorplanScale.value = (savedScaleStr.toFloatOrNull() ?: 1f).coerceIn(0.5f, 4.0f)
+        }
+    }
+
+    /**
+     * ✅ MỚI: Cập nhật tỷ lệ kích thước sơ đồ nền và lưu lại cấu hình.
+     * Range khớp với valueRange 0.5f..4.0f của Slider trong DashboardScreen.
+     */
+    fun setFloorplanScale(scale: Float) {
+        viewModelScope.launch {
+            val clampedScale = scale.coerceIn(0.5f, 4.0f)
+            configProvider.set(FLOORPLAN_SCALE_KEY, clampedScale.toString())
+            _floorplanScale.value = clampedScale
         }
     }
 
@@ -178,5 +203,6 @@ class DashboardViewModel @Inject constructor(
 
     companion object {
         private const val FLOORPLAN_PATH_KEY = "dashboard_floorplan_path"
+        private const val FLOORPLAN_SCALE_KEY = "dashboard_floorplan_scale"
     }
 }

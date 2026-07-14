@@ -19,7 +19,7 @@ class DeviceRegistry @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _deviceNodes = MutableStateFlow<List<DeviceNode>>(emptyList())
-    
+
     /**
      * StateFlow thời gian thực lưu trữ bản sao số của toàn bộ thiết bị trong nhà.
      * UI Dashboard chỉ cần đăng ký Flow này để tự recompose tức thời khi có sự kiện đẩy về.
@@ -31,18 +31,27 @@ class DeviceRegistry @Inject constructor(
 
     /**
      * Đăng ký lô danh sách node ban đầu (gọi lúc khởi động plugin hoặc khi quét mạng)
-     * Đã nâng cấp: Tự động tải lại vị trí tùy chỉnh của người dùng từ persistence layer.
+     * Đã nâng cấp: Ưu tiên giữ lại tọa độ đang hiển thị trực quan trong bộ nhớ, tránh bị dồn cục khi refresh.
      */
     fun registerNodes(nodes: List<DeviceNode>) {
         scope.launch {
             nodes.forEach { node ->
-                val savedX = configProvider.getFloat("layout_x_${node.id}", -1f)
-                val savedY = configProvider.getFloat("layout_y_${node.id}", -1f)
-                
-                val finalNode = if (savedX >= 0f && savedY >= 0f) {
-                    node.copy(x = savedX, y = savedY)
+                val existing = nodeMap[node.id]
+                val finalNode = if (existing != null) {
+                    // Nếu node đang có sẵn trên màn hình, giữ nguyên tọa độ của nó
+                    node.copy(x = existing.x, y = existing.y)
                 } else {
-                    node
+                    // Nếu là node mới chưa có trong bộ nhớ, thử nạp lại tọa độ từ DB
+                    val savedXStr = configProvider.getString("layout_x_${node.id}", "")
+                    val savedYStr = configProvider.getString("layout_y_${node.id}", "")
+                    val savedX = savedXStr.toFloatOrNull()
+                    val savedY = savedYStr.toFloatOrNull()
+
+                    if (savedX != null && savedY != null) {
+                        node.copy(x = savedX, y = savedY)
+                    } else {
+                        node
+                    }
                 }
                 nodeMap[node.id] = finalNode
             }

@@ -62,11 +62,6 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.roundToInt
 
-/**
- * ✅ MỚI: Copy ảnh sơ đồ nhà người dùng chọn (Uri từ Photo Picker, có thể mất quyền truy cập
- * sau khi khởi động lại app) vào bộ nhớ nội bộ app để lưu trữ ổn định lâu dài.
- * Xoá ảnh cũ trước khi lưu ảnh mới để tránh tích tụ dung lượng.
- */
 private fun saveFloorplanImageToInternalStorage(context: android.content.Context, uri: Uri): String? {
     return try {
         val dir = File(context.filesDir, "floorplan")
@@ -92,6 +87,7 @@ fun DashboardScreen(
     val isProcessing by viewModel.isProcessing.collectAsState()
     val executionMessage by viewModel.executionMessage.collectAsState()
     val floorplanPath by viewModel.floorplanPath.collectAsState()
+    val floorplanScale by viewModel.floorplanScale.collectAsState()
 
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -100,8 +96,6 @@ fun DashboardScreen(
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
 
-    // ✅ MỚI: Giải mã ảnh sơ đồ nhà từ file thành ImageBitmap ngầm dưới nền (IO thread),
-    // tránh giật lag UI khi ảnh có kích thước lớn.
     var floorplanBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(floorplanPath) {
         floorplanBitmap = floorplanPath?.let { path ->
@@ -115,7 +109,6 @@ fun DashboardScreen(
         }
     }
 
-    // ✅ MỚI: Photo Picker hệ thống — không cần xin quyền READ_MEDIA_IMAGES runtime
     val pickFloorplanImage = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -133,18 +126,17 @@ fun DashboardScreen(
         }
     }
     var showFloorplanMenu by remember { mutableStateOf(false) }
+    var showFloorplanScaleDialog by remember { mutableStateOf(false) }
 
     // Quản lý trạng thái Canvas vô cực (Zoom & Pan)
     var zoomScale by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
 
-    // Khoảng cách ô lưới để hút tọa độ khi kết thúc kéo thả (Snap-to-Grid)
     val snapGridSize = 20f
     fun snapToGrid(value: Float): Float {
         return (value / snapGridSize).roundToInt() * snapGridSize
     }
 
-    // Đo kích thước màn hình để tính toán tỉ lệ co giãn cơ sở ban đầu
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp
     val designWidth = 360f
@@ -157,12 +149,49 @@ fun DashboardScreen(
         }
     }
 
+    // Hiển thị hộp thoại điều chỉnh tỷ lệ ảnh nền sơ đồ
+    if (showFloorplanScaleDialog) {
+        var tempScale by remember { mutableStateOf(floorplanScale) }
+        AlertDialog(
+            onDismissRequest = { showFloorplanScaleDialog = false },
+            title = { Text("Kích thước sơ đồ") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Điều chỉnh tỷ lệ ảnh nền cho phù hợp với số lượng thiết bị:")
+                    Text(
+                        text = "Tỷ lệ hiện tại: ${"%.1f".format(tempScale)}x",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Slider(
+                        value = tempScale,
+                        onValueChange = { tempScale = it },
+                        valueRange = 0.5f..4.0f,
+                        steps = 35
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.setFloorplanScale(tempScale)
+                    showFloorplanScaleDialog = false
+                }) {
+                    Text("Lưu")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFloorplanScaleDialog = false }) {
+                    Text("Hủy")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Sơ đồ điều khiển thiết bị") },
+                title = { Text("Sơ đồ thiết bị") },
                 actions = {
-                    // ✅ MỚI: Tải / đổi / xoá ảnh sơ đồ nhà làm nền cho Dashboard
                     Box {
                         IconButton(onClick = {
                             if (floorplanPath == null) {
@@ -192,6 +221,13 @@ fun DashboardScreen(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("Điều chỉnh tỷ lệ sơ đồ") },
+                                onClick = {
+                                    showFloorplanMenu = false
+                                    showFloorplanScaleDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Xoá ảnh sơ đồ nhà") },
                                 onClick = {
                                     showFloorplanMenu = false
@@ -199,16 +235,6 @@ fun DashboardScreen(
                                 }
                             )
                         }
-                    }
-                    // Sửa lỗi 2: Chuyển icon khôi phục thu phóng thành biểu tượng Home (Ngôi nhà) để tránh trùng lặp
-                    IconButton(onClick = {
-                        zoomScale = 1f
-                        panOffset = Offset.Zero
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Home,
-                            contentDescription = "Căn giữa sơ đồ nhà"
-                        )
                     }
                     IconButton(onClick = {
                         viewModel.refreshDashboardNodes()
@@ -223,19 +249,21 @@ fun DashboardScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Box(
+        // Sử dụng BoxWithConstraints để nhận chính xác kích thước vùng Canvas hiển thị
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            val viewportWidth = maxWidth.value
+            val viewportHeight = maxHeight.value
+
             // Lớp vẽ mạng lưới nền (Grid Background Canvas)
-            // ✅ SỬA: làm mờ lưới đi khi đã có ảnh sơ đồ nhà, tránh che ảnh
             val gridAlpha = if (floorplanBitmap != null) 0.06f else 0.2f
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val gridSpacing = 40.dp.toPx()
                 val pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
                 
-                // Vẽ lưới dọc
                 var x = panOffset.x % gridSpacing
                 while (x < size.width) {
                     if (x >= 0) {
@@ -250,7 +278,6 @@ fun DashboardScreen(
                     x += gridSpacing
                 }
 
-                // Vẽ lưới ngang
                 var y = panOffset.y % gridSpacing
                 while (y < size.height) {
                     if (y >= 0) {
@@ -276,7 +303,7 @@ fun DashboardScreen(
                         }
                     }
             ) {
-                // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và phân vùng phòng
+                // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và sơ đồ
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -287,9 +314,7 @@ fun DashboardScreen(
                             translationY = panOffset.y
                         )
                 ) {
-                    // ✅ MỚI: Ảnh sơ đồ nhà do người dùng tải lên, làm nền tham chiếu trực quan
-                    // để kéo thả icon thiết bị đúng vị trí thật. Neo tại gốc toạ độ (0,0) — trùng
-                    // hệ toạ độ mà node.x/node.y đang dùng để định vị các thẻ thiết bị.
+                    // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
                     floorplanBitmap?.let { bmp ->
                         Image(
                             bitmap = bmp,
@@ -297,31 +322,30 @@ fun DashboardScreen(
                             contentScale = ContentScale.FillBounds,
                             modifier = Modifier
                                 .offset { IntOffset(0, 0) }
-                                .width((FLOORPLAN_DESIGN_WIDTH * baseScale).dp)
-                                .height((FLOORPLAN_DESIGN_HEIGHT * baseScale).dp)
+                                .width(((FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale).dp)
+                                .height(((FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale).dp)
                                 .alpha(0.9f)
                         )
                     }
 
-                    // Biểu tượng ngôi nhà trung tâm sơ đồ — chỉ hiện khi CHƯA có ảnh sơ đồ nhà thật
                     if (floorplanBitmap == null) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(bottom = 40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("🏠", fontSize = 100.sp, modifier = Modifier.clip(CircleShape))
-                        Text(
-                            text = "AIChatVN Home",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.padding(top = 90.dp)
-                        )
-                    }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(bottom = 40.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("🏠", fontSize = 100.sp, modifier = Modifier.clip(CircleShape))
+                            Text(
+                                text = "AIChatVN Home",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.padding(top = 90.dp)
+                            )
+                        }
                     }
 
-                    // 2. Vẽ phân vùng không gian các phòng mờ ảo (Room bounding boundary)
+                    // Vẽ phân vùng các phòng
                     val rooms = deviceNodes
                         .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
                         .groupBy { it.room }
@@ -330,8 +354,8 @@ fun DashboardScreen(
                         if (nodes.isNotEmpty()) {
                             val minX = nodes.minOf { it.x } - 12f
                             val minY = nodes.minOf { it.y } - 12f
-                            val maxX = nodes.maxOf { it.x } + 150f + 12f // 150dp là chiều rộng Card thiết kế
-                            val maxY = nodes.maxOf { it.y } + 115f + 12f // 115dp là chiều cao Card thiết kế
+                            val maxX = nodes.maxOf { it.x } + 150f + 12f
+                            val maxY = nodes.maxOf { it.y } + 115f + 12f
 
                             val width = maxX - minX
                             val height = maxY - minY
@@ -363,7 +387,7 @@ fun DashboardScreen(
                         }
                     }
 
-                    // 3. Hiển thị danh sách thiết bị và phân bổ cử chỉ Tap / Long-press Drag
+                    // Hiển thị danh sách thiết bị
                     deviceNodes.forEach { node ->
                         key(node.id) {
                             DraggableDeviceNodeItem(
@@ -377,6 +401,59 @@ fun DashboardScreen(
                         }
                     }
                 }
+            }
+
+            // Nút Căn giữa (Home) thông minh dạng Floating Action Button
+            FloatingActionButton(
+                onClick = {
+                    if (deviceNodes.isNotEmpty()) {
+                        // Tính toán bao cảnh (Bounding Box) của các thiết bị hiện tại
+                        val minX = deviceNodes.minOf { it.x }
+                        val minY = deviceNodes.minOf { it.y }
+                        val maxX = deviceNodes.maxOf { it.x + 150f }
+                        val maxY = deviceNodes.maxOf { it.y + (if (it.type == DeviceType.CAMERA) 128f else 115f) }
+
+                        val pixelMinX = minX * baseScale
+                        val pixelMinY = minY * baseScale
+                        val pixelMaxX = maxX * baseScale
+                        val pixelMaxY = maxY * baseScale
+
+                        val contentWidthPx = pixelMaxX - pixelMinX
+                        val contentHeightPx = pixelMaxY - pixelMinY
+
+                        // Tạo khoảng biên an toàn (Padding) bao quanh thiết bị
+                        val paddingPx = 32f * baseScale
+                        val usableWidth = viewportWidth - paddingPx * 2
+                        val usableHeight = viewportHeight - paddingPx * 2
+
+                        // Tính toán tỷ lệ Zoom tối ưu để gom tất cả thiết bị hiển thị gọn gàng
+                        val scaleX = if (contentWidthPx > 0) usableWidth / contentWidthPx else 1f
+                        val scaleY = if (contentHeightPx > 0) usableHeight / contentHeightPx else 1f
+                        zoomScale = minOf(scaleX, scaleY).coerceIn(0.5f, 2.5f)
+
+                        // Dịch chuyển Canvas đưa trung tâm bao cảnh về trung tâm khung hình
+                        val contentCenterX = (pixelMinX + pixelMaxX) / 2f
+                        val contentCenterY = (pixelMinY + pixelMaxY) / 2f
+
+                        panOffset = Offset(
+                            x = (viewportWidth / 2f) - (contentCenterX * zoomScale),
+                            y = (viewportHeight / 2f) - (contentCenterY * zoomScale)
+                        )
+                    } else {
+                        zoomScale = 1f
+                        panOffset = Offset.Zero
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Home,
+                    contentDescription = "Căn giữa sơ đồ nhà"
+                )
             }
 
             if (isProcessing) {
@@ -454,7 +531,6 @@ fun DashboardScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                             }
-                            // ✅ MỚI: Cho phép copy mã định danh dài & khó nhớ để dán vào Huấn luyện (tạo alias QA)
                             Column {
                                 Text("Mã định danh", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -524,15 +600,13 @@ fun DashboardScreen(
                                         ) {
                                             Text(action.icon, fontSize = 16.sp)
                                             Spacer(Modifier.width(6.dp))
-                                            // ✅ SỬA: trước đây maxLines=1 không có overflow khiến chữ dài
-                                            // ("Bật giám sát" → "Bật giám") bị cắt cứng, khó hiểu.
-                                            // Cho phép xuống 2 dòng, font nhỏ hơn, có "…" khi vẫn dài quá.
                                             Text(
                                                 text = action.title,
                                                 fontSize = 12.sp,
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis,
                                                 lineHeight = 14.sp
+                                              
                                             )
                                         }
                                     }
@@ -569,17 +643,9 @@ fun DashboardScreen(
     }
 }
 
-/**
- * ✅ MỚI: Kích thước khung ảnh sơ đồ nhà theo "design units" — cùng hệ toạ độ với node.x/node.y
- * (được nhân với baseScale khi vẽ, giống cách các DeviceNode đang định vị).
- * TODO: có thể cho người dùng tự kéo giãn khung này ở phiên bản sau nếu ảnh không vừa vặn.
- */
 private const val FLOORPLAN_DESIGN_WIDTH = 1024f
 private const val FLOORPLAN_DESIGN_HEIGHT = 1024f
 
-/**
- * Thành phần Composable đóng gói kéo thả sau khi nhấn giữ (After Long Press) để phân tách chạm click.
- */
 @Composable
 fun DraggableDeviceNodeItem(
     node: DeviceNode,
@@ -606,11 +672,9 @@ fun DraggableDeviceNodeItem(
                     (localPosition.y * baseScale).roundToInt()
                 )
             }
-            // 1. Chạm nhanh (Short Tap) kích hoạt mở Bottom Sheet ngay lập tức kèm hiệu ứng Ripple
             .clickable {
                 onNodeClick(node)
             }
-            // 2. Nhấn giữ lâu (Long Press) kích hoạt chế độ kéo thả di chuyển tự do
             .pointerInput(node.id) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = { 
@@ -640,9 +704,6 @@ fun DraggableDeviceNodeItem(
     }
 }
 
-/**
- * Thẻ con Card hiển thị chi tiết thiết bị với hiệu ứng sáng Neon mờ ảo khi đang bật hoạt động.
- */
 @Composable
 fun DeviceNodeCardWidget(
     node: DeviceNode,
@@ -678,7 +739,6 @@ fun DeviceNodeCardWidget(
     Card(
         modifier = modifier
             .width(150.dp)
-            // Camera cần thêm chiều cao để chứa dòng mã định danh mới thêm bên dưới tên
             .height(if (node.type == DeviceType.CAMERA) 128.dp else 115.dp)
             .drawBehind {
                 if (isOnline && isActive) {
@@ -760,8 +820,6 @@ fun DeviceNodeCardWidget(
                     overflow = TextOverflow.Ellipsis,
                     color = if (isOnline) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
-                // ✅ MỚI: Hiển thị mã định danh (node.id) bên dưới tên khách hàng, chỉ áp dụng cho Camera
-                // để phân biệt các camera trùng tên khách hàng (vd nhiều "vinh") ngay trên sơ đồ
                 if (node.type == DeviceType.CAMERA) {
                     Text(
                         text = node.id,
