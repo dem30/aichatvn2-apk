@@ -315,7 +315,7 @@ fun DashboardScreen(
                         )
                 ) {
                     // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
-                    // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
+                   // Ảnh sơ đồ nhà nền (đã được sửa nhân thêm floorplanScale để co giãn theo thanh trượt)
                     floorplanBitmap?.let { bmp ->
                         Image(
                             bitmap = bmp,
