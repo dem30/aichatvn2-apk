@@ -4,30 +4,18 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Tín hiệu AI / smart -->
+    <!-- Con mat: hinh thoi thon dai -->
     <path
-        android:pathData="M41,29 A14,14 0 0,1 67,29"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="3.4"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000" />
-    <path
-        android:pathData="M46,23 A8,8 0 0,1 62,23"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="3.4"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000" />
-    <path
-        android:pathData="M51.4,17.5 A2.6,2.6 0 1,0 56.6,17.5 A2.6,2.6 0 1,0 51.4,17.5 Z"
+        android:pathData="M54,16 L78,54 L54,92 L30,54 Z"
         android:fillColor="#FFFFFF" />
 
-    <!-- Ngôi nhà -->
+    <!-- Trong con nguoi (iris) khoet mau nen -->
     <path
-        android:pathData="M54,38 L78,58 L71,58 L71,82 L37,82 L37,58 L30,58 Z"
-        android:fillColor="#FFFFFF" />
-
-    <!-- Cửa (khoét theo màu nền) -->
-    <path
-        android:pathData="M47,67 L61,67 L61,82 L47,82 Z"
+        android:pathData="M38,54 A16,16 0 1,0 70,54 A16,16 0 1,0 38,54 Z"
         android:fillColor="#3A1E8C" />
+
+    <!-- Highlight kieu comic -->
+    <path
+        android:pathData="M43.5,48.5 A5,5 0 1,0 53.5,48.5 A5,5 0 1,0 43.5,48.5 Z"
+        android:fillColor="#FFFFFF" />
 </vector>
