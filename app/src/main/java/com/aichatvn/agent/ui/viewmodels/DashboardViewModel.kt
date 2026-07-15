@@ -131,7 +131,10 @@ class DashboardViewModel @Inject constructor(
                     activePlugins.forEach { plugin ->
                         if (plugin.manifest.capabilities.dashboard) {
                             val nodes = plugin.getDashboardNodes()
-                            deviceRegistry.registerNodes(nodes)
+                            // ✅ ĐÃ SỬA: truyền kèm pluginId để DeviceRegistry tự dọn các node
+                            // "mồ côi" (camera/thiết bị đã bị xoá) thuộc đúng plugin này, kể cả
+                            // khi danh sách nodes trả về rỗng.
+                            deviceRegistry.registerNodes(plugin.manifest.id, nodes)
                         }
                     }
                 }

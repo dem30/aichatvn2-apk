@@ -32,9 +32,30 @@ class DeviceRegistry @Inject constructor(
     /**
      * Đăng ký lô danh sách node ban đầu (gọi lúc khởi động plugin hoặc khi quét mạng)
      * Đã nâng cấp: Ưu tiên giữ lại tọa độ đang hiển thị trực quan trong bộ nhớ, tránh bị dồn cục khi refresh.
+     *
+     * ✅ MỚI: Yêu cầu truyền `pluginId` tường minh (thay vì tự suy ra từ `nodes`) vì khi thiết bị
+     * cuối cùng của 1 plugin bị xoá, `nodes` truyền vào sẽ RỖNG — không còn cách nào biết cần dọn
+     * node "mồ côi" (đã xoá ở DB nhưng còn sót trong bộ nhớ) thuộc plugin nào nữa. Hàm sẽ coi
+     * `nodes` là danh sách ĐẦY ĐỦ và MỚI NHẤT của plugin đó, rồi xoá khỏi nodeMap mọi node cùng
+     * pluginId nhưng không còn xuất hiện trong danh sách mới (vd camera/thiết bị đã bị xoá).
      */
-    fun registerNodes(nodes: List<DeviceNode>) {
+    fun registerNodes(pluginId: String, nodes: List<DeviceNode>) {
         scope.launch {
+            val incomingIds = nodes.map { it.id }.toSet()
+
+            // ✅ MỚI: Dọn node "mồ côi" — cùng pluginId, có mặt trong bộ nhớ, nhưng không còn
+            // trong danh sách mới nhất từ plugin (đã bị xoá ở DB/nguồn thật).
+            val staleIds = nodeMap.values
+                .filter { it.pluginId == pluginId && it.id !in incomingIds }
+                .map { it.id }
+            if (staleIds.isNotEmpty()) {
+                staleIds.forEach { id ->
+                    nodeMap.remove(id)
+                    configProvider.delete("layout_x_$id")
+                    configProvider.delete("layout_y_$id")
+                }
+            }
+
             nodes.forEach { node ->
                 val existing = nodeMap[node.id]
                 val finalNode = if (existing != null) {
@@ -56,6 +77,40 @@ class DeviceRegistry @Inject constructor(
                 nodeMap[node.id] = finalNode
             }
             syncState()
+        }
+    }
+
+    /**
+     * ✅ MỚI: Xoá NGAY LẬP TỨC 1 node khỏi Dashboard — gọi ngay sau khi người dùng xoá
+     * camera/thiết bị ở tầng ViewModel, để UI cập nhật tức thời thay vì phải đợi tới lần
+     * refreshDashboardNodes() kế tiếp (vd lần mở lại màn hình Dashboard).
+     */
+    fun unregisterNode(id: String) {
+        scope.launch {
+            if (nodeMap.remove(id) != null) {
+                configProvider.delete("layout_x_$id")
+                configProvider.delete("layout_y_$id")
+                syncState()
+            }
+        }
+    }
+
+    /**
+     * ✅ MỚI: Xoá nhiều node cùng lúc — dùng khi xoá theo lô (vd xoá 1 khách hàng kéo theo
+     * xoá toàn bộ camera của khách hàng đó).
+     */
+    fun unregisterNodes(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        scope.launch {
+            var changed = false
+            ids.forEach { id ->
+                if (nodeMap.remove(id) != null) {
+                    configProvider.delete("layout_x_$id")
+                    configProvider.delete("layout_y_$id")
+                    changed = true
+                }
+            }
+            if (changed) syncState()
         }
     }
 

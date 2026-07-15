@@ -20,6 +20,7 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.CameraSkill
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,7 @@ class CustomerCameraViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val database: AppDatabase,
     private val cameraSkill: CameraSkill,
+    private val deviceRegistry: DeviceRegistry,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -111,6 +113,8 @@ class CustomerCameraViewModel @Inject constructor(
             withContext(Dispatchers.IO) {
                 cameraSkill.deleteCamera(trimmedId)
             }
+            // ✅ MỚI: Gỡ node khỏi Dashboard ngay lập tức, không đợi lần refreshDashboardNodes() kế tiếp
+            deviceRegistry.unregisterNode(trimmedId)
             load()
         }
     }

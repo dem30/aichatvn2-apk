@@ -202,7 +202,7 @@ class SmartSwitchSkill @Inject constructor(
     private suspend fun syncToDeviceRegistry() {
         try {
             val initialNodes = getDashboardNodes()
-            deviceRegistry.registerNodes(initialNodes)
+            deviceRegistry.registerNodes(manifest.id, initialNodes)
             logger.i("SmartSwitchSkill", "Khởi tạo sơ đồ đèn lên bản sao số thành công.")
         } catch (e: Exception) {
             logger.e("SmartSwitchSkill", "Khởi tạo sơ đồ đèn lên bản sao số thất bại", e)

@@ -6,6 +6,7 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.CustomerEntity
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +23,7 @@ import javax.inject.Inject
 @HiltViewModel
 class CustomerViewModel @Inject constructor(
     private val database: AppDatabase,
+    private val deviceRegistry: DeviceRegistry,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -96,11 +98,17 @@ class CustomerViewModel @Inject constructor(
             try {
                 val trimmedCustomerId = customerId.trim()
                 // Di chuyển toàn bộ các thao tác xóa Cascade phức tạp ra khỏi luồng chính
-                withContext(Dispatchers.IO) {
+                val cameraIdsOfCustomer = withContext(Dispatchers.IO) {
+                    // ✅ MỚI: Phải lấy danh sách cameraId TRƯỚC khi xoá, vì sau DELETE sẽ không
+                    // còn cách nào truy vấn lại được camera nào từng thuộc khách hàng này nữa.
+                    val ids = database.cameraDao().getCamerasByCustomer(trimmedCustomerId).map { it.id }
                     database.customerDao().deleteCustomer(trimmedCustomerId)
                     database.cameraDao().deleteCamerasByCustomer(trimmedCustomerId)
                     database.cameraDao().deleteCustomerSetting(trimmedCustomerId)
+                    ids
                 }
+                // ✅ MỚI: Gỡ toàn bộ node camera của khách hàng này khỏi Dashboard ngay lập tức
+                deviceRegistry.unregisterNodes(cameraIdsOfCustomer)
                 _result.value = "🗑️ Đã xoá khách hàng"
                 logger.i("CustomerViewModel", "deleteCustomer id=$trimmedCustomerId")
             } catch (e: Exception) {

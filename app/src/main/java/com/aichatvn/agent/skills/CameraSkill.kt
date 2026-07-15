@@ -597,7 +597,7 @@ class CameraSkill @Inject constructor(
     private suspend fun syncToDeviceRegistry() {
         try {
             val initialNodes = getDashboardNodes()
-            deviceRegistry.registerNodes(initialNodes)
+            deviceRegistry.registerNodes(manifest.id, initialNodes)
         } catch (e: Exception) {
             logger.e("CameraSkill", "Khởi tạo sơ đồ camera lên bản sao số thất bại", e)
         }
