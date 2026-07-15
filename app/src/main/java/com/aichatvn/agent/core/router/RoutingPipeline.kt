@@ -32,6 +32,29 @@ import javax.inject.Singleton
 
 private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
 
+// ✅ ĐÃ SỬA: các tiểu từ tình thái/lịch sự không mang thông tin định tuyến (vd "luôn" trong
+// "tắt luôn đèn" chỉ nghĩa "tiện thể", không phải tham số hay hành động). Trước đây các từ này
+// không được lọc ra, nên khi chúng đứng sát điểm cắt mệnh đề (vd ngay trước "và"), chúng bị dính
+// nhầm vào 1 trong 2 mệnh đề, khiến mệnh đề đó dài hơn thực chất -> coverageRatio bị pha loãng
+// xuống dưới ngưỡng 0.70 -> cả mệnh đề (chứa 1-2 ý định thật) bị ClauseSpotter loại bỏ ÂM THẦM.
+// Strip các từ này khỏi từng mệnh đề NGAY SAU khi tách câu (trước khi tính coverageRatio ở
+// Tier3ClauseSpotterStage/Tier4MetadataStage), để độ dài mệnh đề phản ánh đúng nội dung cần khớp.
+private val CLAUSE_FILLER_WORDS = listOf(
+    "giúp tôi", "giúp mình", "hộ tôi", "hộ mình", "dùm tôi", "dùm mình",
+    "luôn", "dùm", "nha", "nhé", "nhá", "thôi", "nè", "ạ"
+)
+
+// Dùng negative lookaround thay vì \b vì \b không nhận diện đúng ranh giới với ký tự có dấu
+// tiếng Việt (giống cách negationWords đang được kiểm tra bên dưới trong hàm process()).
+private fun stripFillerWords(text: String): String {
+    var result = text
+    for (filler in CLAUSE_FILLER_WORDS) {
+        val pattern = Regex("(?<!\\p{L})${Regex.escape(filler)}(?!\\p{L})", RegexOption.IGNORE_CASE)
+        result = pattern.replace(result, " ")
+    }
+    return result.replace(Regex("\\s+"), " ").trim()
+}
+
 @Singleton
 class RoutingPipeline @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
@@ -534,8 +557,26 @@ class RoutingPipeline @Inject constructor(
             aliasThreshold = aliasThreshold
         )
 
-        val clauseSeparator = Regex("[,;]|\\bvà\\b|\\bđồng thời\\b|\\bsau đó\\b|\\brồi\\b", RegexOption.IGNORE_CASE)
-        val clauses = clauseSeparator.split(resolvedMessage).map { it.trim() }.filter { it.isNotBlank() }
+        // ✅ ĐÃ SỬA: bỏ "và", "đồng thời", "sau đó", "rồi" khỏi danh sách điểm cắt cứng.
+        //
+        // LÝ DO: các từ nối này MƠ HỒ về mặt ngữ nghĩa — "và" có thể nối 2 mệnh đề độc lập
+        // ("bật đèn và tắt quạt") nhưng cũng có thể chỉ nối 2 đối tượng trong CÙNG một ý định
+        // ("bật đèn và quạt phòng khách" = 1 lệnh bật cả 2 thiết bị). Tách cứng bằng regex tại
+        // đúng vị trí từ này không có cách nào phân biệt 2 trường hợp trên, và tệ hơn: khi người
+        // dùng chêm tiểu từ ("luôn", "cho tôi"...) ngay sát từ nối (vd "...thông báo cho tôi luôn
+        // và tắt luôn đèn..."), điểm cắt sẽ vô tình gộp 2 ý định thật vào 1 mệnh đề bị pha loãng,
+        // khiến coverageRatio (Tier3/Tier4) rớt dưới ngưỡng 0.70 và cả mệnh đề bị loại bỏ ÂM THẦM
+        // (mất luôn các action thật sự hợp lệ trong đó).
+        //
+        // Cơ chế multi-intent trong CÙNG một mệnh đề (xem isMultiIntent ở Tier3ClauseSpotterStage,
+        // dùng findTokenOrderMatch dò nhiều cụm đã train chồng lấp trong 1 khối văn bản) đã tự xử
+        // lý được các câu ghép nhiều lệnh mà không cần tách trước theo "và"/"rồi". Chỉ giữ lại dấu
+        // ",", ";" làm điểm cắt cứng vì đây là ranh giới tường minh do người dùng chủ động gõ, ít
+        // mơ hồ và không bị tiểu từ dính sai bên.
+        val clauseSeparator = Regex("[,;]", RegexOption.IGNORE_CASE)
+        val clauses = clauseSeparator.split(resolvedMessage)
+            .map { stripFillerWords(it.trim()) }
+            .filter { it.isNotBlank() }
 
         val localEntities = mutableMapOf<String, Any>()
         EMAIL_REGEX.find(resolvedMessage)?.value?.let { localEntities["email"] = it }
