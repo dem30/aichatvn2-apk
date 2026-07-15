@@ -91,10 +91,19 @@ class Tier4MetadataStage @Inject constructor(
                 continue
             }
 
-            val uniqueTypes = matchedAliases.map { it.first.category }.distinct()
-            val hasDuplicateTypes = matchedAliases.size != uniqueTypes.size
+            // ✅ ĐÃ SỬA: Lọc bỏ alias không liên quan tới action đã khớp (vd alias category "camera"
+            // lọt vào khi câu đang nói về đèn/quạt, do 1 alias khác chủ đề trùng substring trong
+            // cùng clause). Trước đây tính isIntentDouble/isMultiIntent/đơn-lệnh dựa trên TOÀN BỘ
+            // matchedAliases kể cả alias không liên quan gì tới tham số của action — khiến trường
+            // hợp "1 action + nhiều alias KHÁC category" rơi vào khoảng trống giữa các nhánh (không
+            // case nào nhận), clause bị bỏ qua oan dù dữ liệu thực ra đã đủ để xử lý đúng.
+            val relevantSemanticTypes = matchedMetadata.flatMap { it.action.parameters.map { p -> p.semanticType } }.toSet()
+            val relevantAliases = matchedAliases.filter { it.first.category in relevantSemanticTypes }
 
-            val isIntentDouble = matchedMetadata.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
+            val uniqueTypes = relevantAliases.map { it.first.category }.distinct()
+            val hasDuplicateTypes = relevantAliases.size != uniqueTypes.size
+
+            val isIntentDouble = matchedMetadata.size == 1 && relevantAliases.size > 1 && uniqueTypes.size == 1
             val isMultiIntent = matchedMetadata.size > 1 && !hasDuplicateTypes
 
             when {
@@ -106,7 +115,7 @@ class Tier4MetadataStage @Inject constructor(
                     action.parameters.forEach { param ->
                         schemaParams[param.name] = param.defaultValue ?: ""
                     }
-                    for (alias in matchedAliases) {
+                    for (alias in relevantAliases) {
                         val resolvedParams = pipeline.resolveParametersWithMeta(
                             parameters = action.parameters,
                             inputParams = schemaParams,
@@ -137,7 +146,7 @@ class Tier4MetadataStage @Inject constructor(
                     }
                 }
                 
-                matchedMetadata.size == 1 && matchedAliases.size <= 1 -> {
+                matchedMetadata.size == 1 && relevantAliases.size <= 1 -> {
                     val meta = matchedMetadata.first()
                     val plugin = meta.plugin
                     val action = meta.action

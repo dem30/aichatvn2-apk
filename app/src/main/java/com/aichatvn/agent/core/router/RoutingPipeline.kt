@@ -997,7 +997,11 @@ class RoutingPipeline @Inject constructor(
                 val paramsInfo = meta.action.parameters.joinToString(", ") { p ->
                     "${p.name} (kiểu: ${p.type}, yêu cầu: ${p.required}, vai trò: ${p.semanticType})"
                 }
-                "  - ${meta.plugin.manifest.id}.${meta.action.name}: ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
+                // ✅ ĐÃ SỬA: bỏ định dạng "pluginId.actionName" nối bằng dấu chấm — model yếu
+                // (vd gpt-oss-20b) từng nhầm cả cụm là 1 giá trị duy nhất và copy nguyên vào field
+                // "plugin" của JSON trả về (vd trả "smart_switch.set" thay vì "smart_switch").
+                // Tách rõ 2 nhãn plugin=/action= để không còn dấu chấm mập mờ.
+                "  - plugin=\"${meta.plugin.manifest.id}\" action=\"${meta.action.name}\": ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
             }
         } else {
             val relevantPlugins = rankRelevantPlugins(queryNormalized, devicePlugins)
@@ -1007,14 +1011,14 @@ class RoutingPipeline @Inject constructor(
                 actionCandidates
                     .filter { c -> relevantPlugins.any { it.manifest.id == c.pluginId } }
                     .joinToString("\n") { c ->
-                        "  - ${c.pluginId}.${c.action}: ${c.description} (tham số: ${c.parameters.joinToString(",")})"
+                        "  - plugin=\"${c.pluginId}\" action=\"${c.action}\": ${c.description} (tham số: ${c.parameters.joinToString(",")})"
                     }
             } else {
                 logger.d("RoutingPipeline", "[$traceId] ⚠️ [Tầng 5 Fallback] Không tìm được plugin liên quan cục bộ -> gửi toàn bộ danh sách")
                 actionCandidates
                     .filter { c -> devicePlugins.any { it.manifest.id == c.pluginId } }
                     .joinToString("\n") { c ->
-                        "  - ${c.pluginId}.${c.action}: ${c.description} (tham số: ${c.parameters.joinToString(",")})"
+                        "  - plugin=\"${c.pluginId}\" action=\"${c.action}\": ${c.description} (tham số: ${c.parameters.joinToString(",")})"
                     }
             }
         }
@@ -1033,7 +1037,8 @@ class RoutingPipeline @Inject constructor(
             append("1. Chỉ định tuyến sang một ứng viên (candidate) bên dưới KHI VÀ CHỈ KHI người dùng đưa ra một YÊU CẦU HÀNH ĐỘNG RÕ RÀNG (ví dụ: bật, tắt, đóng, mở, quét, gửi email cụ thể, thiết lập lịch hẹn giờ thực tế, kiểm tra trạng thái thiết bị).\n")
             append("2. Nếu câu nói là CÂU HỎI THÔNG TIN, GIẢI THÍCH LÝ THUYẾT, ĐỊNH NGHĨA, CHÀO HỎI, TÁN GẪU (ví dụ: 'camera có bao nhiêu loại', 'email hoạt động thế nào', 'tại sao đèn không sáng', 'thời tiết thế nào'...): Bạn TUYỆT ĐỐI KHÔNG ĐƯỢC gán vào bất kỳ lệnh thiết bị nào, cho dù câu nói có chứa từ khóa 'camera', 'email' hay 'đèn'. Hãy xuất chính xác: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
             append("3. Không tự ý suy diễn câu hỏi lý thuyết, câu hỏi khảo sát hoặc thắc mắc chung của người dùng thành một hành động điều khiển thực tế.\n")
-            append("4. Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.</sys>\n")
+            append("4. Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.\n")
+            append("5. Trường \"plugin\" CHỈ được chứa đúng ID plugin (vd \"smart_switch\"), TUYỆT ĐỐI không nối thêm tên action vào sau bằng dấu chấm (SAI: \"smart_switch.set\"). Tên action nằm RIÊNG ở trường \"action\".</sys>\n")
             
             append("<candidates>\n$candidateLines\n</candidates>\n")
             if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
@@ -1052,8 +1057,27 @@ class RoutingPipeline @Inject constructor(
         val rawIntent = parseIntentResponse(routerResultJson) ?: return RouterOutcome.RouterFailed("Tầng 5 LLM parse error")
         if (rawIntent.pluginId == "chat") return RouterOutcome.NotACommand
 
-        val targetPlugin = devicePlugins.find { it.manifest.id == rawIntent.pluginId } ?: return RouterOutcome.RouterFailed("Không tìm thấy Plugin")
-        val targetAction = targetPlugin.manifest.actions.find { it.name == rawIntent.action } ?: return RouterOutcome.RouterFailed("Không tìm thấy Action")
+        // ✅ ĐÃ SỬA: Phòng vệ khi LLM (nhất là model yếu) vẫn lỡ gộp "pluginId.actionName" vào
+        // field plugin dù prompt đã yêu cầu tách riêng (quy tắc 5 ở trên) — tự tách lại theo dấu
+        // chấm đầu tiên và thử tra cứu lại, tránh RouterFailed oan trong khi params đã đúng.
+        var targetPlugin = devicePlugins.find { it.manifest.id == rawIntent.pluginId }
+        var effectiveAction = rawIntent.action
+
+        if (targetPlugin == null && rawIntent.pluginId.contains(".")) {
+            val fixedPluginId = rawIntent.pluginId.substringBefore(".")
+            val suffixAction = rawIntent.pluginId.substringAfter(".", "")
+            val fixedPlugin = devicePlugins.find { it.manifest.id == fixedPluginId }
+            if (fixedPlugin != null) {
+                logger.d("RoutingPipeline", "[$traceId] 🩹 [Tầng 5 Auto-Fix] LLM gộp nhầm plugin=\"${rawIntent.pluginId}\" -> tách lại thành plugin=\"$fixedPluginId\"")
+                targetPlugin = fixedPlugin
+                if (effectiveAction.isBlank() || fixedPlugin.manifest.actions.none { it.name == effectiveAction }) {
+                    effectiveAction = suffixAction
+                }
+            }
+        }
+
+        val finalTargetPlugin = targetPlugin ?: return RouterOutcome.RouterFailed("Không tìm thấy Plugin")
+        val targetAction = finalTargetPlugin.manifest.actions.find { it.name == effectiveAction } ?: return RouterOutcome.RouterFailed("Không tìm thấy Action")
         
         val finalParams = resolveParametersWithMeta(
             parameters = targetAction.parameters,
@@ -1063,10 +1087,10 @@ class RoutingPipeline @Inject constructor(
             depth = 0
         )
         
-        val intent = rawIntent.copy(params = finalParams)
-        val result = intentExecutor.executeIntent(targetPlugin, intent, context, traceId)
+        val intent = rawIntent.copy(pluginId = finalTargetPlugin.manifest.id, action = effectiveAction, params = finalParams)
+        val result = intentExecutor.executeIntent(finalTargetPlugin, intent, context, traceId)
 
-        return RouterOutcome.Matched(DeviceCommandResult(targetPlugin.manifest.id, result))
+        return RouterOutcome.Matched(DeviceCommandResult(finalTargetPlugin.manifest.id, result))
     }
 
     private fun rankRelevantPlugins(queryNormalized: String, devicePlugins: List<Plugin>): List<Plugin> {

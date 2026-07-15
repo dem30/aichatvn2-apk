@@ -19,6 +19,25 @@ class Tier3ClauseSpotterStage @Inject constructor(
     private val logger: Logger
 ) : RouterStage<Layer3Result> {
 
+    // ✅ ĐÃ SỬA: Lọc bỏ alias không liên quan tới action đã khớp trước khi quyết định nhánh xử lý
+    // (xem chi tiết lý do ở resolveRelevantAliases bên dưới) — tránh clause bị bỏ qua oan khi có
+    // alias khác chủ đề (vd category "camera") vô tình trùng substring trong cùng câu lệnh đèn/quạt.
+    private fun relevantSemanticTypesForIntents(
+        matchedIntents: List<QAEntity>,
+        devicePlugins: List<Plugin>
+    ): Set<String> {
+        val types = mutableSetOf<String>()
+        matchedIntents.forEach { qa ->
+            val json = try { JSONObject(qa.answer) } catch (e: Exception) { null }
+            val pluginId = json?.optString("plugin") ?: ""
+            val actionName = json?.optString("action") ?: ""
+            val targetPlugin = devicePlugins.find { it.manifest.id == pluginId }
+            val targetAction = targetPlugin?.manifest?.actions?.find { it.name == actionName }
+            targetAction?.parameters?.forEach { types.add(it.semanticType) }
+        }
+        return types
+    }
+
     override suspend fun process(
         context: RoutingContext,
         devicePlugins: List<Plugin>,
@@ -61,27 +80,30 @@ class Tier3ClauseSpotterStage @Inject constructor(
                 continue
             }
 
-            val uniqueTypes = matchedAliases.map { it.first.category }.distinct()
-            val hasDuplicateTypes = matchedAliases.size != uniqueTypes.size
+            val relevantSemanticTypes = relevantSemanticTypesForIntents(matchedIntents, devicePlugins)
+            val relevantAliases = matchedAliases.filter { it.first.category in relevantSemanticTypes }
 
-            val isIntentDouble = matchedIntents.size == 1 && matchedAliases.size > 1 && uniqueTypes.size == 1
+            val uniqueTypes = relevantAliases.map { it.first.category }.distinct()
+            val hasDuplicateTypes = relevantAliases.size != uniqueTypes.size
+
+            val isIntentDouble = matchedIntents.size == 1 && relevantAliases.size > 1 && uniqueTypes.size == 1
             val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes
 
             context.traces.add(TraceNode(
                 nodeId = "clause.branchSelect",
                 label = "Chọn nhánh xử lý mệnh đề (Clause Spotter)",
-                input = "Clause: '$clause' | intents=${matchedIntents.size}, aliases=${matchedAliases.size}, coverage=${String.format("%.2f", coverageRatio)}",
+                input = "Clause: '$clause' | intents=${matchedIntents.size}, aliases=${matchedAliases.size} (liên quan=${relevantAliases.size}), coverage=${String.format("%.2f", coverageRatio)}",
                 output = when {
                     isIntentDouble -> "isIntentDouble: 1 ý định + nhiều alias cùng category '${uniqueTypes.firstOrNull()}'"
                     isMultiIntent -> "isMultiIntent: ${matchedIntents.size} ý định độc lập, không trùng category"
-                    matchedIntents.size == 1 && matchedAliases.size <= 1 -> "Đơn lệnh chuẩn"
+                    matchedIntents.size == 1 && relevantAliases.size <= 1 -> "Đơn lệnh chuẩn"
                     else -> "Không khớp nhánh nào, bỏ qua clause"
                 },
-                matched = isIntentDouble || isMultiIntent || (matchedIntents.size == 1 && matchedAliases.size <= 1),
+                matched = isIntentDouble || isMultiIntent || (matchedIntents.size == 1 && relevantAliases.size <= 1),
                 codeRef = CodeReference(
                     fileName = "AgentKernel.kt",
                     functionName = "processLayer3ClauseEntitySpotter",
-                    hardcodedRules = "coverageRatio >= 0.70 (ngưỡng bao phủ mệnh đề), isIntentDouble = 1 intent + >1 alias cùng category, isMultiIntent = >1 intent khác category",
+                    hardcodedRules = "coverageRatio >= 0.70 (ngưỡng bao phủ mệnh đề), isIntentDouble = 1 intent + >1 alias LIÊN QUAN cùng category, isMultiIntent = >1 intent khác category. Alias có category không thuộc semanticType của bất kỳ tham số nào trong action đã khớp sẽ bị loại trước khi xét (vd alias 'camera' khi action đang xét không có tham số kiểu camera).",
                     businessLogic = "Tách câu thành các mệnh đề rồi phân loại: 1 ý định lặp nhiều thiết bị cùng loại (isIntentDouble), nhiều ý định độc lập song song (isMultiIntent), hoặc đơn lệnh."
                 )
             ))
@@ -99,7 +121,7 @@ class Tier3ClauseSpotterStage @Inject constructor(
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                         
-                        for (alias in matchedAliases) {
+                        for (alias in relevantAliases) {
                             val resolvedParams = pipeline.resolveParametersWithMeta(
                                 parameters = targetAction.parameters,
                                 inputParams = rootParams,
@@ -134,7 +156,7 @@ class Tier3ClauseSpotterStage @Inject constructor(
                     }
                 }
 
-                matchedIntents.size == 1 && matchedAliases.size <= 1 -> {
+                matchedIntents.size == 1 && relevantAliases.size <= 1 -> {
                     val qa = matchedIntents.first()
                     val rootJson = try { JSONObject(qa.answer) } catch (e: Exception) { null }
                     val rootPluginId = rootJson?.optString("plugin") ?: ""
