@@ -40,7 +40,7 @@ class SmartSwitchSkill @Inject constructor(
         actions = listOf(
             PluginAction(
                 name = "set",
-                description = "Bật hoặc tắt thiết bị đóng ngắt (đèn, ổ cắm, quạt, máy bơm...)",
+                description = "Bật hoặc tắt thiết bị đóng ngắt (đèn, ổ cắm, quạt, máy bơm, máy giặt, điều hòa, máy hút bụi, tủ lạnh, lò vi sóng, bình nóng lạnh...)",
                 examples = listOf(
                     "bật đèn", "tắt đèn",
                     "bật ổ cắm", "tắt ổ cắm",
@@ -57,7 +57,20 @@ class SmartSwitchSkill @Inject constructor(
                     "bật máy bơm" to mapOf("state" to true),
                     "tắt máy bơm" to mapOf("state" to false)
                 ),
-                tags = listOf("light", "switch", "socket", "fan", "pump", "relay", "device"),
+                // ✅ MỚI: Mở rộng danh từ thiết bị cho Tier5 fallback (rankRelevantPlugins trong
+                // RoutingPipeline) — cơ chế này so khớp theo TỪNG TỪ giữa câu người dùng và
+                // description+examples+tags gộp lại, để quyết định plugin nào được đưa vào candidate
+                // cho LLM (Tier3) định tuyến, KHÔNG cần khai báo cứng từng câu "bật máy giặt" trong
+                // examples. Cố tình KHÔNG thêm từ "máy" trơ trọi (quá chung chung, dễ trùng "máy quay"
+                // của CameraSkill...) mà liệt kê danh từ cụ thể. state true/false cho các thiết bị
+                // mới này sẽ do ParameterResolver.extractBooleanFromMessage() suy ra trực tiếp từ câu
+                // gốc (bật/mở -> true, tắt -> false), không cần thêm exampleOverrides riêng.
+                tags = listOf(
+                    "light", "switch", "socket", "fan", "pump", "relay", "device",
+                    "máy giặt", "điều hòa", "điều hoà", "máy lạnh",
+                    "máy hút bụi", "robot hút bụi", "tủ lạnh",
+                    "lò vi sóng", "bình nóng lạnh", "quạt trần", "quạt cây", "máy sưởi"
+                ),
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device"),
                     PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
@@ -96,11 +109,17 @@ class SmartSwitchSkill @Inject constructor(
         val name = dev.name.lowercase()
         val category = dev.category.lowercase()
         return when {
-            name.contains("bơm") || name.contains("pump")            -> Triple("🚰", "Máy Bơm", DeviceType.PUMP)
-            category in setOf("fs", "fsd") || name.contains("quạt")  -> Triple("🌀", "Quạt", DeviceType.SWITCH)
+            name.contains("bơm") || name.contains("pump")                    -> Triple("🚰", "Máy Bơm", DeviceType.PUMP)
+            name.contains("giặt")                                            -> Triple("🧺", "Máy Giặt", DeviceType.SWITCH)
+            name.contains("điều hòa") || name.contains("điều hoà") || name.contains("máy lạnh") -> Triple("❄️", "Điều Hòa", DeviceType.SWITCH)
+            name.contains("hút bụi")                                         -> Triple("🧹", "Máy Hút Bụi", DeviceType.SWITCH)
+            name.contains("tủ lạnh")                                         -> Triple("🧊", "Tủ Lạnh", DeviceType.SWITCH)
+            name.contains("lò vi sóng")                                      -> Triple("♨️", "Lò Vi Sóng", DeviceType.SWITCH)
+            name.contains("nóng lạnh") || name.contains("bình nóng")         -> Triple("🚿", "Bình Nóng Lạnh", DeviceType.SWITCH)
+            category in setOf("fs", "fsd") || name.contains("quạt")          -> Triple("🌀", "Quạt", DeviceType.SWITCH)
             category in setOf("cz", "pc") || name.contains("ổ cắm") || name.contains("ổ điện") -> Triple("🔌", "Ổ Cắm", DeviceType.SWITCH)
-            category == "kg" || name.contains("công tắc")            -> Triple("🔘", "Công Tắc", DeviceType.SWITCH)
-            else                                                     -> Triple("💡", "Đèn", DeviceType.LIGHT) // fallback giữ hành vi cũ nếu không nhận diện được
+            category == "kg" || name.contains("công tắc")                    -> Triple("🔘", "Công Tắc", DeviceType.SWITCH)
+            else                                                             -> Triple("💡", "Đèn", DeviceType.LIGHT) // fallback giữ hành vi cũ nếu không nhận diện được
         }
     }
 
