@@ -54,7 +54,7 @@ object AppModule {
     @Provides
     @IntoSet
     @Singleton
-    fun provideLightSkill(skill: LightSkill): Plugin = skill
+    fun provideSmartSwitchSkill(skill: SmartSwitchSkill): Plugin = skill
 
     @Provides
     @IntoSet

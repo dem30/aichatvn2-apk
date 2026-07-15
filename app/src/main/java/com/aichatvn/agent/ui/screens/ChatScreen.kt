@@ -742,7 +742,7 @@ private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin)
     "human" -> "👤 Trực tiếp"
     "learn" -> "📚 Học"
     "camera" -> "📷 Camera"
-    "light" -> "💡 Đèn"
+    "smart_switch" -> "💡 Đèn"
     "email" -> "📧 Email"
     "notification" -> "🔔 Thông báo"
     "schedule" -> "⏰ Lịch"

@@ -24,7 +24,7 @@ import androidx.navigation.NavController
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.skills.LightSkill
+import com.aichatvn.agent.skills.SmartSwitchSkill
 import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -42,7 +42,7 @@ import javax.inject.Inject
 class TuyaViewModel @Inject constructor(
     private val database: AppDatabase,
     private val tuyaManager: TuyaManager,
-    private val lightSkill: LightSkill,
+    private val smartSwitchSkill: SmartSwitchSkill,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -94,7 +94,7 @@ class TuyaViewModel @Inject constructor(
             try {
                 val params = mapOf("device" to device.name, "state" to turnOn)
                 val result = withContext(Dispatchers.IO) {
-                    lightSkill.execute("set", params)
+                    smartSwitchSkill.execute("set", params)
                 }
                 when (result) {
                     is PluginResult.Success -> {
@@ -118,7 +118,7 @@ class TuyaViewModel @Inject constructor(
             _loadingDevices.value = _loadingDevices.value + device.id
             try {
                 val result = withContext(Dispatchers.IO) {
-                    lightSkill.execute("status", mapOf("device" to device.name))
+                    smartSwitchSkill.execute("status", mapOf("device" to device.name))
                 }
                 when (result) {
                     is PluginResult.Success -> loadDevices()

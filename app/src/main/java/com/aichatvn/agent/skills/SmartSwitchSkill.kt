@@ -23,13 +23,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class LightSkill @Inject constructor(
+class SmartSwitchSkill @Inject constructor(
     private val tuyaManager: TuyaManager,
     private val database: AppDatabase,
     private val deviceRegistry: DeviceRegistry,
     private val configProvider: AppConfigProvider,
     logger: Logger
-) : BaseSkill("light", "Điều khiển đèn", logger), Plugin {
+) : BaseSkill("smart_switch", "Điều khiển thiết bị đóng ngắt", logger), Plugin {
 
     override val manifest = PluginManifest(
         id = id,
@@ -40,13 +40,24 @@ class LightSkill @Inject constructor(
         actions = listOf(
             PluginAction(
                 name = "set",
-                description = "Bật hoặc tắt đèn thông minh",
-                examples = listOf("bật đèn", "tắt đèn"),
+                description = "Bật hoặc tắt thiết bị đóng ngắt (đèn, ổ cắm, quạt, máy bơm...)",
+                examples = listOf(
+                    "bật đèn", "tắt đèn",
+                    "bật ổ cắm", "tắt ổ cắm",
+                    "bật quạt", "tắt quạt",
+                    "bật máy bơm", "tắt máy bơm"
+                ),
                 exampleOverrides = mapOf(
                     "bật đèn" to mapOf("state" to true),
-                    "tắt đèn" to mapOf("state" to false)
+                    "tắt đèn" to mapOf("state" to false),
+                    "bật ổ cắm" to mapOf("state" to true),
+                    "tắt ổ cắm" to mapOf("state" to false),
+                    "bật quạt" to mapOf("state" to true),
+                    "tắt quạt" to mapOf("state" to false),
+                    "bật máy bơm" to mapOf("state" to true),
+                    "tắt máy bơm" to mapOf("state" to false)
                 ),
-                tags = listOf("light", "switch", "relay", "device"),
+                tags = listOf("light", "switch", "socket", "fan", "pump", "relay", "device"),
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device"),
                     PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
@@ -54,8 +65,13 @@ class LightSkill @Inject constructor(
             ),
             PluginAction(
                 name = "status",
-                description = "Xem trạng thái hiện tại của đèn",
-                examples = listOf("trạng thái đèn", "kiểm tra đèn"),
+                description = "Xem trạng thái hiện tại của thiết bị đóng ngắt",
+                examples = listOf(
+                    "trạng thái đèn", "kiểm tra đèn",
+                    "trạng thái ổ cắm", "kiểm tra ổ cắm",
+                    "trạng thái quạt", "kiểm tra quạt",
+                    "trạng thái máy bơm", "kiểm tra máy bơm"
+                ),
                 tags = listOf("status", "query", "sensor"),
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device")
@@ -63,13 +79,30 @@ class LightSkill @Inject constructor(
             ),
             PluginAction(
                 name = "scan",
-                description = "Quét các thiết bị đèn thông minh trong mạng",
-                examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới"),
+                description = "Quét các thiết bị đóng ngắt thông minh (Tuya) trong mạng",
+                examples = listOf("quét thiết bị đèn", "tìm đèn tuya mới", "quét thiết bị tuya", "tìm thiết bị mới"),
                 tags = listOf("discovery", "scan", "network"),
                 parameters = emptyList()
             )
         )
     )
+
+    // ✅ MỚI: Nhận diện icon + nhãn hiển thị + DeviceType theo category thật từ Tuya API (đã có sẵn
+    // trong TuyaDeviceEntity.category, do TuyaManager.scanDevices() điền), fallback theo tên thiết bị
+    // cho các loại Tuya không có category riêng biệt. DeviceType.SWITCH và DeviceType.PUMP đã có sẵn
+    // trong enum (DeviceType.kt) nên map thẳng, không cần thêm giá trị enum mới — quạt/ổ cắm/công tắc
+    // đều dùng chung SWITCH vì bản chất đều là rơ-le đóng ngắt, chỉ khác icon hiển thị.
+    private fun resolveDeviceVisual(dev: com.aichatvn.agent.data.model.TuyaDeviceEntity): Triple<String, String, DeviceType> {
+        val name = dev.name.lowercase()
+        val category = dev.category.lowercase()
+        return when {
+            name.contains("bơm") || name.contains("pump")            -> Triple("🚰", "Máy Bơm", DeviceType.PUMP)
+            category in setOf("fs", "fsd") || name.contains("quạt")  -> Triple("🌀", "Quạt", DeviceType.SWITCH)
+            category in setOf("cz", "pc") || name.contains("ổ cắm") || name.contains("ổ điện") -> Triple("🔌", "Ổ Cắm", DeviceType.SWITCH)
+            category == "kg" || name.contains("công tắc")            -> Triple("🔘", "Công Tắc", DeviceType.SWITCH)
+            else                                                     -> Triple("💡", "Đèn", DeviceType.LIGHT) // fallback giữ hành vi cũ nếu không nhận diện được
+        }
+    }
 
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
@@ -96,23 +129,25 @@ class LightSkill @Inject constructor(
                     false
                 }
 
+                val (deviceIcon, deviceLabel, deviceType) = resolveDeviceVisual(dev)
+
                 DeviceNode(
                     id = dev.id,
                     name = dev.name,
-                    type = DeviceType.LIGHT,
+                    type = deviceType,
                     pluginId = manifest.id,
                     defaultAction = "status",
                     defaultParams = mapOf("device" to dev.id),
                     supportedActions = listOf(
                         DeviceAction(
                             id = "set",
-                            title = "Bật Đèn",
-                            icon = "💡",
+                            title = "Bật $deviceLabel",
+                            icon = deviceIcon,
                             defaultParams = mapOf("state" to true)
                         ),
                         DeviceAction(
                             id = "set",
-                            title = "Tắt Đèn",
+                            title = "Tắt $deviceLabel",
                             icon = "🔌",
                             defaultParams = mapOf("state" to false)
                         ),
@@ -125,7 +160,7 @@ class LightSkill @Inject constructor(
                     x = finalX,
                     y = finalY,
                     online = isOnline,
-                    icon = "💡",
+                    icon = deviceIcon,
                     ip = "192.168.1.${50 + index}",
                     battery = null,
                     status = if (isOnline) {
@@ -133,7 +168,7 @@ class LightSkill @Inject constructor(
                     } else {
                         "Mất kết nối"
                     },
-                    room = "Phòng Khách"
+                    room = "Phòng chung" // Chưa có dữ liệu phòng thật (TuyaDeviceEntity không lưu phòng) — dùng sentinel có sẵn của DashboardScreen để KHÔNG vẽ khung phòng bịa đặt, thay vì hardcode "Phòng Khách" cho mọi thiết bị
                 )
             }
         }
@@ -149,14 +184,14 @@ class LightSkill @Inject constructor(
         try {
             val initialNodes = getDashboardNodes()
             deviceRegistry.registerNodes(initialNodes)
-            logger.i("LightSkill", "Khởi tạo sơ đồ đèn lên bản sao số thành công.")
+            logger.i("SmartSwitchSkill", "Khởi tạo sơ đồ đèn lên bản sao số thành công.")
         } catch (e: Exception) {
-            logger.e("LightSkill", "Khởi tạo sơ đồ đèn lên bản sao số thất bại", e)
+            logger.e("SmartSwitchSkill", "Khởi tạo sơ đồ đèn lên bản sao số thất bại", e)
         }
     }
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
-        logger.d("LightSkill", "execute: action=$action, params=$params")
+        logger.d("SmartSwitchSkill", "execute: action=$action, params=$params")
         
         return when (action) {
             "set" -> handleSet(params)
