@@ -86,20 +86,34 @@ class Tier3ClauseSpotterStage @Inject constructor(
             val uniqueTypes = relevantAliases.map { it.first.category }.distinct()
             val hasDuplicateTypes = relevantAliases.size != uniqueTypes.size
 
+            // ✅ SCHEDULE-WRAPPER GUARD: Nếu clause vừa khớp intent "schedule" (lên lịch) vừa khớp
+            // intent hành động thiết bị khác (vd "bật đèn"), thì "schedule" không phải là 1 ý định
+            // độc lập ngang hàng — nó là ý định BAO TRÙM (wrapper). Hành động thiết bị đi kèm chỉ mô
+            // tả NỘI DUNG của lịch, không phải lệnh cần thực thi ngay. Nếu để lọt vào isMultiIntent,
+            // Layer3Result.Multi sẽ thực thi thật CẢ HAI song song -> đèn bị bật ngay dù người dùng
+            // chỉ muốn lên lịch. Do đó phải tách case này ra ưu tiên trước, giống cơ chế wrapperIntentPair
+            // đã áp dụng ở Tier2SlotResolverStage.
+            val scheduleIntentQA = matchedIntents.firstOrNull { qa ->
+                val json = try { JSONObject(qa.answer) } catch (e: Exception) { null }
+                json?.optString("plugin") == "schedule"
+            }
+            val isScheduleWrapperCase = scheduleIntentQA != null && matchedIntents.size > 1
+
             val isIntentDouble = matchedIntents.size == 1 && relevantAliases.size > 1 && uniqueTypes.size == 1
-            val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes
+            val isMultiIntent = matchedIntents.size > 1 && !hasDuplicateTypes && !isScheduleWrapperCase
 
             context.traces.add(TraceNode(
                 nodeId = "clause.branchSelect",
                 label = "Chọn nhánh xử lý mệnh đề (Clause Spotter)",
                 input = "Clause: '$clause' | intents=${matchedIntents.size}, aliases=${matchedAliases.size} (liên quan=${relevantAliases.size}), coverage=${String.format("%.2f", coverageRatio)}",
                 output = when {
+                    isScheduleWrapperCase -> "isScheduleWrapperCase: intent 'schedule' bao trùm, bỏ qua ${matchedIntents.size - 1} intent hành động thiết bị đi kèm (không thực thi song song)"
                     isIntentDouble -> "isIntentDouble: 1 ý định + nhiều alias cùng category '${uniqueTypes.firstOrNull()}'"
                     isMultiIntent -> "isMultiIntent: ${matchedIntents.size} ý định độc lập, không trùng category"
                     matchedIntents.size == 1 && relevantAliases.size <= 1 -> "Đơn lệnh chuẩn"
                     else -> "Không khớp nhánh nào, bỏ qua clause"
                 },
-                matched = isIntentDouble || isMultiIntent || (matchedIntents.size == 1 && relevantAliases.size <= 1),
+                matched = isScheduleWrapperCase || isIntentDouble || isMultiIntent || (matchedIntents.size == 1 && relevantAliases.size <= 1),
                 codeRef = CodeReference(
                     fileName = "AgentKernel.kt",
                     functionName = "processLayer3ClauseEntitySpotter",
@@ -109,6 +123,29 @@ class Tier3ClauseSpotterStage @Inject constructor(
             ))
 
             when {
+                isScheduleWrapperCase -> {
+                    val qa = scheduleIntentQA!!
+                    val rootJson = try { JSONObject(qa.answer) } catch (e: Exception) { null }
+                    val rootPluginId = rootJson?.optString("plugin") ?: ""
+                    val rootActionName = rootJson?.optString("action") ?: ""
+                    val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
+                    val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
+
+                    if (targetPlugin != null && targetAction != null) {
+                        val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
+                        val resolvedParams = pipeline.resolveParametersWithMeta(
+                            parameters = targetAction.parameters,
+                            inputParams = rootParams,
+                            context = context,
+                            excludeIntentId = qa.id,
+                            depth = 0
+                        )
+                        // ⚠️ CHỦ Ý: KHÔNG lặp qua các matchedIntents khác (vd "bật đèn") để executeIntent
+                        // riêng — chúng chỉ mô tả nội dung của lịch, không phải lệnh thực thi ngay.
+                        resolvedIntents.add(targetPlugin to Intent(rootPluginId, rootActionName, resolvedParams))
+                    }
+                }
+
                 isIntentDouble -> {
                     val singleIntentQA = matchedIntents.first()
                     val rootJson = try { JSONObject(singleIntentQA.answer) } catch (e: Exception) { null }
