@@ -5,6 +5,15 @@ import javax.inject.Singleton
 
 /**
  * Lưu trạng thái 1 lệnh điều khiển đang chờ người dùng bổ sung thông tin còn thiếu.
+ *
+ * ✅ ĐÃ SỬA: tách riêng 2 khái niệm thời gian, trước đây gộp chung vào 1 field `createdAt`
+ * gây ra 2 lỗi trái ngược nhau cùng lúc:
+ *   - `createdAt` giờ CỐ ĐỊNH = thời điểm pending này được tạo mới lần đầu (ở IntentExecutor.kt),
+ *     dùng để SẮP THỨ TỰ hàng đợi ổn định qua getActivePendingIntents() — không đổi dù pending
+ *     có tiến triển dở dang qua nhiều lượt.
+ *   - `lastInteractionAt` = thời điểm gần nhất pending có tiến triển (người dùng vừa điền được
+ *     1 tham số), dùng riêng cho TTL cleanup — PHẢI cập nhật mỗi lần có tương tác, để không hủy
+ *     oan 1 pending đang được người dùng tích cực trả lời dở dang.
  */
 data class PendingIntent(
     val pluginId: String,
@@ -12,7 +21,8 @@ data class PendingIntent(
     val knownParams: Map<String, Any>,
     val missingParams: List<String>,
     val askedQuestion: String,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val lastInteractionAt: Long = System.currentTimeMillis()
 )
 
 @Singleton
@@ -97,20 +107,39 @@ class ChatHistoryManager @Inject constructor() {
 
     /**
      * Hàm dùng chung thực hiện lọc dọn dẹp các lệnh đã quá thời gian chờ (TTL 3 phút)
+     *
+     * ✅ ĐÃ SỬA: dùng `lastInteractionAt` (lần tương tác gần nhất) thay vì `createdAt` (lần tạo
+     * đầu tiên) để tính hạn. Trước đây dùng `createdAt` — nếu để nguyên `createdAt` không đổi
+     * qua các lượt (như bây giờ, cho mục đích sắp thứ tự hàng đợi), một pending đang được người
+     * dùng tích cực trả lời dở dang qua nhiều lượt (vd điền subject rồi body) có thể vượt quá 3
+     * phút TÍNH TỪ LÚC TẠO dù vẫn đang có tiến triển thật, và bị hủy oan giữa chừng.
      */
     @Synchronized
     private fun performTtlCleanup(now: Long) {
-        val (expired, active) = pendingIntents.partition { now - it.createdAt > PENDING_INTENT_TTL_MS }
+        val (expired, active) = pendingIntents.partition { now - it.lastInteractionAt > PENDING_INTENT_TTL_MS }
         if (expired.isNotEmpty()) {
             pendingIntents.removeAll(expired)
             expiredIntents.addAll(expired)
         }
     }
 
+    /**
+     * ✅ MỚI: sắp xếp theo `createdAt` (thời điểm tạo đầu tiên, KHÔNG đổi qua các lượt cập nhật)
+     * trước khi trả về, đảm bảo thứ tự hàng đợi ỔN ĐỊNH.
+     *
+     * LÝ DO: `addPendingIntent()` luôn `removeAll` rồi `add` vào CUỐI list mỗi khi 1 pending được
+     * cập nhật (kể cả khi chỉ đang tiếp tục dở dang, không phải tạo mới) — nên nếu trả về theo thứ
+     * tự vật lý trong list, pending nào vừa "nhích" được 1 bước sẽ bị đẩy xuống cuối hàng đợi, dù
+     * nó lẽ ra đang đứng đầu. Ví dụ thực tế đã gặp: 2 lệnh chờ song song (gửi email cần
+     * subject/body, bật đèn cần device) hoán đổi vị trí đầu hàng đợi liên tục mỗi khi 1 trong 2
+     * được người dùng trả lời một phần, khiến hệ thống hỏi xen kẽ lộn xộn giữa 2 lệnh thay vì hoàn
+     * tất tuần tự từng lệnh như thiết kế ban đầu. Sort theo `createdAt` (cố định, không bị chạm
+     * vào khi tiếp tục dở dang — xem PendingIntentResolver.kt) khôi phục đúng thứ tự FIFO.
+     */
     @Synchronized
     fun getActivePendingIntents(): List<PendingIntent> {
         performTtlCleanup(System.currentTimeMillis())
-        return pendingIntents.toList()
+        return pendingIntents.sortedBy { it.createdAt }
     }
 
     @Synchronized

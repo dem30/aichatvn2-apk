@@ -302,6 +302,10 @@ class PendingIntentResolver @Inject constructor(
             val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
             val (question, options) = intentExecutor.getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action)
 
+            // ✅ ĐÃ SỬA: giữ nguyên createdAt gốc (để sắp thứ tự hàng đợi ổn định — xem
+            // ChatHistoryManager.getActivePendingIntents()), CHỈ cập nhật lastInteractionAt
+            // (để TTL 3 phút tính đúng từ lần người dùng tương tác gần nhất, không hủy oan
+            // pending đang được trả lời dở dang).
             chatHistoryManager.addPendingIntent(
                 pending.copy(
                     knownParams = normalizedMergedParams + mapOf(
@@ -310,7 +314,7 @@ class PendingIntentResolver @Inject constructor(
                     ),
                     missingParams = stillMissing,
                     askedQuestion = question,
-                    createdAt = System.currentTimeMillis()
+                    lastInteractionAt = System.currentTimeMillis()
                 )
             )
             chatHistoryManager.addTurn(userMessage, question)
