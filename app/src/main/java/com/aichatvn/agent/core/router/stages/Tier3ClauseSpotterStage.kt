@@ -19,6 +19,79 @@ class Tier3ClauseSpotterStage @Inject constructor(
     private val logger: Logger
 ) : RouterStage<Layer3Result> {
 
+    companion object {
+        // Số từ chêm (filler) tối đa cho phép giữa 2 token liên tiếp của 1 cụm đã train.
+        // 2 là đủ để chịu "luôn", "giúp tôi", "cho tôi", "hộ mình"... mà không khớp nhầm
+        // 2 cụm nằm cách xa nhau vô nghĩa trong cùng 1 clause (vd "bật quạt rồi tắt đèn"
+        // KHÔNG được khớp "bật đèn" dù cả "bật" và "đèn" đều xuất hiện trong câu).
+        internal const val MAX_FILLER_WORDS_BETWEEN_TOKENS = 2
+        private val TOKEN_SPLIT_REGEX = Regex("\\s+")
+    }
+
+    internal data class TokenMatchResult(val start: Int, val end: Int, val matchedLength: Int)
+
+    // ✅ ĐÃ SỬA: Thay so khớp substring liên tục (tempClause.contains(qNorm)) bằng so khớp
+    // THEO THỨ TỰ TOKEN, cho phép chêm từ ở giữa (tối đa MAX_FILLER_WORDS_BETWEEN_TOKENS từ).
+    //
+    // LÝ DO: câu ghép nhiều mệnh đề (bị RoutingPipeline tách bởi dấu ",", ";", "và",
+    // "đồng thời", "sau đó", "rồi") thường không đạt confidence 0.80 ở Tầng 2 vì điểm fuzzy
+    // bị pha loãng bởi toàn bộ câu dài -> rơi xuống Tầng 3. Ở Tầng 3 cụ thể, cụm đã train
+    // (vd "bật đèn") được dò bằng substring LIÊN TỤC — chỉ cần 1 từ chêm ("bật LUÔN đèn")
+    // là substring vỡ ngay, matchedIntents rỗng cho clause đó -> clause bị loại bỏ ÂM THẦM,
+    // không log lỗi, không action nào được thực thi. Bug này KHÔNG xuất hiện khi câu đơn lẻ
+    // (vì Tầng 2 xử lý bằng fuzzy match tolerant, không quan tâm từ chêm) — chỉ lộ ra khi câu
+    // bị ghép nhiều mệnh đề VÀ mệnh đề đó chứa từ chêm.
+    //
+    // internal (không phải private) để JVM unit test trong cùng module gọi trực tiếp được,
+    // không cần dựng toàn bộ Hilt graph / Android instrumentation.
+    internal fun findTokenOrderMatch(clause: String, trainedPhrase: String): TokenMatchResult? {
+        val trainedTokens = trainedPhrase.split(TOKEN_SPLIT_REGEX).filter { it.isNotBlank() }
+        if (trainedTokens.isEmpty()) return null
+
+        val clauseTokens = clause.split(TOKEN_SPLIT_REGEX).filter { it.isNotBlank() }
+        if (clauseTokens.isEmpty()) return null
+
+        // Offset ký tự (start, endExclusive) của từng token trong chuỗi clause gốc,
+        // cần để cắt đúng span khi "nuốt" (thay bằng space) khỏi tempClause sau khi khớp.
+        val offsets = ArrayList<Pair<Int, Int>>(clauseTokens.size)
+        var cursor = 0
+        for (tok in clauseTokens) {
+            val idx = clause.indexOf(tok, cursor)
+            if (idx < 0) return null // không nên xảy ra, nhưng an toàn thì bail
+            offsets.add(idx to idx + tok.length)
+            cursor = idx + tok.length
+        }
+
+        for (startIdx in clauseTokens.indices) {
+            if (clauseTokens[startIdx] != trainedTokens[0]) continue
+
+            var ti = 1
+            var ci = startIdx + 1
+            var lastMatchedIdx = startIdx
+            var ok = true
+
+            while (ti < trainedTokens.size) {
+                var filler = 0
+                var found = -1
+                while (ci < clauseTokens.size && filler <= MAX_FILLER_WORDS_BETWEEN_TOKENS) {
+                    if (clauseTokens[ci] == trainedTokens[ti]) { found = ci; break }
+                    ci++; filler++
+                }
+                if (found == -1) { ok = false; break }
+                lastMatchedIdx = found
+                ci = found + 1
+                ti++
+            }
+
+            if (ok) {
+                val start = offsets[startIdx].first
+                val end = offsets[lastMatchedIdx].second
+                return TokenMatchResult(start, end, end - start)
+            }
+        }
+        return null
+    }
+
     // ✅ ĐÃ SỬA: Lọc bỏ alias không liên quan tới action đã khớp trước khi quyết định nhánh xử lý
     // (xem chi tiết lý do ở resolveRelevantAliases bên dưới) — tránh clause bị bỏ qua oan khi có
     // alias khác chủ đề (vd category "camera") vô tình trùng substring trong cùng câu lệnh đèn/quạt.
@@ -48,30 +121,46 @@ class Tier3ClauseSpotterStage @Inject constructor(
             .sortedByDescending { it.question.length }
 
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
-        
+
         for (clause in context.clauses) {
             val clauseNorm = StringSimilarityUtil.normalizeVietnamese(clause)
-            
-            val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
+
+            val matchedAliases = context.globalMatchResult.aliasMatches.filter {
                 val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
-                clauseNorm.contains(aliasNorm) 
+                clauseNorm.contains(aliasNorm)
             }
-            
+
             val matchedIntents = mutableListOf<QAEntity>()
+            // ✅ MỚI: track độ dài span THỰC TẾ đã khớp (kể cả filler đã "nuốt") song song với
+            // matchedIntents, để coverageRatio không bị tính sai khi span thực tế dài hơn
+            // qa.question.length (trước đây dùng matchedIntents.sumOf { it.question.length },
+            // giờ phải dùng độ dài span thật vì có thể chứa thêm từ chêm ở giữa).
+            val matchedIntentSpanLengths = mutableListOf<Int>()
+
             var tempClause = clauseNorm
             val sortedIntents = intentQAs.sortedByDescending { it.question.length }
             for (qa in sortedIntents) {
                 val qNorm = StringSimilarityUtil.normalizeVietnamese(qa.question)
                 if (qNorm.isBlank()) continue
-                if (tempClause.contains(qNorm)) {
+
+                val match = findTokenOrderMatch(tempClause, qNorm)
+                if (match != null) {
                     matchedIntents.add(qa)
-                    tempClause = tempClause.replace(qNorm, " ".repeat(qNorm.length))
+                    matchedIntentSpanLengths.add(match.matchedLength)
+                    // "Nuốt" đúng khoảng đã khớp (bao gồm filler ở giữa) bằng khoảng trắng,
+                    // để tránh 1 token bị tái sử dụng cho intent khác trong cùng clause.
+                    // Dùng space thay vì xóa hẳn để offset của các token còn lại không đổi.
+                    tempClause = tempClause.substring(0, match.start) +
+                        " ".repeat(match.end - match.start) +
+                        tempClause.substring(match.end)
                 }
             }
 
-            val totalMatchedLength = matchedIntents.sumOf { it.question.length } + 
+            // ✅ ĐÃ SỬA: dùng span thực tế (matchedIntentSpanLengths) thay vì qa.question.length
+            // cho phần intent, vì span có thể dài hơn cụm gốc do chứa từ chêm ở giữa.
+            val totalMatchedLength = matchedIntentSpanLengths.sum() +
                                      matchedAliases.sumOf { it.first.question.length }
-            
+
             if (clause.isEmpty()) continue
             val coverageRatio = totalMatchedLength.toDouble() / clause.length
 
@@ -117,7 +206,7 @@ class Tier3ClauseSpotterStage @Inject constructor(
                 codeRef = CodeReference(
                     fileName = "AgentKernel.kt",
                     functionName = "processLayer3ClauseEntitySpotter",
-                    hardcodedRules = "coverageRatio >= 0.70 (ngưỡng bao phủ mệnh đề), isIntentDouble = 1 intent + >1 alias LIÊN QUAN cùng category, isMultiIntent = >1 intent khác category. Alias có category không thuộc semanticType của bất kỳ tham số nào trong action đã khớp sẽ bị loại trước khi xét (vd alias 'camera' khi action đang xét không có tham số kiểu camera).",
+                    hardcodedRules = "coverageRatio >= 0.70 (ngưỡng bao phủ mệnh đề), isIntentDouble = 1 intent + >1 alias LIÊN QUAN cùng category, isMultiIntent = >1 intent khác category. Alias có category không thuộc semanticType của bất kỳ tham số nào trong action đã khớp sẽ bị loại trước khi xét (vd alias 'camera' khi action đang xét không có tham số kiểu camera). Cụm intent được dò bằng token-order match, cho phép tối đa $MAX_FILLER_WORDS_BETWEEN_TOKENS từ chêm giữa 2 token liên tiếp của cụm đã train (vd 'bật LUÔN đèn' khớp mẫu 'bật đèn').",
                     businessLogic = "Tách câu thành các mệnh đề rồi phân loại: 1 ý định lặp nhiều thiết bị cùng loại (isIntentDouble), nhiều ý định độc lập song song (isMultiIntent), hoặc đơn lệnh."
                 )
             ))
@@ -151,13 +240,13 @@ class Tier3ClauseSpotterStage @Inject constructor(
                     val rootJson = try { JSONObject(singleIntentQA.answer) } catch (e: Exception) { null }
                     val rootPluginId = rootJson?.optString("plugin") ?: ""
                     val rootActionName = rootJson?.optString("action") ?: ""
-                    
+
                     val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
                     val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
-                    
+
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
-                        
+
                         for (alias in relevantAliases) {
                             val resolvedParams = pipeline.resolveParametersWithMeta(
                                 parameters = targetAction.parameters,
@@ -170,7 +259,7 @@ class Tier3ClauseSpotterStage @Inject constructor(
                         }
                     }
                 }
-                
+
                 isMultiIntent -> {
                     for (qa in matchedIntents) {
                         val rootJson = try { JSONObject(qa.answer) } catch (e: Exception) { null }
@@ -178,7 +267,7 @@ class Tier3ClauseSpotterStage @Inject constructor(
                         val rootActionName = rootJson?.optString("action") ?: ""
                         val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
                         val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
-                        
+
                         if (targetPlugin != null && targetAction != null) {
                             val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                             val resolvedParams = pipeline.resolveParametersWithMeta(
@@ -200,7 +289,7 @@ class Tier3ClauseSpotterStage @Inject constructor(
                     val rootActionName = rootJson?.optString("action") ?: ""
                     val targetPlugin = devicePlugins.find { it.manifest.id == rootPluginId }
                     val targetAction = targetPlugin?.manifest?.actions?.find { it.name == rootActionName }
-                    
+
                     if (targetPlugin != null && targetAction != null) {
                         val rootParams = rootJson?.optJSONObject("params")?.toMap() ?: emptyMap()
                         val resolvedParams = pipeline.resolveParametersWithMeta(
@@ -225,9 +314,4 @@ class Tier3ClauseSpotterStage @Inject constructor(
             else -> Layer3Result.Multi(resolvedIntents)
         }
     }
-
-    
-
-
-    
 }
