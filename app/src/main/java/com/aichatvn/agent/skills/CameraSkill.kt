@@ -589,6 +589,11 @@ class CameraSkill @Inject constructor(
                     pendingResets.remove(tid)
                     dailyEvents.remove(tid)
                     cameraMutexMap.remove(tid)
+                    
+                    // ✅ MỚI (Tự động dọn dẹp): Quét dọn dẹp world state của các camera mồ côi ra khỏi SQLite
+                    scope.launch(Dispatchers.IO) {
+                        database.worldStateDao().deleteStateBySourceAndId("camera", tid)
+                    }
                 }
                 if (orphans.isNotEmpty()) {
                     logger.i("CameraSkill", "🧹 Pruned ${orphans.size} orphaned camera state entries")
@@ -1362,6 +1367,8 @@ class CameraSkill @Inject constructor(
             val tid = cameraId.trim()
             withContext(Dispatchers.IO) {
                 database.cameraDao().deleteCamera(tid)
+                // ✅ MỚI (Tự động dọn dẹp): Xóa world state của camera bị hủy ra khỏi SQLite
+                database.worldStateDao().deleteStateBySourceAndId("camera", tid)
             }
             learningStates.remove(tid)
             circuitBreakers.remove(tid)
@@ -1370,6 +1377,7 @@ class CameraSkill @Inject constructor(
             cameraMutexMap.remove(tid)
             
             syncToDeviceRegistry()
+            
             PluginResult.Success(mapOf("message" to "Camera deleted"))
         } catch (e: Exception) {
             PluginResult.Failure(e.message ?: "Delete camera failed")
@@ -1385,6 +1393,10 @@ class CameraSkill @Inject constructor(
             withContext(Dispatchers.IO) {
                 database.cameraDao().deleteCamerasByCustomer(trimmedCustomerId)
                 database.cameraDao().deleteCustomerSetting(trimmedCustomerId)
+                // ✅ MỚI (Tự động dọn dẹp): Duyệt xóa world state của toàn bộ camera nhánh thuộc khách hàng bị hủy
+                cameras.forEach { camera ->
+                    database.worldStateDao().deleteStateBySourceAndId("camera", camera.id.trim())
+                }
             }
             
             cameras.forEach { camera ->
@@ -1397,6 +1409,7 @@ class CameraSkill @Inject constructor(
             }
             
             syncToDeviceRegistry()
+            
             PluginResult.Success(mapOf("message" to "Customer deleted"))
         } catch (e: Exception) {
             PluginResult.Failure(e.message ?: "Delete customer failed")

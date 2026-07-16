@@ -18,9 +18,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
-import androidx.compose.material.icons.filled.Delete     // ✅ MỚI (Tuần 5)
-import androidx.compose.material.icons.filled.Close      // ✅ MỚI (Tuần 5)
-import androidx.compose.material.icons.filled.ArrowBack  // ✅ MỚI (Tuần 5)
+import androidx.compose.material.icons.filled.Delete     
+import androidx.compose.material.icons.filled.Close      
+import androidx.compose.material.icons.filled.ArrowBack  
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,8 +40,8 @@ import androidx.navigation.NavController
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.data.model.FacebookPageEntity 
-import com.aichatvn.agent.data.model.EventLogEntity      // ✅ MỚI (Tuần 5)
-import com.aichatvn.agent.data.model.WorldStateEntity    // ✅ MỚI (Tuần 5)
+import com.aichatvn.agent.data.model.EventLogEntity      
+import com.aichatvn.agent.data.model.WorldStateEntity    
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -71,7 +71,6 @@ fun SettingsScreen(
     val configSaveResult by viewModel.configSaveResult.collectAsState()
     val facebookPages    by viewModel.facebookPages.collectAsState() 
     
-    // ✅ MỚI (Tuần 5): Quan sát các thực thể trạng thái thế giới thực và nhật ký sự kiện
     val worldStates      by viewModel.worldStates.collectAsState()
     val eventLogs        by viewModel.eventLogs.collectAsState()
 
@@ -162,7 +161,7 @@ fun SettingsScreen(
             }
             OutlinedButton(
                 onClick = { navController.navigate("tuya") },
-                modifier = Modifier.fillMaxWidth
+                modifier = Modifier.fillMaxWidth() // ✅ ĐÃ SỬA: Thêm dấu ngoặc đơn () sửa lỗi biên dịch dòng 165
             ) {
                 Text("🔌 Quản lý danh sách thiết bị Tuya")
             }
@@ -211,7 +210,7 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            // ✅ MỚI (Tuần 5 - Console): Giao diện đồ họa World Model Console Giám sát & Sửa sai thời gian thực
+            // ✅ World Model Console Section
             WorldModelConsoleSection(
                 worldStates = worldStates,
                 eventLogs = eventLogs,
@@ -288,7 +287,6 @@ fun SettingsScreen(
     }
 }
 
-// ✅ MỚI (Tuần 5 - Console): Vẽ thành phần giám sát World Model & Event Logs
 @Composable
 private fun WorldModelConsoleSection(
     worldStates: List<WorldStateEntity>,
@@ -298,7 +296,7 @@ private fun WorldModelConsoleSection(
     onClearLogs: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    var activeTab by remember { mutableStateOf(0) } // 0 = World State, 1 = Event Logs
+    var activeTab by remember { mutableStateOf(0) } 
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -366,7 +364,6 @@ private fun WorldModelConsoleSection(
                                         Spacer(Modifier.height(2.dp))
                                         Text("Cập nhật cuối: ${fmtTs(state.updatedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
                                     }
-                                    // Sửa sai: Cho phép admin xóa nóng các node world_state bị lỗi/cũ kẹt
                                     IconButton(onClick = { onDeleteState(state.id) }, modifier = Modifier.size(36.dp)) {
                                         Icon(Icons.Default.Delete, contentDescription = "Xóa trạng thái", tint = MaterialTheme.colorScheme.error)
                                     }
@@ -921,10 +918,10 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                    .heightIn(max = 200.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
-                    .verticalScroll(responseScrollState)
-                    .padding(8.dp)
+                        .heightIn(max = 200.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                        .verticalScroll(responseScrollState)
+                        .padding(8.dp)
                 ) {
                     Text(
                         text = entry.response,
