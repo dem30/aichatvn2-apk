@@ -18,12 +18,15 @@ import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.dataStore                          // ✅ MỚI: Import để đọc DataStore cấu hình
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatSkill
-import com.aichatvn.agent.skills.TuyaManager           // ✅ MỚI (Tuần 5): Import quản lý Tuya
-import com.aichatvn.agent.skills.TrainingSkill          // ✅ MỚI (Tuần 5): Import TrainingSkill
+import com.aichatvn.agent.skills.TuyaManager           
+import com.aichatvn.agent.skills.TrainingSkill          
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry              // ✅ MỚI: Import sơ đồ bản sao số thiết bị
 import com.aichatvn.agent.scheduler.CronParser 
+import androidx.datastore.preferences.core.stringPreferencesKey    // ✅ MỚI: Import khóa DataStore
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
@@ -59,10 +62,13 @@ class WebhookGatewayService : Service() {
     lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
 
     @Inject
-    lateinit var tuyaManager: TuyaManager               // ✅ MỚI (Tuần 5): Tiêm TuyaManager để đồng bộ trạng thái dưới nền
+    lateinit var tuyaManager: TuyaManager           
 
     @Inject
-    lateinit var trainingSkill: TrainingSkill           // ✅ MỚI (Tuần 5): Tiêm TrainingSkill để đồng bộ cache pattern
+    lateinit var trainingSkill: TrainingSkill       
+
+    @Inject
+    lateinit var deviceRegistry: DeviceRegistry                   // ✅ MỚI: Tiêm sơ đồ thiết bị để đồng bộ Dashboard thời gian thực
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
@@ -100,7 +106,6 @@ class WebhookGatewayService : Service() {
         startHeartbeatLoop()         
         startScheduleLoop()
         
-        // ✅ MỚI (Tuần 5): Khởi động các vòng lặp tự động đồng bộ thiết bị & học thói quen
         startTuyaSyncLoop()
         startPatternMiningLoop()
     }
@@ -822,30 +827,28 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI (Tuần 5 - Passive Polling): Thăm dò đồng bộ trạng thái thực tế từ Tuya Cloud dưới nền (10 phút/lần)
     private fun startTuyaSyncLoop() {
         serviceScope.launch(Dispatchers.IO) {
-            delay(15_000L) // Đợi hệ thống chạy ổn định sau khi khởi chạy dịch vụ
+            delay(15_000L) 
             while (isActive) {
                 try {
                     syncTuyaDeviceStates()
                 } catch (e: Exception) {
                     logger.e("TuyaSync", "Lỗi đồng bộ trạng thái Tuya dưới nền: ${e.message}")
                 }
-                delay(10 * 60 * 1000L) // Quét đồng bộ định kỳ sau mỗi 10 phút
+                delay(10 * 60 * 1000L) 
             }
         }
     }
 
     private suspend fun syncTuyaDeviceStates() = withContext(Dispatchers.IO) {
-        val botToken = configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim()
-        val isTuyaConfigured = configProvider.getString(AppConfigDefaults.TUYA_UID).isNotBlank()
+        val tuyaUidKey = stringPreferencesKey("tuya_uid") // ✅ ĐÃ SỬA: Đọc trực tiếp khóa String an toàn
+        val tuyaUid = context.dataStore.data.first()[tuyaUidKey] ?: ""
         
-        if (!isTuyaConfigured) return@withContext
+        if (tuyaUid.isBlank()) return@withContext
 
         logger.d("TuyaSync", "🔄 Bắt đầu thăm dò trạng thái thiết bị thực tế từ Tuya Cloud...")
         
-        // Quét lấy danh sách trạng thái mới nhất trực tiếp từ Tuya Cloud API
         val currentCloudDevices = tuyaManager.scanDevices()
         val now = System.currentTimeMillis()
 
@@ -853,24 +856,20 @@ class WebhookGatewayService : Service() {
             val cleanId = deviceId.trim()
             val existingState = database.worldStateDao().getState("tuya", cleanId)
             
-            // Đọc trạng thái cũ được lưu trong world_state của bộ não
             val oldStateStr = existingState?.let {
                 try { org.json.JSONObject(it.attributesJson).optString("state", "false") } catch (e: Exception) { "false" }
             } ?: "false"
 
             val oldState = oldStateStr.toBooleanStrictOrNull() ?: false
-            val newState = cloudDev.online // Giả định trường online/state trên cloud khớp trạng thái bật/tắt của thiết bị
+            val newState = cloudDev.online 
 
-            // ✅ Phát hiện sự biến động vật lý (Chủ nhà bật công tắc cơ trên tường hoặc gạt bằng app Smart Life ngoài)
             if (newState != oldState) {
                 logger.i("TuyaSync", "🔁 Phát hiện biến động vật lý bên ngoài: Thiết bị $cleanId đổi trạng thái: $oldState ➔ $newState")
                 
-                // 1. Cập nhật ngay bản sao số world_state thời gian thực
                 com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                     database.worldStateDao(), "tuya", cleanId, "state", newState.toString()
                 )
 
-                // 2. Ghi một dòng nhật ký sạch vào event_logs phục vụ trí nhớ dài hạn (Memory-RAG) cho AI học tập
                 database.eventLogDao().insertLog(
                     com.aichatvn.agent.data.model.EventLogEntity(
                         id = java.util.UUID.randomUUID().toString(),
@@ -883,7 +882,6 @@ class WebhookGatewayService : Service() {
                     )
                 )
 
-                // 3. Đồng bộ cập nhật lên sơ đồ Dashboard App tức thời
                 deviceRegistry.updateNode(cleanId) { current ->
                     current.copy(
                         online = true,
