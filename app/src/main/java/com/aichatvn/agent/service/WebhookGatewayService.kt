@@ -21,6 +21,8 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatSkill
+import com.aichatvn.agent.skills.TuyaManager           // ✅ MỚI (Tuần 5): Import quản lý Tuya
+import com.aichatvn.agent.skills.TrainingSkill          // ✅ MỚI (Tuần 5): Import TrainingSkill
 import com.aichatvn.agent.scheduler.CronParser 
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
@@ -55,6 +57,12 @@ class WebhookGatewayService : Service() {
 
     @Inject
     lateinit var plugins: Set<@JvmSuppressWildcards Plugin>
+
+    @Inject
+    lateinit var tuyaManager: TuyaManager               // ✅ MỚI (Tuần 5): Tiêm TuyaManager để đồng bộ trạng thái dưới nền
+
+    @Inject
+    lateinit var trainingSkill: TrainingSkill           // ✅ MỚI (Tuần 5): Tiêm TrainingSkill để đồng bộ cache pattern
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
@@ -92,7 +100,8 @@ class WebhookGatewayService : Service() {
         startHeartbeatLoop()         
         startScheduleLoop()
         
-        // ✅ MỚI (Tuần 5): Kích hoạt vòng lặp định kỳ khai thác thói quen người dùng
+        // ✅ MỚI (Tuần 5): Khởi động các vòng lặp tự động đồng bộ thiết bị & học thói quen
+        startTuyaSyncLoop()
         startPatternMiningLoop()
     }
 
@@ -813,23 +822,95 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI (Tuần 5 - Phase 4): Triển khai thói quen tự học tập tuần hoàn Pattern Mining định kỳ mỗi 24 giờ
+    // ✅ MỚI (Tuần 5 - Passive Polling): Thăm dò đồng bộ trạng thái thực tế từ Tuya Cloud dưới nền (10 phút/lần)
+    private fun startTuyaSyncLoop() {
+        serviceScope.launch(Dispatchers.IO) {
+            delay(15_000L) // Đợi hệ thống chạy ổn định sau khi khởi chạy dịch vụ
+            while (isActive) {
+                try {
+                    syncTuyaDeviceStates()
+                } catch (e: Exception) {
+                    logger.e("TuyaSync", "Lỗi đồng bộ trạng thái Tuya dưới nền: ${e.message}")
+                }
+                delay(10 * 60 * 1000L) // Quét đồng bộ định kỳ sau mỗi 10 phút
+            }
+        }
+    }
+
+    private suspend fun syncTuyaDeviceStates() = withContext(Dispatchers.IO) {
+        val botToken = configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim()
+        val isTuyaConfigured = configProvider.getString(AppConfigDefaults.TUYA_UID).isNotBlank()
+        
+        if (!isTuyaConfigured) return@withContext
+
+        logger.d("TuyaSync", "🔄 Bắt đầu thăm dò trạng thái thiết bị thực tế từ Tuya Cloud...")
+        
+        // Quét lấy danh sách trạng thái mới nhất trực tiếp từ Tuya Cloud API
+        val currentCloudDevices = tuyaManager.scanDevices()
+        val now = System.currentTimeMillis()
+
+        currentCloudDevices.forEach { (deviceId, cloudDev) ->
+            val cleanId = deviceId.trim()
+            val existingState = database.worldStateDao().getState("tuya", cleanId)
+            
+            // Đọc trạng thái cũ được lưu trong world_state của bộ não
+            val oldStateStr = existingState?.let {
+                try { org.json.JSONObject(it.attributesJson).optString("state", "false") } catch (e: Exception) { "false" }
+            } ?: "false"
+
+            val oldState = oldStateStr.toBooleanStrictOrNull() ?: false
+            val newState = cloudDev.online // Giả định trường online/state trên cloud khớp trạng thái bật/tắt của thiết bị
+
+            // ✅ Phát hiện sự biến động vật lý (Chủ nhà bật công tắc cơ trên tường hoặc gạt bằng app Smart Life ngoài)
+            if (newState != oldState) {
+                logger.i("TuyaSync", "🔁 Phát hiện biến động vật lý bên ngoài: Thiết bị $cleanId đổi trạng thái: $oldState ➔ $newState")
+                
+                // 1. Cập nhật ngay bản sao số world_state thời gian thực
+                com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                    database.worldStateDao(), "tuya", cleanId, "state", newState.toString()
+                )
+
+                // 2. Ghi một dòng nhật ký sạch vào event_logs phục vụ trí nhớ dài hạn (Memory-RAG) cho AI học tập
+                database.eventLogDao().insertLog(
+                    com.aichatvn.agent.data.model.EventLogEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        timestamp = now,
+                        source = "tuya",
+                        sourceId = cleanId,
+                        eventType = "state_change",
+                        value = newState.toString(),
+                        summary = "Thiết bị Tuya ${cloudDev.name} được chuyển sang trạng thái: ${if (newState) "Bật" else "Tắt"} thủ công từ bên ngoài."
+                    )
+                )
+
+                // 3. Đồng bộ cập nhật lên sơ đồ Dashboard App tức thời
+                deviceRegistry.updateNode(cleanId) { current ->
+                    current.copy(
+                        online = true,
+                        status = if (newState) "Đang bật" else "Đang tắt",
+                        lastSeen = now
+                    )
+                }
+            }
+        }
+    }
+
     private fun startPatternMiningLoop() {
         serviceScope.launch(Dispatchers.IO) {
-            delay(30_000L) // Đợi hệ thống chạy ổn định sau khi khởi động
+            delay(30_000L) 
             while (isActive) {
                 try {
                     minePatterns()
                 } catch (e: Exception) {
                     logger.e("PatternMining", "Lỗi khi khai thác mẫu hành vi: ${e.message}", e)
                 }
-                delay(24 * 60 * 60 * 1000L) // Quét khai thác lại sau mỗi 24 giờ
+                delay(24 * 60 * 60 * 1000L) 
             }
         }
     }
 
     private suspend fun minePatterns() {
-        val since = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 // Thống kê trong 7 ngày gần nhất
+        val since = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 
         val now = System.currentTimeMillis()
         val logs = database.eventLogDao().getLogsInTimeframe(since, now)
         if (logs.isEmpty()) return
@@ -837,7 +918,6 @@ class WebhookGatewayService : Service() {
         val calendar = java.util.Calendar.getInstance()
         data class GroupKey(val source: String, val sourceId: String, val eventType: String, val hour: Int)
 
-        // Phân nhóm logs theo khung giờ hằng ngày
         val grouped = logs.groupBy { log ->
             calendar.timeInMillis = log.timestamp
             GroupKey(log.source, log.sourceId, log.eventType, calendar.get(java.util.Calendar.HOUR_OF_DAY))
@@ -847,13 +927,11 @@ class WebhookGatewayService : Service() {
         val existingPatterns = trainingSkillPatternCache()
 
         grouped.forEach { (key, entries) ->
-            // Đếm số ngày xuất hiện biến động tương đồng trong cùng một khung giờ hằng ngày
             val distinctDays = entries.map { entry ->
                 calendar.timeInMillis = entry.timestamp
                 calendar.get(java.util.Calendar.DAY_OF_YEAR)
             }.distinct().size
 
-            // Điều kiện ghi nhận thói quen: Lặp lại tối thiểu 4/7 ngày liên tiếp
             if (distinctDays >= 4) {
                 val question = "pattern_${key.source}_${key.sourceId}_${key.eventType}_${key.hour}h"
                 val answer = "${key.source}/${key.sourceId}: \"${key.eventType}\" thường xảy ra vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất)."

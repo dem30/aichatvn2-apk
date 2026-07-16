@@ -40,7 +40,7 @@ class SmartSwitchSkill @Inject constructor(
         actions = listOf(
             PluginAction(
                 name = "set",
-                description = "Bật hoặc tắt thiết bị đóng ngắt (đèn, ổ cắm, quạt, máy bơm, máy giặt, điều hòa, máy hút bụi, tủ lạnh, lò vi sóng, bình nóng lạnh...)",
+                description = "Bật hoặc tắt thiết bị đóng ngắt (đèn, ổ cắm, quạt, máy bơm, máy giặt, điều hòa, máy giặt, robot hút bụi, tủ lạnh...)",
                 examples = listOf(
                     "bật đèn", "tắt đèn",
                     "bật ổ cắm", "tắt ổ cắm",
@@ -57,14 +57,6 @@ class SmartSwitchSkill @Inject constructor(
                     "bật máy bơm" to mapOf("state" to true),
                     "tắt máy bơm" to mapOf("state" to false)
                 ),
-                // ✅ MỚI: Mở rộng danh từ thiết bị cho Tier5 fallback (rankRelevantPlugins trong
-                // RoutingPipeline) — cơ chế này so khớp theo TỪNG TỪ giữa câu người dùng và
-                // description+examples+tags gộp lại, để quyết định plugin nào được đưa vào candidate
-                // cho LLM (Tier3) định tuyến, KHÔNG cần khai báo cứng từng câu "bật máy giặt" trong
-                // examples. Cố tình KHÔNG thêm từ "máy" trơ trọi (quá chung chung, dễ trùng "máy quay"
-                // của CameraSkill...) mà liệt kê danh từ cụ thể. state true/false cho các thiết bị
-                // mới này sẽ do ParameterResolver.extractBooleanFromMessage() suy ra trực tiếp từ câu
-                // gốc (bật/mở -> true, tắt -> false), không cần thêm exampleOverrides riêng.
                 tags = listOf(
                     "light", "switch", "socket", "fan", "pump", "relay", "device",
                     "máy giặt", "điều hòa", "điều hoà", "máy lạnh",
@@ -74,7 +66,9 @@ class SmartSwitchSkill @Inject constructor(
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device"),
                     PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
-                )
+                ),
+                // ✅ MỚI (Tuần 5 - Phase 5): Ràng buộc thế giới thực mặc định để trống cho người dùng lên lịch tự đặt
+                requiredWorldState = ""
             ),
             PluginAction(
                 name = "status",
@@ -100,11 +94,6 @@ class SmartSwitchSkill @Inject constructor(
         )
     )
 
-    // ✅ MỚI: Nhận diện icon + nhãn hiển thị + DeviceType theo category thật từ Tuya API (đã có sẵn
-    // trong TuyaDeviceEntity.category, do TuyaManager.scanDevices() điền), fallback theo tên thiết bị
-    // cho các loại Tuya không có category riêng biệt. DeviceType.SWITCH và DeviceType.PUMP đã có sẵn
-    // trong enum (DeviceType.kt) nên map thẳng, không cần thêm giá trị enum mới — quạt/ổ cắm/công tắc
-    // đều dùng chung SWITCH vì bản chất đều là rơ-le đóng ngắt, chỉ khác icon hiển thị.
     private fun resolveDeviceVisual(dev: com.aichatvn.agent.data.model.TuyaDeviceEntity): Triple<String, String, DeviceType> {
         val name = dev.name.lowercase()
         val category = dev.category.lowercase()
@@ -119,7 +108,7 @@ class SmartSwitchSkill @Inject constructor(
             category in setOf("fs", "fsd") || name.contains("quạt")          -> Triple("🌀", "Quạt", DeviceType.SWITCH)
             category in setOf("cz", "pc") || name.contains("ổ cắm") || name.contains("ổ điện") -> Triple("🔌", "Ổ Cắm", DeviceType.SWITCH)
             category == "kg" || name.contains("công tắc")                    -> Triple("🔘", "Công Tắc", DeviceType.SWITCH)
-            else                                                             -> Triple("💡", "Đèn", DeviceType.LIGHT) // fallback giữ hành vi cũ nếu không nhận diện được
+            else                                                             -> Triple("💡", "Đèn", DeviceType.LIGHT) 
         }
     }
 
@@ -187,14 +176,13 @@ class SmartSwitchSkill @Inject constructor(
                     } else {
                         "Mất kết nối"
                     },
-                    room = "Phòng chung" // Chưa có dữ liệu phòng thật (TuyaDeviceEntity không lưu phòng) — dùng sentinel có sẵn của DashboardScreen để KHÔNG vẽ khung phòng bịa đặt, thay vì hardcode "Phòng Khách" cho mọi thiết bị
+                    room = "Phòng chung" 
                 )
             }
         }
         deferredNodes.awaitAll()
     }
 
-    // ✅ ĐÃ THÊM: Triển khai hàm khởi tạo vòng đời để tự động nạp thiết bị khi app mở lại từ nền
     override suspend fun initialize() {
         syncToDeviceRegistry()
     }
@@ -211,7 +199,6 @@ class SmartSwitchSkill @Inject constructor(
 
     override suspend fun execute(action: String, params: Map<String, Any>): AgentKernel.PluginResult {
         logger.d("SmartSwitchSkill", "execute: action=$action, params=$params")
-        
         return when (action) {
             "set" -> handleSet(params)
             "status" -> handleStatus(params)
@@ -232,12 +219,32 @@ class SmartSwitchSkill @Inject constructor(
             } else {
                 tuyaManager.turnOff(deviceName)
             }
+
+            val now = System.currentTimeMillis()
+
+            // ✅ MỚI (Tuần 5 - Active Logging): Đồng bộ lập tức trạng thái mới vào world_state
+            com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                database.worldStateDao(), "tuya", deviceName, "state", state.toString()
+            )
+
+            // ✅ MỚI (Tuần 5 - Active Logging): Ghi nhật ký sự kiện tương tác vật lý vào event_logs
+            database.eventLogDao().insertLog(
+                com.aichatvn.agent.data.model.EventLogEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    timestamp = now,
+                    source = "tuya",
+                    sourceId = deviceName,
+                    eventType = "state_change",
+                    value = state.toString(),
+                    summary = "Thiết bị Tuya $deviceName đã được chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} thành công qua ứng dụng."
+                )
+            )
             
             deviceRegistry.updateNode(deviceName) { current ->
                 current.copy(
                     online = true,
                     status = if (state) "Đang bật" else "Đang tắt",
-                    lastSeen = System.currentTimeMillis()
+                    lastSeen = now
                 )
             }
             
