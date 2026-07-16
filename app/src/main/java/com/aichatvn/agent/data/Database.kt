@@ -258,7 +258,6 @@ interface AlertDao {
     @Query("DELETE FROM alerts WHERE timestamp < :beforeTimestamp")
     suspend fun deleteAlertsOlderThan(beforeTimestamp: Long)
 
-    // ✅ MỚI (Tuần 2 & 3 - Phase 3): Hỗ trợ cơ chế gộp/nén sự kiện cảnh báo
     @Query("SELECT * FROM alerts WHERE cameraId = :cameraId ORDER BY timestamp DESC LIMIT 1")
     suspend fun getLatestAlertForCamera(cameraId: String): AlertEntity?
 
@@ -321,7 +320,7 @@ interface AppConfigDao {
     suspend fun getAll(): List<AppConfigEntity>
 }
 
-// ==================== MULTI facebook PAGES DAO ====================
+// ==================== MULTI FACEBOOK PAGES DAO ====================
 
 @Dao
 interface FacebookPageDao {
@@ -346,7 +345,6 @@ interface FacebookPageDao {
 
 // ==================== EVENT LOG DAO (TRÍ NHỚ) ====================
 
-// ✅ MỚI (Tuần 2 - Phase 2): Quản lý lưu trữ nhật ký sự kiện để phục vụ Memory-RAG
 @Dao
 interface EventLogDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -360,11 +358,20 @@ interface EventLogDao {
 
     @Query("DELETE FROM event_logs WHERE timestamp < :beforeTimestamp")
     suspend fun pruneLogsOlderThan(beforeTimestamp: Long)
+
+    // ✅ MỚI (Tuần 5 - Console CRUD): Cho phép xóa từng log và lấy Flow quan sát danh sách thời gian thực
+    @Query("DELETE FROM event_logs WHERE id = :id")
+    suspend fun deleteLogById(id: String)
+
+    @Query("DELETE FROM event_logs")
+    suspend fun clearAllLogs()
+
+    @Query("SELECT * FROM event_logs ORDER BY timestamp DESC LIMIT 100")
+    fun getLatestLogsFlow(): Flow<List<EventLogEntity>>
 }
 
 // ==================== WORLD STATE DAO (BẢN SAO SỐ) ====================
 
-// ✅ MỚI (Tuần 5 - Phase 5): Quản lý trạng thái hiện tại thời gian thực của thế giới vật lý
 @Dao
 interface WorldStateDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -372,6 +379,16 @@ interface WorldStateDao {
 
     @Query("SELECT * FROM world_state WHERE source = :source AND sourceId = :sourceId LIMIT 1")
     suspend fun getState(source: String, sourceId: String): WorldStateEntity?
+
+    // ✅ MỚI (Tuần 5 - Console CRUD): Hỗ trợ dọn dẹp các trạng thái mồ côi/cũ khi đổi thiết bị và lấy Flow quan sát
+    @Query("DELETE FROM world_state WHERE id = :id")
+    suspend fun deleteStateById(id: String)
+
+    @Query("DELETE FROM world_state WHERE source = :source AND sourceId = :sourceId")
+    suspend fun deleteStateBySourceAndId(source: String, sourceId: String)
+
+    @Query("SELECT * FROM world_state ORDER BY id ASC")
+    fun getAllStatesFlow(): Flow<List<WorldStateEntity>>
 }
 
 // ==================== DATABASE ====================
@@ -388,10 +405,10 @@ interface WorldStateDao {
         AppConfigEntity::class,
         CustomerEntity::class,
         FacebookPageEntity::class,
-        EventLogEntity::class,   // ✅ ĐĂNG KÝ MỚI (Tuần 2)
-        WorldStateEntity::class  // ✅ ĐĂNG KÝ MỚI (Tuần 5)
+        EventLogEntity::class,   
+        WorldStateEntity::class  
     ],
-    version = 15, // ✅ TĂNG PHIÊN BẢN: Tăng cấu trúc từ 13 lên 15 để Room Destructive Migration hoạt động chính xác
+    version = 15, 
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -407,8 +424,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun appConfigDao(): AppConfigDao
     abstract fun facebookPageDao(): FacebookPageDao
     
-    abstract fun eventLogDao(): EventLogDao   // ✅ DAO MỚI (Tuần 2)
-    abstract fun worldStateDao(): WorldStateDao // ✅ DAO MỚI (Tuần 5)
+    abstract fun eventLogDao(): EventLogDao   
+    abstract fun worldStateDao(): WorldStateDao 
 
     companion object {
         @Volatile

@@ -23,6 +23,8 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.model.FacebookPageEntity
+import com.aichatvn.agent.data.model.EventLogEntity      // ✅ MỚI (Tuần 5)
+import com.aichatvn.agent.data.model.WorldStateEntity    // ✅ MỚI (Tuần 5)
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
@@ -70,6 +72,7 @@ class SettingsViewModel @Inject constructor(
         val TUYA_CLIENT_SECRET = stringPreferencesKey("tuya_client_secret")
         val TUYA_UID = stringPreferencesKey("tuya_uid")
 
+        // ✅ MỚI (Tuần 5): Thêm event_logs và world_state vào danh sách sao lưu để hỗ trợ giám sát trên PC
         private val BACKUP_TABLES = listOf(
             "customers",
             "customer_settings",
@@ -78,7 +81,9 @@ class SettingsViewModel @Inject constructor(
             "facebook_pages",
             "qa_data",
             "schedules",
-            "app_config"
+            "app_config",
+            "event_logs",  
+            "world_state"  
         )
     }
 
@@ -130,6 +135,13 @@ class SettingsViewModel @Inject constructor(
     val facebookPages: StateFlow<List<FacebookPageEntity>> = database.facebookPageDao().getAllPagesFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    // ✅ MỚI (Tuần 5 - Console CRUD): Luồng quan sát trực tiếp Trạng thái thực tế và Nhật ký sự kiện thời gian thực
+    val worldStates: StateFlow<List<WorldStateEntity>> = database.worldStateDao().getAllStatesFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val eventLogs: StateFlow<List<EventLogEntity>> = database.eventLogDao().getLatestLogsFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
 
@@ -171,6 +183,40 @@ class SettingsViewModel @Inject constructor(
 
     fun clearImportResult() { _importResult.value = null }
     fun clearExportResult() { _exportResult.value = null }
+
+    // ✅ MỚI (Tuần 5 - Console CRUD): Thao tác xóa sửa thế giới thực để dọn tàn dư thiết bị mồ côi
+    fun deleteWorldState(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                database.worldStateDao().deleteStateById(id)
+                logger.i("SettingsViewModel", "🗑️ Đã xóa thủ công world state: $id")
+            } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Lỗi xóa world state: ${e.message}")
+            }
+        }
+    }
+
+    fun deleteEventLog(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                database.eventLogDao().deleteLogById(id)
+                logger.i("SettingsViewModel", "🗑️ Đã xóa thủ công event log: $id")
+            } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Lỗi xóa event log: ${e.message}")
+            }
+        }
+    }
+
+    fun clearAllEventLogs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                database.eventLogDao().clearAllLogs()
+                logger.i("SettingsViewModel", "🧹 Đã xóa sạch toàn bộ Event Logs để làm mới trí nhớ AI")
+            } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Lỗi dọn sạch event logs: ${e.message}")
+            }
+        }
+    }
 
     fun saveGroqApiKey(key: String) {
         viewModelScope.launch {
@@ -279,10 +325,6 @@ class SettingsViewModel @Inject constructor(
                     prefs[TUYA_UID] = uid.trim()
                 }
                 val devices = tuyaManager.scanDevices()
-                // ✅ ĐÃ SỬA: "Kết nối OK" chỉ có nghĩa API auth + liệt kê thiết bị thành công,
-                // KHÔNG đồng nghĩa thiết bị đang online. Hiển thị thêm số lượng online thực tế
-                // (theo field "online" mà chính Tuya Cloud trả về) để tránh hiểu lầm với Dashboard,
-                // nơi hiển thị đúng giá trị "online" này cho từng thiết bị.
                 val onlineCount = devices.values.count { it.online }
                 "✅ Kết nối Tuya OK — ${devices.size} thiết bị ($onlineCount đang online)"
             } catch (e: Exception) {
@@ -410,18 +452,13 @@ class SettingsViewModel @Inject constructor(
                 _tuyaClientSecret.value = tuyaSecretVal
                 _tuyaUid.value = tuyaUidVal
 
-               
-              
-              
-              var restoredCount = 0
+                var restoredCount = 0
                 val dataJson = json.optJSONObject("data")
                 
                 if (dataJson != null) {
                     val sdb = database.openHelper.writableDatabase
                     
-                    // ✅ MỚI: Tắt foreign_keys TRƯỚC khi bắt đầu Transaction (bắt buộc theo chuẩn SQLite)
                     sdb.execSQL("PRAGMA foreign_keys=OFF;")
-                    
                     sdb.beginTransaction()
                     try {
                         for (tableName in BACKUP_TABLES) {
@@ -471,9 +508,6 @@ class SettingsViewModel @Inject constructor(
 
                             if (columnsToInsert.isEmpty()) continue
 
-                            // ✅ TỐI ƯU HÓA LỚN: Sử dụng sdb.insert kết hợp ContentValues thay cho sdb.execSQL thô.
-                            // Cách này giúp SQLite tự động ánh xạ chính xác kiểu dữ liệu (Int, Long, Float, String, Blob)
-                            // tránh tuyệt đối các lỗi silent-fail hoặc mismatch dữ liệu thô trên các thiết bị cũ/mới.
                             for (rowIndex in 0 until rowsArray.length()) {
                                 val rowObj = rowsArray.getJSONObject(rowIndex)
                                 val values = android.content.ContentValues()
@@ -535,13 +569,10 @@ class SettingsViewModel @Inject constructor(
                         sdb.setTransactionSuccessful()
                     } finally {
                         sdb.endTransaction()
-                        // ✅ MỚI: Bật lại kiểm tra khóa ngoại sau khi kết thúc Transaction
                         sdb.execSQL("PRAGMA foreign_keys=ON;")
                     }
                 }
 
-                // ✅ MỚI: Yêu cầu Room InvalidationTracker ép tất cả các Flow/LiveData quan sát
-                // danh sách camera, thiết bị, khách hàng, QA... làm mới dữ liệu lập tức lên UI.
                 database.invalidationTracker.refreshVersionsAsync()
 
                 trainingSkill.refreshQAList("default_user")
@@ -549,7 +580,7 @@ class SettingsViewModel @Inject constructor(
                 try {
                     cameraSkill.initialize()
                     tuyaManager.loadDevicesFromDB()
-                    scheduleSkill.loadSchedules() // ✅ MỚI: Đồng bộ nạp lại lịch trình vào bộ nhớ đệm cache của Skill
+                    scheduleSkill.loadSchedules() 
                 } catch (e: Exception) {
                     logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya/lịch trình sau khi import thất bại", e)
                 }
@@ -564,22 +595,6 @@ class SettingsViewModel @Inject constructor(
                     "✅ Import thành công! (chỉ có settings, không có dữ liệu DB)"
                 _importResult.value = message
                 message
-              
-              
-              
-              
-              
-              
-
-                
-
-
-
-
-
-
-
-              
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Import error: ${e.message}", e)
                 _importResult.value = "❌ Lỗi: ${e.message}"
@@ -587,7 +602,6 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
-    
 
     override fun onCleared() {
         super.onCleared()

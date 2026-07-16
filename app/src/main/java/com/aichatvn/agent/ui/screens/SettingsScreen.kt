@@ -18,10 +18,14 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.Delete     // ✅ MỚI (Tuần 5)
+import androidx.compose.material.icons.filled.Close      // ✅ MỚI (Tuần 5)
+import androidx.compose.material.icons.filled.ArrowBack  // ✅ MỚI (Tuần 5)
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -35,7 +39,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
-import com.aichatvn.agent.data.model.FacebookPageEntity // ✅ ĐÃ THÊM: Thực thể trang Facebook
+import com.aichatvn.agent.data.model.FacebookPageEntity 
+import com.aichatvn.agent.data.model.EventLogEntity      // ✅ MỚI (Tuần 5)
+import com.aichatvn.agent.data.model.WorldStateEntity    // ✅ MỚI (Tuần 5)
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
 import kotlinx.coroutines.delay
@@ -63,7 +69,11 @@ fun SettingsScreen(
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
     val configSaveResult by viewModel.configSaveResult.collectAsState()
-    val facebookPages    by viewModel.facebookPages.collectAsState() // ✅ ĐÃ THÊM: Quan sát danh sách trang từ DB
+    val facebookPages    by viewModel.facebookPages.collectAsState() 
+    
+    // ✅ MỚI (Tuần 5): Quan sát các thực thể trạng thái thế giới thực và nhật ký sự kiện
+    val worldStates      by viewModel.worldStates.collectAsState()
+    val eventLogs        by viewModel.eventLogs.collectAsState()
 
     var groqKeyInput          by remember(groqApiKey)     { mutableStateOf(groqApiKey) }
     var resendKeyInput        by remember(resendApiKey)   { mutableStateOf(resendApiKey) }
@@ -152,7 +162,7 @@ fun SettingsScreen(
             }
             OutlinedButton(
                 onClick = { navController.navigate("tuya") },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth
             ) {
                 Text("🔌 Quản lý danh sách thiết bị Tuya")
             }
@@ -194,9 +204,20 @@ fun SettingsScreen(
             PluginConfigSection(
                 configs = allConfigs,
                 configSaveResult = configSaveResult,
-                facebookPages = facebookPages, // ✅ ĐÃ SỬA: Chuyển tiếp danh sách trang xuống
+                facebookPages = facebookPages, 
                 onSave = { key, value -> viewModel.saveConfig(key, value) },
                 onReset = { key -> viewModel.resetConfig(key) }
+            )
+
+            HorizontalDivider()
+
+            // ✅ MỚI (Tuần 5 - Console): Giao diện đồ họa World Model Console Giám sát & Sửa sai thời gian thực
+            WorldModelConsoleSection(
+                worldStates = worldStates,
+                eventLogs = eventLogs,
+                onDeleteState = { viewModel.deleteWorldState(it) },
+                onDeleteLog = { viewModel.deleteEventLog(it) },
+                onClearLogs = { viewModel.clearAllEventLogs() }
             )
 
             HorizontalDivider()
@@ -267,11 +288,160 @@ fun SettingsScreen(
     }
 }
 
+// ✅ MỚI (Tuần 5 - Console): Vẽ thành phần giám sát World Model & Event Logs
+@Composable
+private fun WorldModelConsoleSection(
+    worldStates: List<WorldStateEntity>,
+    eventLogs: List<EventLogEntity>,
+    onDeleteState: (String) -> Unit,
+    onDeleteLog: (String) -> Unit,
+    onClearLogs: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var activeTab by remember { mutableStateOf(0) } // 0 = World State, 1 = Event Logs
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text("🧠 World Model Console", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        IconButton(onClick = { expanded = !expanded }) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = if (expanded) "Thu gọn" else "Mở rộng"
+            )
+        }
+    }
+
+    if (!expanded) {
+        Text(
+            "Giám sát và sửa sai trạng thái thiết bị (${worldStates.size} thiết bị) và bộ nhớ sự kiện (${eventLogs.size} logs) — bấm để quản lý",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            TabRow(
+                selectedTabIndex = activeTab,
+                containerColor = Color.Transparent,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Tab(selected = activeTab == 0, onClick = { activeTab = 0 }) {
+                    Text("Bản sao số (World State)", modifier = Modifier.padding(vertical = 10.dp), style = MaterialTheme.typography.labelMedium)
+                }
+                Tab(selected = activeTab == 1, onClick = { activeTab = 1 }) {
+                    Text("Nhật ký sự kiện (Event Logs)", modifier = Modifier.padding(vertical = 10.dp), style = MaterialTheme.typography.labelMedium)
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            if (activeTab == 0) {
+                if (worldStates.isEmpty()) {
+                    Text("Chưa ghi nhận trạng thái thiết bị nào trong SQLite.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        worldStates.forEach { state ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp).fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(state.id, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("Trạng thái (JSON): ${state.attributesJson}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                                        Spacer(Modifier.height(2.dp))
+                                        Text("Cập nhật cuối: ${fmtTs(state.updatedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                    }
+                                    // Sửa sai: Cho phép admin xóa nóng các node world_state bị lỗi/cũ kẹt
+                                    IconButton(onClick = { onDeleteState(state.id) }, modifier = Modifier.size(36.dp)) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Xóa trạng thái", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column {
+                    if (eventLogs.isNotEmpty()) {
+                        Button(
+                            onClick = onClearLogs,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("🧹 Xóa sạch toàn bộ Event Logs (Reset trí nhớ AI)")
+                        }
+                    }
+
+                    if (eventLogs.isEmpty()) {
+                        Text("Nhật ký sự kiện trống. AI hiện chưa có ký ức hoạt động nào.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            eventLogs.take(50).forEach { log ->
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(8.dp).fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)
+                                                ) {
+                                                    Text(
+                                                        text = log.source,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.secondary
+                                                    )
+                                                }
+                                                Text(fmtTs(log.timestamp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                                            }
+                                            Spacer(Modifier.height(4.dp))
+                                            Text(log.summary, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        IconButton(onClick = { onDeleteLog(log.id) }, modifier = Modifier.size(32.dp)) {
+                                            Icon(Icons.Default.Close, contentDescription = "Xóa sự kiện đơn lẻ", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun PluginConfigSection(
     configs: List<AppConfigEntity>,
     configSaveResult: String?,
-    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận danh sách trang
+    facebookPages: List<FacebookPageEntity>, 
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -320,7 +490,7 @@ private fun PluginConfigSection(
             pluginId = pluginId,
             items = items,
             allConfigs = configs,
-            facebookPages = facebookPages, // ✅ ĐÃ SỬA: Truyền tiếp danh sách trang xuống dưới
+            facebookPages = facebookPages, 
             onSave = onSave,
             onReset = onReset
         )
@@ -332,7 +502,7 @@ private fun PluginGroupCard(
     pluginId: String,
     items: List<AppConfigEntity>,
     allConfigs: List<AppConfigEntity>,
-    facebookPages: List<FacebookPageEntity>, // ✅ ĐÃ SỬA: Chấp nhận tham số trang facebook
+    facebookPages: List<FacebookPageEntity>, 
     onSave: (String, String) -> Unit,
     onReset: (String) -> Unit
 ) {
@@ -345,11 +515,8 @@ private fun PluginGroupCard(
         "camera"    -> Pair("📷", "Camera giám sát thửa đất")
         "email"     -> Pair("📧", "Email thông báo cảnh báo")
         "schedule"  -> Pair("⏰", "Lịch trình tự động hóa")
-        
         "facebook"  -> Pair("📘", "Facebook Messenger")
-        
         "telegram"  -> Pair("✈️", "Telegram Assistant")
-        
         "website"   -> Pair("💻", "Website Chat Widget")
         else        -> Pair("🔧", "Cấu hình $pluginId")
     }
@@ -375,7 +542,6 @@ private fun PluginGroupCard(
             if (groupExpanded) {
                 Spacer(Modifier.height(4.dp))
 
-                // ✅ ĐÃ THÊM: Nếu mở rộng thẻ cấu hình Website, tự động render mã nhúng HTML kèm nút Copy 1 chạm!
                 if (pluginId == "website") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val widgetKey = allConfigs.firstOrNull { it.key == AppConfigDefaults.WEBSITE_WIDGET_KEY }?.value ?: ""
@@ -420,11 +586,6 @@ private fun PluginGroupCard(
                                     Text("📋 Sao chép mã nhúng Website", style = MaterialTheme.typography.labelMedium)
                                 }
 
-                                // ✅ ĐÃ THÊM: URL nhúng riêng cho kiểu "Embed by URL" (Google Sites và các trình
-                                // dựng web kéo-thả khác chặn localStorage khi dùng "Embed code" do bọc iframe
-                                // sandbox không allow-same-origin — mỗi lần refresh trang sẽ mất senderId/lịch sử).
-                                // Trỏ thẳng iframe tới URL này (origin thật) thì localStorage lưu bền qua các lần
-                                // refresh. Xem route /widget-frame trên app.py (Render).
                                 Spacer(Modifier.height(16.dp))
                                 Text(
                                     "🔗 URL nhúng (kiểu \"Nhúng URL\" — dùng cho Google Sites hoặc web kéo-thả):",
@@ -460,13 +621,11 @@ private fun PluginGroupCard(
                     }
                 }
 
-                // ✅ ĐÃ THÊM: Nút bấm kết nối tự động 1-Click cho Facebook kèm danh sách Fanpage thực tế
                 if (pluginId == "facebook") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
                     val gatewayToken = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_TOKEN }?.value ?: ""
                     val authUrl = "$gatewayUrl/auth/facebook?token=$gatewayToken"
 
-                    // --- VẼ DANH SÁCH FANPAGE ĐÃ KẾT NỐI ---
                     if (facebookPages.isNotEmpty()) {
                         Card(
                             modifier = Modifier
@@ -762,10 +921,10 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 200.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
-                        .verticalScroll(responseScrollState)
-                        .padding(8.dp)
+                    .heightIn(max = 200.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                    .verticalScroll(responseScrollState)
+                    .padding(8.dp)
                 ) {
                     Text(
                         text = entry.response,
