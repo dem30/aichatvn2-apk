@@ -918,10 +918,16 @@ class CameraSkill @Inject constructor(
     }
 
     // ✅ MỚI (Tuần 1): Hàm parse nội dung nhận được từ Groq Vision ép buộc cấu trúc JSON.
+    
     private fun parseVisionResult(raw: String): VisionParseResult {
-        val cleaned = raw.trim()
-            .removePrefix("```json").removePrefix("```")
-            .removeSuffix("```").trim()
+        val start = raw.indexOf('{')
+        val end = raw.lastIndexOf('}')
+        
+        val cleaned = if (start in 0 until end) {
+            raw.substring(start, end + 1).trim()
+        } else {
+            raw.trim()
+        }
 
         return try {
             val json = org.json.JSONObject(cleaned)
@@ -930,11 +936,10 @@ class CameraSkill @Inject constructor(
             val structuredSuspicious = when (state) {
                 "suspicious" -> true
                 "normal" -> false
-                else -> null // JSON ra nhưng state sai định dạng -> fallback về keyword contains()
+                else -> null 
             }
             VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, rawJson = json)
         } catch (e: Exception) {
-            // Không parse được JSON (lỗi mạng, timeout, hoặc model lỗi) -> giữ nguyên raw và trả structuredSuspicious = null để fallback
             VisionParseResult(displayComment = raw, structuredSuspicious = null, rawJson = null)
         }
     }
