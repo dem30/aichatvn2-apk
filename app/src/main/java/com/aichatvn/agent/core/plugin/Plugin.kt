@@ -1,5 +1,3 @@
-
-
 package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.core.AgentKernel
@@ -12,7 +10,7 @@ data class PluginCapabilities(
     val schedule: Boolean = false,
     val voice: Boolean = false,
     val vision: Boolean = false,
-    val background: Boolean = false // ✅ Đã khai báo năng lực chạy nền hợp lệ
+    val background: Boolean = false 
 )
 
 data class PluginManifest(
@@ -31,7 +29,6 @@ data class PluginManifest(
 interface Plugin {
     val manifest: PluginManifest
 
-    // Cầu nối tương thích ngược giúp tất cả các file cũ gọi không bị lỗi build
     val id: String get() = manifest.id
     val name: String get() = manifest.name
     val pluginVersion: String get() = manifest.pluginVersion
@@ -90,12 +87,9 @@ data class PluginParameter(
                 if (value is Boolean) return value
                 val lower = strVal.lowercase()
 
-                
-                // Sau:
-val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "enable", "có", "đồng ý", "xác nhận", "ok", "chuẩn", "đúng")
-val falseWords = setOf("false", "tắt", "no", "off", "0", "dừng", "vô hiệu", "disable", "không", "hủy", "huỷ", "thôi")
+                val trueWords = setOf("true", "mở", "bật", "yes", "on", "1", "kích hoạt", "enable", "có", "đồng ý", "xác nhận", "ok", "chuẩn", "đúng")
+                val falseWords = setOf("false", "tắt", "no", "off", "0", "dừng", "vô hiệu", "disable", "không", "hủy", "huỷ", "thôi")
 
-                
                 when (lower) {
                     in trueWords -> true
                     in falseWords -> false
@@ -120,12 +114,13 @@ data class PluginAction(
     val name: String,
     val description: String,
     val examples: List<String> = emptyList(),
-    val exampleOverrides: Map<String, Map<String, Any>> = emptyMap(), // ✅ MỚI
-    
+    val exampleOverrides: Map<String, Map<String, Any>> = emptyMap(), 
     val parameters: List<PluginParameter> = emptyList(),
     val tags: List<String> = emptyList(),
     val enabled: Boolean = true,
-    val triggerPrefixes: List<String> = emptyList()
+    val triggerPrefixes: List<String> = emptyList(),
+    
+    // ✅ MỚI (Tuần 5 - Phase 5): Ràng buộc trạng thái thế giới thực để chạy an toàn
+    // Định dạng cấu trúc: "source.sourceId.attrKey=expectedValue"
+    val requiredWorldState: String = ""
 )
-
-

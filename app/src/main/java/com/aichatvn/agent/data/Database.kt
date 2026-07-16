@@ -46,7 +46,7 @@ interface CustomerDao {
     suspend fun deleteCustomer(customerId: String)
 }
 
-// ==================== DAOS ====================
+// ==================== CHAT MESSAGE DAO ====================
 
 @Dao
 interface ChatMessageDao {
@@ -65,9 +65,9 @@ interface ChatMessageDao {
     @Query("DELETE FROM chat_messages WHERE id = :messageId")
     suspend fun deleteMessage(messageId: String)
 
-     @Query("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT :limit")
+    @Query("SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT :limit")
     suspend fun getAllMessagesRaw(limit: Int): List<ChatMessageEntity>
-    // ✅ ĐÃ THÊM: Truy vấn quét Hộp thư đến (Inbox) - Lấy tin nhắn mới nhất của từng khách hàng để làm danh sách.
+
     @Query("""
         SELECT m1.* FROM chat_messages m1
         INNER JOIN (
@@ -79,8 +79,6 @@ interface ChatMessageDao {
     """)
     fun getLatestChatThreadsFlow(): Flow<List<ChatMessageEntity>>
 
-    // ✅ MỚI: Đếm số tin nhắn khách CHƯA ĐỌC theo từng thread — dùng để hiện badge trên InboxScreen.
-    // Chỉ đếm role="user" vì tin "assistant" (AI tự trả lời hoặc admin gõ tay) không cần badge.
     @Query("""
         SELECT username, COUNT(*) as unreadCount
         FROM chat_messages
@@ -89,17 +87,16 @@ interface ChatMessageDao {
     """)
     fun getUnreadCountsFlow(): Flow<List<ThreadUnreadCount>>
 
-    // ✅ MỚI: Đánh dấu toàn bộ tin nhắn khách của 1 thread là đã đọc — gọi khi Admin mở
-    // ChatScreen của khách đó (xem ChatViewModel.init()).
     @Query("UPDATE chat_messages SET isRead = 1 WHERE username = :username AND role = 'user' AND isRead = 0")
     suspend fun markThreadAsRead(username: String)
 }
 
-// ✅ MỚI: Kết quả gộp nhóm cho getUnreadCountsFlow()
 data class ThreadUnreadCount(
     val username: String,
     val unreadCount: Int
 )
+
+// ==================== Q&A DAO ====================
 
 @Dao
 interface QADao {
@@ -165,6 +162,7 @@ interface TuyaDeviceDao {
     suspend fun deleteAllDevices()
 }
 
+// ==================== CAMERA DAO ====================
 
 @Dao
 interface CameraDao {
@@ -204,7 +202,6 @@ interface CameraDao {
     @Query("UPDATE customer_settings SET smartMode = :enabled, updatedAt = :timestamp WHERE customerId = :customerId")
     suspend fun updateSmartMode(customerId: String, enabled: Boolean, timestamp: Long)
 
-    // ✅ MỚI: Ghi lại Page ID Facebook gần nhất mà khách (customerId = PSID) vừa nhắn tới
     @Query("UPDATE customer_settings SET lastFacebookPageId = :pageId WHERE customerId = :customerId")
     suspend fun updateLastFacebookPageId(customerId: String, pageId: String)
     
@@ -217,6 +214,8 @@ interface CameraDao {
     @Query("UPDATE cameras SET smartMode = :enabled WHERE id = :cameraId")
     suspend fun updateCameraSmartMode(cameraId: String, enabled: Int)
 }
+
+// ==================== ALERT DAO ====================
 
 @Dao
 interface AlertDao {
@@ -258,6 +257,13 @@ interface AlertDao {
 
     @Query("DELETE FROM alerts WHERE timestamp < :beforeTimestamp")
     suspend fun deleteAlertsOlderThan(beforeTimestamp: Long)
+
+    // ✅ MỚI (Tuần 2 & 3 - Phase 3): Hỗ trợ cơ chế gộp/nén sự kiện cảnh báo
+    @Query("SELECT * FROM alerts WHERE cameraId = :cameraId ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLatestAlertForCamera(cameraId: String): AlertEntity?
+
+    @Query("UPDATE alerts SET endTime = :endTime WHERE id = :alertId")
+    suspend fun updateAlertEndTime(alertId: String, endTime: Long)
 }
 
 // ==================== SCHEDULE DAO ====================
@@ -270,7 +276,6 @@ interface ScheduleDao {
     @Query("SELECT * FROM schedules ORDER BY createdAt DESC")
     suspend fun getAllSchedules(): List<ScheduleEntity>
     
-    // ✅ BỔ SUNG: Lấy thông tin lịch trình theo ID để sinh nhãn hiển thị cho Alert
     @Query("SELECT * FROM schedules WHERE id = :id LIMIT 1")
     suspend fun getScheduleById(id: String): ScheduleEntity?
     
@@ -289,7 +294,6 @@ interface ScheduleDao {
     @Query("UPDATE schedules SET enabled = :enabled WHERE id = :id")
     suspend fun toggleSchedule(id: String, enabled: Int)
 }
-
 
 // ==================== APP CONFIG DAO ====================
 
@@ -317,7 +321,7 @@ interface AppConfigDao {
     suspend fun getAll(): List<AppConfigEntity>
 }
 
-// ==================== MULTI FACEBOOK PAGES DAO ====================
+// ==================== MULTI facebook PAGES DAO ====================
 
 @Dao
 interface FacebookPageDao {
@@ -340,6 +344,36 @@ interface FacebookPageDao {
     suspend fun clearAll()
 }
 
+// ==================== EVENT LOG DAO (TRÍ NHỚ) ====================
+
+// ✅ MỚI (Tuần 2 - Phase 2): Quản lý lưu trữ nhật ký sự kiện để phục vụ Memory-RAG
+@Dao
+interface EventLogDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertLog(log: EventLogEntity)
+
+    @Query("SELECT * FROM event_logs WHERE timestamp >= :since AND timestamp <= :until ORDER BY timestamp ASC")
+    suspend fun getLogsInTimeframe(since: Long, until: Long): List<EventLogEntity>
+
+    @Query("SELECT * FROM event_logs WHERE source = :source ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getLatestLogsBySource(source: String, limit: Int): List<EventLogEntity>
+
+    @Query("DELETE FROM event_logs WHERE timestamp < :beforeTimestamp")
+    suspend fun pruneLogsOlderThan(beforeTimestamp: Long)
+}
+
+// ==================== WORLD STATE DAO (BẢN SAO SỐ) ====================
+
+// ✅ MỚI (Tuần 5 - Phase 5): Quản lý trạng thái hiện tại thời gian thực của thế giới vật lý
+@Dao
+interface WorldStateDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertState(state: WorldStateEntity)
+
+    @Query("SELECT * FROM world_state WHERE source = :source AND sourceId = :sourceId LIMIT 1")
+    suspend fun getState(source: String, sourceId: String): WorldStateEntity?
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -353,10 +387,11 @@ interface FacebookPageDao {
         TuyaDeviceEntity::class,
         AppConfigEntity::class,
         CustomerEntity::class,
-        FacebookPageEntity::class // ✅ ĐĂNG KÝ: Thực thể lưu nhiều trang Facebook
+        FacebookPageEntity::class,
+        EventLogEntity::class,   // ✅ ĐĂNG KÝ MỚI (Tuần 2)
+        WorldStateEntity::class  // ✅ ĐĂNG KÝ MỚI (Tuần 5)
     ],
-    version = 13, // ✅ TĂNG PHIÊN BẢN: Tăng phiên bản cấu trúc từ 12 lên 13 (thêm scheduleId cho AlertEntity)
-
+    version = 15, // ✅ TĂNG PHIÊN BẢN: Tăng cấu trúc từ 13 lên 15 để Room Destructive Migration hoạt động chính xác
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -370,18 +405,14 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tuyaDeviceDao(): TuyaDeviceDao
     abstract fun customerDao(): CustomerDao
     abstract fun appConfigDao(): AppConfigDao
-    abstract fun facebookPageDao(): FacebookPageDao // ✅ ĐĂNG KÝ DAO của Facebook Pages
+    abstract fun facebookPageDao(): FacebookPageDao
+    
+    abstract fun eventLogDao(): EventLogDao   // ✅ DAO MỚI (Tuần 2)
+    abstract fun worldStateDao(): WorldStateDao // ✅ DAO MỚI (Tuần 5)
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
-
-        // ✅ App đang trong giai đoạn test/dev, không cần viết Migration tay cho từng version nữa.
-        // fallbackToDestructiveMigration() sẽ tự XOÁ VÀ TẠO LẠI toàn bộ database mỗi khi `version`
-        // trong @Database tăng lên mà không khớp version cũ trên máy — mất hết dữ liệu cũ trong DB,
-        // nhưng đổi lại không cần lo migration khi đổi schema liên tục.
-        // ⚠️ Nếu sau này lên bản chính thức cho người dùng thật, PHẢI viết lại Migration đầy đủ,
-        // nếu không mỗi lần tăng version sẽ xoá sạch dữ liệu người dùng.
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {

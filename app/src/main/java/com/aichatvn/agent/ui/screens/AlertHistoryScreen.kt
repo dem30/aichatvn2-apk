@@ -111,10 +111,8 @@ fun AlertHistoryScreen(
         }
     }
 
-    // Xem ảnh full size
     if (fullImagePath != null) {
         Dialog(onDismissRequest = { fullImagePath = null }) {
-            // TỐI ƯU HÓA LỚN: Giải mã ảnh phóng to kích thước đầy đủ trên luồng IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
             var fullBitmap by remember(fullImagePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
             
             LaunchedEffect(fullImagePath) {
@@ -143,7 +141,6 @@ fun AlertHistoryScreen(
         }
     }
 
-    // Xác nhận xóa tất cả
     if (showDeleteAllConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteAllConfirm = false },
@@ -169,11 +166,19 @@ private fun AlertCard(
     onDelete: () -> Unit
 ) {
     val isUnread = alert.isRead == 0
-    val timeText = remember(alert.timestamp) {
-        SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.getDefault()).format(Date(alert.timestamp))
+
+    // ✅ MỚI (Tuần 3 - Phase 3): Tính toán hiển thị thời gian động khi có sự kiện nén dạng khoảng [bắt đầu] - [kết thúc]
+    val timeText = remember(alert.timestamp, alert.endTime) {
+        val startText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(alert.timestamp))
+        val dateText = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(alert.timestamp))
+        if (alert.endTime != null && alert.endTime!! > alert.timestamp) {
+            val endText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(alert.endTime!!))
+            "$startText - $endText | $dateText"
+        } else {
+            "$startText $dateText"
+        }
     }
 
-    // TỐI ƯU HÓA LỚN: Giải mã ảnh thumbnail bất đồng bộ trên luồng ngầm IO chuyên dụng thay vì chạy đồng bộ trên Luồng giao diện chính
     var thumbnailBitmap by remember(alert.imagePath) { mutableStateOf<android.graphics.Bitmap?>(null) }
     
     LaunchedEffect(alert.imagePath) {
@@ -270,47 +275,38 @@ private fun AlertCard(
 
                 Spacer(Modifier.height(4.dp))
 
-
-
-
-                
                 Row(verticalAlignment = Alignment.CenterVertically) {
-    Text(
-        "diff=${alert.diff} (ngưỡng ${alert.absDiffTrigger})",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-    
-    // ✅ MỚI: Hiển thị nhãn lịch trình nếu có
-    if (!alert.scheduleLabel.isNullOrBlank()) {
-        Spacer(Modifier.width(8.dp))
-        Surface(
-            shape = MaterialTheme.shapes.extraSmall,
-            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-        ) {
-            Text(
-                text = alert.scheduleLabel,
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
-        }
-    }
+                    Text(
+                        "diff=${alert.diff} (ngưỡng ${alert.absDiffTrigger})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    if (!alert.scheduleLabel.isNullOrBlank()) {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = MaterialTheme.shapes.extraSmall,
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                        ) {
+                            Text(
+                                text = alert.scheduleLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
 
-    if (alert.emailSent == 1) {
-        Spacer(Modifier.width(8.dp))
-        Icon(
-            Icons.Default.Email,
-            contentDescription = "Đã gửi email",
-            modifier = Modifier.size(14.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-    }
-}
-
-
-
-                
+                    if (alert.emailSent == 1) {
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            Icons.Default.Email,
+                            contentDescription = "Đã gửi email",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         }
     }

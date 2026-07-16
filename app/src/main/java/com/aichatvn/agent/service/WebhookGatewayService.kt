@@ -21,7 +21,7 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatSkill
-import com.aichatvn.agent.scheduler.CronParser // ĐÃ THÊM: Import lớp phân tích cron độc lập
+import com.aichatvn.agent.scheduler.CronParser 
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
@@ -90,9 +90,10 @@ class WebhookGatewayService : Service() {
         startCloudGatewaySSE()       
         startTelegramLongPolling()   
         startHeartbeatLoop()         
-        
-        // ✅ THÊM MỚI: Kích hoạt vòng lặp quét lịch độc lập từng phút
         startScheduleLoop()
+        
+        // ✅ MỚI (Tuần 5): Kích hoạt vòng lặp định kỳ khai thác thói quen người dùng
+        startPatternMiningLoop()
     }
 
     private fun acquireWakeLock() {
@@ -128,15 +129,13 @@ class WebhookGatewayService : Service() {
     private fun startForegroundService() {
         val notification = buildNotification("Hệ thống Webhook Gateway đang hoạt động...")
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // Android 14+ (API 34+)
-            // Đồng bộ chính xác kiểu SERVICE_TYPE_SPECIAL_USE khớp với Manifest
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { 
             startForeground(
                 NOTIFICATION_ID, 
                 notification, 
                 android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             )
         } else {
-            // Đối với các phiên bản Android cũ hơn, khởi chạy tiền cảnh tiêu chuẩn không cần truyền tham số Type đặc biệt
             startForeground(NOTIFICATION_ID, notification)
         }
     }
@@ -345,16 +344,13 @@ class WebhookGatewayService : Service() {
                                                     }
                                                 }
                                            } else {
-    val platform = jsonObj.optString("platform", "website") // ✅ Đổi từ "web" thành "website"
-    val senderId = jsonObj.optString("senderId", "external_user")
-    val text = jsonObj.optString("text", "")
-    val incomingPageId = jsonObj.optString("pageId", "")
-                                              // do widget Website gửi trực tiếp — Render gateway forward nguyên 2 field này.
+                                                val platform = jsonObj.optString("platform", "website") 
+                                                val senderId = jsonObj.optString("senderId", "external_user")
+                                                val text = jsonObj.optString("text", "")
+                                                val incomingPageId = jsonObj.optString("pageId", "")
                                                 val incomingImageUrl = jsonObj.optString("imageUrl", "").takeIf { it.isNotBlank() }
                                                 val incomingImageBase64Raw = jsonObj.optString("imageBase64", "").takeIf { it.isNotBlank() }
 
-                                                // ✅ SỬA: trước đây chỉ xử lý khi có text — tin nhắn CHỈ có ảnh (không kèm
-                                                // caption) bị bỏ qua hoàn toàn. Giờ xử lý khi có text HOẶC có ảnh.
                                                 if (text.isNotBlank() || incomingImageUrl != null || incomingImageBase64Raw != null) {
                                                     val unifiedUsername = "${platform}_$senderId"
 
@@ -378,9 +374,6 @@ class WebhookGatewayService : Service() {
                                                         }
                                                     }
 
-                                                    // ✅ MỚI: Tải ảnh về máy (nếu là URL của Meta CDN) rồi mã hoá base64 để
-                                                    // truyền tiếp cho AgentKernel (Vision Plugin dùng imageBase64 để phân tích).
-                                                    // Website đã gửi sẵn base64 nên dùng thẳng, không cần tải lại.
                                                     val resolvedImageBase64 = incomingImageBase64Raw
                                                         ?: incomingImageUrl?.let { downloadImageAsBase64(it) }
 
@@ -401,8 +394,6 @@ class WebhookGatewayService : Service() {
                                                         if (result is AgentKernel.PluginResult.Success) {
                                                             val replyMap = result.data as? Map<*, *>
                                                             val replyText = (replyMap?.get("response") as? String) ?: ""
-                                                            // ✅ MỚI: nếu bot/plugin trả kèm ảnh (vd. CameraSkill quét camera),
-                                                            // đọc bytes cục bộ để gửi kèm ra đúng kênh.
                                                             val replyImagePath = replyMap?.get("imagePath") as? String
                                                             val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
 
@@ -424,10 +415,6 @@ class WebhookGatewayService : Service() {
                                                             }
                                                         }
                                                     } else {
-                                                        // ✅ ĐÃ SỬA: trước đây gọi saveExternalUserMessage() chỉ với (text, unifiedUsername) —
-                                                        // resolvedImageBase64/incomingImageUrl đã tải/giải mã xong ở trên nhưng KHÔNG được
-                                                        // truyền vào, nên ảnh khách gửi tới khi Admin đang ở chế độ Người Trực bị rớt mất
-                                                        // hoàn toàn, chỉ còn lại tin nhắn text rỗng (hoặc mất hẳn nếu text cũng rỗng).
                                                         chatSkill.saveExternalUserMessage(
                                                             message = text,
                                                             username = unifiedUsername,
@@ -490,9 +477,6 @@ class WebhookGatewayService : Service() {
                                     val message = update.optJSONObject("message") ?: continue
                                     val text = message.optString("text", "")
                                     val chatId = message.getJSONObject("chat").getLong("id").toString()
-                                    // ✅ MỚI: Telegram gửi ảnh dưới dạng mảng "photo" gồm nhiều kích cỡ (file_id
-                                    // khác nhau) — trước đây hoàn toàn không được đọc, chỉ "text" mới được xử lý.
-                                    // Lấy phần tử CUỐI (kích thước lớn nhất) trong mảng.
                                     val photoArray = message.optJSONArray("photo")
                                     val largestPhotoFileId = if (photoArray != null && photoArray.length() > 0) {
                                         photoArray.getJSONObject(photoArray.length() - 1).optString("file_id", "")
@@ -510,7 +494,6 @@ class WebhookGatewayService : Service() {
                                         val isBotEnabled = setting?.smartMode != 0
 
                                         serviceScope.launch {
-                                            // ✅ MỚI: Tải ảnh từ Telegram (getFile -> URL file thật -> tải bytes -> base64)
                                             val imageBase64 = largestPhotoFileId?.let { downloadTelegramPhotoAsBase64(botToken, it) }
 
                                             if (isBotEnabled) {
@@ -531,9 +514,6 @@ class WebhookGatewayService : Service() {
                                                     }
                                                 }
                                             } else {
-                                                // ✅ ĐÃ SỬA: cùng lỗi như nhánh Website/FB — imageBase64 đã tải xong ở trên
-                                                // (downloadTelegramPhotoAsBase64) nhưng không được truyền vào, khiến ảnh khách
-                                                // gửi qua Telegram lúc Admin đang Người Trực bị rớt, chỉ còn tin nhắn rỗng.
                                                 chatSkill.saveExternalUserMessage(
                                                     message = effectiveText,
                                                     username = unifiedUsername,
@@ -554,7 +534,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI: nhận thêm imageBase64 tuỳ chọn để đẩy kèm ảnh vào hàng đợi SSE của widget Website.
     private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, message: String, imageBase64: String? = null) {
         withContext(Dispatchers.IO) {
             try {
@@ -585,14 +564,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI: Tải 1 ảnh từ URL công khai (vd. Facebook CDN) về bộ nhớ rồi mã hoá base64,
-    // để đưa vào ChatRequest.imageBase64 cho Vision Plugin phân tích. Trả về null nếu lỗi bất kỳ
-    // (mạng lỗi, ảnh quá lớn...) — không được để lỗi tải ảnh làm rớt luôn cả phần text đi kèm.
-    // ✅ ĐÃ SỬA: trước đây thất bại (timeout/mạng chập chờn/HTTP lỗi) là bỏ luôn ngay lần đầu,
-    // không có retry — trong khi các hàm gửi đi (safe_post_request_async bên Gateway Python)
-    // đều có retry 3 lần + backoff. Đây là nguyên nhân ảnh khách gửi "lúc được lúc không" ở
-    // chế độ bot tự động: mạng chập chờn thoáng qua là ảnh rớt âm thầm, bot vẫn trả lời (chỉ
-    // dựa trên text nếu có) như không có gì xảy ra.
     private suspend fun downloadImageAsBase64(imageUrl: String, maxRetries: Int = 3): String? {
         return withContext(Dispatchers.IO) {
             var lastErrorMessage: String? = null
@@ -623,9 +594,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI: Đọc 1 file ảnh đã lưu cục bộ trên máy (vd. context.filesDir/chat_images/*.jpg do
-    // CameraSkill tạo ra) rồi mã hoá base64 để gửi ra kênh ngoài. Trả về null nếu file không tồn
-    // tại hoặc đọc lỗi — không làm crash toàn bộ luồng trả lời.
     private fun readLocalFileAsBase64(absolutePath: String): String? {
         return try {
             val file = java.io.File(absolutePath)
@@ -638,11 +606,6 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI: Telegram chỉ gửi "file_id" trong webhook/getUpdates, phải gọi thêm "getFile" để lấy
-    // "file_path" thật, rồi mới tải được bytes từ https://api.telegram.org/file/bot<token>/<file_path>.
-    // ✅ ĐÃ SỬA: thêm retry cho CẢ 2 bước (getFile lấy file_path, rồi tải bytes thật) — trước đây
-    // chỉ cần 1 trong 2 request bị trễ/lỗi thoáng qua là mất ảnh ngay lập tức, không có cơ hội
-    // thử lại, gây hiện tượng ảnh Telegram "lúc được lúc không" ở chế độ bot tự động.
     private suspend fun getTelegramFilePath(botToken: String, fileId: String, maxRetries: Int = 3): String? {
         return withContext(Dispatchers.IO) {
             var lastErrorMessage: String? = null
@@ -715,14 +678,11 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ MỚI: Gửi ảnh (kèm caption tuỳ chọn) trực tiếp cho Telegram bằng multipart/form-data —
-    // "sendPhoto" nhận file nhị phân trực tiếp, không cần ảnh có URL công khai. Gọi thẳng
-    // api.telegram.org, KHÔNG đi qua Render Gateway (giống sendTelegramMessage hiện có).
     private suspend fun sendTelegramPhoto(token: String, chatId: String, imageBase64: String, caption: String = "") {
         withContext(Dispatchers.IO) {
             try {
                 val imageBytes = android.util.Base64.decode(imageBase64, android.util.Base64.NO_WRAP)
-                val captionSafe = caption.take(1024) // Giới hạn caption của Telegram Bot API
+                val captionSafe = caption.take(1024) 
 
                 val multipartBuilder = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
                     .addFormDataPart("chat_id", chatId)
@@ -808,10 +768,9 @@ class WebhookGatewayService : Service() {
         }
     }
 
-    // ✅ THÊM MỚI: Luồng quét và thực thi lịch trình cục bộ (Thay thế cho WorkManager)
     private fun startScheduleLoop() {
         serviceScope.launch(Dispatchers.IO) {
-            delay(5000) // Đợi database và cơ chế tiêm phụ thuộc ổn định
+            delay(5000) 
             while (isActive) {
                 try {
                     val schedules = database.scheduleDao().getAllSchedules()
@@ -820,7 +779,6 @@ class WebhookGatewayService : Service() {
                     for (schedule in schedules) {
                         if (schedule.enabled != 1) continue
 
-                        // Tận dụng CronParser đã sửa bug logic ở File 1
                         val shouldRun = CronParser.matches(schedule.cron, now, schedule.lastRunAt) ||
                                 (schedule.intervalMinutes > 0 && 
                                  (now - schedule.lastRunAt) >= (schedule.intervalMinutes * 60_000L - 10_000L))
@@ -850,12 +808,85 @@ class WebhookGatewayService : Service() {
                 } catch (e: Exception) {
                     logger.e("ScheduleLoop", "⚠️ Gặp lỗi trong vòng lặp quét lịch trình: ${e.message}")
                 }
-                delay(60_000L) // Quét database mỗi 60 giây một lần với WakeLock bảo vệ
+                delay(60_000L) 
             }
         }
     }
 
-    // ✅ THÊM MỚI: Hàm chuyển đổi đệ quy an toàn JSON sang Map thuần tuý cho các Action
+    // ✅ MỚI (Tuần 5 - Phase 4): Triển khai thói quen tự học tập tuần hoàn Pattern Mining định kỳ mỗi 24 giờ
+    private fun startPatternMiningLoop() {
+        serviceScope.launch(Dispatchers.IO) {
+            delay(30_000L) // Đợi hệ thống chạy ổn định sau khi khởi động
+            while (isActive) {
+                try {
+                    minePatterns()
+                } catch (e: Exception) {
+                    logger.e("PatternMining", "Lỗi khi khai thác mẫu hành vi: ${e.message}", e)
+                }
+                delay(24 * 60 * 60 * 1000L) // Quét khai thác lại sau mỗi 24 giờ
+            }
+        }
+    }
+
+    private suspend fun minePatterns() {
+        val since = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 // Thống kê trong 7 ngày gần nhất
+        val now = System.currentTimeMillis()
+        val logs = database.eventLogDao().getLogsInTimeframe(since, now)
+        if (logs.isEmpty()) return
+
+        val calendar = java.util.Calendar.getInstance()
+        data class GroupKey(val source: String, val sourceId: String, val eventType: String, val hour: Int)
+
+        // Phân nhóm logs theo khung giờ hằng ngày
+        val grouped = logs.groupBy { log ->
+            calendar.timeInMillis = log.timestamp
+            GroupKey(log.source, log.sourceId, log.eventType, calendar.get(java.util.Calendar.HOUR_OF_DAY))
+        }
+
+        val qaDao = database.qaDao()
+        val existingPatterns = trainingSkillPatternCache()
+
+        grouped.forEach { (key, entries) ->
+            // Đếm số ngày xuất hiện biến động tương đồng trong cùng một khung giờ hằng ngày
+            val distinctDays = entries.map { entry ->
+                calendar.timeInMillis = entry.timestamp
+                calendar.get(java.util.Calendar.DAY_OF_YEAR)
+            }.distinct().size
+
+            // Điều kiện ghi nhận thói quen: Lặp lại tối thiểu 4/7 ngày liên tiếp
+            if (distinctDays >= 4) {
+                val question = "pattern_${key.source}_${key.sourceId}_${key.eventType}_${key.hour}h"
+                val answer = "${key.source}/${key.sourceId}: \"${key.eventType}\" thường xảy ra vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất)."
+
+                if (existingPatterns[question] != answer) {
+                    val qa = com.aichatvn.agent.data.model.QAEntity(
+                        id = existingPatterns[question + "_id"] ?: java.util.UUID.randomUUID().toString(),
+                        question = question,
+                        answer = answer,
+                        type = "pattern",
+                        category = "auto_pattern",
+                        createdBy = "default_user",
+                        createdAt = System.currentTimeMillis(),
+                        timestamp = System.currentTimeMillis()
+                    )
+                    qaDao.insertQA(qa)
+                    logger.i("PatternMining", "🔁 Phát hiện thói quen mới: $answer")
+                }
+            }
+        }
+    }
+
+    private suspend fun trainingSkillPatternCache(): Map<String, String> {
+        return try {
+            database.qaDao().getAllQAs("default_user")
+                .filter { it.type == "pattern" }
+                .flatMap { listOf(it.question to it.answer, it.question + "_id" to it.id) }
+                .toMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
     private fun jsonObjectToMap(json: org.json.JSONObject): Map<String, Any> {
         val map = mutableMapOf<String, Any>()
         json.keys().forEach { key ->

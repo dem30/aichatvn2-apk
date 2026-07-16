@@ -32,10 +32,7 @@ data class ChatMessageEntity(
     val timestamp: Long,
     // Nguồn gốc câu trả lời của Assistant (human, learn, camera, v.v.)
     val sourcePlugin: String? = null,
-    // ✅ MỚI: Trạng thái đã đọc — CHỈ có ý nghĩa với tin nhắn role="user" của khách ngoại kênh
-    // (Facebook/Telegram/Website). Mặc định true để không phá dữ liệu cũ/tin nhắn assistant/tin
-    // nhắn của default_user (những tin này không cần badge chưa đọc). Các nơi insert tin nhắn
-    // KHÁCH GỬI TỚI từ webhook sẽ set false tường minh — xem ChatSkill.saveExternalUserMessage().
+    // Trạng thái đã đọc — CHỈ có ý nghĩa với tin nhắn role="user" của khách ngoại kênh
     val isRead: Boolean = true
 )
 
@@ -59,7 +56,7 @@ data class QAEntity(
 @Entity(tableName = "customers")
 data class CustomerEntity(
     @PrimaryKey
-    val id: String,          // = customerId, khớp với CameraConfigEntity.customerId
+    val id: String,          // = customerId, khớp with CameraConfigEntity.customerId
     val name: String,
     val email: String,
     val address: String = "",
@@ -87,9 +84,9 @@ data class CameraConfigEntity(
     val aiPrompt: String = "",
     val aiPositiveKeywords: String = "",
     val aiNegativeKeywords: String = "",
-    val enableCooldown: Int = 1,       // ✅ MỚI: 1 = Bật, 0 = Tắt hoãn kiểm tra AI
-    val enableNotification: Int = 1,    // ✅ MỚI: 1 = Bật, 0 = Tắt gửi Email/Push
-    val alertActions: String = "[]"   // ✅ MỚI: JSON array [{pluginId, action, params}] chạy khi isSuspicious=true
+    val enableCooldown: Int = 1,       // 1 = Bật, 0 = Tắt hoãn kiểm tra AI
+    val enableNotification: Int = 1,    // 1 = Bật, 0 = Tắt gửi Email/Push
+    val alertActions: String = "[]"   // JSON array [{pluginId, action, params}] chạy khi isSuspicious=true
 )
 
 @Entity(tableName = "customer_settings")
@@ -100,9 +97,6 @@ data class CustomerSettingEntity(
     val isActive: Int = 1,
     val updatedAt: Long,
     val timestamp: Long,
-    // ✅ MỚI: Page ID Facebook gần nhất mà khách (customerId = PSID) đã nhắn tới.
-    // Dùng để trả lời thủ công đúng Fanpage khi có nhiều Fanpage liên kết cùng lúc,
-    // thay vì phụ thuộc extraContext (thường rỗng khi Admin gõ tay từ ChatScreen).
     val lastFacebookPageId: String? = null
 )
 
@@ -128,10 +122,14 @@ data class AlertEntity(
     val isSuspicious: Int = 1,
     val isRead: Int = 0,
     val scheduleId: String? = null,
-    val scheduleLabel: String? = null
-
-
-  
+    val scheduleLabel: String? = null,
+    
+    // ✅ MỚI (Tuần 2 & 3 - Phase 3): Thời điểm kết thúc sự kiện nén kéo dài.
+    // null nghĩa là sự kiện tức thời hoặc không áp dụng nén.
+    val endTime: Long? = null,
+    
+    // ✅ MỚI (Tuần 1 & 2 - Phase 1): Lưu trữ raw JSON có cấu trúc nhận được từ Groq Vision
+    val aiStateJson: String? = null
 )
 
 // ==================== SCHEDULE ====================
@@ -173,5 +171,36 @@ data class FacebookPageEntity(
     val id: String,                 // Page ID từ Facebook
     val name: String,               // Tên Fanpage
     val accessToken: String,        // Access Token dài hạn riêng của trang này
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+// ==================== EVENT LOG (TRÍ NHỚ SỰ KIỆN) ====================
+
+// ✅ MỚI (Tuần 2 - Phase 2): Nhật ký sự kiện phục vụ bộ nhớ ngữ cảnh và Memory-RAG.
+@Entity(
+    tableName = "event_logs",
+    indices = [Index(value = ["source"]), Index(value = ["timestamp"])]
+)
+data class EventLogEntity(
+    @PrimaryKey
+    val id: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val source: String,       // "camera", "tuya", "system", "call", "notification"
+    val sourceId: String,     // ID cụ thể của thiết bị/camera/kênh liên lạc
+    val eventType: String,    // "state_change", "person_detected", "missed_call", "incoming_message"
+    val value: String,        // Giá trị trạng thái thô
+    val summary: String       // Tóm tắt ngôn ngữ tự nhiên để AI dễ đọc
+)
+
+// ==================== WORLD STATE (BẢN SAO SỐ THỜI GIAN THỰC) ====================
+
+// ✅ MỚI (Tuần 5 - Phase 5): Bản sao trạng thái mới nhất của các đối tượng trong nhà.
+@Entity(tableName = "world_state")
+data class WorldStateEntity(
+    @PrimaryKey
+    val id: String,           // Định dạng: "$source:$sourceId"
+    val source: String,       // "camera", "tuya", "system", v.v.
+    val sourceId: String,
+    val attributesJson: String, // Lưu JSON phẳng các thuộc tính hiện tại: {"state":"on","cup_detected":"true"}
     val updatedAt: Long = System.currentTimeMillis()
 )

@@ -86,6 +86,13 @@ class GroqClientTool @Inject constructor(
 
         private const val PROMPT_LOG_SIZE = 10
         private const val PROMPT_LOG_MAX_CHARS = 20_000
+
+        // ✅ MỚI (Tuần 1 - Phase 1): Ép Groq Vision trả JSON có cấu trúc ổn định thay vì
+        // văn bản tự do — để CameraSkill parse logic chính xác thay vì chỉ contains() từ khóa thô.
+        private const val STRUCTURED_VISION_SUFFIX = """
+
+🚨 BẮT BUỘC TRẢ VỀ JSON THÔ THEO ĐỊNH DẠNG SAU, KHÔNG GIẢI THÍCH THÊM, KHÔNG BỌC TRONG MARKDOWN ```json:
+{"objects": ["các đối tượng chính phát hiện được, vd: person, car, dog"], "state": "suspicious hoặc normal", "confidence": 0.0 đến 1.0, "description": "mô tả tóm tắt bằng tiếng Việt về những gì bạn thấy"}"""
     }
 
     private val client = OkHttpClient.Builder()
@@ -198,7 +205,6 @@ class GroqClientTool @Inject constructor(
             val raw = prefs.getString(key, null) ?: return@OnSharedPreferenceChangeListener
             val info = parseRateLimitJson(raw) ?: return@OnSharedPreferenceChangeListener
 
-            // Đồng bộ nguyên tử thread-safe đối với SharedPrefs listener
             _rateLimitByModel.update { it + (key to info) }
             when (key) {
                 DEFAULT_MODEL_TEXT, DEFAULT_MODEL_VISION -> _chatRateLimitInfo.value = info
@@ -283,7 +289,6 @@ class GroqClientTool @Inject constructor(
             capturedAtMillis = now
         )
 
-        // SỬA ĐỒNG BỘ NỀN: Áp dụng cập nhật .update nguyên tử tránh Race Condition khi đa luồng gọi đồng thời
         _rateLimitByModel.update { it + (model to info) }
         
         val chatModel   = _rateLimitByModel.value.keys.firstOrNull { it == DEFAULT_MODEL_TEXT || it == DEFAULT_MODEL_VISION }
@@ -373,7 +378,6 @@ class GroqClientTool @Inject constructor(
                 put("max_tokens", maxTokens)
             }.toString()
 
-            // KHẮC PHỤC RÒ RỈ: Giải phóng socket tự động bằng khối '.use' của OkHttp Response
             val parsed = client.newCall(
                 Request.Builder()
                     .url(BASE_URL)
@@ -421,7 +425,6 @@ class GroqClientTool @Inject constructor(
             put("temperature", 0)
         }.toString()
 
-        // KHẮC PHỤC RÒ RỈ: Sửa triệt để rò rỉ Socket mạng bằng cấu trúc '.use' khép kín dữ liệu Response
         val resultPair = try {
             client.newCall(
                 Request.Builder()
@@ -492,11 +495,14 @@ class GroqClientTool @Inject constructor(
             val base64  = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
             val dataUrl = "data:image/jpeg;base64,$base64"
 
+            // ✅ MỚI (Tuần 1): Nối cấu trúc JSON ép buộc của Camera Vision vào cuối prompt thô
+            val structuredPrompt = prompt + STRUCTURED_VISION_SUFFIX
+
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "user")
                     put("content", JSONArray().apply {
-                        put(JSONObject().apply { put("type", "text"); put("text", prompt) })
+                        put(JSONObject().apply { put("type", "text"); put("text", structuredPrompt) })
                         put(JSONObject().apply {
                             put("type", "image_url")
                             put("image_url", JSONObject().apply { put("url", dataUrl) })
@@ -517,7 +523,6 @@ class GroqClientTool @Inject constructor(
                 put("max_tokens", maxTokens)
             }.toString()
 
-            // KHẮC PHỤC RÒ RỈ: Giải phóng socket tự động bằng khối '.use' của OkHttp Response
             val parsed = client.newCall(
                 Request.Builder()
                     .url(BASE_URL)

@@ -4,7 +4,6 @@ import com.aichatvn.agent.utils.toMap
 import javax.inject.Provider
 import com.aichatvn.agent.core.execution.IntentExecutor
 
-
 import android.content.Context
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
@@ -64,7 +63,7 @@ class CameraSkill @Inject constructor(
     private val notificationSkill: NotificationSkill,
     private val configProvider: AppConfigProvider,
     private val deviceRegistry: DeviceRegistry,
-    private val intentExecutorProvider: Provider<IntentExecutor>, // ✅ MỚI — Provider phá cycle CameraSkill→IntentExecutor→Set<Plugin>→CameraSkill
+    private val intentExecutorProvider: Provider<IntentExecutor>, 
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
@@ -81,9 +80,6 @@ class CameraSkill @Inject constructor(
                 examples = listOf("quét camera", "chụp ảnh camera"),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
-                    // ✅ MỚI: force + alertActions/scheduleId thực chất được ScheduleFormSheet
-                    // ghi trực tiếp vào ScheduleEntity.params (xem CameraDetailViewModel.saveSchedule),
-                    // khai báo ở đây chỉ để nhất quán manifest và cho phép gọi qua lệnh chat nếu cần.
                     PluginParameter("force", "boolean", "Ép buộc AI phân tích (bỏ qua pHash & cooldown)", false, "boolean")
                 )
             ),
@@ -192,6 +188,13 @@ class CameraSkill @Inject constructor(
             return result
         }
     }
+
+    // ✅ MỚI (Tuần 1 - Phase 1): Thực thể phân tích có cấu trúc sau khi ép Groq trả về JSON
+    private data class VisionParseResult(
+        val displayComment: String,         // Text lưu lịch sử (ưu tiên trường description)
+        val structuredSuspicious: Boolean?, // Rơi vào true/false khi parse được JSON, null khi parse lỗi
+        val rawJson: org.json.JSONObject?    // Giữ lại JSON để lưu cột aiStateJson
+    )
     
     private val learningStates = ConcurrentHashMap<String, CameraLearningState>()
     private val circuitBreakers = ConcurrentHashMap<String, CircuitBreakerState>()
@@ -207,9 +210,11 @@ class CameraSkill @Inject constructor(
     private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, 3 * 60 * 60 * 1000L)
     private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
     private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
-    
     private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
+    
+    // ✅ MỚI (Tuần 3 - Phase 3): Đọc thời gian tối đa gộp nén cảnh báo liên tiếp
+    private suspend fun alertMergeWindowMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS, 5 * 60 * 1000L)
     
     companion object {
         private const val CIRCUIT_BREAKER_THRESHOLD_DEFAULT = 3
@@ -224,10 +229,6 @@ class CameraSkill @Inject constructor(
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
 
-    // ✅ MỚI: Tổng hợp trạng thái hiển thị Dashboard từ 3 nguồn độc lập (kết nối mạng,
-    // giám sát thủ công manualOff, AI Smart Mode của khách hàng) thay vì chỉ dựa vào isOnline.
-    // Trước đây getDashboardNodes/handleSetActive/handleSetSmartMode mỗi nơi tự ghi đè status
-    // theo cách riêng, khiến "Làm mới" xoá mất thông tin giám sát/AI vừa đổi.
     private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
         if (cam.isOnline != 1) return "Mất kết nối"
         val setting = database.cameraDao().getCustomerSetting(cam.customerId.trim())
@@ -243,11 +244,9 @@ class CameraSkill @Inject constructor(
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
         cameras.mapIndexed { index, cam ->
-            // Tọa độ mặc định ban đầu của thiết bị camera
             val defaultX = 40f + (index % 2) * 160f
             val defaultY = 40f + (index / 2) * 160f
 
-            // ✅ Kiểm tra và ưu tiên nạp tọa độ tùy chỉnh từ Database
             val savedX = configProvider.getFloat("layout_x_${cam.id.trim()}", -1f)
             val savedY = configProvider.getFloat("layout_y_${cam.id.trim()}", -1f)
             val finalX = if (savedX >= 0f) savedX else defaultX
@@ -260,7 +259,6 @@ class CameraSkill @Inject constructor(
                 name = cam.customername,
                 type = DeviceType.CAMERA,
                 pluginId = manifest.id,
-                
                 defaultAction = "scan",
                 defaultParams = mapOf("cameraId" to cam.id.trim()),
                 supportedActions = listOf(
@@ -269,17 +267,14 @@ class CameraSkill @Inject constructor(
                     DashboardDeviceAction(id = "set_active", title = "Bật giám sát", icon = "🔔", defaultParams = mapOf("active" to true)),
                     DashboardDeviceAction(id = "set_active", title = "Tắt giám sát", icon = "🔕", defaultParams = mapOf("active" to false)),
                     DashboardDeviceAction(id = "set_smart_mode", title = "Bật AI", icon = "🧠", defaultParams = mapOf("enabled" to true)),
-                    // ✅ MỚI: Trước đây chỉ có nút bật AI, không có cách tắt AI từ Dashboard
                     DashboardDeviceAction(id = "set_smart_mode", title = "Tắt AI", icon = "🚫", defaultParams = mapOf("enabled" to false))
                 ),
-                
                 x = finalX,
                 y = finalY,
                 online = isOnline,
                 icon = "📷",
                 ip = "192.168.1.${10 + index}",
                 battery = null,
-                // ✅ SỬA: dùng buildCameraStatusText() để phản ánh đúng cả giám sát + AI, không chỉ online
                 status = buildCameraStatusText(cam),
                 room = "Thửa Đất"
             )
@@ -288,7 +283,6 @@ class CameraSkill @Inject constructor(
     
     override suspend fun execute(action: String, params: Map<String, Any>): PluginResult {
         logger.d("CameraSkill", "execute: action=$action")
-        
         return when (action) {
             "scan" -> handleScan(params)
             "list_cameras" -> handleListCameras()
@@ -312,7 +306,6 @@ class CameraSkill @Inject constructor(
             aiNegativeKeywords = (params["aiNegativeKeywords"] as? String)?.trim() ?: cam.aiNegativeKeywords,
             snapshoturl = (params["snapshotUrl"] as? String)?.trim() ?: cam.snapshoturl,
             landinfo = (params["landInfo"] as? String)?.trim() ?: cam.landinfo,
-            // ✅ MỚI: Cập nhật cấu hình cooldown / thông báo qua action "configure"
             enableCooldown = (params["enableCooldown"] as? Int) ?: (params["enableCooldown"] as? Number)?.toInt() ?: cam.enableCooldown,
             enableNotification = (params["enableNotification"] as? Int) ?: (params["enableNotification"] as? Number)?.toInt() ?: cam.enableNotification
         )
@@ -331,7 +324,6 @@ class CameraSkill @Inject constructor(
         logger.i("CameraSkill", "configure OK cameraId=$cameraId changed=$changed")
         
         syncToDeviceRegistry()
-        
         PluginResult.Success(mapOf("message" to "✅ Camera \"${cam.customername}\": $summary"))
     }
 
@@ -352,15 +344,9 @@ class CameraSkill @Inject constructor(
         val summary = cameras.joinToString("\n") { "• ${it.customername} (id: ${it.id.trim()})" }
         PluginResult.Success(mapOf("cameras" to list, "message" to "Danh sách camera:\n$summary"))
     }
-
-
-
-
-
     
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = (params["cameraId"] as? String)?.trim()
-        // ✅ MỚI: đọc force + scheduleId + alertActions riêng do ScheduleFormSheet ghi vào params
         val force = params["force"] as? Boolean
             ?: (params["force"] as? String)?.lowercase()?.let { it == "true" }
             ?: false
@@ -369,6 +355,7 @@ class CameraSkill @Inject constructor(
             ?.trim()
             ?.takeIf { it.isNotEmpty() && it != "[]" }
             ?.let { alertActionsFromJson(it) }
+            
         val result = scanCamera(
             cameraId,
             false,
@@ -388,7 +375,6 @@ class CameraSkill @Inject constructor(
 
                 if (warning != null) return PluginResult.Success(mapOf("message" to warning))
 
-                // ✅ MỚI: chỉ đính kèm ảnh khi user chỉ định đúng 1 camera cụ thể (vd. "chụp ảnh camera X")
                 var imagePath: String? = null
                 if (cameraId != null) {
                     val single = results.firstOrNull() as? Map<*, *>
@@ -429,13 +415,6 @@ class CameraSkill @Inject constructor(
             else -> PluginResult.Failure("Quét thất bại")
         }
     }
-
-
-
-
-    
-
-
     
     private suspend fun handleStatus(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
         val cameraId = (params["cameraId"] as? String)?.trim()
@@ -493,13 +472,8 @@ class CameraSkill @Inject constructor(
         database.cameraDao().updateCamera(updatedCam)
         logger.i("CameraSkill", "set_active cameraId=$cameraId active=$active (manualOff=$newManualOff)")
 
-        // ✅ SỬA LỖI BUILD: buildCameraStatusText là suspend fun, không thể gọi trực tiếp bên trong
-        // lambda thường của deviceRegistry.updateNode() → tính trước rồi mới truyền giá trị vào.
         val newStatusText = buildCameraStatusText(updatedCam)
 
-        // ✅ SỬA LỖI: trước đây gán online = active, khiến "Tắt giám sát" bị hiển thị nhầm
-        // thành mất kết nối mạng (chấm đỏ) dù camera vẫn online bình thường.
-        // "Giám sát" (manualOff) và "kết nối mạng" (online) là 2 khái niệm độc lập.
         deviceRegistry.updateNode(cam.id.trim()) { current ->
             current.copy(
                 status = newStatusText,
@@ -551,9 +525,6 @@ class CameraSkill @Inject constructor(
         if (result is PluginResult.Success) {
             val cameras = database.cameraDao().getCamerasByCustomer(resolvedCustomerId)
             cameras.forEach { camera ->
-                // ✅ SỬA LỖI: trước đây ghi đè status = "AI Đang bật/tắt", làm mất thông tin
-                // giám sát (manualOff) đang hiển thị. Dùng buildCameraStatusText() để tổng hợp lại đầy đủ.
-                // ✅ SỬA LỖI BUILD: tính status (suspend) TRƯỚC, ngoài lambda thường của updateNode.
                 val newStatusText = buildCameraStatusText(camera)
                 deviceRegistry.updateNode(camera.id.trim()) { current ->
                     current.copy(
@@ -588,6 +559,7 @@ class CameraSkill @Inject constructor(
         }
         updateDiagnostics()
         cleanupOldAlerts()
+        cleanupOldEventLogs() // ✅ MỚI (Tuần 4): Dọn dẹp log cũ khi khởi chạy
         pruneOrphanedCameraState()
         scheduleDailyReport()
         
@@ -642,6 +614,20 @@ class CameraSkill @Inject constructor(
                 }
             } catch (e: Exception) {
                 logger.e("CameraSkill", "cleanupOldAlerts error: ${e.message}", e)
+            }
+        }
+    }
+
+    // ✅ MỚI (Tuần 4): Triển khai hàm dọn dẹp nhật ký Event Log cũ (Lưu giữ tối đa 30 ngày)
+    private fun cleanupOldEventLogs() {
+        scope.launch {
+            try {
+                val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+                withContext(Dispatchers.IO) {
+                    database.eventLogDao().pruneLogsOlderThan(cutoff)
+                }
+            } catch (e: Exception) {
+                logger.e("CameraSkill", "cleanupOldEventLogs error: ${e.message}", e)
             }
         }
     }
@@ -854,14 +840,6 @@ class CameraSkill @Inject constructor(
                     continue
                 }
 
-                // ✅ ĐÃ SỬA: KHÔNG bỏ qua toàn bộ lượt quét khi camera đang cooldown nữa.
-                // Trước đây bỏ qua hẳn fetch snapshot khiến trạng thái isOnline không được
-                // refresh (chỉ được cập nhật bên trong processImageWithLearning), dẫn đến
-                // camera bị kẹt ở "Mất kết nối" nhiều giờ dù thực tế vẫn xem ảnh trực tiếp
-                // bình thường. Đúng theo thiết kế: vẫn quét pHash + cập nhật baseline +
-                // trạng thái online mỗi chu kỳ, chỉ hoãn bước GỌI AI (xử lý trong
-                // processImageWithLearning qua biến shouldCallAi dựa trên camera.enableCooldown).
-
                 val customerSetting = withContext(Dispatchers.IO) {
                     database.cameraDao().getCustomerSetting(camera.customerId.trim())
                 }
@@ -933,6 +911,28 @@ class CameraSkill @Inject constructor(
             PluginResult.Failure(e.message ?: "Process image failed")
         }
     }
+
+    // ✅ MỚI (Tuần 1): Hàm parse nội dung nhận được từ Groq Vision ép buộc cấu trúc JSON.
+    private fun parseVisionResult(raw: String): VisionParseResult {
+        val cleaned = raw.trim()
+            .removePrefix("```json").removePrefix("```")
+            .removeSuffix("```").trim()
+
+        return try {
+            val json = org.json.JSONObject(cleaned)
+            val state = json.optString("state", "").lowercase().trim()
+            val description = json.optString("description", "").ifBlank { raw }
+            val structuredSuspicious = when (state) {
+                "suspicious" -> true
+                "normal" -> false
+                else -> null // JSON ra nhưng state sai định dạng -> fallback về keyword contains()
+            }
+            VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, rawJson = json)
+        } catch (e: Exception) {
+            // Không parse được JSON (lỗi mạng, timeout, hoặc model lỗi) -> giữ nguyên raw và trả structuredSuspicious = null để fallback
+            VisionParseResult(displayComment = raw, structuredSuspicious = null, rawJson = null)
+        }
+    }
     
     private suspend fun processImageWithLearning(
         camera: CameraConfigEntity,
@@ -990,10 +990,6 @@ class CameraSkill @Inject constructor(
                     )
                 }
                 
-                // ✅ MỚI: Nếu camera cấu hình TẮT Cooldown (enableCooldown == 0), luôn gọi AI
-                // ngay khi có biến động đột biến, bỏ qua thời gian hoãn (cooldownUntil).
-                // ✅ MỚI: forceAi=true bỏ qua cả điều kiện biến động (isSuddenChange) lẫn cooldown,
-                // đảm bảo AI luôn được gọi đúng chu kỳ của lịch trình "ép buộc"
                 val shouldCallAi = (isSuddenChange || forceAi) && isSmartMode &&
                     (forceAi || camera.enableCooldown == 0 || now >= state.cooldownUntil)
                 
@@ -1010,7 +1006,10 @@ class CameraSkill @Inject constructor(
                         logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid, bỏ qua phân tích AI lần này")
                         "Không thể phân tích (AI timeout)"
                     }
-                    aiComment = aiResult
+
+                    // ✅ MỚI (Tuần 1 - Phase 1): Thử parse cấu trúc JSON Vision
+                    val visionParsed = parseVisionResult(aiResult)
+                    aiComment = visionParsed.displayComment
                     
                     val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
                         camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
@@ -1023,10 +1022,17 @@ class CameraSkill @Inject constructor(
                         defaultNegativeKw()
                     }
                     
-                    val textClean = aiComment.lowercase()
-                    val hasPositive = positiveKeywords.any { textClean.contains(it) }
-                    val hasNegative = negativeKeywords.any { textClean.contains(it) }
-                    isSuspicious = hasPositive && !hasNegative
+                    isSuspicious = if (visionParsed.structuredSuspicious != null) {
+                        // ✅ JSON hoàn toàn hợp lệ -> Ưu tiên dùng state có cấu trúc
+                        logger.d("CameraSkill", "🧩 [Structured Vision] camera=$tid state=${visionParsed.structuredSuspicious}")
+                        visionParsed.structuredSuspicious
+                    } else {
+                        // ⚠️ Fallback: Tự động rơi về logic keyword contains() cũ khi JSON hỏng, bảo đảm an toàn
+                        val textClean = aiComment.lowercase()
+                        val hasPositive = positiveKeywords.any { textClean.contains(it) }
+                        val hasNegative = negativeKeywords.any { textClean.contains(it) }
+                        hasPositive && !hasNegative
+                    }
                     
                     if (isSuspicious) {
                         state.realEvents++
@@ -1038,9 +1044,6 @@ class CameraSkill @Inject constructor(
                             cameraDailyEvents.removeAt(0)
                         }
                         
-                        // ✅ MỚI: Chỉ gửi Email cảnh báo nếu camera bật cấu hình nhận thông báo
-                        // (enableNotification == 1). Khi tắt, hệ thống vẫn phân tích AI và vẫn
-                        // lưu lịch sử cảnh báo, chỉ không làm phiền bằng Email/Push.
                         val customerEmail = camera.customeremail
                         var emailSent = false
                         if (camera.enableNotification == 1 && customerEmail.isNotEmpty()) {
@@ -1053,16 +1056,8 @@ class CameraSkill @Inject constructor(
                             emailSent = true
                         }
                         
-                        // ✅ ĐÃ SỬA: Sinh alertId TRƯỚC — dùng chung cho cả notification lẫn
-                        // record lưu DB, thay vì để 2 nơi tự sinh ID riêng không liên quan gì
-                        // nhau (trước đây notificationSkill.sendNotification() trả về 1 ID rồi
-                        // vứt bỏ, còn saveAlertToHistory() tự tạo alertId khác). Nhờ ID chung +
-                        // deepLinkRoute, bấm vào notification giờ sẽ mở đúng lịch sử cảnh báo
-                        // của camera này, và huỷ được đúng notification khi Admin đánh dấu đã
-                        // đọc/xoá alert tương ứng (xem AlertHistoryViewModel).
                         val alertId = UUID.randomUUID().toString()
 
-                        // ✅ MỚI: Chỉ gửi Push notification nếu camera bật cấu hình nhận thông báo
                         if (camera.enableNotification == 1) {
                             notificationSkill.sendNotification(
                                 title = "Cảnh Báo Camera ${camera.customername}",
@@ -1072,7 +1067,6 @@ class CameraSkill @Inject constructor(
                             )
                         }
                         
-                        // ✅ Luôn lưu vào lịch sử DB để Admin xem lại trong app, bất kể có tắt thông báo hay không
                         saveAlertToHistory(
                             alertId = alertId,
                             camera = camera,
@@ -1082,16 +1076,36 @@ class CameraSkill @Inject constructor(
                             deltaTrigger = deltaTrigger,
                             absDiffTrigger = absDiffTrigger,
                             emailSent = emailSent,
-                            scheduleId = scheduleId   // ✅ MỚI — truy vết cảnh báo này đến từ lịch nào
+                            scheduleId = scheduleId,
+                            aiStateJson = visionParsed.rawJson?.toString() // ✅ MỚI (Tuần 1 & 3): Lưu trữ meta JSON
                         )
                         
-                        executeAlertActions(camera, aiComment, overrideAlertActions) // ✅ MỚI: ưu tiên hành động riêng của lịch nếu có
-                       logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
+                        executeAlertActions(camera, aiComment, overrideAlertActions) 
+                        logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
                         
                     } else {
                         if (isMature && isSuddenChange) {
                             pendingResets[tid] = PendingResetState(currentDiff, now)
                             logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
+                        }
+
+                        // ✅ MỚI (Tuần 3 & 5): Ghi nhật ký "bình thường" song song khi gọi AI thật
+                        withContext(Dispatchers.IO) {
+                            database.eventLogDao().insertLog(
+                                com.aichatvn.agent.data.model.EventLogEntity(
+                                    id = UUID.randomUUID().toString(),
+                                    timestamp = now,
+                                    source = "camera",
+                                    sourceId = tid,
+                                    eventType = "state_change",
+                                    value = "Bình thường",
+                                    summary = "Camera ${camera.customername}: $aiComment"
+                                )
+                            )
+                            // Ghi world_state "normal" thời gian thực
+                            com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                                database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "normal"
+                            )
                         }
                     }
                 }
@@ -1132,7 +1146,6 @@ class CameraSkill @Inject constructor(
                 }
                 
                 logger.d("CameraSkill", "📷 Camera $tid scanned, hasChange=$isSuddenChange")
-                
                 updateDiagnostics()
                 
                 return@withLock mapOf(
@@ -1146,8 +1159,7 @@ class CameraSkill @Inject constructor(
                     "drift" to drift,
                     "deltaTrigger" to deltaTrigger,
                     "absDiffTrigger" to absDiffTrigger,
-                    "imageBytes" to optimizedBytes   // ✅ MỚI: mang ảnh theo để chat có thể hiển thị
-                
+                    "imageBytes" to optimizedBytes   
                 )
                 
             } catch (e: Exception) {
@@ -1306,10 +1318,9 @@ class CameraSkill @Inject constructor(
                 aiPrompt = (config["aiPrompt"] as? String ?: existing?.aiPrompt ?: "").trim(),
                 aiPositiveKeywords = (config["aiPositiveKeywords"] as? String ?: existing?.aiPositiveKeywords ?: "").trim(),
                 aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim(),
-                // ✅ MỚI: Đồng bộ cấu hình cooldown / gửi thông báo, mặc định giữ nguyên (hoặc 1 nếu camera mới)
                 enableCooldown = (config["enableCooldown"] as? Int) ?: (config["enableCooldown"] as? Number)?.toInt() ?: existing?.enableCooldown ?: 1,
                 enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1,
-alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]" 
+                alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]" 
             )
             
             withContext(Dispatchers.IO) {
@@ -1338,7 +1349,6 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
             }
             
             syncToDeviceRegistry()
-            
             PluginResult.Success(mapOf("message" to "Camera saved"))
             
         } catch (e: Exception) {
@@ -1360,7 +1370,6 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
             cameraMutexMap.remove(tid)
             
             syncToDeviceRegistry()
-            
             PluginResult.Success(mapOf("message" to "Camera deleted"))
         } catch (e: Exception) {
             PluginResult.Failure(e.message ?: "Delete camera failed")
@@ -1388,7 +1397,6 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
             }
             
             syncToDeviceRegistry()
-            
             PluginResult.Success(mapOf("message" to "Customer deleted"))
         } catch (e: Exception) {
             PluginResult.Failure(e.message ?: "Delete customer failed")
@@ -1508,104 +1516,132 @@ alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[
         _diagnostics.value = stats
     }
 
-    
-
-
-
+    // ✅ MỚI (Tuần 3 - Phase 3): Triển khai lưu trữ lịch sử có hỗ trợ nén thời gian và đồng bộ Event Log
     private suspend fun saveAlertToHistory(
-    alertId: String,
-    camera: CameraConfigEntity,
-    aiComment: String,
-    imageBytes: ByteArray?,
-    diff: Int,
-    deltaTrigger: Int,
-    absDiffTrigger: Int,
-    emailSent: Boolean,
-    scheduleId: String? = null
-) {
-    val tid = camera.id.trim()
-    try {
-        val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
+        alertId: String,
+        camera: CameraConfigEntity,
+        aiComment: String,
+        imageBytes: ByteArray?,
+        diff: Int,
+        deltaTrigger: Int,
+        absDiffTrigger: Int,
+        emailSent: Boolean,
+        scheduleId: String? = null,
+        aiStateJson: String? = null
+    ) {
+        val tid = camera.id.trim()
+        try {
+            val latestAlert = withContext(Dispatchers.IO) {
+                database.alertDao().getLatestAlertForCamera(tid)
+            }
+            val now = System.currentTimeMillis()
+            val mergeWindowMs = alertMergeWindowMs()
 
-        // ✅ MỚI: Truy vấn lịch trình để tạo nhãn hiển thị thân thiện
-        val scheduleLabel = scheduleId?.let { id ->
-            withContext(Dispatchers.IO) {
-                val sched = database.scheduleDao().getScheduleById(id)
-                sched?.let {
-                    // Nếu lịch có đặt tên riêng (label) thì dùng label
-                    if (!it.label.isNullOrBlank()) {
-                        it.label
-                    } else if (it.cron.isNotBlank()) {
-                        "⏰ ${it.cron}"
-                    } else {
-                        "🔁 mỗi ${it.intervalMinutes} phút"
+            // Điều kiện gộp nén sự kiện: cảnh báo cũ tồn tại, cùng suspicious=1 và nằm trong cửa sổ thời gian cấu hình
+            val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
+            val shouldMerge = latestAlert != null &&
+                latestAlert.isSuspicious == 1 &&
+                latestEffectiveTime != null &&
+                (now - latestEffectiveTime) <= mergeWindowMs
+
+            if (shouldMerge && latestAlert != null) {
+                withContext(Dispatchers.IO) {
+                    database.alertDao().updateAlertEndTime(latestAlert.id, now)
+                }
+                logger.d("CameraSkill", "🔗 [Nén sự kiện] Gộp cảnh báo mới của camera $tid vào alert cũ #${latestAlert.id} (endTime=$now)")
+            } else {
+                val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
+
+                val scheduleLabel = scheduleId?.let { id ->
+                    withContext(Dispatchers.IO) {
+                        val sched = database.scheduleDao().getScheduleById(id)
+                        sched?.let {
+                            if (!it.label.isNullOrBlank()) {
+                                it.label
+                            } else if (it.cron.isNotBlank()) {
+                                "⏰ ${it.cron}"
+                            } else {
+                                "🔁 mỗi ${it.intervalMinutes} phút"
+                            }
+                        }
                     }
                 }
+
+                val alert = AlertEntity(
+                    id = alertId,
+                    cameraId = tid,
+                    customerId = camera.customerId.trim(),
+                    cameraName = camera.customername,
+                    timestamp = now,
+                    aiComment = aiComment,
+                    diff = diff,
+                    deltaTrigger = deltaTrigger,
+                    absDiffTrigger = absDiffTrigger,
+                    imagePath = imagePath,
+                    emailSent = if (emailSent) 1 else 0,
+                    isSuspicious = 1,
+                    isRead = 0,
+                    scheduleId = scheduleId,
+                    scheduleLabel = scheduleLabel,
+                    endTime = null, // Bản ghi gốc bắt đầu
+                    aiStateJson = aiStateJson
+                )
+                withContext(Dispatchers.IO) {
+                    database.alertDao().insertAlert(alert)
+                }
+            }
+
+            // ✅ MỚI (Tuần 3 & 4): Luôn đồng bộ ghi nhật ký sự kiện Event Log phục vụ trí nhớ dài hạn (Memory-RAG)
+            withContext(Dispatchers.IO) {
+                database.eventLogDao().insertLog(
+                    com.aichatvn.agent.data.model.EventLogEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        timestamp = now,
+                        source = "camera",
+                        sourceId = tid,
+                        eventType = "person_detected",
+                        value = "Phát hiện bất thường",
+                        summary = "Camera ${camera.customername} phát hiện: $aiComment"
+                    )
+                )
+                // Đồng bộ cập nhật World State thời gian thực dạng suspicious
+                com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                    database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
+                )
+            }
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
+        }
+    }
+
+    private suspend fun executeAlertActions(
+        camera: CameraConfigEntity,
+        aiComment: String,
+        overrideAlertActions: List<AlertActionConfig>? = null   
+    ) {
+        val actionsToExecute: List<AlertActionConfig> = if (!overrideAlertActions.isNullOrEmpty()) {
+            overrideAlertActions
+        } else {
+            if (camera.alertActions.isBlank() || camera.alertActions == "[]") return
+            alertActionsFromJson(camera.alertActions)
+        }
+        if (actionsToExecute.isEmpty()) return
+
+        for (cfg in actionsToExecute) {
+            val targetPluginId = cfg.pluginId
+            val targetActionName = cfg.action
+            if (targetPluginId.isBlank() || targetActionName.isBlank()) continue
+
+            val params: Map<String, Any> = cfg.params
+
+            try {
+                val result = intentExecutorProvider.get().executePluginAction(targetPluginId, targetActionName, params)
+                logger.i("CameraSkill", "🔗 Alert-action ${camera.id.trim()} -> $targetPluginId.$targetActionName: $result")
+            } catch (e: Exception) {
+                logger.e("CameraSkill", "🔗 Alert-action lỗi ($targetPluginId.$targetActionName): ${e.message}", e)
             }
         }
-
-        val alert = AlertEntity(
-            id = alertId,
-            cameraId = tid,
-            customerId = camera.customerId.trim(),
-            cameraName = camera.customername,
-            timestamp = System.currentTimeMillis(),
-            aiComment = aiComment,
-            diff = diff,
-            deltaTrigger = deltaTrigger,
-            absDiffTrigger = absDiffTrigger,
-            imagePath = imagePath,
-            emailSent = if (emailSent) 1 else 0,
-            isSuspicious = 1,
-            isRead = 0,
-            scheduleId = scheduleId,
-            scheduleLabel = scheduleLabel // ✅ MỚI: Lưu trực tiếp nhãn thân thiện
-        )
-        withContext(Dispatchers.IO) {
-            database.alertDao().insertAlert(alert)
-        }
-    } catch (e: Exception) {
-        logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
     }
-}
-
-
-
-
-    
-
-    // ✅ MỚI: Thực thi các hành động chéo-plugin đã cấu hình cho camera này khi phát hiện cảnh báo THẬT.
-// Mỗi action bọc try/catch riêng — 1 action lỗi không được chặn action khác hay làm hỏng luồng scan chính.
-private suspend fun executeAlertActions(
-    camera: CameraConfigEntity,
-    aiComment: String,
-    overrideAlertActions: List<AlertActionConfig>? = null   // ✅ MỚI — hành động riêng của lịch, ưu tiên hơn camera-level
-) {
-    // ✅ MỚI: nếu lịch trình có cấu hình alertActions riêng thì dùng nó, KHÔNG đụng
-    // tới camera.alertActions — đảm bảo tính độc lập tuyệt đối giữa các lịch khác nhau.
-    val actionsToExecute: List<AlertActionConfig> = if (!overrideAlertActions.isNullOrEmpty()) {
-        overrideAlertActions
-    } else {
-        if (camera.alertActions.isBlank() || camera.alertActions == "[]") return
-        alertActionsFromJson(camera.alertActions)
-    }
-    if (actionsToExecute.isEmpty()) return
-
-    for (cfg in actionsToExecute) {
-        val targetPluginId = cfg.pluginId
-        val targetActionName = cfg.action
-        if (targetPluginId.isBlank() || targetActionName.isBlank()) continue
-
-        val params: Map<String, Any> = cfg.params
-
-        try {
-            val result = intentExecutorProvider.get().executePluginAction(targetPluginId, targetActionName, params)
-            logger.i("CameraSkill", "🔗 Alert-action ${camera.id.trim()} -> $targetPluginId.$targetActionName: $result")
-        } catch (e: Exception) {
-            logger.e("CameraSkill", "🔗 Alert-action lỗi ($targetPluginId.$targetActionName): ${e.message}", e)
-        }
-    }
-}
 
     private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
         return try {
@@ -1620,7 +1656,6 @@ private suspend fun executeAlertActions(
         }
     }
 
-    // ✅ MỚI: Lưu ảnh chụp riêng cho hiển thị trong khung chat — thư mục riêng, không lẫn với alert_images
     private fun saveChatImage(bytes: ByteArray): String? {
         return try {
             val dir = File(context.filesDir, "chat_images")

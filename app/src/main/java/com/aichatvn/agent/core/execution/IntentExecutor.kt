@@ -6,6 +6,7 @@ import com.aichatvn.agent.core.*
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.utils.WorldStateHelper // ✅ MỚI (Tuần 5): Import helper trạng thái thực tế
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -50,9 +51,45 @@ class IntentExecutor @Inject constructor(
             )
         ))
 
+        // ✅ MỚI (Tuần 5 - Phase 5): Phân tích ràng buộc trạng thái thế giới thực (requiredWorldState) của action
+        val actionMeta = plugin.manifest.actions.find { it.name == normalizedIntent.action }
+        val worldStateCondition = actionMeta?.requiredWorldState?.let {
+            WorldStateHelper.parseCondition(it)
+        }
+
+        // Kiểm tra thực tế: Nếu action yêu cầu world state nhưng trạng thái hiện tại trong database không khớp -> Chặn
+        val worldStateBlocked = if (missing.isEmpty() && worldStateCondition != null) {
+            val actualValue = WorldStateHelper.getAttribute(
+                database.worldStateDao(), // Gọi trực tiếp dao từ database đã được inject sẵn
+                worldStateCondition.source,
+                worldStateCondition.sourceId,
+                worldStateCondition.attrKey
+            )
+            actualValue != worldStateCondition.expected
+        } else false
+
+        // ✅ MỚI (Tuần 5): Thêm trace chẩn đoán trực quan cho World State lên màn hình PipelineGraphScreen
+        context.traces.add(TraceNode(
+            nodeId = "worldstate.check",
+            label = "Kiểm tra điều kiện Thế giới thực (World State Precondition)",
+            input = worldStateCondition?.let { "${it.source}.${it.sourceId}.${it.attrKey} == '${it.expected}' ?" } ?: "Không có điều kiện",
+            output = if (worldStateCondition == null) "Bỏ qua (action không có ràng buộc)"
+                     else if (worldStateBlocked) "❌ Ràng buộc chưa thỏa mãn -> Chặn hành động" else "✅ Trạng thái thực tế hợp lệ",
+            matched = worldStateCondition == null || !worldStateBlocked,
+            codeRef = CodeReference(
+                fileName = "WorldStateHelper.kt",
+                functionName = "getAttribute",
+                hardcodedRules = "requiredWorldState = \"source.sourceId.attrKey=expectedValue\"",
+                businessLogic = "Chặn hành động vật lý nếu trạng thái thế giới thực chưa khớp cấu hình, tránh chạy thiết bị mù quáng khi thiếu điều kiện an toàn (vd bật bơm khi chưa có cốc)."
+            )
+        ))
+
         val executionResult = if (missing.isNotEmpty()) {
             val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
             PluginResult.NeedMoreInfo(missing, question, options)
+        } else if (worldStateBlocked) {
+            // ✅ MỚI (Tuần 5): Trả lỗi Failure an toàn nếu thế giới thực chưa đáp ứng điều kiện
+            PluginResult.Failure("⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta?.description ?: normalizedIntent.action}\" (Cần trạng thái: ${worldStateCondition?.attrKey} = ${worldStateCondition?.expected}).")
         } else {
             try {
                 logger.d("IntentExecutor", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}")
@@ -200,7 +237,7 @@ class IntentExecutor @Inject constructor(
             val cameras = database.cameraDao().getActiveCameras()
             if (cameras.isNotEmpty()) {
                 return buildNumberedQuestion(
-                    "Bạn muốn thao tác với camera nào?",
+                    "Bạn muốn thao tác with camera nào?",
                     cameras.map { 
                         val displayName = if (!it.landinfo.isNullOrBlank()) {
                             "${it.landinfo} (${it.id})"
@@ -230,7 +267,7 @@ class IntentExecutor @Inject constructor(
             val schedules = database.scheduleDao().getAllSchedules()
             if (schedules.isNotEmpty()) {
                 return buildNumberedQuestion(
-                    "Bạn muốn thao tác với lịch trình nào?",
+                    "Bạn muốn thao tác with lịch trình nào?",
                     schedules.map { "${it.pluginId}.${it.action} (${if (it.cron.isNotEmpty()) it.cron else "${it.intervalMinutes} phút"})" to it.id }
                 )
             }

@@ -29,6 +29,9 @@ object AppConfigDefaults {
     const val CAMERA_CIRCUIT_BREAKER_THRESHOLD = "camera.circuit_breaker_threshold"
     const val CAMERA_CIRCUIT_BREAKER_RESET_MS  = "camera.circuit_breaker_reset_ms"
     const val CAMERA_DAILY_REPORT_HOUR       = "camera.daily_report_hour"
+    
+    // ✅ MỚI (Tuần 2 & 3 - Phase 3): Ngưỡng thời gian gộp/nén các sự kiện liên tiếp
+    const val CAMERA_ALERT_MERGE_WINDOW_MS    = "camera.alert_merge_window_ms"
 
     // ───────────────────────── EMAIL ────────────────────────
     const val EMAIL_SUBJECT_PREFIX = "email.subject_prefix"
@@ -37,12 +40,10 @@ object AppConfigDefaults {
     // ───────────────────────── SCHEDULE ─────────────────────
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
-    
-
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
     const val GLOBAL_ALIAS_THRESHOLD        = "global.alias_threshold"
-  const val GLOBAL_CHAT_QA_THRESHOLD      = "global.chat_qa_threshold"
+    const val GLOBAL_CHAT_QA_THRESHOLD      = "global.chat_qa_threshold"
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
     const val GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = "global.block_external_device_control"
 
@@ -51,16 +52,9 @@ object AppConfigDefaults {
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
 
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
-    // Seed sẵn toàn bộ biến cấu hình cho tất cả các kênh giao tiếp chính
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
-    
-  
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
     const val WEBSITE_ALLOWED_ORIGINS       = "website.allowed_origins"
-    // ✅ ĐÃ THÊM: widget_key công khai — an toàn để nhúng vào HTML website khách xem được, KHÁC
-    // với GLOBAL_GATEWAY_TOKEN (bí mật, không bao giờ lộ ra ngoài app). Được tự sinh và đăng ký lên
-    // Cloud Gateway ở WebhookGatewayService khi kết nối SSE lần đầu; để trống thì cứ để rỗng, hệ
-    // thống sẽ tự tạo.
     const val WEBSITE_WIDGET_KEY            = "website.widget_key"
 
     // ─────────────────────────────────────────────────────────
@@ -112,10 +106,8 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "website",
             label = "Allowed Origins (Tên miền được phép nhúng)",
-            description = "Danh sách tên miền được phép nhúng khung chat (cách nhau bởi dấu phẩy, để dấu * là cho phép tất cả)."
+            description = "Danh sách tên miền được phép nhúng khát chat (cách nhau bởi dấu phẩy, để dấu * là cho phép tất cả)."
         ),
-        // ✅ ĐÃ THÊM: Mã widget công khai dùng cho <script src=".../widget.js?key=...">. Khác hoàn
-        // toàn với Gateway Token thật (bí mật) — mã này an toàn để lộ ra công khai trên website khách.
         AppConfigEntity(
             key = WEBSITE_WIDGET_KEY,
             value = "",
@@ -132,7 +124,7 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "groq",
             label = "Model chat chính",
-            description = "Model Groq dùng cho hội thoại văn bản (chat, QA). Thay đổi nếu model bị deprecated."
+            description = "Model Groq dùng cho hội thoại văn bản (chat, QA). Thay đổi nếu model bị khát."
         ),
         AppConfigEntity(
             key = GROQ_MODEL_VISION,
@@ -240,6 +232,16 @@ object AppConfigDefaults {
             label = "Giờ gửi báo cáo ngày",
             description = "Giờ trong ngày (0–23) để gửi báo cáo tổng hợp. Mặc định 20 giờ (8 PM)."
         ),
+        
+        // ✅ ĐÃ THÊM: Seed cấu hình khoảng thời gian gộp/nén sự kiện (Tuần 2 & 3)
+        AppConfigEntity(
+            key = CAMERA_ALERT_MERGE_WINDOW_MS,
+            value = "${5 * 60 * 1000L}",
+            type = "long",
+            pluginId = "camera",
+            label = "Cửa sổ gộp cảnh báo liên tiếp (ms)",
+            description = "Nếu 2 cảnh báo cùng camera, cùng trạng thái xảy ra cách nhau dưới thời gian này thì gộp thành 1 sự kiện kéo dài (start-end) thay vì tạo bản ghi mới. Mặc định 5 phút = 300000 ms."
+        ),
 
         // ── EMAIL ──
         AppConfigEntity(
@@ -269,8 +271,6 @@ object AppConfigDefaults {
             description = "Khoảng thời gian giữa 2 lần TaskScheduler tự động quét toàn bộ camera. Mặc định 15 phút."
         ),
 
-        
-
         // ── GLOBAL ──
         AppConfigEntity(
             key = GLOBAL_FUZZY_THRESHOLD,
@@ -289,16 +289,14 @@ object AppConfigDefaults {
             description = "Alias."
         ),
 
-
-      AppConfigEntity(
-
-          key = GLOBAL_CHAT_QA_THRESHOLD,
-           value = "0.8",
-           type = "float",
-           pluginId = "global",
-           label = "Ngưỡng khớp câu hỏi Chat (Chat QA Threshold)",
-          description = "Độ tương tự tối thiểu (0.0–1.0) để 1 câu trong catalogue Chat "  ),
-
+        AppConfigEntity(
+            key = GLOBAL_CHAT_QA_THRESHOLD,
+            value = "0.8",
+            type = "float",
+            pluginId = "global",
+            label = "Ngưỡng khớp câu hỏi Chat (Chat QA Threshold)",
+            description = "Độ tương tự tối thiểu (0.0–1.0) để 1 câu trong catalogue Chat "  
+        ),
       
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
