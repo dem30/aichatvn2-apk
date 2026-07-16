@@ -18,15 +18,16 @@ import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.data.dataStore                          // ✅ MỚI: Import để đọc DataStore cấu hình
+import com.aichatvn.agent.data.dataStore                          
 import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.skills.ChatSkill
 import com.aichatvn.agent.skills.TuyaManager           
 import com.aichatvn.agent.skills.TrainingSkill          
-import com.aichatvn.agent.ui.dashboard.DeviceRegistry              // ✅ MỚI: Import sơ đồ bản sao số thiết bị
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry              
 import com.aichatvn.agent.scheduler.CronParser 
-import androidx.datastore.preferences.core.stringPreferencesKey    // ✅ MỚI: Import khóa DataStore
+import androidx.datastore.preferences.core.stringPreferencesKey    
+import kotlinx.coroutines.flow.first                               // ✅ MỚI: Import tường minh hàm mở rộng first() của Flow
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
@@ -68,7 +69,7 @@ class WebhookGatewayService : Service() {
     lateinit var trainingSkill: TrainingSkill       
 
     @Inject
-    lateinit var deviceRegistry: DeviceRegistry                   // ✅ MỚI: Tiêm sơ đồ thiết bị để đồng bộ Dashboard thời gian thực
+    lateinit var deviceRegistry: DeviceRegistry                   
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
@@ -842,8 +843,8 @@ class WebhookGatewayService : Service() {
     }
 
     private suspend fun syncTuyaDeviceStates() = withContext(Dispatchers.IO) {
-        val tuyaUidKey = stringPreferencesKey("tuya_uid") // ✅ ĐÃ SỬA: Đọc trực tiếp khóa String an toàn
-        val tuyaUid = context.dataStore.data.first()[tuyaUidKey] ?: ""
+        val tuyaUidKey = stringPreferencesKey("tuya_uid") 
+        val tuyaUid = applicationContext.dataStore.data.first()[tuyaUidKey] ?: "" // ✅ ĐÃ SỬA: Thay thế bằng applicationContext để tránh xung đột ngữ cảnh trong Service
         
         if (tuyaUid.isBlank()) return@withContext
 
