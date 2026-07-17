@@ -213,7 +213,22 @@ class IntentExecutor @Inject constructor(
         params: Map<String, Any>
     ): PluginResult.Failure? {
         if (pluginId == "smart_switch" && action == "set") {
-            val deviceId = params["device"]?.toString() ?: params["device_id"]?.toString() ?: params["deviceId"]?.toString() ?: ""
+            val rawDeviceKey = params["device"]?.toString() ?: params["device_id"]?.toString() ?: params["deviceId"]?.toString() ?: ""
+            // ✅ SỬA: quy đổi về ID thật trước khi build guardKey — trước đây dùng thẳng
+            // rawDeviceKey (có thể là TÊN nếu người dùng gõ tay/nói, hoặc ID nếu chọn từ
+            // menu số, xem TuyaManager.getDeviceInfo()). Vì ParameterResolver.normalizeParams()
+            // không hề quy đổi tên→ID, guardKey trước đây có thể lệch khỏi key mà admin đã
+            // cấu hình (luôn theo ID thật) → precondition bị bỏ qua âm thầm khi người dùng
+            // gõ tên thay vì chọn từ menu. Áp cùng pattern id-trước, tên-sau như
+            // SmartSwitchSkill.handleSet() đã dùng khi ghi world_state.
+            // Đồng thời giữ lại `entity.name` (tên thân thiện đồng bộ từ Tuya/Smart Life app)
+            // để hiển thị trong thông báo — tránh in thẳng ID dài khó đọc cho người dùng.
+            val deviceEntity = if (rawDeviceKey.isNotEmpty()) {
+                database.tuyaDeviceDao().getDeviceById(rawDeviceKey)
+                    ?: database.tuyaDeviceDao().getDeviceByName(rawDeviceKey)
+            } else null
+            val deviceId = deviceEntity?.id ?: rawDeviceKey
+            val displayName = deviceEntity?.name ?: rawDeviceKey
             if (deviceId.isNotEmpty()) {
                 val guardKey = "worldstate_guard_$deviceId"
                 val precondition = configProvider.getString(guardKey, "")
@@ -237,7 +252,7 @@ class IntentExecutor @Inject constructor(
                                              else (currentState ?: "Không xác định")
                                              
                             return PluginResult.Failure(
-                                "❌ Hành động bị chặn: Thiết bị '$deviceId' chỉ được phép kích hoạt khi " +
+                                "❌ Hành động bị chặn: Thiết bị '$displayName' chỉ được phép kích hoạt khi " +
                                 "trạng thái của '${condition.sourceId}' là '$expectedMsg' " +
                                 "(Trạng thái thực tế hiện tại đang là: '$currentMsg')"
                             )
