@@ -863,7 +863,6 @@ class WebhookGatewayService : Service() {
 
             val oldState = oldStateStr.toBooleanStrictOrNull() ?: false
 
-            // ✅ ĐÃ SỬA: Thay thế cloudDev.online (chỉ là kết nối mạng) bằng trạng thái ON/OFF vật lý thực tế
             val newState = try {
                 if (cloudDev.online) {
                     tuyaManager.getStatus(cloudDev.name)
@@ -927,7 +926,6 @@ class WebhookGatewayService : Service() {
 
         val calendar = java.util.Calendar.getInstance()
         
-        // ✅ ĐÃ SỬA: Nhóm thói quen theo cả "value" để phân biệt Bật/Tắt rõ ràng
         data class GroupKey(val source: String, val sourceId: String, val eventType: String, val value: String, val hour: Int)
 
         val grouped = logs.groupBy { log ->
@@ -939,13 +937,15 @@ class WebhookGatewayService : Service() {
         val existingPatterns = trainingSkillPatternCache()
 
         grouped.forEach { (key, entries) ->
+            // ✅ SỬA LỖI #5: Loại bỏ hoàn toàn nguồn "camera" ra khỏi mô hình khai thác thói quen Bật/Tắt để tránh sinh gợi ý rác
+            if (key.source != "tuya") return@forEach
+
             val distinctDays = entries.map { entry ->
                 calendar.timeInMillis = entry.timestamp
                 calendar.get(java.util.Calendar.DAY_OF_YEAR)
             }.distinct().size
 
             if (distinctDays >= 4) {
-                // ✅ ĐÃ SỬA: Dùng ký tự phân tách đặc biệt ":" thay vì "_" và chèn thêm thông số value
                 val question = "pattern:${key.source}:${key.sourceId}:${key.eventType}:${key.value}:${key.hour}h"
                 val actionLabel = if (key.value.lowercase() == "true") "bật" else "tắt"
                 val answer = "Bạn thường $actionLabel thiết bị ${key.sourceId} vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất). Hệ thống đề xuất đặt lịch tự động cho thói quen này."
@@ -956,7 +956,7 @@ class WebhookGatewayService : Service() {
                         question = question,
                         answer = answer,
                         type = "pattern",
-                        category = "pending_pattern", // ✅ ĐÃ SỬA: category="pending_pattern" để chờ duyệt ở màn hình Dashboard
+                        category = "pending_pattern", 
                         createdBy = "default_user",
                         createdAt = System.currentTimeMillis(),
                         timestamp = System.currentTimeMillis()

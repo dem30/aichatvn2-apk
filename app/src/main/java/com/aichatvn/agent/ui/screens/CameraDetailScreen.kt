@@ -55,16 +55,13 @@ fun CameraDetailScreen(
     val scheduleDraft by viewModel.scheduleDraft.collectAsState()
     val scheduleResult by viewModel.scheduleResult.collectAsState()
 
-    // ✅ MỚI: Danh sách plugin/thiết bị/camera phục vụ dropdown chọn hành động tự động khi có cảnh báo thật
     val alertActionPlugins = viewModel.alertActionPlugins
     val tuyaDevicesForAlertAction by viewModel.tuyaDevicesForAlertAction.collectAsState()
     val camerasForAlertAction by viewModel.camerasForAlertAction.collectAsState()
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    // ✅ MỚI: Sheet riêng cho form thêm hành động tự động (cấp camera)
     val alertActionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showAlertActionSheet by remember { mutableStateOf(false) }
-    // ✅ MỚI: Sheet riêng để thêm hành động cảnh báo RIÊNG cho 1 lịch trình cụ thể
     val scheduleAlertActionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var showScheduleAlertActionSheet by remember { mutableStateOf(false) }
 
@@ -98,13 +95,12 @@ fun CameraDetailScreen(
                 onUpdate = { viewModel.updateScheduleDraft(it) },
                 onSave = { viewModel.saveSchedule() },
                 onCancel = { viewModel.closeScheduleEditor() },
-                onAddAlertAction = { showScheduleAlertActionSheet = true },       // ✅ MỚI
-                onRemoveAlertAction = { i -> viewModel.removeScheduleAlertAction(i) } // ✅ MỚI
+                onAddAlertAction = { showScheduleAlertActionSheet = true },       
+                onRemoveAlertAction = { i -> viewModel.removeScheduleAlertAction(i) } 
             )
         }
     }
 
-    // ✅ MỚI: Sheet thêm hành động tự động chéo-plugin khi camera phát hiện cảnh báo thật (cấp camera)
     if (showAlertActionSheet) {
         ModalBottomSheet(
             onDismissRequest = { showAlertActionSheet = false },
@@ -123,8 +119,6 @@ fun CameraDetailScreen(
         }
     }
 
-    // ✅ MỚI: Sheet thêm hành động tự động RIÊNG cho lịch đang sửa — tái dùng đúng
-    // AlertActionFormSheet, chỉ đổi nơi lưu (addScheduleAlertAction thay vì addAlertAction)
     if (showScheduleAlertActionSheet) {
         ModalBottomSheet(
             onDismissRequest = { showScheduleAlertActionSheet = false },
@@ -192,11 +186,9 @@ fun CameraDetailScreen(
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // === Ảnh xem trực tiếp ===
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        // TỐI ƯU HÓA LỚN: Tải và giải mã mảng byte ảnh snapshot bất đồng bộ hoàn toàn dưới luồng ngầm IO
                         var bitmap by remember(liveSnapshot) { mutableStateOf<android.graphics.Bitmap?>(null) }
                         
                         LaunchedEffect(liveSnapshot) {
@@ -256,7 +248,6 @@ fun CameraDetailScreen(
                 }
             }
 
-            // === Trạng thái & thông tin ===
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -295,7 +286,6 @@ fun CameraDetailScreen(
                 }
             }
 
-            // === Điều khiển ===
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -342,7 +332,6 @@ fun CameraDetailScreen(
 
                         Spacer(Modifier.height(4.dp))
 
-                        // ✅ MỚI: Switch bật/tắt Cooldown hoãn quét
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -363,7 +352,6 @@ fun CameraDetailScreen(
 
                         Spacer(Modifier.height(4.dp))
 
-                        // ✅ MỚI: Switch bật/tắt gửi thông báo Email/Push
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -401,7 +389,6 @@ fun CameraDetailScreen(
                 }
             }
 
-            // === Học tập thích nghi ===
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -440,7 +427,6 @@ fun CameraDetailScreen(
                 }
             }
 
-            // === Cấu hình camera ===
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -467,8 +453,8 @@ fun CameraDetailScreen(
                                 DetailRow("AI Prompt", cam.aiPrompt.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (+)", cam.aiPositiveKeywords.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (−)", cam.aiNegativeKeywords.ifBlank { "(mặc định)" })
-                                DetailRow("Bật Cooldown hoãn quét", if (cam.enableCooldown == 1) "Bật" else "Tắt") // ✅ MỚI
-                                DetailRow("Cho phép gửi thông báo", if (cam.enableNotification == 1) "Bật" else "Tắt") // ✅ MỚI
+                                DetailRow("Bật Cooldown hoãn quét", if (cam.enableCooldown == 1) "Bật" else "Tắt") 
+                                DetailRow("Cho phép gửi thông báo", if (cam.enableNotification == 1) "Bật" else "Tắt") 
                             }
                         }
 
@@ -557,7 +543,6 @@ fun CameraDetailScreen(
                                         singleLine = true
                                     )
 
-                                    // ✅ MỚI: Toggle Cooldown hoãn quét trong trình chỉnh sửa cấu hình
                                     Spacer(Modifier.height(6.dp))
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -571,7 +556,6 @@ fun CameraDetailScreen(
                                         )
                                     }
 
-                                    // ✅ MỚI: Toggle gửi thông báo trong trình chỉnh sửa cấu hình
                                     Spacer(Modifier.height(6.dp))
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -585,8 +569,6 @@ fun CameraDetailScreen(
                                         )
                                     }
 
-                                    // ✅ MỚI: Danh sách hành động tự động chéo-plugin khi camera phát hiện cảnh báo THẬT
-                                    // (isSuspicious = true) — thực thi ngay trong CameraSkill.processImageWithLearning()
                                     Spacer(Modifier.height(10.dp))
                                     HorizontalDivider()
                                     Spacer(Modifier.height(10.dp))
@@ -650,7 +632,6 @@ fun CameraDetailScreen(
                 }
             }
 
-            // === Lịch trình ===
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -687,7 +668,6 @@ fun CameraDetailScreen(
                 )
             }
 
-            // === Cảnh báo gần đây ===
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -823,7 +803,6 @@ private fun ScheduleFormSheet(
     onRemoveAlertAction: (Int) -> Unit = {}   
 ) {
     val isEdit = draft.id.isNotBlank()
-    // ✅ Khởi tạo trạng thái cuộn dọc
     val scrollState = rememberScrollState()
 
     Column(
@@ -831,7 +810,7 @@ private fun ScheduleFormSheet(
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
             .padding(bottom = 32.dp)
-            .verticalScroll(scrollState), // ✅ KÍCH HOẠT CUỘN DỌC Ở ĐÂY
+            .verticalScroll(scrollState), 
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
@@ -845,11 +824,6 @@ private fun ScheduleFormSheet(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true
         )
-        // ... các thành phần bên trong giữ nguyên ...
-
-        
-        
-
         
         Text("Action", style = MaterialTheme.typography.labelMedium)
         val actions = listOf("scan")
@@ -893,8 +867,6 @@ private fun ScheduleFormSheet(
             )
         }
 
-        // ✅ MỚI: Ép buộc AI phân tích — bỏ qua pHash & cooldown, đảm bảo AI luôn được
-        // gọi đúng chu kỳ lịch này (dùng cho báo cáo định kỳ, khác với quét ngầm tiết kiệm token)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -914,8 +886,6 @@ private fun ScheduleFormSheet(
             )
         }
 
-        // ✅ MỚI: Hành động khi có cảnh báo thật — RIÊNG cho lịch này (không phải cấu hình
-        // chung của camera). Để trống thì dùng mặc định của camera (xem CameraSkill.executeAlertActions)
         Spacer(Modifier.height(4.dp))
         HorizontalDivider()
         Spacer(Modifier.height(4.dp))
@@ -960,7 +930,7 @@ private fun ScheduleFormSheet(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Huỷ") }
             Button(
-                onClick = onSave,
+                onClick = { onSave() },
                 modifier = Modifier.weight(1f),
                 enabled = !isLoading
             ) {
@@ -975,9 +945,18 @@ private fun ScheduleFormSheet(
 
 @Composable
 private fun MiniAlertRow(alert: AlertEntity) {
-    val timeText = remember(alert.timestamp) {
-        SimpleDateFormat("HH:mm dd/MM", Locale.getDefault()).format(Date(alert.timestamp))
+    // ✅ SỬA LỖI: Tính toán mốc giờ nén kéo dài (endTime) tương tự như AlertHistoryScreen để người dùng có thể quan sát trực tiếp
+    val timeText = remember(alert.timestamp, alert.endTime) {
+        val startText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(alert.timestamp))
+        val dateText = SimpleDateFormat("dd/MM", Locale.getDefault()).format(Date(alert.timestamp))
+        if (alert.endTime != null && alert.endTime!! > alert.timestamp) {
+            val endText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(alert.endTime!!))
+            "$startText - $endText $dateText"
+        } else {
+            "$startText $dateText"
+        }
     }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.Top) {
             Icon(
@@ -991,7 +970,6 @@ private fun MiniAlertRow(alert: AlertEntity) {
                 Text(timeText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(alert.aiComment, style = MaterialTheme.typography.bodySmall, maxLines = 2)
                 
-                // ✅ MỚI: Hiển thị nhãn lịch trình nếu có
                 if (!alert.scheduleLabel.isNullOrBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Surface(
@@ -1013,10 +991,6 @@ private fun MiniAlertRow(alert: AlertEntity) {
 
 
 
-// ✅ MỚI: Form thêm 1 hành động tự động chéo-plugin (pluginId + action + params) sẽ được
-// CameraSkill.executeAlertActions() gọi ngay khi camera phát hiện cảnh báo THẬT (isSuspicious=true).
-// Tái dùng đúng pattern dropdown "device"/"camera" như AddScheduleDialog trong ScheduleScreen.kt
-// để người dùng chọn thiết bị/camera đích thay vì phải gõ tay ID.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AlertActionFormSheet(
@@ -1062,7 +1036,6 @@ private fun AlertActionFormSheet(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        // ── Chọn Plugin đích ──
         ExposedDropdownMenuBox(
             expanded = pluginExpanded,
             onExpandedChange = { pluginExpanded = it }
@@ -1094,7 +1067,6 @@ private fun AlertActionFormSheet(
             }
         }
 
-        // ── Chọn Action của Plugin đã chọn ──
         selectedPlugin?.let { plugin ->
             ExposedDropdownMenuBox(
                 expanded = actionExpanded,
@@ -1127,7 +1099,6 @@ private fun AlertActionFormSheet(
             }
         }
 
-        // ── Điền tham số cho Action đã chọn (boolean/device/camera có UI riêng, còn lại là text) ──
         selectedAction?.parameters?.forEach { param ->
             when {
                 param.type == "boolean" -> {
@@ -1144,7 +1115,6 @@ private fun AlertActionFormSheet(
                     }
                 }
 
-                // ✅ Dropdown chọn thiết bị Tuya thay vì gõ ID tay
                 param.semanticType == "device" -> {
                     var deviceExpanded by remember { mutableStateOf(false) }
                     val selectedDeviceId = paramValues[param.name] ?: ""
@@ -1190,7 +1160,6 @@ private fun AlertActionFormSheet(
                     }
                 }
 
-                // ✅ Dropdown chọn camera thay vì gõ ID tay
                 param.semanticType == "camera" -> {
                     var cameraExpanded by remember { mutableStateOf(false) }
                     val selectedCameraId = paramValues[param.name] ?: ""
