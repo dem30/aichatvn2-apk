@@ -1089,14 +1089,22 @@ class CameraSkill @Inject constructor(
                         }
 
                         // Push Notification (Gửi đè/Cập nhật yên lặng vào thông báo cũ trên Android tray khi gộp nhờ dùng trùng activeAlertId)
-                        if (camera.enableNotification == 1) {
-                            notificationSkill.sendNotification(
-                                title = "Cảnh Báo Camera ${camera.customername}",
-                                message = aiComment.take(100),
-                                notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
-                                deepLinkRoute = "alert_history?cameraId=$tid"
-                            )
-                        }
+                      // Push Notification (Bọc try-catch cục bộ để bảo vệ luồng thực thi chung)
+if (camera.enableNotification == 1) {
+    runCatching {
+        notificationSkill.sendNotification(
+            title = "Cảnh Báo Camera ${camera.customername}",
+            message = aiComment.take(100),
+            notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
+            deepLinkRoute = "alert_history?cameraId=$tid"
+        )
+    }.onFailure { e ->
+        logger.e("CameraSkill", "⚠️ Không thể gửi thông báo đẩy: ${e.message}", e)
+    }
+}
+
+
+                        
                         
                         // Lưu cơ sở dữ liệu lịch sử cảnh báo
                         saveAlertToHistory(
@@ -1123,30 +1131,47 @@ class CameraSkill @Inject constructor(
                     } else {
                         // ✅ MỚI: đánh dấu thời điểm AI vừa xác nhận "bình thường" — dùng để cắt
                         // chuỗi gộp cảnh báo ở nhánh isSuspicious phía trên (xem shouldMerge).
-                        state.lastNormalScanAt = now
 
-                        if (isMature && isSuddenChange) {
-                            pendingResets[tid] = PendingResetState(currentDiff, now)
-                            logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
-                        }
 
-                        withContext(Dispatchers.IO) {
-                            database.eventLogDao().insertLog(
-                                com.aichatvn.agent.data.model.EventLogEntity(
-                                    id = UUID.randomUUID().toString(),
-                                    timestamp = now,
-                                    source = "camera",
-                                    sourceId = tid,
-                                    eventType = "state_change",
-                                    value = "Bình thường",
-                                    summary = "Camera ${camera.customername}: $aiComment"
-                                )
+                      
+                        // Đánh dấu thời điểm quét bình thường
+                    state.lastNormalScanAt = now
+
+                    if (isMature && isSuddenChange) {
+                        pendingResets[tid] = PendingResetState(currentDiff, now)
+                        logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
+                    }
+
+                    withContext(Dispatchers.IO) {
+                        database.eventLogDao().insertLog(
+                            com.aichatvn.agent.data.model.EventLogEntity(
+                                id = UUID.randomUUID().toString(),
+                                timestamp = now,
+                                source = "camera",
+                                sourceId = tid,
+                                eventType = "state_change",
+                                value = "Bình thường",
+                                summary = "Camera ${camera.customername}: $aiComment"
                             )
+                        )
+                        // Ghi nhận trạng thái chung
+                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                            database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "normal"
+                        )
+                        // ✅ MỚI: Nếu có scheduleId, ghi nhận riêng trạng thái bình thường cho lịch trình này
+                        if (!scheduleId.isNullOrBlank()) {
                             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                                database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "normal"
+                                database.worldStateDao(), source = "camera", sourceId = tid, key = "state_$scheduleId", value = "normal"
                             )
                         }
                     }
+                    }
+
+
+
+
+
+                    
                 }
                 
                 if (!shouldCallAi || !isSuspicious) {
@@ -1640,23 +1665,35 @@ class CameraSkill @Inject constructor(
                 }
             }
 
-            withContext(Dispatchers.IO) {
-                database.eventLogDao().insertLog(
-                    com.aichatvn.agent.data.model.EventLogEntity(
-                        id = java.util.UUID.randomUUID().toString(),
-                        timestamp = now,
-                        source = "camera",
-                        sourceId = tid,
-                        eventType = "person_detected",
-                        value = "Phát hiện bất thường",
-                        summary = "Camera ${camera.customername} phát hiện: $aiComment"
-                    )
-                )
-                com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                    database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
-                )
-            }
-        } catch (e: Exception) {
+
+
+            
+
+            // Cập nhật lưu World State kèm theo ID lịch trình nếu có
+                    withContext(Dispatchers.IO) {
+                        database.eventLogDao().insertLog(
+                            com.aichatvn.agent.data.model.EventLogEntity(
+                                id = java.util.UUID.randomUUID().toString(),
+                                timestamp = now,
+                                source = "camera",
+                                sourceId = tid,
+                                eventType = "person_detected",
+                                value = "Phát hiện bất thường",
+                                summary = "Camera ${camera.customername} phát hiện: $aiComment"
+                            )
+                        )
+                        // Ghi nhận trạng thái chung
+                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                            database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
+                        )
+                        // ✅ MỚI: Nếu có scheduleId, ghi nhận riêng trạng thái phân tách cho lịch trình này
+                        if (!scheduleId.isNullOrBlank()) {
+                            com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                                database.worldStateDao(), source = "camera", sourceId = tid, key = "state_$scheduleId", value = "suspicious"
+                            )
+                        }
+                    }
+                    } catch (e: Exception) {
             logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
         }
     }

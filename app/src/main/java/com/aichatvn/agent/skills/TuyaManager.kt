@@ -4,6 +4,7 @@ import android.content.Context
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
+import com.aichatvn.agent.utils.WorldStateHelper
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.utils.Logger
 import androidx.datastore.preferences.core.edit
@@ -33,6 +34,7 @@ import kotlinx.coroutines.withContext
 class TuyaManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val tuyaDeviceDao: TuyaDeviceDao,
+    private val database: AppDatabase, // ✅ MỚI: cần worldStateDao() để dọn world_state khi xoá thiết bị
     private val logger: Logger
 ) {
     companion object {
@@ -94,6 +96,26 @@ class TuyaManager @Inject constructor(
             )
         }
         logger.i("TuyaManager", "📂 Loaded ${deviceCache.size} devices from DB")
+    }
+
+    // ✅ MỚI: trước đây TuyaDeviceDao.deleteDevice() được khai báo trong Database.kt nhưng
+    // KHÔNG có nơi nào trong app gọi tới — nghĩa là chưa hề có đường xoá thiết bị Tuya.
+    // Hàm này xoá đồng bộ 3 nơi: bản ghi trong SQLite, cache trong bộ nhớ (deviceCache/
+    // switchCodeCache), và world_state "tuya:<id>" tương ứng — tránh để lại bản ghi mồ côi
+    // vĩnh viễn trong World Model Console (giống cách CameraSkill.deleteCamera() đã làm).
+    suspend fun deleteDevice(deviceId: String) = withContext(Dispatchers.IO) {
+        val trimmedId = deviceId.trim()
+
+        tuyaDeviceDao.deleteDevice(trimmedId)
+        database.worldStateDao().deleteStateBySourceAndId("tuya", trimmedId)
+
+        val cachedName = deviceCache.values.find { it.id == trimmedId }?.name
+        if (cachedName != null) {
+            deviceCache.remove(cachedName)
+        }
+        switchCodeCache.remove(trimmedId)
+
+        logger.i("TuyaManager", "🗑️ Đã xoá thiết bị Tuya id=$trimmedId (kèm world_state)")
     }
 
     suspend fun scanDevices(): Map<String, DeviceInfo> = withContext(Dispatchers.IO) {

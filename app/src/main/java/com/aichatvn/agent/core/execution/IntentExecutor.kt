@@ -1,12 +1,13 @@
 package com.aichatvn.agent.core.execution
 
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.AgentKernel.Intent
 import com.aichatvn.agent.core.*
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.utils.WorldStateHelper // ✅ Đã có tệp import hợp lệ
+import com.aichatvn.agent.utils.WorldStateHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -19,6 +20,7 @@ class IntentExecutor @Inject constructor(
     private val database: AppDatabase,
     private val chatHistoryManager: ChatHistoryManager,
     private val dialogManager: DialogManager,
+    private val configProvider: AppConfigProvider, // ✅ TIÊM THÊM ĐỂ ĐỌC CẤU HÌNH CHẶN CẤP THIẾT BỊ
     private val logger: Logger
 ) {
 
@@ -51,7 +53,7 @@ class IntentExecutor @Inject constructor(
             )
         ))
 
-        // ✅ MỚI (Tuần 5): Đọc ràng buộc và định nghĩa kiểu dữ liệu tường minh tránh lỗi Type Inference
+        // ✅ Đọc ràng buộc và định nghĩa kiểu dữ liệu tường minh tránh lỗi Type Inference (Action-level)
         val actionMeta = plugin.manifest.actions.find { it.name == normalizedIntent.action }
         val worldStateCondition: WorldStateHelper.WorldStateCondition? = actionMeta?.requiredWorldState?.let {
             WorldStateHelper.parseCondition(it)
@@ -62,6 +64,11 @@ class IntentExecutor @Inject constructor(
         } else {
             false
         }
+
+        // ✅ MỚI (Triển khai Precondition cấp thiết bị): Chèn bộ lọc kiểm tra riêng cấu hình chặn của thiết bị đích
+        val deviceGuardBlocked: PluginResult.Failure? = if (missing.isEmpty()) {
+            checkDeviceWorldStateGuard(plugin.manifest.id, normalizedIntent.action, normalizedIntent.params)
+        } else null
 
         // Định nghĩa rõ kiểu String cho input và output để TraceNode biên dịch an toàn
         val traceInput: String = if (worldStateCondition != null) {
@@ -97,6 +104,8 @@ class IntentExecutor @Inject constructor(
             PluginResult.NeedMoreInfo(missing, question, options)
         } else if (worldStateBlocked) {
             PluginResult.Failure("⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta?.description ?: normalizedIntent.action}\" (Cần trạng thái: ${worldStateCondition?.attrKey} = ${worldStateCondition?.expected}).")
+        } else if (deviceGuardBlocked != null) {
+            deviceGuardBlocked // ✅ TRẢ VỀ LỖI CHẶN CẤP THIẾT BỊ NẾU CÓ
         } else {
             try {
                 logger.d("IntentExecutor", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}")
@@ -175,8 +184,7 @@ class IntentExecutor @Inject constructor(
         return executionResult
     }
 
-    // ✅ MỚI: tách riêng để dùng chung — đánh giá 1 WorldStateCondition đã parse sẵn,
-    // trả về true nếu bị chặn (trạng thái thực tế chưa khớp điều kiện yêu cầu).
+    // ✅ MỚI: Đánh giá 1 WorldStateCondition đã parse sẵn, trả về true nếu bị chặn.
     suspend fun checkWorldStateBlocked(condition: WorldStateHelper.WorldStateCondition): Boolean {
         val actualValue = WorldStateHelper.getAttribute(
             database.worldStateDao(),
@@ -187,12 +195,7 @@ class IntentExecutor @Inject constructor(
         return actualValue != condition.expected
     }
 
-    // ✅ MỚI: guard dùng chung cho MỌI đường thực thi (không chỉ NLU/chat routing qua
-    // executeIntent). Trước đây requiredWorldState chỉ được kiểm tra ở executeIntent(), nên
-    // Dashboard tap (DashboardViewModel.sendDeviceAction) và camera alert-action
-    // (CameraSkill.executeAlertActions) — vốn đều gọi executePluginAction() — hoàn toàn KHÔNG
-    // bị chặn dù action có requiredWorldState. Đây chính là 2 nguồn rủi ro cao nhất vì chạy
-    // không có người xác nhận từng bước, nên guard cần áp dụng ở đây thay vì chỉ ở lớp NLU.
+    // ✅ MỚI: Guard cấp Action-level dùng chung.
     suspend fun checkWorldStateGuard(plugin: Plugin, action: String): PluginResult.Failure? {
         val actionMeta = plugin.manifest.actions.find { it.name == action } ?: return null
         val condition = actionMeta.requiredWorldState?.let { WorldStateHelper.parseCondition(it) } ?: return null
@@ -201,6 +204,49 @@ class IntentExecutor @Inject constructor(
             "⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta.description}\" " +
                 "(Cần trạng thái: ${condition.attrKey} = ${condition.expected})."
         )
+    }
+
+    // ✅ MỚI (Triển khai Precondition cấp thiết bị): Đánh giá điều kiện chặn riêng tư được cấu hình theo từng thiết bị Tuya
+    suspend fun checkDeviceWorldStateGuard(
+        pluginId: String,
+        action: String,
+        params: Map<String, Any>
+    ): PluginResult.Failure? {
+        if (pluginId == "smart_switch" && action == "set") {
+            val deviceId = params["device"]?.toString() ?: params["device_id"]?.toString() ?: params["deviceId"]?.toString() ?: ""
+            if (deviceId.isNotEmpty()) {
+                val guardKey = "worldstate_guard_$deviceId"
+                val precondition = configProvider.getString(guardKey, "")
+                
+                if (precondition.isNotBlank()) {
+                    val condition = WorldStateHelper.parseCondition(precondition)
+                    if (condition != null) {
+                        val currentState = WorldStateHelper.getAttribute(
+                            database.worldStateDao(),
+                            condition.source,
+                            condition.sourceId,
+                            condition.attrKey
+                        )
+                        
+                        if (currentState != condition.expected) {
+                            val expectedMsg = if (condition.expected == "true") "Bật" 
+                                              else if (condition.expected == "false") "Tắt" 
+                                              else condition.expected
+                            val currentMsg = if (currentState == "true") "Bật" 
+                                             else if (currentState == "false") "Tắt" 
+                                             else (currentState ?: "Không xác định")
+                                             
+                            return PluginResult.Failure(
+                                "❌ Hành động bị chặn: Thiết bị '$deviceId' chỉ được phép kích hoạt khi " +
+                                "trạng thái của '${condition.sourceId}' là '$expectedMsg' " +
+                                "(Trạng thái thực tế hiện tại đang là: '$currentMsg')"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return null
     }
 
     suspend fun executePluginAction(
@@ -213,9 +259,15 @@ class IntentExecutor @Inject constructor(
 
         val normalizedParams = ParameterResolver.normalizeParams(params, plugin, action, plugins, null)
 
-        // ✅ MỚI: áp world-state guard trước khi thực thi thật
+        // ✅ MỚI: Áp world-state guard cấp hành động trước khi thực thi
         checkWorldStateGuard(plugin, action)?.let { blocked ->
             logger.d("IntentExecutor", "executePluginAction bị chặn bởi world-state: $pluginId.$action")
+            return blocked
+        }
+
+        // ✅ MỚI (Triển khai Precondition cấp thiết bị): Áp world-state guard cấp thiết bị trước khi thực thi
+        checkDeviceWorldStateGuard(pluginId, action, normalizedParams)?.let { blocked ->
+            logger.d("IntentExecutor", "executePluginAction bị chặn bởi device world-state: $pluginId.$action")
             return blocked
         }
 

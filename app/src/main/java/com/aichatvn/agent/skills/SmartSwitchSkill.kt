@@ -207,24 +207,39 @@ class SmartSwitchSkill @Inject constructor(
         }
     }
 
+
+
+    
     private suspend fun handleSet(params: Map<String, Any>): AgentKernel.PluginResult {
-        val deviceName = params["device"] as? String
+        val deviceKey = params["device"] as? String
             ?: return failure("Thiếu tên thiết bị")
         val state = params["state"] as? Boolean
             ?: return failure("Thiếu trạng thái")
 
         return try {
+            // ✅ SỬA (Bug B+C+D): chuẩn hóa deviceKey (có thể là id hoặc tên, tùy nơi gọi)
+            // thành entity thật NGAY từ đầu — để world_state và DeviceRegistry luôn dùng
+            // đúng MỘT định danh (id), khớp với "tuya.<id>.state=..." mà
+            // PreconditionGuardDialog lưu, và khớp với key trong DeviceRegistry.nodeMap
+            // (vốn được index theo dev.id, không phải theo tên).
+            val deviceEntity = database.tuyaDeviceDao().getDeviceById(deviceKey)
+                ?: database.tuyaDeviceDao().getDeviceByName(deviceKey)
+                ?: return failure("Không tìm thấy thiết bị '$deviceKey'")
+            val deviceId = deviceEntity.id
+            val deviceName = deviceEntity.name
+
             if (state) {
-                tuyaManager.turnOn(deviceName)
+                tuyaManager.turnOn(deviceKey)
             } else {
-                tuyaManager.turnOff(deviceName)
+                tuyaManager.turnOff(deviceKey)
             }
 
             val now = System.currentTimeMillis()
 
-            // ✅ MỚI (Tuần 5 - Active Logging): Đồng bộ lập tức trạng thái mới vào world_state
+            // ✅ SỬA: ghi world_state theo deviceId (trước đây ghi theo deviceName, khiến
+            // điều kiện "tuya.<id>.state=..." không bao giờ khớp được dữ liệu thật).
             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                database.worldStateDao(), "tuya", deviceName, "state", state.toString()
+                database.worldStateDao(), "tuya", deviceId, "state", state.toString()
             )
 
             // ✅ MỚI (Tuần 5 - Active Logging): Ghi nhật ký sự kiện tương tác vật lý vào event_logs
@@ -240,7 +255,10 @@ class SmartSwitchSkill @Inject constructor(
                 )
             )
             
-            deviceRegistry.updateNode(deviceName) { current ->
+            // ✅ SỬA (Bug D): DeviceRegistry.nodeMap được index theo dev.id — truyền
+            // deviceName vào đây trước đây khiến updateNode() luôn no-op (không tìm thấy
+            // node), nên trạng thái Dashboard không cập nhật tức thời sau khi bật/tắt.
+            deviceRegistry.updateNode(deviceId) { current ->
                 current.copy(
                     online = true,
                     status = if (state) "Đang bật" else "Đang tắt",
@@ -253,6 +271,9 @@ class SmartSwitchSkill @Inject constructor(
             failure("Lỗi điều khiển thiết bị: ${e.message}")
         }
     }
+
+
+    
 
     private suspend fun handleStatus(params: Map<String, Any>): AgentKernel.PluginResult {
         val deviceName = params["device"] as? String

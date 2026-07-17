@@ -156,7 +156,12 @@ class AgentKernel @Inject constructor(
         val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(plugins)
 
         if (request.allowDeviceControl) {
+            val lockedPluginId = chatHistoryManager.getLockedPlugin() // ✅ Kiểm tra trạng thái khóa bảo vệ
+            
             for (plugin in plugins) {
+                // ✅ VÁ LỖ HỔNG: Nếu đang khóa plugin A, bỏ qua việc quét trigger prefix của plugin B, C...
+                if (lockedPluginId != null && plugin.manifest.id != lockedPluginId) continue
+                
                 for (action in plugin.manifest.actions) {
                     if (!action.enabled) continue
                     val matchedPrefix = action.triggerPrefixes.find { prefix ->
@@ -464,11 +469,21 @@ class AgentKernel @Inject constructor(
 
     private fun parseYesNo(msg: String): Boolean? {
         val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
-        val yes = setOf("co", "dung", "u", "ok", "dong y", "chuan", "phai")
-        val no = setOf("khong", "khoi", "thoi", "huy", "sai")
+        
+        val yesKeywords = setOf("co", "dung", "u", "ok", "dong y", "chuan", "phai", "co nhe", "co chu", "dung roi")
+        val noKeywords = setOf("khong", "khoi", "thoi", "huy", "sai", "khong dau", "khong nhe", "bo qua")
+        
+        // ✅ SỬA LỖI #2: Sử dụng Regex khớp ranh giới từ để nhận diện ngôn ngữ tự nhiên thông minh hơn
+        val isYes = yesKeywords.any { kw -> 
+            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
+        }
+        val isNo = noKeywords.any { kw -> 
+            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
+        }
+        
         return when {
-            yes.any { norm == it } -> true
-            no.any { norm == it } -> false
+            isYes && !isNo -> true
+            isNo && !isYes -> false
             else -> null
         }
     }
