@@ -50,6 +50,11 @@ object AppConfigDefaults {
     // ✅ MỚI: Giới hạn số dòng nhật ký sự kiện tối đa gửi lên AI (chống Token Bloat)
     const val GLOBAL_MAX_MEMORY_LOGS        = "global.max_memory_logs"
 
+    // ✅ MỚI: Số câu tối đa AI được hướng dẫn trả lời mỗi lượt (chỉ là gợi ý trong prompt, không
+    // cắt cứng như max_tokens). Cấu hình được thay vì code cứng, áp dụng CHUNG cho toàn hệ thống
+    // — mọi kênh trò chuyện với AI (nội bộ, Facebook, Telegram, Website) đều dùng chung 1 giá trị này.
+    const val GLOBAL_CHAT_MAX_SENTENCES     = "global.chat_max_sentences"
+
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
@@ -324,6 +329,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Số lượng nhật ký trí nhớ tối đa gửi lên AI",
             description = "Giới hạn số lượng dòng nhật ký sự kiện tối đa gửi làm ngữ cảnh cho AI để chống token bloat. Mặc định là 30 dòng."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CHAT_MAX_SENTENCES,
+            value = "4",
+            type = "int",
+            pluginId = "global",
+            label = "Số câu tối đa mỗi câu trả lời AI",
+            description = "Hướng dẫn AI trả lời tối đa bao nhiêu câu mỗi lượt chat (chỉ là gợi ý trong prompt, không cắt cứng như max_tokens). Áp dụng CHUNG cho mọi kênh trò chuyện với AI: nội bộ, Facebook, Telegram, Website. Mặc định 4 câu."
         )
     )
 }

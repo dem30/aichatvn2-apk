@@ -246,14 +246,19 @@ class AgentKernel @Inject constructor(
         val routerFailed = outcome is RouterOutcome.RouterFailed
         val usedMode = request.chatMode
         val usedPluginId = if (routerFailed) "router_error" else null
-        
+
+        // ✅ MỚI: Đọc từ config thay vì code cứng "3-4 câu". Đây là hàm chat() DUY NHẤT được gọi bởi
+        // mọi kênh (nội bộ, Facebook, Telegram, Website — xem ChatSkill.processQuery), nên 1 giá trị
+        // cấu hình ở đây tự động áp dụng CHUNG cho toàn hệ thống, không cần sửa riêng từng kênh.
+        val maxSentences = configProvider.getInt(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES, 4)
+
         val ANTI_HALLUCINATION_GUARD =
             "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
             "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
             "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
-            // ✅ MỚI: Chỉ thị chủ động trả lời ngắn gọn, thay vì chỉ dựa vào max_tokens cắt cứng ở tầng API
+            // Chỉ thị chủ động trả lời ngắn gọn, thay vì chỉ dựa vào max_tokens cắt cứng ở tầng API
             // (max_tokens cắt ngang câu chữ nếu vượt, còn chỉ thị này giúp AI TỰ viết súc tích ngay từ đầu).
-            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa 3-4 câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
+            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
 
         val guard = if (routerFailed) {
             ANTI_HALLUCINATION_GUARD + "\n" +
