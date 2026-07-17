@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb // Giữ hoặc xóa dòng này tùy thuộc vào cấu hình, ở dưới đã có hàm thay thế toArgbInt() để phòng ngừa
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -76,6 +77,15 @@ private fun saveFloorplanImageToInternalStorage(context: android.content.Context
     }
 }
 
+// Hàm mở rộng tự chuyển đổi màu Compose sang định dạng số nguyên ARGB dùng cho Paint nền tảng
+private fun Color.toArgbInt(): Int {
+    val a = (alpha * 255f + 0.5f).toInt() and 0xFF
+    val r = (red * 255f + 0.5f).toInt() and 0xFF
+    val g = (green * 255f + 0.5f).toInt() and 0xFF
+    val b = (blue * 255f + 0.5f).toInt() and 0xFF
+    return (a shl 24) or (r shl 16) or (g shl 8) or b
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
@@ -88,7 +98,6 @@ fun DashboardScreen(
     val floorplanPath by viewModel.floorplanPath.collectAsState()
     val floorplanScale by viewModel.floorplanScale.collectAsState()
     
-    // ✅ ĐÃ THÊM: Theo dõi danh sách đề xuất thói quen tự học của AI
     val aiRecommendations by viewModel.aiRecommendations.collectAsState()
 
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
@@ -255,7 +264,6 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // ✅ ĐÃ THÊM: Hộp thông báo gợi ý tự động hóa thông minh (Proactive Suggestions)
             if (aiRecommendations.isNotEmpty()) {
                 val recommendation = aiRecommendations.first()
                 Card(
@@ -319,16 +327,14 @@ fun DashboardScreen(
                 }
             }
 
-            // Sử dụng BoxWithConstraints để nhận chính xác kích thước vùng Canvas hiển thị
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f) // ✅ ĐÃ SỬA: Box chiếm không gian còn lại bên dưới thẻ Card đề xuất
+                    .weight(1f)
             ) {
                 val viewportWidth = maxWidth.value
                 val viewportHeight = maxHeight.value
 
-                // Lớp vẽ mạng lưới nền (Grid Background Canvas)
                 val gridAlpha = if (floorplanBitmap != null) 0.06f else 0.2f
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val gridSpacing = 40.dp.toPx()
@@ -373,7 +379,6 @@ fun DashboardScreen(
                             }
                         }
                 ) {
-                    // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và sơ đồ
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -384,7 +389,6 @@ fun DashboardScreen(
                                 translationY = panOffset.y
                             )
                     ) {
-                        // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
                         floorplanBitmap?.let { bmp ->
                             Image(
                                 bitmap = bmp,
@@ -415,7 +419,6 @@ fun DashboardScreen(
                             }
                         }
 
-                        // Vẽ phân vùng các phòng
                         val rooms = deviceNodes
                             .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
                             .groupBy { it.room }
@@ -457,7 +460,6 @@ fun DashboardScreen(
                             }
                         }
 
-                        // Hiển thị danh sách thiết bị
                         deviceNodes.forEach { node ->
                             key(node.id) {
                                 DraggableDeviceNodeItem(
@@ -473,7 +475,6 @@ fun DashboardScreen(
                     }
                 }
 
-                // Nút Căn giữa (Home) thông minh dạng Floating Action Button
                 FloatingActionButton(
                     onClick = {
                         if (deviceNodes.isNotEmpty()) {
@@ -544,7 +545,6 @@ fun DashboardScreen(
             }
         }
 
-        // Tầng BottomSheet cấu hình và kích hoạt lệnh
         if (selectedNode != null) {
             val node = selectedNode!!
             ModalBottomSheet(
@@ -823,12 +823,13 @@ fun DeviceNodeCardWidget(
                     drawIntoCanvas { canvas ->
                         val paint = Paint().apply {
                             asFrameworkPaint().apply {
-                                color = activeThemeColor.copy(alpha = glowAlpha).toArgb()
+                                // Sử dụng hàm mở rộng toArgbInt() thay cho toArgb() hệ thống để vượt lỗi biên dịch
+                                color = activeThemeColor.copy(alpha = glowAlpha).toArgbInt()
                                 setShadowLayer(
                                     14.dp.toPx(),
                                     0f,
                                     0f,
-                                    activeThemeColor.copy(alpha = glowAlpha).toArgb()
+                                    activeThemeColor.copy(alpha = glowAlpha).toArgbInt()
                                 )
                             }
                         }
