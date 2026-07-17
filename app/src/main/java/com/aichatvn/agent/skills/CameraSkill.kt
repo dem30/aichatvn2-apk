@@ -1,3 +1,4 @@
+
 package com.aichatvn.agent.skills
 
 import com.aichatvn.agent.utils.toMap
@@ -189,11 +190,10 @@ class CameraSkill @Inject constructor(
         }
     }
 
-    // ✅ MỚI (Tuần 1 - Phase 1): Thực thể phân tích có cấu trúc sau khi ép Groq trả về JSON
     private data class VisionParseResult(
-        val displayComment: String,         // Text lưu lịch sử (ưu tiên trường description)
-        val structuredSuspicious: Boolean?, // Rơi vào true/false khi parse được JSON, null khi parse lỗi
-        val rawJson: org.json.JSONObject?    // Giữ lại JSON để lưu cột aiStateJson
+        val displayComment: String,         
+        val structuredSuspicious: Boolean?, 
+        val rawJson: org.json.JSONObject?    
     )
     
     private val learningStates = ConcurrentHashMap<String, CameraLearningState>()
@@ -212,8 +212,6 @@ class CameraSkill @Inject constructor(
     private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
     private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
-    
-    // ✅ MỚI (Tuần 3 - Phase 3): Đọc thời gian tối đa gộp nén cảnh báo liên tiếp
     private suspend fun alertMergeWindowMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS, 5 * 60 * 1000L)
     
     companion object {
@@ -559,7 +557,7 @@ class CameraSkill @Inject constructor(
         }
         updateDiagnostics()
         cleanupOldAlerts()
-        cleanupOldEventLogs() // ✅ MỚI (Tuần 4): Dọn dẹp log cũ khi khởi chạy
+        cleanupOldEventLogs() 
         pruneOrphanedCameraState()
         scheduleDailyReport()
         
@@ -590,7 +588,6 @@ class CameraSkill @Inject constructor(
                     dailyEvents.remove(tid)
                     cameraMutexMap.remove(tid)
                     
-                    // ✅ MỚI (Tự động dọn dẹp): Quét dọn dẹp world state của các camera mồ côi ra khỏi SQLite
                     scope.launch(Dispatchers.IO) {
                         database.worldStateDao().deleteStateBySourceAndId("camera", tid)
                     }
@@ -623,7 +620,6 @@ class CameraSkill @Inject constructor(
         }
     }
 
-    // ✅ MỚI (Tuần 4): Triển khai hàm dọn dẹp nhật ký Event Log cũ (Lưu giữ tối đa 30 ngày)
     private fun cleanupOldEventLogs() {
         scope.launch {
             try {
@@ -917,8 +913,6 @@ class CameraSkill @Inject constructor(
         }
     }
 
-    // ✅ MỚI (Tuần 1): Hàm parse nội dung nhận được từ Groq Vision ép buộc cấu trúc JSON.
-    
     private fun parseVisionResult(raw: String): VisionParseResult {
         val start = raw.indexOf('{')
         val end = raw.lastIndexOf('}')
@@ -1017,7 +1011,6 @@ class CameraSkill @Inject constructor(
                         "Không thể phân tích (AI timeout)"
                     }
 
-                    // ✅ MỚI (Tuần 1 - Phase 1): Thử parse cấu trúc JSON Vision
                     val visionParsed = parseVisionResult(aiResult)
                     aiComment = visionParsed.displayComment
                     
@@ -1033,11 +1026,9 @@ class CameraSkill @Inject constructor(
                     }
                     
                     isSuspicious = if (visionParsed.structuredSuspicious != null) {
-                        // ✅ JSON hoàn toàn hợp lệ -> Ưu tiên dùng state có cấu trúc
                         logger.d("CameraSkill", "🧩 [Structured Vision] camera=$tid state=${visionParsed.structuredSuspicious}")
                         visionParsed.structuredSuspicious
                     } else {
-                        // ⚠️ Fallback: Tự động rơi về logic keyword contains() cũ khi JSON hỏng, bảo đảm an toàn
                         val textClean = aiComment.lowercase()
                         val hasPositive = positiveKeywords.any { textClean.contains(it) }
                         val hasNegative = negativeKeywords.any { textClean.contains(it) }
@@ -1053,10 +1044,29 @@ class CameraSkill @Inject constructor(
                         if (cameraDailyEvents.size > maxDailyEvents()) {
                             cameraDailyEvents.removeAt(0)
                         }
-                        
+
+                        // ✅ SỬA LỖI #2 & #4: Lấy thông tin cảnh báo cuối cùng từ DB TRƯỚC để kiểm tra xem có gộp biến cố liên tiếp không
+                        val latestAlert = withContext(Dispatchers.IO) {
+                            database.alertDao().getLatestAlertForCamera(tid)
+                        }
+                        val mergeWindowMs = alertMergeWindowMs()
+                        val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
+                        val shouldMerge = latestAlert != null &&
+                            latestAlert.isSuspicious == 1 &&
+                            latestEffectiveTime != null &&
+                            (now - latestEffectiveTime) <= mergeWindowMs
+
+                        // ✅ SỬA LỖI #3: ID cảnh báo và thông báo đồng bộ thống nhất
+                        val activeAlertId = if (shouldMerge && latestAlert != null) {
+                            latestAlert.id // Tái sử dụng ID cũ khi gộp
+                        } else {
+                            UUID.randomUUID().toString() // Tạo mới hoàn toàn nếu là biến cố độc lập
+                        }
+
                         val customerEmail = camera.customeremail
                         var emailSent = false
-                        if (camera.enableNotification == 1 && customerEmail.isNotEmpty()) {
+                        // Chỉ gửi email khi KHÔNG gộp sự kiện (Tránh spam hòm thư của chủ nhà)
+                        if (!shouldMerge && camera.enableNotification == 1 && customerEmail.isNotEmpty()) {
                             emailSkill.sendEmail(
                                 to = customerEmail,
                                 subject = "🚨 CẢNH BÁO AN NINH KHẨN CẤP!",
@@ -1065,20 +1075,20 @@ class CameraSkill @Inject constructor(
                             )
                             emailSent = true
                         }
-                        
-                        val alertId = UUID.randomUUID().toString()
 
+                        // Push Notification (Gửi đè/Cập nhật yên lặng vào thông báo cũ trên Android tray khi gộp nhờ dùng trùng activeAlertId)
                         if (camera.enableNotification == 1) {
                             notificationSkill.sendNotification(
                                 title = "Cảnh Báo Camera ${camera.customername}",
                                 message = aiComment.take(100),
-                                notificationId = NotificationSkill.notificationIdForAlert(alertId),
+                                notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
                                 deepLinkRoute = "alert_history?cameraId=$tid"
                             )
                         }
                         
+                        // Lưu cơ sở dữ liệu lịch sử cảnh báo
                         saveAlertToHistory(
-                            alertId = alertId,
+                            alertId = activeAlertId,
                             camera = camera,
                             aiComment = aiComment,
                             imageBytes = optimizedBytes,
@@ -1087,11 +1097,16 @@ class CameraSkill @Inject constructor(
                             absDiffTrigger = absDiffTrigger,
                             emailSent = emailSent,
                             scheduleId = scheduleId,
-                            aiStateJson = visionParsed.rawJson?.toString() // ✅ MỚI (Tuần 1 & 3): Lưu trữ meta JSON
+                            aiStateJson = visionParsed.rawJson?.toString(),
+                            shouldMerge = shouldMerge, // Truyền cờ xác định trạng thái gộp
+                            existingAlert = latestAlert
                         )
                         
-                        executeAlertActions(camera, aiComment, overrideAlertActions) 
-                        logger.i("CameraSkill", "🚨 ALERT detected for camera $tid: $aiComment")
+                        // Chỉ kích hoạt alertActions chạy kịch bản vật lý khi KHÔNG gộp sự kiện (Chống lặp lại rơ-le)
+                        if (!shouldMerge) {
+                            executeAlertActions(camera, aiComment, overrideAlertActions) 
+                        }
+                        logger.i("CameraSkill", "🚨 ALERT handled for camera $tid (merged=$shouldMerge, id=$activeAlertId): $aiComment")
                         
                     } else {
                         if (isMature && isSuddenChange) {
@@ -1099,7 +1114,6 @@ class CameraSkill @Inject constructor(
                             logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
                         }
 
-                        // ✅ MỚI (Tuần 3 & 5): Ghi nhật ký "bình thường" song song khi gọi AI thật
                         withContext(Dispatchers.IO) {
                             database.eventLogDao().insertLog(
                                 com.aichatvn.agent.data.model.EventLogEntity(
@@ -1112,7 +1126,6 @@ class CameraSkill @Inject constructor(
                                     summary = "Camera ${camera.customername}: $aiComment"
                                 )
                             )
-                            // Ghi world_state "normal" thời gian thực
                             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                                 database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "normal"
                             )
@@ -1372,7 +1385,6 @@ class CameraSkill @Inject constructor(
             val tid = cameraId.trim()
             withContext(Dispatchers.IO) {
                 database.cameraDao().deleteCamera(tid)
-                // ✅ MỚI (Tự động dọn dẹp): Xóa world state của camera bị hủy ra khỏi SQLite
                 database.worldStateDao().deleteStateBySourceAndId("camera", tid)
             }
             learningStates.remove(tid)
@@ -1398,7 +1410,6 @@ class CameraSkill @Inject constructor(
             withContext(Dispatchers.IO) {
                 database.cameraDao().deleteCamerasByCustomer(trimmedCustomerId)
                 database.cameraDao().deleteCustomerSetting(trimmedCustomerId)
-                // ✅ MỚI (Tự động dọn dẹp): Duyệt xóa world state của toàn bộ camera nhánh thuộc khách hàng bị hủy
                 cameras.forEach { camera ->
                     database.worldStateDao().deleteStateBySourceAndId("camera", camera.id.trim())
                 }
@@ -1534,7 +1545,7 @@ class CameraSkill @Inject constructor(
         _diagnostics.value = stats
     }
 
-    // ✅ MỚI (Tuần 3 - Phase 3): Triển khai lưu trữ lịch sử có hỗ trợ nén thời gian và đồng bộ Event Log
+    // ✅ SỬA LỖI #2 & #3: Đổi cấu trúc hàm saveAlertToHistory() để nhận trực tiếp kết quả kiểm duyệt gộp ở trên
     private suspend fun saveAlertToHistory(
         alertId: String,
         camera: CameraConfigEntity,
@@ -1545,28 +1556,20 @@ class CameraSkill @Inject constructor(
         absDiffTrigger: Int,
         emailSent: Boolean,
         scheduleId: String? = null,
-        aiStateJson: String? = null
+        aiStateJson: String? = null,
+        shouldMerge: Boolean = false,              // Thêm cờ gộp đã phân tích trước
+        existingAlert: AlertEntity? = null         // Nhận bản ghi cuối cùng đang hoạt động
     ) {
         val tid = camera.id.trim()
         try {
-            val latestAlert = withContext(Dispatchers.IO) {
-                database.alertDao().getLatestAlertForCamera(tid)
-            }
             val now = System.currentTimeMillis()
-            val mergeWindowMs = alertMergeWindowMs()
 
-            // Điều kiện gộp nén sự kiện: cảnh báo cũ tồn tại, cùng suspicious=1 và nằm trong cửa sổ thời gian cấu hình
-            val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
-            val shouldMerge = latestAlert != null &&
-                latestAlert.isSuspicious == 1 &&
-                latestEffectiveTime != null &&
-                (now - latestEffectiveTime) <= mergeWindowMs
-
-            if (shouldMerge && latestAlert != null) {
+            if (shouldMerge && existingAlert != null) {
+                // Tái sử dụng chính ID của bản ghi cũ để đồng nhất với Notification ID, chỉ cập nhật endTime kéo dài
                 withContext(Dispatchers.IO) {
-                    database.alertDao().updateAlertEndTime(latestAlert.id, now)
+                    database.alertDao().updateAlertEndTime(existingAlert.id, now)
                 }
-                logger.d("CameraSkill", "🔗 [Nén sự kiện] Gộp cảnh báo mới của camera $tid vào alert cũ #${latestAlert.id} (endTime=$now)")
+                logger.d("CameraSkill", "🔗 [Nén sự kiện] Đã gộp thành công mốc giờ hoạt động kéo dài vào bản ghi #${existingAlert.id}")
             } else {
                 val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
 
@@ -1601,7 +1604,7 @@ class CameraSkill @Inject constructor(
                     isRead = 0,
                     scheduleId = scheduleId,
                     scheduleLabel = scheduleLabel,
-                    endTime = null, // Bản ghi gốc bắt đầu
+                    endTime = null, 
                     aiStateJson = aiStateJson
                 )
                 withContext(Dispatchers.IO) {
@@ -1609,7 +1612,6 @@ class CameraSkill @Inject constructor(
                 }
             }
 
-            // ✅ MỚI (Tuần 3 & 4): Luôn đồng bộ ghi nhật ký sự kiện Event Log phục vụ trí nhớ dài hạn (Memory-RAG)
             withContext(Dispatchers.IO) {
                 database.eventLogDao().insertLog(
                     com.aichatvn.agent.data.model.EventLogEntity(
@@ -1622,7 +1624,6 @@ class CameraSkill @Inject constructor(
                         summary = "Camera ${camera.customername} phát hiện: $aiComment"
                     )
                 )
-                // Đồng bộ cập nhật World State thời gian thực dạng suspicious
                 com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                     database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
                 )
@@ -1709,3 +1710,4 @@ class CameraSkill @Inject constructor(
     
     override suspend fun shutdown() {}
 }
+

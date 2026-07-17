@@ -1,3 +1,4 @@
+
 package com.aichatvn.agent.skills
 
 import android.content.Context
@@ -80,7 +81,6 @@ class ChatSkill @Inject constructor(
     private val messagesMutex = Mutex()
 
     companion object {
-        // ✅ MỚI (Tuần 4): Từ khóa nhận diện câu hỏi thuộc dạng truy vấn quá khứ/lịch sử
         private val PAST_QUERY_KEYWORDS = setOf(
             "mấy hôm trước", "hôm qua", "hôm nay", "gần đây", "vừa rồi", "lúc nãy",
             "lịch sử", "nhật ký", "hoạt động", "đã làm gì", "đã xảy ra",
@@ -91,7 +91,6 @@ class ChatSkill @Inject constructor(
         private const val DEFAULT_MEMORY_LOOKBACK_DAYS = 3
     }
 
-    // ✅ MỚI (Tuần 4): Kiểm tra câu hỏi có thuộc dạng cần truy xuất ký ức quá khứ hay không
     private fun isPastMemoryQuery(message: String): Boolean {
         val norm = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(message)
         return PAST_QUERY_KEYWORDS.any { keyword ->
@@ -100,8 +99,10 @@ class ChatSkill @Inject constructor(
         }
     }
 
-    // ✅ MỚI (Tuần 4 - Memory-RAG): Truy vấn trực tiếp SQLite sau đó định dạng thành văn bản thô để bơm vào bối cảnh chat
     private suspend fun buildMemoryContext(username: String): String = withContext(Dispatchers.IO) {
+        // ✅ SỬA LỖI #1: Chốt chặn an ninh chặn đứng rò rỉ dữ liệu riêng tư smarthome của chủ nhà cho khách ngoại tuyến
+        if (username != "default_user") return@withContext ""
+
         try {
             val now = System.currentTimeMillis()
             val since = now - (DEFAULT_MEMORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000L)
@@ -111,24 +112,24 @@ class ChatSkill @Inject constructor(
 
             val activityLines = logs
                 .sortedBy { it.timestamp }
+                // ✅ SỬA LỖI #6: Lọc bỏ trùng lặp tin nhắn đã có log trong event_logs tránh xuất hiện 2 lần
+                .filter { it.eventType != "incoming_message" }
                 .take(200) 
                 .map { log -> "${dateFmt.format(java.util.Date(log.timestamp))}: ${log.summary}" }
 
-            val unreadLines = if (username == "default_user") {
-                try {
-                    database.chatMessageDao().getAllMessagesRaw(500)
-                        .filter { it.role == "user" && !it.isRead && it.username != "default_user" }
-                        .sortedByDescending { it.timestamp }
-                        .take(30)
-                        .map { msg ->
-                            val platform = msg.username.substringBefore("_")
-                            val rawId = msg.username.substringAfter("_")
-                            "${dateFmt.format(java.util.Date(msg.timestamp))}: [$platform] $rawId nhắn: \"${msg.content.take(80)}\""
-                        }
-                } catch (e: Exception) {
-                    emptyList()
-                }
-            } else emptyList()
+            val unreadLines = try {
+                database.chatMessageDao().getAllMessagesRaw(500)
+                    .filter { it.role == "user" && !it.isRead && it.username != "default_user" }
+                    .sortedByDescending { it.timestamp }
+                    .take(30)
+                    .map { msg ->
+                        val platform = msg.username.substringBefore("_")
+                        val rawId = msg.username.substringAfter("_")
+                        "${dateFmt.format(java.util.Date(msg.timestamp))}: [$platform] $rawId nhắn: \"${msg.content.take(80)}\""
+                    }
+            } catch (e: Exception) {
+                emptyList()
+            }
 
             if (activityLines.isEmpty() && unreadLines.isEmpty()) return@withContext ""
 
@@ -207,7 +208,6 @@ class ChatSkill @Inject constructor(
         withContext(Dispatchers.IO) {
             database.chatMessageDao().insertMessage(userMessage)
             
-            // ✅ MỚI (Tuần 4): Ghi nhật ký sự kiện "tin nhắn mới nhận" làm giàu kho Event Log phục vụ Memory-RAG
             database.eventLogDao().insertLog(
                 com.aichatvn.agent.data.model.EventLogEntity(
                     id = java.util.UUID.randomUUID().toString(),
@@ -363,7 +363,6 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                // ✅ MỚI (Tuần 4 - Memory-RAG): Chỉ tiến hành nạp ký ức khi câu hỏi thực sự liên quan đến lịch sử và không kèm phân tích Vision ảnh
                 val memoryContext = if (imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(message)) {
                     buildMemoryContext(username)
                 } else {
