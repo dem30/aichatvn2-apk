@@ -684,8 +684,7 @@ fun PreconditionGuardDialog(
                         expanded = cameraExpanded,
                         onExpandedChange = { cameraExpanded = it }
                     ) {
-                        val cameraName = activeCameras.find { it.id == selectedCameraId }
-                            ?.let { "${it.customername} (${it.id})" } ?: selectedCameraId
+                        val cameraName = activeCameras.find { it.id == selectedCameraId }?.customername ?: selectedCameraId
                         OutlinedTextField(
                             value = cameraName.ifBlank { "Chọn camera..." },
                             onValueChange = {},
@@ -699,7 +698,7 @@ fun PreconditionGuardDialog(
                         ) {
                             activeCameras.forEach { cam ->
                                 DropdownMenuItem(
-                                    text = { Text("${cam.customername} (${cam.id})") },
+                                    text = { Text(cam.customername) },
                                     onClick = {
                                         selectedCameraId = cam.id
                                         cameraExpanded = false
@@ -764,14 +763,23 @@ fun PreconditionGuardDialog(
                             expanded = tuyaExpanded,
                             onDismissRequest = { tuyaExpanded = false }
                         ) {
-                            tuyaDevices.filter { it.id != targetDevice.id }.forEach { dev ->
+                            val otherTuyaDevices = tuyaDevices.filter { it.id != targetDevice.id }
+                            if (otherTuyaDevices.isEmpty()) {
                                 DropdownMenuItem(
-                                    text = { Text(dev.name) },
-                                    onClick = {
-                                        selectedTuyaId = dev.id
-                                        tuyaExpanded = false
-                                    }
+                                    text = { Text("⚠️ Không có ổ cắm Tuya nào khác để chọn (không thể chọn chính thiết bị đang cấu hình)") },
+                                    onClick = {},
+                                    enabled = false
                                 )
+                            } else {
+                                otherTuyaDevices.forEach { dev ->
+                                    DropdownMenuItem(
+                                        text = { Text(dev.name) },
+                                        onClick = {
+                                            selectedTuyaId = dev.id
+                                            tuyaExpanded = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
