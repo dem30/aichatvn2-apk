@@ -116,7 +116,16 @@ class DashboardViewModel @Inject constructor(
                                         )
                                     )
                                 }
-                                _executionMessage.value = "✅ Đã thiết lập lịch hằng ngày: ${if (value.toBoolean()) "Bật" else "Tắt"} $sourceId lúc ${hour}h!"
+                                // ✅ MỚI: ScheduleSkill.handleAdd giờ trả về data["duplicate"]=true
+                                // nếu đã có lịch trùng từ trước (vd người dùng lỡ bấm "Đồng ý" 2 lần) —
+                                // vẫn đánh dấu approved để ẩn đề xuất khỏi Dashboard, nhưng báo đúng
+                                // sự thật thay vì nói "đã thiết lập" gây hiểu nhầm là vừa tạo mới.
+                                val isDuplicate = (result.data as? Map<*, *>)?.get("duplicate") as? Boolean ?: false
+                                _executionMessage.value = if (isDuplicate) {
+                                    "ℹ️ Thói quen này đã có lịch tự động từ trước, không tạo thêm bản trùng."
+                                } else {
+                                    "✅ Đã thiết lập lịch hằng ngày: ${if (value.toBoolean()) "Bật" else "Tắt"} $sourceId lúc ${hour}h!"
+                                }
                             }
                             is PluginResult.Failure -> {
                                 _executionMessage.value = "❌ Không thể tạo lịch trình: ${result.error}"

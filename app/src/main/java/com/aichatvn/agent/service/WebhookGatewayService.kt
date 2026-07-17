@@ -48,6 +48,9 @@ class WebhookGatewayService : Service() {
     lateinit var agentKernel: AgentKernel
 
     @Inject
+    lateinit var intentExecutor: com.aichatvn.agent.core.execution.IntentExecutor
+
+    @Inject
     lateinit var chatSkill: ChatSkill
 
     @Inject
@@ -812,8 +815,17 @@ class WebhookGatewayService : Service() {
                                     emptyMap()
                                 }
 
-                                val result = plugin.execute(schedule.action, params)
-                                logger.i("ScheduleLoop", "✅ Thực thi lịch trình thành công: ${schedule.pluginId}.${schedule.action} -> $result")
+                                // ✅ SỬA: trước đây gọi thẳng plugin.execute(...), bỏ qua hoàn toàn
+                                // requiredWorldState — nghĩa là lịch tự động (chạy không người giám
+                                // sát, rủi ro cao nhất) lại là nơi duy nhất KHÔNG được world-state
+                                // bảo vệ. Đổi sang executePluginAction() để áp guard dùng chung.
+                                val result = intentExecutor.executePluginAction(schedule.pluginId, schedule.action, params)
+                                when (result) {
+                                    is AgentKernel.PluginResult.Failure ->
+                                        logger.w("ScheduleLoop", "⚠️ Lịch trình bị chặn/lỗi: ${schedule.pluginId}.${schedule.action} -> ${result.error}")
+                                    else ->
+                                        logger.i("ScheduleLoop", "✅ Thực thi lịch trình thành công: ${schedule.pluginId}.${schedule.action} -> $result")
+                                }
                             } catch (e: Exception) {
                                 logger.e("ScheduleLoop", "❌ Lỗi thực thi action: ${schedule.pluginId}.${schedule.action}: ${e.message}")
                             }
@@ -950,29 +962,69 @@ class WebhookGatewayService : Service() {
                 val actionLabel = if (key.value.lowercase() == "true") "bật" else "tắt"
                 val answer = "Bạn thường $actionLabel thiết bị ${key.sourceId} vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất). Hệ thống đề xuất đặt lịch tự động cho thói quen này."
 
-                if (existingPatterns[question] != answer) {
-                    val qa = com.aichatvn.agent.data.model.QAEntity(
-                        id = existingPatterns[question + "_id"] ?: java.util.UUID.randomUUID().toString(),
-                        question = question,
-                        answer = answer,
-                        type = "pattern",
-                        category = "pending_pattern", 
-                        createdBy = "default_user",
-                        createdAt = System.currentTimeMillis(),
-                        timestamp = System.currentTimeMillis()
-                    )
-                    qaDao.insertQA(qa)
-                    logger.i("PatternMining", "🔁 Phát hiện thói quen mới chờ duyệt: $answer")
+                val existingCategory = existingPatterns[question + "_category"]
+
+                // ✅ SỬA LỖI: dùng "question" (khóa cố định theo device/hour) để nhận diện pattern,
+                // KHÔNG dùng "answer" (chứa $distinctDays biến động mỗi ngày do cửa sổ 7 ngày trượt).
+                // Trước đây so sánh bằng answer khiến pattern gần như luôn bị coi là "mới" mỗi lần
+                // mining chạy (24h/lần) -> ghi đè category về "pending_pattern", làm mất trạng thái
+                // approved_pattern/ignored_pattern mà người dùng đã chọn trước đó, khiến gợi ý đã
+                // duyệt/bỏ qua cứ hiện lại và có nguy cơ tạo lịch trùng khi bấm "Đồng ý" lần nữa.
+                when (existingCategory) {
+                    null -> {
+                        // Chưa từng có -> tạo mới ở trạng thái chờ duyệt
+                        val qa = com.aichatvn.agent.data.model.QAEntity(
+                            id = java.util.UUID.randomUUID().toString(),
+                            question = question,
+                            answer = answer,
+                            type = "pattern",
+                            category = "pending_pattern",
+                            createdBy = "default_user",
+                            createdAt = System.currentTimeMillis(),
+                            timestamp = System.currentTimeMillis()
+                        )
+                        qaDao.insertQA(qa)
+                        logger.i("PatternMining", "🔁 Phát hiện thói quen mới chờ duyệt: $answer")
+                    }
+                    "pending_pattern" -> {
+                        // Vẫn đang chờ duyệt -> chỉ cập nhật nội dung hiển thị (số ngày mới nhất),
+                        // giữ nguyên category, không tạo id mới.
+                        if (existingPatterns[question] != answer) {
+                            val qa = com.aichatvn.agent.data.model.QAEntity(
+                                id = existingPatterns[question + "_id"] ?: java.util.UUID.randomUUID().toString(),
+                                question = question,
+                                answer = answer,
+                                type = "pattern",
+                                category = "pending_pattern",
+                                createdBy = "default_user",
+                                createdAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
+                            qaDao.insertQA(qa)
+                        }
+                    }
+                    else -> {
+                        // approved_pattern / ignored_pattern -> người dùng đã quyết định, không đụng vào.
+                        logger.d("PatternMining", "⏭️ Bỏ qua pattern đã xử lý (category=$existingCategory): $question")
+                    }
                 }
             }
         }
     }
 
+    // ✅ SỬA: trả thêm category theo từng question (key + "_category") để minePatterns()
+    // biết pattern đã được duyệt/bỏ qua hay chưa, tránh ghi đè ngược về "pending_pattern".
     private suspend fun trainingSkillPatternCache(): Map<String, String> {
         return try {
             database.qaDao().getAllQAs("default_user")
                 .filter { it.type == "pattern" }
-                .flatMap { listOf(it.question to it.answer, it.question + "_id" to it.id) }
+                .flatMap {
+                    listOf(
+                        it.question to it.answer,
+                        it.question + "_id" to it.id,
+                        it.question + "_category" to it.category
+                    )
+                }
                 .toMap()
         } catch (e: Exception) {
             emptyMap()

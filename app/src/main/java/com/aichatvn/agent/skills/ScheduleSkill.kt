@@ -110,6 +110,30 @@ class ScheduleSkill @Inject constructor(
         }
     }
 
+    // ✅ MỚI: chống tạo lịch trùng — ví dụ khi người dùng bấm "Đồng ý" nhiều lần trên
+    // cùng 1 đề xuất thói quen (approvePattern), hoặc pattern mining vô tình sinh lại đề xuất
+    // đã duyệt (xem WebhookGatewayService.minePatterns). So khớp theo pluginId + action + cron
+    // + intervalMinutes + tham số "device" lồng trong params (nếu có), vì đây là bộ khóa đủ để
+    // coi là "cùng một thói quen tự động".
+    private suspend fun findDuplicateSchedule(
+        pluginId: String,
+        action: String,
+        cron: String,
+        intervalMinutes: Int,
+        nestedParams: Map<String, Any>
+    ): ScheduleEntity? {
+        val targetDevice = (nestedParams["device"] ?: nestedParams["device_id"] ?: nestedParams["deviceId"])?.toString()
+        val existing = withContext(Dispatchers.IO) { database.scheduleDao().getAllSchedules() }
+        return existing.find { s ->
+            if (s.pluginId != pluginId || s.action != action) return@find false
+            if (s.cron.trim() != cron.trim() || s.intervalMinutes != intervalMinutes) return@find false
+            if (targetDevice == null) return@find true
+            val sParams = try { JSONObject(s.params) } catch (e: Exception) { JSONObject() }
+            val sDevice = sParams.optString("device", sParams.optString("device_id", sParams.optString("deviceId", "")))
+            sDevice == targetDevice
+        }
+    }
+
     private suspend fun handleAdd(params: Map<String, Any>): AgentKernel.PluginResult {
         val pluginId = params["pluginId"] as? String
             ?: return failure("Thiếu pluginId")
@@ -131,6 +155,15 @@ class ScheduleSkill @Inject constructor(
             else -> emptyMap()
         }
         val paramsJson = JSONObject(nestedParams).toString()
+
+        // ✅ MỚI: chặn tạo trùng ngay tại nguồn — áp dụng cho MỌI lời gọi "add" (kể cả từ
+        // approvePattern, chat NLU, hay UI thêm lịch thủ công), không chỉ riêng luồng gợi ý.
+        findDuplicateSchedule(pluginId, action, cron, intervalMinutes, nestedParams)?.let { dup ->
+            return success(
+                message = "ℹ️ Lịch trình tương tự đã tồn tại: \"${dup.label}\" — không tạo thêm bản trùng.",
+                data = mapOf("schedule" to dup, "duplicate" to true)
+            )
+        }
 
         val label = (params["label"] as? String)?.trim()?.takeIf { it.isNotBlank() }
             ?: "$pluginId.$action"

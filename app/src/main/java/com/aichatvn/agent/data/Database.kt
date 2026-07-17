@@ -263,6 +263,29 @@ interface AlertDao {
 
     @Query("UPDATE alerts SET endTime = :endTime WHERE id = :alertId")
     suspend fun updateAlertEndTime(alertId: String, endTime: Long)
+
+    // ✅ MỚI: dùng khi gộp cảnh báo (merge alert) — trước đây chỉ có updateAlertEndTime(),
+    // khiến push notification hiện nội dung MỚI nhất (aiComment mới) nhưng alert_history vẫn
+    // giữ nội dung/ảnh của lần alert ĐẦU TIÊN trong chuỗi gộp, gây lệch thông tin khi người
+    // dùng bấm vào thông báo để xem chi tiết. imagePath dùng COALESCE để không xóa ảnh cũ nếu
+    // lần merge này không kèm ảnh mới.
+    @Query("""
+        UPDATE alerts
+        SET endTime = :endTime,
+            aiComment = :aiComment,
+            diff = :diff,
+            imagePath = COALESCE(:imagePath, imagePath),
+            aiStateJson = COALESCE(:aiStateJson, aiStateJson)
+        WHERE id = :alertId
+    """)
+    suspend fun mergeAlertUpdate(
+        alertId: String,
+        endTime: Long,
+        aiComment: String,
+        diff: Int,
+        imagePath: String?,
+        aiStateJson: String?
+    )
 }
 
 // ==================== SCHEDULE DAO ====================

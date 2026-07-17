@@ -58,13 +58,7 @@ class IntentExecutor @Inject constructor(
         }
 
         val worldStateBlocked: Boolean = if (missing.isEmpty() && worldStateCondition != null) {
-            val actualValue = WorldStateHelper.getAttribute(
-                database.worldStateDao(), 
-                worldStateCondition.source,
-                worldStateCondition.sourceId,
-                worldStateCondition.attrKey
-            )
-            actualValue != worldStateCondition.expected
+            checkWorldStateBlocked(worldStateCondition)
         } else {
             false
         }
@@ -181,6 +175,34 @@ class IntentExecutor @Inject constructor(
         return executionResult
     }
 
+    // ✅ MỚI: tách riêng để dùng chung — đánh giá 1 WorldStateCondition đã parse sẵn,
+    // trả về true nếu bị chặn (trạng thái thực tế chưa khớp điều kiện yêu cầu).
+    suspend fun checkWorldStateBlocked(condition: WorldStateHelper.WorldStateCondition): Boolean {
+        val actualValue = WorldStateHelper.getAttribute(
+            database.worldStateDao(),
+            condition.source,
+            condition.sourceId,
+            condition.attrKey
+        )
+        return actualValue != condition.expected
+    }
+
+    // ✅ MỚI: guard dùng chung cho MỌI đường thực thi (không chỉ NLU/chat routing qua
+    // executeIntent). Trước đây requiredWorldState chỉ được kiểm tra ở executeIntent(), nên
+    // Dashboard tap (DashboardViewModel.sendDeviceAction) và camera alert-action
+    // (CameraSkill.executeAlertActions) — vốn đều gọi executePluginAction() — hoàn toàn KHÔNG
+    // bị chặn dù action có requiredWorldState. Đây chính là 2 nguồn rủi ro cao nhất vì chạy
+    // không có người xác nhận từng bước, nên guard cần áp dụng ở đây thay vì chỉ ở lớp NLU.
+    suspend fun checkWorldStateGuard(plugin: Plugin, action: String): PluginResult.Failure? {
+        val actionMeta = plugin.manifest.actions.find { it.name == action } ?: return null
+        val condition = actionMeta.requiredWorldState?.let { WorldStateHelper.parseCondition(it) } ?: return null
+        if (!checkWorldStateBlocked(condition)) return null
+        return PluginResult.Failure(
+            "⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta.description}\" " +
+                "(Cần trạng thái: ${condition.attrKey} = ${condition.expected})."
+        )
+    }
+
     suspend fun executePluginAction(
         pluginId: String,
         action: String,
@@ -190,6 +212,12 @@ class IntentExecutor @Inject constructor(
             ?: return PluginResult.Failure("Không tìm thấy plugin: $pluginId")
 
         val normalizedParams = ParameterResolver.normalizeParams(params, plugin, action, plugins, null)
+
+        // ✅ MỚI: áp world-state guard trước khi thực thi thật
+        checkWorldStateGuard(plugin, action)?.let { blocked ->
+            logger.d("IntentExecutor", "executePluginAction bị chặn bởi world-state: $pluginId.$action")
+            return blocked
+        }
 
         return try {
             plugin.execute(action, normalizedParams)

@@ -1,4 +1,3 @@
-
 package com.aichatvn.agent.skills
 
 import com.aichatvn.agent.utils.toMap
@@ -158,7 +157,12 @@ class CameraSkill @Inject constructor(
         var realEvents: Int = 0,
         var deltaTrigger: Int = 10,
         var absDiffTrigger: Int = 18,
-        var cooldownUntil: Long = 0L
+        var cooldownUntil: Long = 0L,
+        // ✅ MỚI: thời điểm AI xác nhận gần nhất là "bình thường" (state=normal, không phải chỉ
+        // là không gọi AI). Dùng để cắt chuỗi gộp cảnh báo — nếu có 1 lần xác nhận bình thường
+        // xảy ra SAU alert gần nhất, thì lần suspicious tiếp theo phải là sự kiện MỚI, không được
+        // gộp chung dù còn trong mergeWindowMs.
+        var lastNormalScanAt: Long = 0L
     )
     
     private data class CircuitBreakerState(
@@ -1051,10 +1055,18 @@ class CameraSkill @Inject constructor(
                         }
                         val mergeWindowMs = alertMergeWindowMs()
                         val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
+                        // ✅ SỬA: trước đây chỉ so sánh mốc thời gian, nên nếu giữa 2 lần suspicious
+                        // có 1 lần AI quét thấy "bình thường" (vd kẻ lạ #1 rời đi rồi kẻ lạ #2 xuất
+                        // hiện, cùng nằm trong mergeWindowMs tính từ alert #1), 2 sự kiện ĐỘC LẬP này
+                        // vẫn bị gộp làm 1 -> không gửi email/push mới, có nguy cơ bỏ lỡ sự kiện thật
+                        // thứ hai. Thêm điều kiện: không được có lần xác nhận "bình thường" nào xảy
+                        // ra SAU mốc alert gần nhất thì mới coi là cùng 1 chuỗi sự kiện để gộp.
+                        val hasNormalScanSinceLastAlert = latestEffectiveTime != null && state.lastNormalScanAt > latestEffectiveTime
                         val shouldMerge = latestAlert != null &&
                             latestAlert.isSuspicious == 1 &&
                             latestEffectiveTime != null &&
-                            (now - latestEffectiveTime) <= mergeWindowMs
+                            (now - latestEffectiveTime) <= mergeWindowMs &&
+                            !hasNormalScanSinceLastAlert
 
                         // ✅ SỬA LỖI #3: ID cảnh báo và thông báo đồng bộ thống nhất
                         val activeAlertId = if (shouldMerge && latestAlert != null) {
@@ -1109,6 +1121,10 @@ class CameraSkill @Inject constructor(
                         logger.i("CameraSkill", "🚨 ALERT handled for camera $tid (merged=$shouldMerge, id=$activeAlertId): $aiComment")
                         
                     } else {
+                        // ✅ MỚI: đánh dấu thời điểm AI vừa xác nhận "bình thường" — dùng để cắt
+                        // chuỗi gộp cảnh báo ở nhánh isSuspicious phía trên (xem shouldMerge).
+                        state.lastNormalScanAt = now
+
                         if (isMature && isSuddenChange) {
                             pendingResets[tid] = PendingResetState(currentDiff, now)
                             logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
@@ -1565,11 +1581,23 @@ class CameraSkill @Inject constructor(
             val now = System.currentTimeMillis()
 
             if (shouldMerge && existingAlert != null) {
-                // Tái sử dụng chính ID của bản ghi cũ để đồng nhất với Notification ID, chỉ cập nhật endTime kéo dài
+                // ✅ SỬA: trước đây chỉ updateAlertEndTime() — bản ghi lịch sử vẫn giữ nguyên
+                // aiComment/diff/ảnh của lần alert ĐẦU TIÊN trong chuỗi gộp, trong khi push
+                // notification lại hiện aiComment MỚI nhất -> người dùng bấm vào noti thấy thông
+                // tin không khớp với alert_history. Giờ lưu đè ảnh mới lên đúng file cũ (tái sử
+                // dụng alertId làm tên file, không phát sinh rác) và cập nhật toàn bộ nội dung.
+                val refreshedImagePath = imageBytes?.let { saveAlertImage(existingAlert.id, it) }
                 withContext(Dispatchers.IO) {
-                    database.alertDao().updateAlertEndTime(existingAlert.id, now)
+                    database.alertDao().mergeAlertUpdate(
+                        alertId = existingAlert.id,
+                        endTime = now,
+                        aiComment = aiComment,
+                        diff = diff,
+                        imagePath = refreshedImagePath,
+                        aiStateJson = aiStateJson
+                    )
                 }
-                logger.d("CameraSkill", "🔗 [Nén sự kiện] Đã gộp thành công mốc giờ hoạt động kéo dài vào bản ghi #${existingAlert.id}")
+                logger.d("CameraSkill", "🔗 [Nén sự kiện] Đã gộp và cập nhật nội dung mới nhất vào bản ghi #${existingAlert.id}")
             } else {
                 val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
 
@@ -1710,4 +1738,3 @@ class CameraSkill @Inject constructor(
     
     override suspend fun shutdown() {}
 }
-
