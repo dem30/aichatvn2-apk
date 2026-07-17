@@ -31,7 +31,7 @@ object AppModule {
         database: AppDatabase,
         logger: Logger
     ): TuyaManager {
-        return TuyaManager(context, database.tuyaDeviceDao(), logger)
+        return TuyaManager(context, database.tuyaDeviceDao(), database, logger)
     }
 
     @Provides
