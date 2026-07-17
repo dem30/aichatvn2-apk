@@ -175,7 +175,15 @@ class TuyaManager @Inject constructor(
         val result = json.optJSONArray("result")
         deviceCache.clear()
         val deviceList = mutableListOf<TuyaDeviceEntity>()
-        
+        // ✅ SỬA: map riêng để TRẢ VỀ cho caller, khoá theo `id` thật (duy nhất trên Tuya
+        // Cloud) — KHÔNG dùng chung key với deviceCache nội bộ (vẫn khoá theo `name` để
+        // getDeviceInfo() tra theo tên khi lệnh gõ tay/giọng nói vẫn hoạt động bình thường).
+        // Trước đây hàm này trả thẳng deviceCache (khoá theo name) khiến
+        // WebhookGatewayService.syncTuyaDeviceStates() tưởng nhầm `name` là `deviceId` và
+        // ghi world_state sai khoá — không bao giờ khớp với khoá `id` thật mà
+        // SmartSwitchSkill dùng khi bật/tắt qua chat.
+        val devicesById = mutableMapOf<String, DeviceInfo>()
+
         if (result != null) {
             for (i in 0 until result.length()) {
                 val device = result.getJSONObject(i)
@@ -186,7 +194,9 @@ class TuyaManager @Inject constructor(
                 val productName = device.optString("product_name", "")
                 
                 if (name.isNotBlank() && id.isNotBlank()) {
-                    deviceCache[name] = DeviceInfo(id, name, online, category, productName)
+                    val info = DeviceInfo(id, name, online, category, productName)
+                    deviceCache[name] = info
+                    devicesById[id] = info
                     logger.i("TuyaManager", "📱 $name → $id (online: $online)")
                     
                     deviceList.add(
@@ -208,8 +218,8 @@ class TuyaManager @Inject constructor(
             logger.i("TuyaManager", "💾 Saved ${deviceList.size} devices to DB")
         }
         
-        logger.i("TuyaManager", "✅ Tìm thấy ${deviceCache.size} thiết bị")
-        deviceCache
+        logger.i("TuyaManager", "✅ Tìm thấy ${devicesById.size} thiết bị")
+        devicesById
     }
 
     // ✅ SỬA: nhận cả ID lẫn tên (deviceKey). Ưu tiên tra theo ID trước vì ID là duy nhất
