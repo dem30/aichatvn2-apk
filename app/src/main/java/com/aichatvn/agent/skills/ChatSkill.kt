@@ -1,4 +1,3 @@
-
 package com.aichatvn.agent.skills
 
 import android.content.Context
@@ -85,7 +84,9 @@ class ChatSkill @Inject constructor(
             "mấy hôm trước", "hôm qua", "hôm nay", "gần đây", "vừa rồi", "lúc nãy",
             "lịch sử", "nhật ký", "hoạt động", "đã làm gì", "đã xảy ra",
             "có ai gọi", "có ai nhắn", "tin nhắn gì", "cuộc gọi", "bỏ lỡ", "chưa đọc",
-            "mấy ngày nay", "tuần trước", "tuần này", "trước đó"
+            "mấy ngày nay", "tuần trước", "tuần này", "trước đó",
+            // 💡 Bổ sung từ khóa mở rộng: đảm bảo câu hỏi nhắc thẳng đến camera/thiết bị/sự kiện cũng kích hoạt buildMemoryContext
+            "sự kiện", "biến cố", "cảnh báo", "báo cáo", "camera", "thiết bị"
         )
 
         private const val DEFAULT_MEMORY_LOOKBACK_DAYS = 3
@@ -99,7 +100,9 @@ class ChatSkill @Inject constructor(
         }
     }
 
-    private suspend fun buildMemoryContext(username: String): String = withContext(Dispatchers.IO) {
+    // ⚙️ Sửa đổi chữ ký hàm để nhận diện thêm userMessage từ khung chat gửi xuống,
+    // phục vụ việc trích xuất thực thể camera/thiết bị/kênh và lọc log theo đúng đối tượng được hỏi
+    private suspend fun buildMemoryContext(username: String, userMessage: String): String = withContext(Dispatchers.IO) {
         // ✅ SỬA LỖI #1: Chốt chặn an ninh chặn đứng rò rỉ dữ liệu riêng tư smarthome của chủ nhà cho khách ngoại tuyến
         if (username != "default_user") return@withContext ""
 
@@ -107,21 +110,70 @@ class ChatSkill @Inject constructor(
             val now = System.currentTimeMillis()
             val since = now - (DEFAULT_MEMORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000L)
 
-            val logs = database.eventLogDao().getLogsInTimeframe(since, now)
+            // Đọc giới hạn số lượng dòng log tối đa cấu hình từ DB (chống Token Bloat, thay cho hard-code take(200))
+            val maxLogs = configProvider.getInt(AppConfigDefaults.GLOBAL_MAX_MEMORY_LOGS, 30)
+
+            // Truy xuất danh sách camera/thiết bị đang hoạt động để đối chiếu thực thể trong câu hỏi
+            val activeCameras = database.cameraDao().getActiveCameras()
+            val activeDevices = database.tuyaDeviceDao().getAllDevices()
+            val normalizedMsg = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userMessage.lowercase())
+
+            // 🎯 Bước 1: Phân tích trích xuất thực thể xem câu hỏi có nhắc đích danh camera/thiết bị nào không
+            val matchedCamera = activeCameras.find { cam ->
+                val normCamName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(cam.customername.lowercase())
+                normalizedMsg.contains(normCamName) || normalizedMsg.contains(cam.id.lowercase())
+            }
+            val matchedDevice = activeDevices.find { dev ->
+                val normDevName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase())
+                normalizedMsg.contains(normDevName) || normalizedMsg.contains(dev.id.lowercase())
+            }
+
+            // ✅ MỚI: Các kênh chat đa nền tảng (Facebook/Telegram/Website) cũng là một "đối tượng" xứng đáng
+            // được lọc riêng, tránh trộn lẫn tin nhắn của kênh này với kênh khác khi Admin hỏi đích danh.
+            // Chỉ áp dụng khi KHÔNG khớp camera/thiết bị, vì camera/thiết bị là ưu tiên cao hơn (cụ thể hơn).
+            val platformKeywords = mapOf(
+                "facebook" to listOf("facebook", "fb", "fanpage"),
+                "telegram" to listOf("telegram"),
+                "website" to listOf("website", "trang web", "widget web")
+            )
+            val matchedPlatform = if (matchedCamera == null && matchedDevice == null) {
+                platformKeywords.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
+            } else null
+
+            // 🎯 Bước 2: Truy vấn có bộ lọc phân vùng để tránh rò rỉ ngữ cảnh chéo giữa các camera/thiết bị/kênh
+            val rawLogs = database.eventLogDao().getLogsInTimeframe(since, now)
+            val filteredLogs = when {
+                matchedCamera != null -> rawLogs.filter {
+                    it.sourceId == matchedCamera.id || it.summary.contains(matchedCamera.customername, ignoreCase = true)
+                }
+                matchedDevice != null -> rawLogs.filter {
+                    it.sourceId == matchedDevice.id || it.summary.contains(matchedDevice.name, ignoreCase = true)
+                }
+                // Hỏi đích danh 1 kênh đa nền tảng: lấy đúng log incoming_message của kênh đó (kể cả đã đọc,
+                // vì đây là truy vấn kiểm toán lịch sử, không chỉ riêng tin chưa đọc)
+                matchedPlatform != null -> rawLogs.filter { it.source == matchedPlatform }
+                // Hỏi chung chung: chỉ lấy các biến động quan trọng, bỏ bớt log rác hệ thống
+                else -> rawLogs.filter { it.eventType in setOf("person_detected", "state_change") }
+            }
+
             val dateFmt = java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.getDefault())
 
-            val activityLines = logs
+            // 🎯 Bước 3: Áp dụng giới hạn động thay vì take(200) cứng
+            // Chỉ loại incoming_message khi KHÔNG hỏi đích danh 1 kênh (tránh trùng với unreadLines phía dưới,
+            // nhưng khi hỏi đích danh kênh thì vẫn cần incoming_message để trả lời được lịch sử tin nhắn kênh đó)
+            val activityLines = filteredLogs
                 .sortedBy { it.timestamp }
-                // ✅ SỬA LỖI #6: Lọc bỏ trùng lặp tin nhắn đã có log trong event_logs tránh xuất hiện 2 lần
-                .filter { it.eventType != "incoming_message" }
-                .take(200) 
+                .filter { matchedPlatform != null || it.eventType != "incoming_message" }
+                .take(maxLogs)
                 .map { log -> "${dateFmt.format(java.util.Date(log.timestamp))}: ${log.summary}" }
 
             val unreadLines = try {
                 database.chatMessageDao().getAllMessagesRaw(500)
                     .filter { it.role == "user" && !it.isRead && it.username != "default_user" }
+                    // Nếu Admin hỏi đích danh 1 kênh, chỉ lấy tin chưa đọc của đúng kênh đó
+                    .filter { matchedPlatform == null || it.username.substringBefore("_") == matchedPlatform }
                     .sortedByDescending { it.timestamp }
-                    .take(30)
+                    .take(10) // Tối ưu hóa từ 30 xuống 10 dòng chưa đọc để giảm token
                     .map { msg ->
                         val platform = msg.username.substringBefore("_")
                         val rawId = msg.username.substringAfter("_")
@@ -131,13 +183,35 @@ class ChatSkill @Inject constructor(
                 emptyList()
             }
 
-            if (activityLines.isEmpty() && unreadLines.isEmpty()) return@withContext ""
+            // ✅ MỚI: Tra cứu World State (Bản sao số) — trạng thái SỐNG hiện tại, khác với event_logs (lịch sử
+            // biến động). Trước đây buildMemoryContext không hề đọc world_state nên AI không có cách nào trả lời
+            // đúng "đèn đang bật hay tắt" — chỉ có lịch sử bật/tắt trong quá khứ, không có trạng thái tức thời.
+            // Chỉ tra khi khớp đích danh 1 camera/thiết bị cụ thể (world_state không áp dụng cho kênh chat).
+            val worldState = when {
+                matchedCamera != null -> database.worldStateDao().getState("camera", matchedCamera.id)
+                matchedDevice != null -> database.worldStateDao().getState("tuya", matchedDevice.id)
+                else -> null
+            }
+
+            if (activityLines.isEmpty() && unreadLines.isEmpty() && worldState == null) return@withContext ""
 
             buildString {
                 append("<system_memory_context>\n")
-                append("Dưới đây là nhật ký hoạt động thực tế thu thập từ thiết bị Tuya và Camera trong smarthome của người dùng, cùng tin nhắn khách hàng chưa đọc:\n")
+                if (matchedCamera != null) {
+                    append("--- Nhật ký hoạt động Camera ${matchedCamera.customername} ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                } else if (matchedDevice != null) {
+                    append("--- Nhật ký hoạt động Thiết bị ${matchedDevice.name} ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                } else if (matchedPlatform != null) {
+                    append("--- Nhật ký hoạt động kênh $matchedPlatform ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                } else {
+                    append("--- Nhật ký hoạt động tổng hợp ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                }
+                if (worldState != null) {
+                    append("--- Trạng thái SỐNG hiện tại (Bản sao số, cập nhật lúc ${dateFmt.format(java.util.Date(worldState.updatedAt))}) ---\n")
+                    append(worldState.attributesJson)
+                    append("\n")
+                }
                 if (activityLines.isNotEmpty()) {
-                    append("--- Nhật ký hoạt động ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
                     append(activityLines.joinToString("\n"))
                     append("\n")
                 }
@@ -364,7 +438,7 @@ class ChatSkill @Inject constructor(
                 )
 
                 val memoryContext = if (imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(message)) {
-                    buildMemoryContext(username)
+                    buildMemoryContext(username, message) // 💡 Đã truyền thêm tham số 'message' để phục vụ việc trích xuất thực thể
                 } else {
                     ""
                 }

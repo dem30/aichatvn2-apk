@@ -250,7 +250,10 @@ class AgentKernel @Inject constructor(
         val ANTI_HALLUCINATION_GUARD =
             "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
             "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
-            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được."
+            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
+            // ✅ MỚI: Chỉ thị chủ động trả lời ngắn gọn, thay vì chỉ dựa vào max_tokens cắt cứng ở tầng API
+            // (max_tokens cắt ngang câu chữ nếu vượt, còn chỉ thị này giúp AI TỰ viết súc tích ngay từ đầu).
+            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa 3-4 câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
 
         val guard = if (routerFailed) {
             ANTI_HALLUCINATION_GUARD + "\n" +
@@ -269,13 +272,7 @@ class AgentKernel @Inject constructor(
                     }
 
                     "groq" -> {
-                        val historySnapshot = try {
-                            database.chatMessageDao().getMessages(username, 6)
-                                .reversed()
-                                .map { mapOf("role" to it.role, "content" to it.content) }
-                        } catch (e: Exception) {
-                            emptyList()
-                        }
+                        val historySnapshot = buildHistorySnapshot(username)
 
                         val cleanContext = buildString {
                             append(guard)
@@ -297,13 +294,7 @@ class AgentKernel @Inject constructor(
                         if (perfectMatch != null) {
                             perfectMatch.answer
                         } else {
-                            val historySnapshot = try {
-                                database.chatMessageDao().getMessages(username, 6)
-                                    .reversed()
-                                    .map { mapOf("role" to it.role, "content" to it.content) }
-                            } catch (e: Exception) {
-                                emptyList()
-                            }
+                            val historySnapshot = buildHistorySnapshot(username)
                             
                             val qaContext = buildQAContextForAgent(message, username)
                             val fullContext = buildString {
@@ -330,6 +321,40 @@ class AgentKernel @Inject constructor(
             responseText = "$expiredNotification\n\n$responseText"
         }
         return ChatResponse(responseText, usedMode, usedPluginId)
+    }
+
+    // ✅ MỚI: Cắt ngắn lịch sử chat gửi kèm Groq để chống Token Bloat, thay vì gửi nguyên văn 6 tin nhắn.
+    // Chiến lược kết hợp:
+    //   1. Cắt bất đối xứng theo role — tin "assistant" (thường là nhật ký/giải thích dài) bị cắt
+    //      mạnh hơn tin "user" (thường ngắn, là câu lệnh/câu hỏi).
+    //   2. Trọng số theo độ gần — 2 lượt gần nhất giữ gần như nguyên văn để AI không mất mạch hội
+    //      thoại hiện tại; các lượt cũ hơn trong cửa sổ 6 tin bị cắt ngắn hơn.
+    //   3. Cắt tại ranh giới từ gần nhất dưới ngưỡng, tránh cắt giữa từ.
+    private fun truncateSmart(text: String, maxLen: Int): String {
+        if (text.length <= maxLen) return text
+        val cut = text.substring(0, maxLen)
+        val lastSpace = cut.lastIndexOf(' ')
+        val safeCut = if (lastSpace >= (maxLen * 0.6).toInt()) cut.substring(0, lastSpace) else cut
+        return "$safeCut…"
+    }
+
+    private suspend fun buildHistorySnapshot(username: String): List<Map<String, String>> {
+        return try {
+            val raw = database.chatMessageDao().getMessages(username, 6).reversed()
+            val recentCutoffIndex = raw.size - 2 // 2 lượt cuối cùng coi là "gần đây"
+            raw.mapIndexed { index, msg ->
+                val isRecent = index >= recentCutoffIndex
+                val maxLen = when {
+                    isRecent && msg.role == "assistant" -> 300
+                    isRecent -> 200
+                    msg.role == "assistant" -> 70
+                    else -> 120
+                }
+                mapOf("role" to msg.role, "content" to truncateSmart(msg.content, maxLen))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     private suspend fun buildQAContextForAgent(message: String, username: String): String {

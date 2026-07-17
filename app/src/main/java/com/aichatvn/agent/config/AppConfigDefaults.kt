@@ -47,6 +47,9 @@ object AppConfigDefaults {
     const val GLOBAL_TIER2_HIGH_CONFIDENCE  = "global.tier2_high_confidence"
     const val GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = "global.block_external_device_control"
 
+    // ✅ MỚI: Giới hạn số dòng nhật ký sự kiện tối đa gửi lên AI (chống Token Bloat)
+    const val GLOBAL_MAX_MEMORY_LOGS        = "global.max_memory_logs"
+
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
@@ -313,6 +316,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Chặn điều khiển thiết bị từ kênh ngoài",
             description = "Khi BẬT: khách chat từ Facebook/Telegram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào (kể cả khóa điều khiển riêng). Không ảnh hưởng đến chat nội bộ (default_user)."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_MAX_MEMORY_LOGS,
+            value = "30",
+            type = "int",
+            pluginId = "global",
+            label = "Số lượng nhật ký trí nhớ tối đa gửi lên AI",
+            description = "Giới hạn số lượng dòng nhật ký sự kiện tối đa gửi làm ngữ cảnh cho AI để chống token bloat. Mặc định là 30 dòng."
         )
     )
 }
