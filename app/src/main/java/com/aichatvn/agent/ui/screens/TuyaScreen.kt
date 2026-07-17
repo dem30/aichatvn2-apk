@@ -684,7 +684,8 @@ fun PreconditionGuardDialog(
                         expanded = cameraExpanded,
                         onExpandedChange = { cameraExpanded = it }
                     ) {
-                        val cameraName = activeCameras.find { it.id == selectedCameraId }?.customername ?: selectedCameraId
+                        val cameraName = activeCameras.find { it.id == selectedCameraId }
+                            ?.let { "${it.customername} (${it.id})" } ?: selectedCameraId
                         OutlinedTextField(
                             value = cameraName.ifBlank { "Chọn camera..." },
                             onValueChange = {},
@@ -698,7 +699,7 @@ fun PreconditionGuardDialog(
                         ) {
                             activeCameras.forEach { cam ->
                                 DropdownMenuItem(
-                                    text = { Text(cam.customername) },
+                                    text = { Text("${cam.customername} (${cam.id})") },
                                     onClick = {
                                         selectedCameraId = cam.id
                                         cameraExpanded = false

@@ -1151,7 +1151,7 @@ if (camera.enableNotification == 1) {
                                 sourceId = tid,
                                 eventType = "state_change",
                                 value = "Bình thường",
-                                summary = "Camera ${camera.customername}: $aiComment"
+                                summary = "Camera ${camera.customername} ($tid): $aiComment"
                             )
                         )
                         // Ghi nhận trạng thái chung
@@ -1679,7 +1679,7 @@ if (camera.enableNotification == 1) {
                                 sourceId = tid,
                                 eventType = "person_detected",
                                 value = "Phát hiện bất thường",
-                                summary = "Camera ${camera.customername} phát hiện: $aiComment"
+                                summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment"
                             )
                         )
                         // Ghi nhận trạng thái chung
