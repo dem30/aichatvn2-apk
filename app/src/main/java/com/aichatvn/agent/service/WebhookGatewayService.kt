@@ -27,7 +27,7 @@ import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry              
 import com.aichatvn.agent.scheduler.CronParser 
 import androidx.datastore.preferences.core.stringPreferencesKey    
-import kotlinx.coroutines.flow.first                               // ✅ MỚI: Import tường minh hàm mở rộng first() của Flow
+import kotlinx.coroutines.flow.first                               
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
@@ -844,7 +844,7 @@ class WebhookGatewayService : Service() {
 
     private suspend fun syncTuyaDeviceStates() = withContext(Dispatchers.IO) {
         val tuyaUidKey = stringPreferencesKey("tuya_uid") 
-        val tuyaUid = applicationContext.dataStore.data.first()[tuyaUidKey] ?: "" // ✅ ĐÃ SỬA: Thay thế bằng applicationContext để tránh xung đột ngữ cảnh trong Service
+        val tuyaUid = applicationContext.dataStore.data.first()[tuyaUidKey] ?: "" 
         
         if (tuyaUid.isBlank()) return@withContext
 
@@ -862,7 +862,18 @@ class WebhookGatewayService : Service() {
             } ?: "false"
 
             val oldState = oldStateStr.toBooleanStrictOrNull() ?: false
-            val newState = cloudDev.online 
+
+            // ✅ ĐÃ SỬA: Thay thế cloudDev.online (chỉ là kết nối mạng) bằng trạng thái ON/OFF vật lý thực tế
+            val newState = try {
+                if (cloudDev.online) {
+                    tuyaManager.getStatus(cloudDev.name)
+                } else {
+                    false
+                }
+            } catch (e: Exception) {
+                logger.e("TuyaSync", "Lỗi lấy trạng thái ON/OFF thực tế của ${cloudDev.name}: ${e.message}")
+                oldState
+            }
 
             if (newState != oldState) {
                 logger.i("TuyaSync", "🔁 Phát hiện biến động vật lý bên ngoài: Thiết bị $cleanId đổi trạng thái: $oldState ➔ $newState")
@@ -915,11 +926,13 @@ class WebhookGatewayService : Service() {
         if (logs.isEmpty()) return
 
         val calendar = java.util.Calendar.getInstance()
-        data class GroupKey(val source: String, val sourceId: String, val eventType: String, val hour: Int)
+        
+        // ✅ ĐÃ SỬA: Nhóm thói quen theo cả "value" để phân biệt Bật/Tắt rõ ràng
+        data class GroupKey(val source: String, val sourceId: String, val eventType: String, val value: String, val hour: Int)
 
         val grouped = logs.groupBy { log ->
             calendar.timeInMillis = log.timestamp
-            GroupKey(log.source, log.sourceId, log.eventType, calendar.get(java.util.Calendar.HOUR_OF_DAY))
+            GroupKey(log.source, log.sourceId, log.eventType, log.value, calendar.get(java.util.Calendar.HOUR_OF_DAY))
         }
 
         val qaDao = database.qaDao()
@@ -932,8 +945,10 @@ class WebhookGatewayService : Service() {
             }.distinct().size
 
             if (distinctDays >= 4) {
-                val question = "pattern_${key.source}_${key.sourceId}_${key.eventType}_${key.hour}h"
-                val answer = "${key.source}/${key.sourceId}: \"${key.eventType}\" thường xảy ra vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất)."
+                // ✅ ĐÃ SỬA: Dùng ký tự phân tách đặc biệt ":" thay vì "_" và chèn thêm thông số value
+                val question = "pattern:${key.source}:${key.sourceId}:${key.eventType}:${key.value}:${key.hour}h"
+                val actionLabel = if (key.value.lowercase() == "true") "bật" else "tắt"
+                val answer = "Bạn thường $actionLabel thiết bị ${key.sourceId} vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất). Hệ thống đề xuất đặt lịch tự động cho thói quen này."
 
                 if (existingPatterns[question] != answer) {
                     val qa = com.aichatvn.agent.data.model.QAEntity(
@@ -941,13 +956,13 @@ class WebhookGatewayService : Service() {
                         question = question,
                         answer = answer,
                         type = "pattern",
-                        category = "auto_pattern",
+                        category = "pending_pattern", // ✅ ĐÃ SỬA: category="pending_pattern" để chờ duyệt ở màn hình Dashboard
                         createdBy = "default_user",
                         createdAt = System.currentTimeMillis(),
                         timestamp = System.currentTimeMillis()
                     )
                     qaDao.insertQA(qa)
-                    logger.i("PatternMining", "🔁 Phát hiện thói quen mới: $answer")
+                    logger.i("PatternMining", "🔁 Phát hiện thói quen mới chờ duyệt: $answer")
                 }
             }
         }

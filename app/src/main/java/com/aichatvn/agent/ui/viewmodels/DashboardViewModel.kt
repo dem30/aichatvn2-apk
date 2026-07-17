@@ -8,12 +8,17 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry
+import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.QAEntity
+import com.aichatvn.agent.skills.ScheduleSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -24,6 +29,8 @@ class DashboardViewModel @Inject constructor(
     private val deviceRegistry: DeviceRegistry,
     private val agentKernel: AgentKernel,
     private val configProvider: AppConfigProvider,
+    private val database: AppDatabase,               // ✅ ĐÃ THÊM: AppDatabase để truy vấn đề xuất AI
+    private val scheduleSkill: ScheduleSkill,         // ✅ ĐÃ THÊM: ScheduleSkill để thiết lập lịch tự động
     private val logger: Logger
 ) : ViewModel() {
 
@@ -35,31 +42,134 @@ class DashboardViewModel @Inject constructor(
     private val _executionMessage = MutableStateFlow<String?>(null)
     val executionMessage: StateFlow<String?> = _executionMessage.asStateFlow()
 
-    // ✅ MỚI: Đường dẫn file ảnh sơ đồ nhà do người dùng tự tải lên, làm nền cho Dashboard.
-    // null nghĩa là chưa có ảnh -> UI sẽ hiển thị canvas lưới + icon 🏠 mặc định như trước.
     private val _floorplanPath = MutableStateFlow<String?>(null)
     val floorplanPath: StateFlow<String?> = _floorplanPath.asStateFlow()
 
-    // ✅ MỚI: Tỷ lệ co giãn của ảnh sơ đồ nền, chỉnh qua Slider trong Menu (0.5x - 4.0x)
     private val _floorplanScale = MutableStateFlow(1f)
     val floorplanScale: StateFlow<Float> = _floorplanScale.asStateFlow()
 
-    // ✅ ĐÃ THÊM: Khối khởi tạo ViewModel tự động làm mới sơ đồ thiết bị ngầm dưới nền khi mở màn hình
+    // ✅ ĐÃ THÊM: Luồng quan sát các đề xuất thói quen chờ duyệt thời gian thực
+    private val _aiRecommendations = MutableStateFlow<List<QAEntity>>(emptyList())
+    val aiRecommendations: StateFlow<List<QAEntity>> = _aiRecommendations.asStateFlow()
+
     init {
         refreshDashboardNodes()
         loadFloorplanPath()
         loadFloorplanScale()
+        observePendingPatterns() // ✅ ĐÃ THÊM: Lắng nghe danh sách thói quen
+    }
+
+    // ✅ ĐÃ THÊM: Theo dõi các bản ghi thói quen chờ duyệt
+    private fun observePendingPatterns() {
+        viewModelScope.launch {
+            database.qaDao().getAllQAsFlow("default_user")
+                .map { list -> list.filter { it.category == "pending_pattern" } }
+                .collect { _aiRecommendations.value = it }
+        }
+    }
+
+    /**
+     * ✅ ĐÃ THÊM: Phê duyệt thói quen, chuyển đổi dữ liệu và kích hoạt tạo lịch tự động trong hệ thống
+     */
+    fun approvePattern(pattern: QAEntity) {
+        viewModelScope.launch {
+            _isProcessing.value = true
+            _executionMessage.value = null
+            try {
+                // Định dạng question: pattern:[source]:[sourceId]:[eventType]:[value]:[hour]h
+                val segments = pattern.question.split(":")
+                if (segments.size >= 6 && segments[0] == "pattern") {
+                    val source = segments[1]     // "tuya" hoặc "camera"
+                    val sourceId = segments[2]   // Tên thiết bị (ví dụ: "Đèn phòng khách")
+                    val eventType = segments[3]  // "state_change"
+                    val value = segments[4]      // "true" hoặc "false"
+                    val hourStr = segments[5].removeSuffix("h")
+                    val hour = hourStr.toIntOrNull() ?: 12
+
+                    val cronExpr = "0 $hour * * *" // Thiết lập chạy hằng ngày vào giờ chỉ định
+
+                    if (source == "tuya") {
+                        val paramsMap = mapOf(
+                            "device" to sourceId,
+                            "state" to value.toBoolean()
+                        )
+
+                        val executionParams = mapOf(
+                            "pluginId" to "smart_switch",
+                            "action" to "set",
+                            "cron" to cronExpr,
+                            "params" to paramsMap,
+                            "label" to "Tự động: $sourceId"
+                        )
+
+                        val result = withContext(Dispatchers.IO) {
+                            scheduleSkill.execute("add", executionParams)
+                        }
+
+                        when (result) {
+                            is PluginResult.Success -> {
+                                withContext(Dispatchers.IO) {
+                                    database.qaDao().insertQA(
+                                        pattern.copy(
+                                            category = "approved_pattern",
+                                            timestamp = System.currentTimeMillis()
+                                        )
+                                    )
+                                }
+                                _executionMessage.value = "✅ Đã thiết lập lịch hằng ngày: ${if (value.toBoolean()) "Bật" else "Tắt"} $sourceId lúc ${hour}h!"
+                            }
+                            is PluginResult.Failure -> {
+                                _executionMessage.value = "❌ Không thể tạo lịch trình: ${result.error}"
+                            }
+                            is PluginResult.NeedMoreInfo -> {
+                                _executionMessage.value = "⚠️ Yêu cầu thông tin thêm: ${result.question}"
+                            }
+                        }
+                    } else {
+                        _executionMessage.value = "❌ Hệ thống hiện chưa hỗ trợ tự tạo lịch cho nguồn: $source"
+                    }
+                } else {
+                    _executionMessage.value = "❌ Định dạng đề xuất thói quen không chính xác"
+                }
+            } catch (e: Exception) {
+                _executionMessage.value = "❌ Lỗi phê duyệt đề xuất: ${e.message}"
+                logger.e("DashboardViewModel", "Lỗi duyệt pattern", e)
+            } finally {
+                _isProcessing.value = false
+            }
+        }
+    }
+
+    /**
+     * ✅ ĐÃ THÊM: Bỏ qua đề xuất và ẩn khỏi giao diện Dashboard
+     */
+    fun ignorePattern(pattern: QAEntity) {
+        viewModelScope.launch {
+            _executionMessage.value = null
+            try {
+                withContext(Dispatchers.IO) {
+                    database.qaDao().insertQA(
+                        pattern.copy(
+                            category = "ignored_pattern",
+                            timestamp = System.currentTimeMillis()
+                        )
+                    )
+                }
+                _executionMessage.value = "🔕 Đã bỏ qua đề xuất này."
+            } catch (e: Exception) {
+                _executionMessage.value = "❌ Lỗi khi bỏ qua: ${e.message}"
+                logger.e("DashboardViewModel", "Lỗi bỏ qua pattern", e)
+            }
+        }
     }
 
     private fun loadFloorplanPath() {
         viewModelScope.launch {
             val savedPath = configProvider.getString(FLOORPLAN_PATH_KEY, "")
-            // Kiểm tra file còn tồn tại trên đĩa để tránh hiển thị ảnh vỡ nếu file bị xoá thủ công
             _floorplanPath.value = savedPath.takeIf { it.isNotBlank() && File(it).exists() }
         }
     }
 
-    // ✅ MỚI: Nạp tỷ lệ sơ đồ đã lưu, mặc định 1.0x nếu chưa từng chỉnh
     private fun loadFloorplanScale() {
         viewModelScope.launch {
             val savedScaleStr = configProvider.getString(FLOORPLAN_SCALE_KEY, "1.0")
@@ -67,10 +177,6 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ✅ MỚI: Cập nhật tỷ lệ kích thước sơ đồ nền và lưu lại cấu hình.
-     * Range khớp với valueRange 0.5f..4.0f của Slider trong DashboardScreen.
-     */
     fun setFloorplanScale(scale: Float) {
         viewModelScope.launch {
             val clampedScale = scale.coerceIn(0.5f, 4.0f)
@@ -79,15 +185,11 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Lưu đường dẫn ảnh sơ đồ nhà mới (đã được copy vào bộ nhớ nội bộ app từ UI) và persist qua AppConfigProvider.
-     */
     fun setFloorplanPath(path: String) {
         viewModelScope.launch {
             val oldPath = _floorplanPath.value
             configProvider.set(FLOORPLAN_PATH_KEY, path)
             _floorplanPath.value = path
-            // Dọn file ảnh cũ để tránh tích tụ dung lượng bộ nhớ trong theo thời gian
             if (!oldPath.isNullOrBlank() && oldPath != path) {
                 withContext(Dispatchers.IO) {
                     try { File(oldPath).delete() } catch (e: Exception) {
@@ -98,9 +200,6 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Xoá ảnh sơ đồ nhà hiện tại, quay lại canvas lưới mặc định.
-     */
     fun clearFloorplanPath() {
         viewModelScope.launch {
             val oldPath = _floorplanPath.value
@@ -131,9 +230,6 @@ class DashboardViewModel @Inject constructor(
                     activePlugins.forEach { plugin ->
                         if (plugin.manifest.capabilities.dashboard) {
                             val nodes = plugin.getDashboardNodes()
-                            // ✅ ĐÃ SỬA: truyền kèm pluginId để DeviceRegistry tự dọn các node
-                            // "mồ côi" (camera/thiết bị đã bị xoá) thuộc đúng plugin này, kể cả
-                            // khi danh sách nodes trả về rỗng.
                             deviceRegistry.registerNodes(plugin.manifest.id, nodes)
                         }
                     }
@@ -148,13 +244,11 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    // Nhận DeviceAction thay vì actionId (String) để merge được action.defaultParams
     fun sendDeviceAction(node: DeviceNode, action: DeviceAction, extraParams: Map<String, Any>) {
         viewModelScope.launch {
             _isProcessing.value = true
             _executionMessage.value = null
             try {
-                // Merge đủ 3 lớp params: node defaults + action defaults + caller extras
                 val finalParams = node.defaultParams + action.defaultParams + extraParams
                 val result = withContext(Dispatchers.IO) {
                     agentKernel.executePluginAction(node.pluginId, action.id, finalParams)
@@ -166,7 +260,6 @@ class DashboardViewModel @Inject constructor(
                             ?: "✅ Đã thực hiện thành công"
                         _executionMessage.value = msg
 
-                        // Kiểm tra thuộc tính "state" từ finalParams đã gộp thay vì extraParams rỗng
                         val stateValue = finalParams["state"] as? Boolean
                         if (stateValue != null) {
                             deviceRegistry.updateNode(node.id) { current ->

@@ -37,7 +37,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -88,6 +87,9 @@ fun DashboardScreen(
     val executionMessage by viewModel.executionMessage.collectAsState()
     val floorplanPath by viewModel.floorplanPath.collectAsState()
     val floorplanScale by viewModel.floorplanScale.collectAsState()
+    
+    // ✅ ĐÃ THÊM: Theo dõi danh sách đề xuất thói quen tự học của AI
+    val aiRecommendations by viewModel.aiRecommendations.collectAsState()
 
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -149,7 +151,6 @@ fun DashboardScreen(
         }
     }
 
-    // Hiển thị hộp thoại điều chỉnh tỷ lệ ảnh nền sơ đồ
     if (showFloorplanScaleDialog) {
         var tempScale by remember { mutableStateOf(floorplanScale) }
         AlertDialog(
@@ -249,246 +250,297 @@ fun DashboardScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        // Sử dụng BoxWithConstraints để nhận chính xác kích thước vùng Canvas hiển thị
-        BoxWithConstraints(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            val viewportWidth = maxWidth.value
-            val viewportHeight = maxHeight.value
-
-            // Lớp vẽ mạng lưới nền (Grid Background Canvas)
-            val gridAlpha = if (floorplanBitmap != null) 0.06f else 0.2f
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val gridSpacing = 40.dp.toPx()
-                val pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
-                
-                var x = panOffset.x % gridSpacing
-                while (x < size.width) {
-                    if (x >= 0) {
-                        drawLine(
-                            color = Color.LightGray.copy(alpha = gridAlpha),
-                            start = Offset(x, 0f),
-                            end = Offset(x, size.height),
-                            strokeWidth = 1.dp.toPx(),
-                            pathEffect = pathEffect
-                        )
+            // ✅ ĐÃ THÊM: Hộp thông báo gợi ý tự động hóa thông minh (Proactive Suggestions)
+            if (aiRecommendations.isNotEmpty()) {
+                val recommendation = aiRecommendations.first()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f)
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("🤖", fontSize = 28.sp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Đề xuất tự động hóa thông minh",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = recommendation.answer,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Button(
+                                    onClick = { viewModel.approvePattern(recommendation) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("Đồng ý (OK)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { viewModel.ignorePattern(recommendation) },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("Bỏ qua", fontSize = 11.sp)
+                                }
+                            }
+                        }
                     }
-                    x += gridSpacing
-                }
-
-                var y = panOffset.y % gridSpacing
-                while (y < size.height) {
-                    if (y >= 0) {
-                        drawLine(
-                            color = Color.LightGray.copy(alpha = gridAlpha),
-                            start = Offset(0f, y),
-                            end = Offset(size.width, y),
-                            strokeWidth = 1.dp.toPx(),
-                            pathEffect = pathEffect
-                        )
-                    }
-                    y += gridSpacing
                 }
             }
 
-            Box(
+            // Sử dụng BoxWithConstraints để nhận chính xác kích thước vùng Canvas hiển thị
+            BoxWithConstraints(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            zoomScale = (zoomScale * zoom).coerceIn(0.5f, 3.0f)
-                            panOffset += pan
-                        }
-                    }
+                    .fillMaxWidth()
+                    .weight(1f) // ✅ ĐÃ SỬA: Box chiếm không gian còn lại bên dưới thẻ Card đề xuất
             ) {
-                // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và sơ đồ
+                val viewportWidth = maxWidth.value
+                val viewportHeight = maxHeight.value
+
+                // Lớp vẽ mạng lưới nền (Grid Background Canvas)
+                val gridAlpha = if (floorplanBitmap != null) 0.06f else 0.2f
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val gridSpacing = 40.dp.toPx()
+                    val pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+                    
+                    var x = panOffset.x % gridSpacing
+                    while (x < size.width) {
+                        if (x >= 0) {
+                            drawLine(
+                                color = Color.LightGray.copy(alpha = gridAlpha),
+                                start = Offset(x, 0f),
+                                end = Offset(x, size.height),
+                                strokeWidth = 1.dp.toPx(),
+                                pathEffect = pathEffect
+                            )
+                        }
+                        x += gridSpacing
+                    }
+
+                    var y = panOffset.y % gridSpacing
+                    while (y < size.height) {
+                        if (y >= 0) {
+                            drawLine(
+                                color = Color.LightGray.copy(alpha = gridAlpha),
+                                start = Offset(0f, y),
+                                end = Offset(size.width, y),
+                                strokeWidth = 1.dp.toPx(),
+                                pathEffect = pathEffect
+                            )
+                        }
+                        y += gridSpacing
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer(
-                            scaleX = zoomScale,
-                            scaleY = zoomScale,
-                            translationX = panOffset.x,
-                            translationY = panOffset.y
-                        )
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                zoomScale = (zoomScale * zoom).coerceIn(0.5f, 3.0f)
+                                panOffset += pan
+                            }
+                        }
                 ) {
-                    // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
-                   // Ảnh sơ đồ nhà nền (đã được sửa nhân thêm floorplanScale để co giãn theo thanh trượt)
-                    floorplanBitmap?.let { bmp ->
-                        Image(
-                            bitmap = bmp,
-                            contentDescription = "Sơ đồ nhà",
-                            contentScale = ContentScale.FillBounds,
-                            modifier = Modifier
-                                .offset { IntOffset(0, 0) }
-                                // ✅ FIX: dùng requiredWidth/requiredHeight thay vì width/height
-                                // để bỏ qua giới hạn constraint của Box(fillMaxSize) cha,
-                                // cho phép ảnh phình to thật sự vượt khung màn hình khi tăng floorplanScale.
-                                .requiredWidth(((FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale).dp)
-                                .requiredHeight(((FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale).dp)
-                                .alpha(0.9f)
-                        )
-                    }
-
-
-                    
-
-                    if (floorplanBitmap == null) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(bottom = 40.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("🏠", fontSize = 100.sp, modifier = Modifier.clip(CircleShape))
-                            Text(
-                                text = "AIChatVN Home",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.padding(top = 90.dp)
+                    // Lớp Canvas chịu tác động Zoom/Pan chứa toàn bộ cấu phần thiết bị và sơ đồ
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(
+                                scaleX = zoomScale,
+                                scaleY = zoomScale,
+                                translationX = panOffset.x,
+                                translationY = panOffset.y
+                            )
+                    ) {
+                        // Ảnh sơ đồ nhà nền (được scale động dựa trên cấu hình floorplanScale)
+                        floorplanBitmap?.let { bmp ->
+                            Image(
+                                bitmap = bmp,
+                                contentDescription = "Sơ đồ nhà",
+                                contentScale = ContentScale.FillBounds,
+                                modifier = Modifier
+                                    .offset { IntOffset(0, 0) }
+                                    .requiredWidth(((FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale).dp)
+                                    .requiredHeight(((FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale).dp)
+                                    .alpha(0.9f)
                             )
                         }
-                    }
 
-                    // Vẽ phân vùng các phòng
-                    val rooms = deviceNodes
-                        .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
-                        .groupBy { it.room }
-
-                    rooms.forEach { (roomName, nodes) ->
-                        if (nodes.isNotEmpty()) {
-                            val minX = nodes.minOf { it.x } - 12f
-                            val minY = nodes.minOf { it.y } - 12f
-                            val maxX = nodes.maxOf { it.x } + 150f + 12f
-                            val maxY = nodes.maxOf { it.y } + 115f + 12f
-
-                            val width = maxX - minX
-                            val height = maxY - minY
-
+                        if (floorplanBitmap == null) {
                             Box(
                                 modifier = Modifier
-                                    .offset { IntOffset(minX.roundToInt(), minY.roundToInt()) }
-                                    .requiredWidth(width.dp)
-                                    .requiredHeight(height.dp)
+                                    .align(Alignment.Center)
+                                    .padding(bottom = 40.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Canvas(modifier = Modifier.fillMaxSize()) {
-                                    drawRoundRect(
-                                        color = Color.Gray.copy(alpha = 0.25f),
-                                        size = this.size,
-                                        style = Stroke(
-                                            width = 1.dp.toPx(),
-                                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+                                Text("🏠", fontSize = 100.sp, modifier = Modifier.clip(CircleShape))
+                                Text(
+                                    text = "AIChatVN Home",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier.padding(top = 90.dp)
+                                )
+                            }
+                        }
+
+                        // Vẽ phân vùng các phòng
+                        val rooms = deviceNodes
+                            .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
+                            .groupBy { it.room }
+
+                        rooms.forEach { (roomName, nodes) ->
+                            if (nodes.isNotEmpty()) {
+                                val minX = nodes.minOf { it.x } - 12f
+                                val minY = nodes.minOf { it.y } - 12f
+                                val maxX = nodes.maxOf { it.x } + 150f + 12f
+                                val maxY = nodes.maxOf { it.y } + 115f + 12f
+
+                                val width = maxX - minX
+                                val height = maxY - minY
+
+                                Box(
+                                    modifier = Modifier
+                                        .offset { IntOffset(minX.roundToInt(), minY.roundToInt()) }
+                                        .requiredWidth(width.dp)
+                                        .requiredHeight(height.dp)
+                                ) {
+                                    Canvas(modifier = Modifier.fillMaxSize()) {
+                                        drawRoundRect(
+                                            color = Color.Gray.copy(alpha = 0.25f),
+                                            size = this.size,
+                                            style = Stroke(
+                                                width = 1.dp.toPx(),
+                                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+                                            )
                                         )
+                                    }
+                                    Text(
+                                        text = roomName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                        modifier = Modifier.padding(6.dp)
                                     )
                                 }
-                                Text(
-                                    text = roomName,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                    modifier = Modifier.padding(6.dp)
+                            }
+                        }
+
+                        // Hiển thị danh sách thiết bị
+                        deviceNodes.forEach { node ->
+                            key(node.id) {
+                                DraggableDeviceNodeItem(
+                                    node = node,
+                                    baseScale = baseScale,
+                                    zoomScale = zoomScale,
+                                    snapToGrid = ::snapToGrid,
+                                    onNodeClick = { selectedNode = it },
+                                    onUpdatePosition = { id, x, y -> viewModel.updateNodePosition(id, x, y) }
                                 )
                             }
                         }
                     }
-
-                    // Hiển thị danh sách thiết bị
-                    deviceNodes.forEach { node ->
-                        key(node.id) {
-                            DraggableDeviceNodeItem(
-                                node = node,
-                                baseScale = baseScale,
-                                zoomScale = zoomScale,
-                                snapToGrid = ::snapToGrid,
-                                onNodeClick = { selectedNode = it },
-                                onUpdatePosition = { id, x, y -> viewModel.updateNodePosition(id, x, y) }
-                            )
-                        }
-                    }
                 }
-            }
 
+                // Nút Căn giữa (Home) thông minh dạng Floating Action Button
+                FloatingActionButton(
+                    onClick = {
+                        if (deviceNodes.isNotEmpty()) {
+                            val minX = deviceNodes.minOf { it.x }
+                            val minY = deviceNodes.minOf { it.y }
+                            val maxX = deviceNodes.maxOf { it.x + 150f }
+                            val maxY = deviceNodes.maxOf { it.y + (if (it.type == DeviceType.CAMERA) 128f else 115f) }
 
+                            val pixelMinX = minX * baseScale
+                            val pixelMinY = minY * baseScale
+                            val pixelMaxX = maxX * baseScale
+                            val pixelMaxY = maxY * baseScale
 
+                            val contentWidthPx = pixelMaxX - pixelMinX
+                            val contentHeightPx = pixelMaxY - pixelMinY
 
-            
-            // Nút Căn giữa (Home) thông minh dạng Floating Action Button
-            FloatingActionButton(
-                onClick = {
-                    if (deviceNodes.isNotEmpty()) {
-                        // Tính toán bao cảnh (Bounding Box) của các thiết bị hiện tại
-                        val minX = deviceNodes.minOf { it.x }
-                        val minY = deviceNodes.minOf { it.y }
-                        val maxX = deviceNodes.maxOf { it.x + 150f }
-                        val maxY = deviceNodes.maxOf { it.y + (if (it.type == DeviceType.CAMERA) 128f else 115f) }
+                            val paddingPx = 32f * baseScale
+                            val usableWidth = viewportWidth - paddingPx * 2
+                            val usableHeight = viewportHeight - paddingPx * 2
 
-                        val pixelMinX = minX * baseScale
-                        val pixelMinY = minY * baseScale
-                        val pixelMaxX = maxX * baseScale
-                        val pixelMaxY = maxY * baseScale
+                            val scaleX = if (contentWidthPx > 0) usableWidth / contentWidthPx else 1f
+                            val scaleY = if (contentHeightPx > 0) usableHeight / contentHeightPx else 1f
+                            zoomScale = minOf(scaleX, scaleY).coerceIn(0.5f, 2.5f)
 
-                        val contentWidthPx = pixelMaxX - pixelMinX
-                        val contentHeightPx = pixelMaxY - pixelMinY
+                            val contentCenterX = (pixelMinX + pixelMaxX) / 2f
+                            val contentCenterY = (pixelMinY + pixelMaxY) / 2f
 
-                        // Tạo khoảng biên an toàn (Padding) bao quanh thiết bị
-                        val paddingPx = 32f * baseScale
-                        val usableWidth = viewportWidth - paddingPx * 2
-                        val usableHeight = viewportHeight - paddingPx * 2
+                            panOffset = Offset(
+                                x = (viewportWidth / 2f) - (contentCenterX * zoomScale),
+                                y = (viewportHeight / 2f) - (contentCenterY * zoomScale)
+                            )
+                        } else if (floorplanBitmap != null) {
+                            val imageWidth = (FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale
+                            val imageHeight = (FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale
 
-                        // Tính toán tỷ lệ Zoom tối ưu để gom tất cả thiết bị hiển thị gọn gàng
-                        val scaleX = if (contentWidthPx > 0) usableWidth / contentWidthPx else 1f
-                        val scaleY = if (contentHeightPx > 0) usableHeight / contentHeightPx else 1f
-                        zoomScale = minOf(scaleX, scaleY).coerceIn(0.5f, 2.5f)
+                            val scaleX = viewportWidth / imageWidth
+                            val scaleY = viewportHeight / imageHeight
+                            zoomScale = minOf(scaleX, scaleY).coerceIn(0.5f, 2.5f)
 
-                        // Dịch chuyển Canvas đưa trung tâm bao cảnh về trung tâm khung hình
-                        val contentCenterX = (pixelMinX + pixelMaxX) / 2f
-                        val contentCenterY = (pixelMinY + pixelMaxY) / 2f
-
-                        panOffset = Offset(
-                            x = (viewportWidth / 2f) - (contentCenterX * zoomScale),
-                            y = (viewportHeight / 2f) - (contentCenterY * zoomScale)
-                        )
-                    } else if (floorplanBitmap != null) {
-                        // Nâng cấp: Nếu chưa có node, tự động Fit ảnh sơ đồ nền vừa vặn vào màn hình
-                        val imageWidth = (FLOORPLAN_DESIGN_WIDTH * floorplanScale) * baseScale
-                        val imageHeight = (FLOORPLAN_DESIGN_HEIGHT * floorplanScale) * baseScale
-
-                        val scaleX = viewportWidth / imageWidth
-                        val scaleY = viewportHeight / imageHeight
-                        zoomScale = minOf(scaleX, scaleY).coerceIn(0.5f, 2.5f)
-
-                        panOffset = Offset(
-                            x = (viewportWidth / 2f) - ((imageWidth / 2f) * zoomScale),
-                            y = (viewportHeight / 2f) - ((imageHeight / 2f) * zoomScale)
-                        )
-                    } else {
-                        zoomScale = 1f
-                        panOffset = Offset.Zero
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Home,
-                    contentDescription = "Căn giữa sơ đồ nhà"
-                )
-            }
-
-
-            
-
-            if (isProcessing) {
-                CircularProgressIndicator(
+                            panOffset = Offset(
+                                x = (viewportWidth / 2f) - ((imageWidth / 2f) * zoomScale),
+                                y = (viewportHeight / 2f) - ((imageHeight / 2f) * zoomScale)
+                            )
+                        } else {
+                            zoomScale = 1f
+                            panOffset = Offset.Zero
+                        }
+                    },
                     modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(48.dp)
-                )
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Home,
+                        contentDescription = "Căn giữa sơ đồ nhà"
+                    )
+                }
+
+                if (isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .size(48.dp)
+                    )
+                }
             }
         }
 
@@ -633,7 +685,6 @@ fun DashboardScreen(
                                                 maxLines = 2,
                                                 overflow = TextOverflow.Ellipsis,
                                                 lineHeight = 14.sp
-                                              
                                             )
                                         }
                                     }
