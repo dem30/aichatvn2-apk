@@ -678,35 +678,52 @@ fun PreconditionGuardDialog(
                     )
                 }
 
+
+
+                
+
+
+
                 if (selectedSourceType == "camera") {
-                    Text("2. Chọn Camera", style = MaterialTheme.typography.labelMedium)
-                    ExposedDropdownMenuBox(
-                        expanded = cameraExpanded,
-                        onExpandedChange = { cameraExpanded = it }
-                    ) {
-                        val cameraName = activeCameras.find { it.id == selectedCameraId }?.customername ?: selectedCameraId
-                        OutlinedTextField(
-                            value = cameraName.ifBlank { "Chọn camera..." },
-                            onValueChange = {},
-                            readOnly = true,
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cameraExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = cameraExpanded,
-                            onDismissRequest = { cameraExpanded = false }
-                        ) {
-                            activeCameras.forEach { cam ->
-                                DropdownMenuItem(
-                                    text = { Text(cam.customername) },
-                                    onClick = {
-                                        selectedCameraId = cam.id
-                                        cameraExpanded = false
-                                    }
-                                )
-                            }
-                        }
+    Text("2. Chọn Camera", style = MaterialTheme.typography.labelMedium)
+    ExposedDropdownMenuBox(
+        expanded = cameraExpanded,
+        onExpandedChange = { cameraExpanded = it }
+    ) {
+        // 🛠️ SỬA: Hiển thị cả tên khách hàng và mã camera ID tại ô chọn chính
+        val cameraName = activeCameras.find { it.id == selectedCameraId }?.let { cam ->
+            "${cam.customername} (${cam.id})"
+        } ?: selectedCameraId
+
+        OutlinedTextField(
+            value = cameraName.ifBlank { "Chọn camera..." },
+            onValueChange = {},
+            readOnly = true,
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cameraExpanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor()
+        )
+        ExposedDropdownMenu(
+            expanded = cameraExpanded,
+            onDismissRequest = { cameraExpanded = false }
+        ) {
+            activeCameras.forEach { cam ->
+                DropdownMenuItem(
+                    // 🛠️ SỬA: Hiển thị kết hợp cả tên khách hàng và mã camera ID trong danh sách xổ xuống
+                    text = { Text("${cam.customername} (${cam.id})") },
+                    onClick = {
+                        selectedCameraId = cam.id
+                        cameraExpanded = false
                     }
+                )
+            }
+        }
+    }
+    
+
+
+
+
+                    
 
                     if (cameraSchedules.isNotEmpty()) {
                         Text("3. Chọn Lịch trình kiểm tra", style = MaterialTheme.typography.labelMedium)
