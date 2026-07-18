@@ -424,6 +424,24 @@ class ChatSkill @Inject constructor(
                 )
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(userMessage)
+                    // ✅ SỬA: trước đây nhánh bot tự trả lời (isExternal=true, isManual=false) chỉ ghi
+                    // ChatMessageEntity, KHÔNG ghi event_log — khiến buildMemoryContext() không có
+                    // audit-log vĩnh viễn để trả lời các câu hỏi lịch sử xa hơn "top 10 tin chưa đọc"
+                    // (vd: tin đã đọc rồi, hoặc hỏi theo kênh cụ thể "tuần trước Telegram nhắn gì").
+                    // Ghi giống hệt saveExternalUserMessage() (nhánh Người Trực) để 2 luồng nhất quán.
+                    if (isExternal) {
+                        database.eventLogDao().insertLog(
+                            com.aichatvn.agent.data.model.EventLogEntity(
+                                id = java.util.UUID.randomUUID().toString(),
+                                timestamp = userMessage.timestamp,
+                                source = username.substringBefore("_"),
+                                sourceId = username.substringAfter("_"),
+                                eventType = "incoming_message",
+                                value = message.take(200),
+                                summary = "Tin nhắn mới từ ${username.substringBefore("_")} (${username.substringAfter("_")}): \"${message.take(80)}\""
+                            )
+                        )
+                    }
                 }
 
                 messagesMutex.withLock {
