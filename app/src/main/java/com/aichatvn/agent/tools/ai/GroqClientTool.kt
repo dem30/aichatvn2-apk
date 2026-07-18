@@ -92,7 +92,7 @@ class GroqClientTool @Inject constructor(
         private const val STRUCTURED_VISION_SUFFIX = """
 
 🚨 BẮT BUỘC TRẢ VỀ JSON THÔ THEO ĐỊNH DẠNG SAU, KHÔNG GIẢI THÍCH THÊM, KHÔNG BỌC TRONG MARKDOWN ```json:
-{"objects": ["các đối tượng chính phát hiện được, vd: person, car, dog"], "state": "suspicious hoặc normal", "confidence": 0.0 đến 1.0, "description": "mô tả tóm tắt bằng tiếng Việt về những gì bạn thấy"}"""
+{"objects": ["CHỈ dùng đúng các nhãn tiếng Anh viết thường sau, không tự bịa nhãn khác: person, car, motorbike, dog, cat, package, unknown"], "state": "suspicious hoặc normal", "confidence": 0.0 đến 1.0, "description": "mô tả tóm tắt bằng tiếng Việt về những gì bạn thấy"}"""
     }
 
     private val client = OkHttpClient.Builder()

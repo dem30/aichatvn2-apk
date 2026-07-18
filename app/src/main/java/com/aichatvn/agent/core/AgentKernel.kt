@@ -362,11 +362,25 @@ class AgentKernel @Inject constructor(
         }
     }
 
+    companion object {
+        // ✅ MỚI: Trần cứng số lượng QA match và độ dài answer đưa vào prompt. Trước đây hàm này
+        // nối TẤT CẢ match có similarity >= 0.7 mà không giới hạn — nếu catalogue QA lớn và câu
+        // hỏi mơ hồ (khớp nhiều mục cùng lúc), phần context này có thể phình to không kiểm soát.
+        // 3 match đầu (đã sort theo similarity) gần như luôn đủ để AI chọn đúng câu trả lời.
+        private const val MAX_QA_MATCHES_IN_CONTEXT = 3
+        private const val MAX_QA_ANSWER_CHARS = 200
+    }
+
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
         val matches = search(message, username, 0.7f)
+            .sortedByDescending { it.similarity }
+            .take(MAX_QA_MATCHES_IN_CONTEXT)
         if (matches.isEmpty()) return ""
         return matches.joinToString("\n") { match ->
-            "📚 Q: ${match.qa.question}\n   A: ${match.qa.answer} (độ tương tự: ${String.format("%.2f", match.similarity)})"
+            val answer = match.qa.answer.let {
+                if (it.length > MAX_QA_ANSWER_CHARS) it.take(MAX_QA_ANSWER_CHARS) + "…" else it
+            }
+            "📚 Q: ${match.qa.question}\n   A: $answer (độ tương tự: ${String.format("%.2f", match.similarity)})"
         }
     }
 

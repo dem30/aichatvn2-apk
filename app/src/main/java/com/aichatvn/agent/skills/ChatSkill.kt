@@ -90,7 +90,57 @@ class ChatSkill @Inject constructor(
         )
 
         private const val DEFAULT_MEMORY_LOOKBACK_DAYS = 3
+
+        // ✅ MỚI: Nhận diện câu hỏi dạng ĐẾM SỐ LƯỢNG ("bao nhiêu", "mấy lần"...) — khi khớp,
+        // buildMemoryContext trả về một con số tổng hợp thay vì liệt kê từng dòng log thô,
+        // giảm đáng kể token gửi lên AI cho loại câu hỏi này.
+        private val QUANTITY_KEYWORDS = setOf(
+            "bao nhieu", "may lan", "so luong", "tong cong", "duoc may"
+        )
     }
+
+    private fun isQuantityQuery(normalizedMsg: String): Boolean =
+        QUANTITY_KEYWORDS.any { normalizedMsg.contains(it) }
+
+    // ✅ MỚI: Bắt trạng thái cụ thể được hỏi kèm trong câu đếm số lượng (vd "mấy lần OFF",
+    // "bao nhiêu lần bật"). Trả về danh sách biến thể để so khớp .contains() với summary log,
+    // vì chưa chắc summary được ghi bằng tiếng Việt có dấu hay tiếng Anh — xem ghi chú giới hạn
+    // đã biết tại nơi gọi hàm này trong buildMemoryContext().
+    //
+    // ⚠️ QUAN TRỌNG: PHẢI so khớp "bật"/"tắt" trên `originalMessage` (CÒN DẤU), không phải bản
+    // đã normalize() — vì normalize() bỏ dấu khiến "bật" và "bất" (như trong "bất thường") đều
+    // thành "bat", dẫn đến câu "có sự kiện bất thường nào không" bị hiểu nhầm thành hỏi trạng
+    // thái "bật". "on"/"off" không có vấn đề dấu nên vẫn so khớp trên bản đã chuẩn hóa.
+    private fun extractStateKeyword(originalMessage: String, normalizedMsg: String): List<String>? = when {
+        originalMessage.contains("tắt", ignoreCase = true) || containsAnyWord(normalizedMsg, "off") ->
+            listOf("tắt", "off", "Tắt", "OFF")
+        originalMessage.contains("bật", ignoreCase = true) || containsAnyWord(normalizedMsg, "on") ->
+            listOf("bật", "on", "Bật", "ON")
+        else -> null
+    }
+
+    private fun containsAnyWord(text: String, vararg words: String) =
+        words.any { com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(text, it) }
+
+    // ✅ MỚI: Ánh xạ từ tiếng Việt sang nhãn "objects" mà camera vision trả về. PHẢI khớp đúng
+    // tập nhãn đóng đã siết trong GroqClientTool.STRUCTURED_VISION_SUFFIX (person, car, motorbike,
+    // dog, cat, package, unknown) — nếu bên đó đổi tập nhãn, phải cập nhật lại map này theo.
+    private val OBJECT_LABEL_KEYWORDS = mapOf(
+        "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom"),
+        "car" to listOf("oto", "xe hoi", "xe oto"),
+        "motorbike" to listOf("xe may"),
+        "dog" to listOf("con cho", "cho "),
+        "cat" to listOf("con meo", "meo "),
+        "package" to listOf("goi hang", "buu kien", "shipper")
+    )
+
+    // Trả về nhãn object (tiếng Anh, khớp world_state/event log) nếu câu hỏi nhắc tới 1 loại đối
+    // tượng cụ thể, dùng để lọc CHÍNH XÁC theo loại thay vì đếm/liệt kê chung mọi sự kiện.
+    private fun extractObjectLabel(normalizedMsg: String): String? =
+        OBJECT_LABEL_KEYWORDS.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
+
+    private fun logHasObject(summary: String, label: String): Boolean =
+        summary.contains("[objects:", ignoreCase = true) && summary.contains(label, ignoreCase = true)
 
     private fun isPastMemoryQuery(message: String): Boolean {
         val norm = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(message)
@@ -108,7 +158,6 @@ class ChatSkill @Inject constructor(
 
         try {
             val now = System.currentTimeMillis()
-            val since = now - (DEFAULT_MEMORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000L)
 
             // Đọc giới hạn số lượng dòng log tối đa cấu hình từ DB (chống Token Bloat, thay cho hard-code take(200))
             val maxLogs = configProvider.getInt(AppConfigDefaults.GLOBAL_MAX_MEMORY_LOGS, 30)
@@ -117,6 +166,14 @@ class ChatSkill @Inject constructor(
             val activeCameras = database.cameraDao().getActiveCameras()
             val activeDevices = database.tuyaDeviceDao().getAllDevices()
             val normalizedMsg = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userMessage.lowercase())
+
+            // ✅ MỚI: Khoanh vùng thời gian THEO ĐÚNG Ý CÂU HỎI ("hôm qua", "lúc nãy", "3 ngày trước"...)
+            // thay vì luôn quét cứng 3 ngày rồi mới cắt bớt bằng take(maxLogs). Nếu câu hỏi không chứa
+            // tín hiệu thời gian rõ ràng, giữ nguyên hành vi mặc định cũ (3 ngày).
+            val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedMsg, now)
+            val since = parsedRange?.since
+                ?: (now - DEFAULT_MEMORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000L)
+            val rangeLabel = parsedRange?.label ?: "$DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất"
 
             // 🎯 Bước 1: Phân tích trích xuất thực thể xem câu hỏi có nhắc đích danh camera/thiết bị nào không
             val matchedCamera = activeCameras.find { cam ->
@@ -141,7 +198,10 @@ class ChatSkill @Inject constructor(
             } else null
 
             // 🎯 Bước 2: Truy vấn có bộ lọc phân vùng để tránh rò rỉ ngữ cảnh chéo giữa các camera/thiết bị/kênh
-            val rawLogs = database.eventLogDao().getLogsInTimeframe(since, now)
+            // Dùng 'until' đã phân giải (vd "hôm qua" -> until = đầu ngày hôm nay), KHÔNG luôn dùng 'now',
+            // nếu không log của "hôm nay" sẽ lẫn vào kết quả khi user hỏi về "hôm qua".
+            val until = parsedRange?.until ?: now
+            val rawLogs = database.eventLogDao().getLogsInTimeframe(since, until)
             val filteredLogs = when {
                 matchedCamera != null -> rawLogs.filter {
                     it.sourceId == matchedCamera.id || it.summary.contains(matchedCamera.customername, ignoreCase = true)
@@ -158,10 +218,53 @@ class ChatSkill @Inject constructor(
 
             val dateFmt = java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.getDefault())
 
+            // ✅ MỚI: Nếu câu hỏi nhắc tới 1 loại đối tượng cụ thể ("người lạ", "con chó"...), lọc
+            // tiếp trên field "objects" mà CameraSkill giờ đã ghi kèm trong summary (xem
+            // saveAlertToHistory/processImageWithLearning) — dữ liệu này đến từ chính AI vision
+            // model lúc phân tích snapshot (STRUCTURED_VISION_SUFFIX trong GroqClientTool), không
+            // phải suy đoán qua từ khóa chung chung như trước.
+            val objectLabel = extractObjectLabel(normalizedMsg)
+            val objectFilteredLogs = if (objectLabel != null) {
+                filteredLogs.filter { logHasObject(it.summary, objectLabel) }
+            } else filteredLogs
+
+            // ✅ MỚI: Câu hỏi dạng ĐẾM SỐ LƯỢNG ("bao nhiêu", "mấy lần"...) không cần AI đọc từng
+            // dòng log — chỉ cần một con số. Đếm trực tiếp trên objectFilteredLogs đã lọc theo đúng
+            // đối tượng/khoảng thời gian ở Bước 2, KHÔNG cần thêm truy vấn DB nào khác, rồi trả
+            // về sớm để không nối thêm activityLines/unreadLines thô vào context (tiết kiệm token
+            // đáng kể so với liệt kê từng dòng cho loại câu hỏi này).
+            if (isQuantityQuery(normalizedMsg) && objectFilteredLogs.isNotEmpty()) {
+                val subjectLabel = when {
+                    matchedCamera != null -> "camera ${matchedCamera.customername}"
+                    matchedDevice != null -> "thiết bị ${matchedDevice.name}"
+                    matchedPlatform != null -> "kênh $matchedPlatform"
+                    else -> "hệ thống"
+                }
+                // ⚠️ Nếu câu hỏi nhắc kèm 1 trạng thái cụ thể ("mấy lần OFF", "bao nhiêu lần bật"),
+                // phải lọc lại theo đúng trạng thái đó trước khi đếm — nếu không, đếm luôn cả sự
+                // kiện "bật" lẫn "tắt" sẽ cho ra con số sai với ý người dùng hỏi.
+                // GIỚI HẠN ĐÃ BIẾT: match bằng .contains(ignoreCase) trên summary, dựa theo quy
+                // ước hiện tại của CameraSkill/SmartSwitchSkill khi ghi summary (vd "Đang tắt").
+                // Nếu nơi ghi log dùng từ khác (vd "OFF" viết hoa không dấu), cần bổ sung thêm
+                // biến thể vào STATE_KEYWORD_VARIANTS bên dưới cho khớp.
+                val stateKeyword = extractStateKeyword(userMessage, normalizedMsg)
+                val countedLogs = if (stateKeyword != null) {
+                    objectFilteredLogs.filter { log -> stateKeyword.any { log.summary.contains(it, ignoreCase = true) } }
+                } else objectFilteredLogs
+                val stateNote = if (stateKeyword != null) " (trạng thái: ${stateKeyword.first()})" else ""
+                val objectNote = if (objectLabel != null) " (đối tượng: $objectLabel)" else ""
+                return@withContext buildString {
+                    append("<system_memory_context>\n")
+                    append("Trong khoảng $rangeLabel, $subjectLabel ghi nhận ${countedLogs.size} sự kiện$stateNote$objectNote.\n")
+                    append("Hãy trả lời trực tiếp con số này, không cần liệt kê chi tiết trừ khi người dùng hỏi thêm.\n")
+                    append("</system_memory_context>")
+                }
+            }
+
             // 🎯 Bước 3: Áp dụng giới hạn động thay vì take(200) cứng
             // Chỉ loại incoming_message khi KHÔNG hỏi đích danh 1 kênh (tránh trùng với unreadLines phía dưới,
             // nhưng khi hỏi đích danh kênh thì vẫn cần incoming_message để trả lời được lịch sử tin nhắn kênh đó)
-            val activityLines = filteredLogs
+            val activityLines = objectFilteredLogs
                 .sortedBy { it.timestamp }
                 .filter { matchedPlatform != null || it.eventType != "incoming_message" }
                 .take(maxLogs)
@@ -198,13 +301,13 @@ class ChatSkill @Inject constructor(
             buildString {
                 append("<system_memory_context>\n")
                 if (matchedCamera != null) {
-                    append("--- Nhật ký hoạt động Camera ${matchedCamera.customername} ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                    append("--- Nhật ký hoạt động Camera ${matchedCamera.customername} ($rangeLabel) ---\n")
                 } else if (matchedDevice != null) {
-                    append("--- Nhật ký hoạt động Thiết bị ${matchedDevice.name} ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                    append("--- Nhật ký hoạt động Thiết bị ${matchedDevice.name} ($rangeLabel) ---\n")
                 } else if (matchedPlatform != null) {
-                    append("--- Nhật ký hoạt động kênh $matchedPlatform ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                    append("--- Nhật ký hoạt động kênh $matchedPlatform ($rangeLabel) ---\n")
                 } else {
-                    append("--- Nhật ký hoạt động tổng hợp ($DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất) ---\n")
+                    append("--- Nhật ký hoạt động tổng hợp ($rangeLabel) ---\n")
                 }
                 if (worldState != null) {
                     append("--- Trạng thái SỐNG hiện tại (Bản sao số, cập nhật lúc ${dateFmt.format(java.util.Date(worldState.updatedAt))}) ---\n")

@@ -197,6 +197,9 @@ class CameraSkill @Inject constructor(
     private data class VisionParseResult(
         val displayComment: String,         
         val structuredSuspicious: Boolean?, 
+        val objects: List<String>,           // ✅ MỚI: nhãn đối tượng AI phát hiện — GroqClientTool.STRUCTURED_VISION_SUFFIX
+                                              // đã ép AI trả field này ở MỌI lần gọi analyzeImage(), nhưng trước đây
+                                              // parseVisionResult() bỏ qua hoàn toàn, không đọc.
         val rawJson: org.json.JSONObject?    
     )
     
@@ -936,9 +939,19 @@ class CameraSkill @Inject constructor(
                 "normal" -> false
                 else -> null 
             }
-            VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, rawJson = json)
+            // ✅ MỚI: đọc mảng "objects" — dữ liệu AI đã trả sẵn trong MỌI lần gọi analyzeImage()
+            // (xem STRUCTURED_VISION_SUFFIX trong GroqClientTool) nhưng trước đây bị bỏ qua.
+            // Chuẩn hóa lowercase + trim vì so khớp sau này (buildMemoryContext) làm trên chữ thường.
+            val objectsRaw = json.optJSONArray("objects")
+            val objects = if (objectsRaw != null) {
+                (0 until objectsRaw.length())
+                    .mapNotNull { i -> objectsRaw.optString(i)?.trim()?.lowercase() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+            } else emptyList()
+            VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, objects = objects, rawJson = json)
         } catch (e: Exception) {
-            VisionParseResult(displayComment = raw, structuredSuspicious = null, rawJson = null)
+            VisionParseResult(displayComment = raw, structuredSuspicious = null, objects = emptyList(), rawJson = null)
         }
     }
     
@@ -1118,6 +1131,7 @@ if (camera.enableNotification == 1) {
                             emailSent = emailSent,
                             scheduleId = scheduleId,
                             aiStateJson = visionParsed.rawJson?.toString(),
+                            objects = visionParsed.objects,
                             shouldMerge = shouldMerge, // Truyền cờ xác định trạng thái gộp
                             existingAlert = latestAlert
                         )
@@ -1143,6 +1157,9 @@ if (camera.enableNotification == 1) {
                     }
 
                     withContext(Dispatchers.IO) {
+                        // ✅ MỚI: nối danh sách object vào summary để buildMemoryContext (ChatSkill) có thể
+                        // lọc/đếm theo loại đối tượng khi trả lời — trước đây summary chỉ có mô tả tự do.
+                        val objectsSuffix = if (visionParsed.objects.isNotEmpty()) " [objects: ${visionParsed.objects.joinToString(",")}]" else ""
                         database.eventLogDao().insertLog(
                             com.aichatvn.agent.data.model.EventLogEntity(
                                 id = UUID.randomUUID().toString(),
@@ -1151,12 +1168,18 @@ if (camera.enableNotification == 1) {
                                 sourceId = tid,
                                 eventType = "state_change",
                                 value = "Bình thường",
-                                summary = "Camera ${camera.customername} ($tid): $aiComment"
+                                summary = "Camera ${camera.customername} ($tid): $aiComment$objectsSuffix"
                             )
                         )
                         // Ghi nhận trạng thái chung
                         com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                             database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "normal"
+                        )
+                        // ✅ MỚI: Ghi riêng "objects" vào world_state — WorldStateHelper.setAttribute() merge
+                        // theo key vào cùng 1 JSON blob của (source, sourceId), nên KHÔNG cần đổi schema DB.
+                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                            database.worldStateDao(), source = "camera", sourceId = tid, key = "objects",
+                            value = org.json.JSONArray(visionParsed.objects).toString()
                         )
                         // ✅ MỚI: Nếu có scheduleId, ghi nhận riêng trạng thái bình thường cho lịch trình này
                         if (!scheduleId.isNullOrBlank()) {
@@ -1598,6 +1621,8 @@ if (camera.enableNotification == 1) {
         emailSent: Boolean,
         scheduleId: String? = null,
         aiStateJson: String? = null,
+        objects: List<String> = emptyList(),       // ✅ MỚI: nhãn đối tượng AI phát hiện, để ghi vào
+                                                     // event log summary + world_state (xem parseVisionResult)
         shouldMerge: Boolean = false,              // Thêm cờ gộp đã phân tích trước
         existingAlert: AlertEntity? = null         // Nhận bản ghi cuối cùng đang hoạt động
     ) {
@@ -1671,6 +1696,9 @@ if (camera.enableNotification == 1) {
 
             // Cập nhật lưu World State kèm theo ID lịch trình nếu có
                     withContext(Dispatchers.IO) {
+                        // ✅ MỚI: nối object list vào summary — trước đây chỉ có $aiComment (mô tả tự do),
+                        // khiến buildMemoryContext (ChatSkill) không thể lọc/đếm theo loại đối tượng.
+                        val objectsSuffix = if (objects.isNotEmpty()) " [objects: ${objects.joinToString(",")}]" else ""
                         database.eventLogDao().insertLog(
                             com.aichatvn.agent.data.model.EventLogEntity(
                                 id = java.util.UUID.randomUUID().toString(),
@@ -1679,12 +1707,17 @@ if (camera.enableNotification == 1) {
                                 sourceId = tid,
                                 eventType = "person_detected",
                                 value = "Phát hiện bất thường",
-                                summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment"
+                                summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment$objectsSuffix"
                             )
                         )
                         // Ghi nhận trạng thái chung
                         com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                             database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
+                        )
+                        // ✅ MỚI: Ghi riêng "objects" vào world_state (merge theo key, không đổi schema DB)
+                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                            database.worldStateDao(), source = "camera", sourceId = tid, key = "objects",
+                            value = org.json.JSONArray(objects).toString()
                         )
                         // ✅ MỚI: Nếu có scheduleId, ghi nhận riêng trạng thái phân tách cho lịch trình này
                         if (!scheduleId.isNullOrBlank()) {
