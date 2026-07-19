@@ -313,7 +313,8 @@ class RoutingPipeline @Inject constructor(
         if (matchedAliasValue != null) return matchedAliasValue
 
         if (context.resolvedQuery.isNotBlank()) {
-            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+            // ✅ SỬA: literal 0.2f lệch với seed thật (0.5) — dùng defaultOf() để không thể lệch nữa
+            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
             val containsMatch = context.globalMatchResult.aliasMatches
                 .filter { it.first.category == param.semanticType && it.second >= configAliasThreshold }
                 .sortedByDescending { it.first.question.length }
@@ -400,9 +401,10 @@ class RoutingPipeline @Inject constructor(
 
         val simulatedTiers = mutableListOf<DiagnosticTier>()
         var finalOutcome: String? = null
-        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
-        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
-        val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, 0.80f)
+        // ✅ SỬA: 3 literal fallback lệch seed thật (0.3f≠0.5, 0.2f≠0.5, 0.80f≠0.85) — dùng defaultOf()
+        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD).toFloat())
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
+        val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE).toFloat())
 
         val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.let {
@@ -1017,7 +1019,8 @@ class RoutingPipeline @Inject constructor(
         devicePlugins: List<Plugin>,
         traceId: String
     ): RouterOutcome {
-        val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+        // ✅ SỬA: literal 0.2f lệch với seed thật (0.5) — dùng defaultOf()
+        val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
 
         val foundAliases = context.globalMatchResult.aliasMatches
             .filter { it.second >= configAliasThreshold }

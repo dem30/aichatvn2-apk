@@ -12,6 +12,14 @@ import com.aichatvn.agent.data.model.AppConfigEntity
  */
 object AppConfigDefaults {
 
+    // ✅ MỚI: Hàm tra cứu giá trị mặc định DÙNG CHUNG cho toàn bộ codebase — thay vì mỗi
+    // file (GroqClientTool, AgentKernel, CameraSkill, PendingIntentResolver...) tự chép lại
+    // 1 bản literal riêng rồi dễ lệch nhau (đã xảy ra thật với model vision và max_tokens_router).
+    // Dùng: configProvider.getFloat(KEY, AppConfigDefaults.defaultOf(KEY).toFloat())
+    private val defaultsByKey: Map<String, String> by lazy { all().associate { it.key to it.value } }
+    fun defaultOf(key: String): String = defaultsByKey[key]
+        ?: error("Thiếu giá trị mặc định cho key '$key' — thêm vào AppConfigDefaults.all() trước.")
+
     // ───────────────────────── GROQ ─────────────────────────
     const val GROQ_MODEL_TEXT    = "groq.model_text"
     const val GROQ_MODEL_VISION  = "groq.model_vision"
@@ -136,7 +144,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MODEL_VISION,
-            value = "meta-llama/llama-4-scout-17b-16e-instruct",
+            value = "qwen/qwen3.6-27b", // ✅ SỬA: llama-4-scout đã bị Groq deprecate (17/06/2026), trả 404. Lưu ý qwen3.6-27b là preview model bên Groq, có thể đổi tiếp trong tương lai — kiểm tra console.groq.com/docs/deprecations định kỳ.
             type = "string",
             pluginId = "groq",
             label = "Model vision (phân tích ảnh)",

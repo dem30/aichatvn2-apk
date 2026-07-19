@@ -254,7 +254,11 @@ class AgentKernel @Inject constructor(
         val usedPluginId = if (routerFailed) "router_error" else null
 
         // ✅ MỚI: Đọc từ config thay vì code cứng "3-4 câu"
-        val maxSentences = configProvider.getInt(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES, 4)
+        // ✅ SỬA: bỏ literal 4 trùng lặp, dùng defaultOf() để không thể lệch khỏi seed (cùng pattern với 2 threshold bên dưới)
+        val maxSentences = configProvider.getInt(
+            AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES).toInt()
+        )
 
         val ANTI_HALLUCINATION_GUARD =
             "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
@@ -262,24 +266,23 @@ class AgentKernel @Inject constructor(
             "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
             "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
 
-        // ✅ MỚI (Tích hợp Gđ 2): Prompt chỉ thị AI tự trả về JSON gọi Tool khi thiếu thông tin lịch sử
+        // ✅ SỬA (Gđ 2 tối ưu): Chỉ mang theo JSON contract khi câu hỏi thật sự đụng tới
+        // camera/thiết bị/kênh chat — tránh gửi schema cho mọi tin nhắn chat thường.
         val TOOL_CALLING_GUARD =
-            "\n\n🚨 QUY TẮC TRUY VẤN DỮ LIỆU LỊCH SỬ:\n" +
-            "Nếu người dùng yêu cầu tìm kiếm, liệt kê, kiểm tra, hỏi về quá khứ/lịch sử hoặc " +
-            "hỏi thông tin về các sự kiện của camera/thiết bị (ví dụ: 'có con chó nào không', 'liệt kê đi', " +
-            "'mấy giờ xe vào', 'ai nhắn tin'...) nhưng trong đoạn chat chưa có dữ liệu lịch sử thô này:\n" +
-            "Bạn BẮT BUỘC phải phản hồi bằng một chuỗi JSON thô theo đúng định dạng sau để hệ thống truy vấn " +
-            "giúp bạn (không bọc trong markdown, không giải thích gì thêm, không viết chữ nào khác ngoài JSON):\n" +
-            "{\"tool\": \"db_search\", \"timeframe\": \"today|yesterday|last_3_days|last_7_days\", \"object\": \"person|car|motorbike|dog|cat|package|all\"}\n" +
-            "Nếu dữ liệu lịch sử thô ĐÃ có sẵn trong ngữ cảnh chat trước đó hoặc bạn vừa được hệ thống cung cấp " +
-            "ở trên, hãy trả lời trực tiếp một cách tự nhiên, TUYỆT ĐỐI không gọi lại tool nữa."
+            "\n\n🚨 Nếu câu hỏi cần dữ liệu thực tế về camera/thiết bị/tin nhắn mà bạn CHƯA có " +
+            "trong ngữ cảnh, trả về DUY NHẤT JSON này (không giải thích, không markdown):\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\"," +
+            "\"object\":\"person|car|motorbike|dog|cat|package|all\"}\n" +
+            "Nếu dữ liệu đã có sẵn trong ngữ cảnh, trả lời trực tiếp, đừng gọi tool nữa."
 
-        val guard = if (routerFailed) {
-            ANTI_HALLUCINATION_GUARD + "\n" +
-                "⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm." +
-                TOOL_CALLING_GUARD
-        } else {
-            ANTI_HALLUCINATION_GUARD + TOOL_CALLING_GUARD
+        val guard = buildString {
+            append(ANTI_HALLUCINATION_GUARD)
+            if (routerFailed) {
+                append("\n⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm.")
+            }
+            if (mentionsAppDomain(message)) {
+                append(TOOL_CALLING_GUARD)
+            }
         }
 
         var responseText = try {
@@ -600,8 +603,8 @@ class AgentKernel @Inject constructor(
     ): DiagnosticInfo {
         val result = routingPipeline.process(userMessage, username, PipelineMode.DIAGNOSTIC, "DIAGNOSTIC-TRACE")
         val matchResult = result.matchResult ?: TrainingSkill.MatchResult(emptyList(), emptyList(), emptyMap())
-        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
-        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD).toFloat())
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
 
         val activePending = chatHistoryManager.getActivePendingIntents().firstOrNull()
         @Suppress("UNCHECKED_CAST")
@@ -642,6 +645,24 @@ class AgentKernel @Inject constructor(
             is RouterOutcome.RouterFailed -> PluginResult.Failure(outcome.reason)
             is RouterOutcome.NotACommand -> PluginResult.Failure("Không phải lệnh thiết bị")
         }
+    }
+
+    // ✅ MỚI: Chỉ 3 domain ứng dụng thật sự hỗ trợ — camera, thiết bị, kênh chat đa nguồn.
+    // Dùng để quyết định có cần gắn JSON contract (TOOL_CALLING_GUARD) vào prompt hay không,
+    // tránh tốn token cho những câu hỏi chat thường không liên quan.
+    private fun mentionsAppDomain(msg: String): Boolean {
+        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
+        val domainKeywords = listOf(
+            // camera / an ninh
+            "camera", "canh bao", "phat hien", "nguoi la", "xam nhap", "quay",
+            // thiết bị nhà thông minh
+            "den", "cua", "quat", "dieu hoa", "thiet bi", "bat", "tat",
+            // tin nhắn đa kênh
+            "tin nhan", "nhan tin",
+            // truy vấn dữ liệu chung (áp dụng cho cả 3 domain trên)
+            "liet ke", "lich su", "hom qua", "may gio", "kiem tra"
+        )
+        return domainKeywords.any { norm.contains(it) }
     }
 
     private fun isExitLockPhrase(msg: String): Boolean {

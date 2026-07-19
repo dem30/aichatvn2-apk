@@ -447,8 +447,10 @@ class ChatSkill @Inject constructor(
                         sendTelegramMessage(botToken, rawSenderId, message)
                     }
                 } else if (username.startsWith("website_")) {
-                    val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-                    val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                    // ✅ SỬA: trước đây không truyền default -> ngầm định "" khi đọc DB thất bại,
+                    // trong khi seed thật có URL/token cụ thể. Dùng defaultOf() để khớp seed.
+                    val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_GATEWAY_URL)).trim()
+                    val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN)).trim()
                     sendWebsiteReply(gatewayUrl, gatewayToken, rawSenderId, message, if (hasImage) imageBase64 else null)
                 }
 

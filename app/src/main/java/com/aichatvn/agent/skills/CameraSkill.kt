@@ -211,21 +211,17 @@ class CameraSkill @Inject constructor(
     private val _diagnostics = MutableStateFlow<Map<String, Any>>(emptyMap())
     val diagnostics: StateFlow<Map<String, Any>> = _diagnostics.asStateFlow()
 
-    private suspend fun defaultAiPrompt()       = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT, "Camera giám sát. Mô tả những gì bạn thấy, ghi cảnh báo nếu phát hiện bất thường.")
-    private suspend fun defaultPositiveKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW, "cảnh báo").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-    private suspend fun defaultNegativeKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW, "bình thường").split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-    private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, 3 * 60 * 60 * 1000L)
-    private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, 50)
-    private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD_DEFAULT)
-    private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, CIRCUIT_BREAKER_RESET_MS_DEFAULT)
-    private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, DAILY_REPORT_HOUR_DEFAULT)
-    private suspend fun alertMergeWindowMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS, 5 * 60 * 1000L)
+    private suspend fun defaultAiPrompt()       = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DEFAULT_AI_PROMPT))
+    private suspend fun defaultPositiveKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DEFAULT_POSITIVE_KW)).split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    private suspend fun defaultNegativeKw()     = configProvider.getString(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DEFAULT_NEGATIVE_KW)).split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+    private suspend fun cooldownDurationMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_COOLDOWN_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_COOLDOWN_MS).toLong())
+    private suspend fun maxDailyEvents()        = configProvider.getInt(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_MAX_DAILY_EVENTS).toInt())
+    private suspend fun circuitBreakerThreshold() = configProvider.getInt(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_THRESHOLD).toInt())
+    private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS).toLong())
+    private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR).toInt())
+    private suspend fun alertMergeWindowMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS).toLong())
     
     companion object {
-        private const val CIRCUIT_BREAKER_THRESHOLD_DEFAULT = 3
-        private const val CIRCUIT_BREAKER_RESET_MS_DEFAULT = 30 * 60 * 1000L
-        private const val DAILY_REPORT_HOUR_DEFAULT = 20
-
         private val TIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.getDefault()).withZone(ZoneId.systemDefault())
         private val DATE_FORMATTER: DateTimeFormatter =

@@ -69,20 +69,22 @@ class GroqClientTool @Inject constructor(
     companion object {
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-        private const val DEFAULT_MODEL_TEXT    = "openai/gpt-oss-120b"
-        private const val DEFAULT_MODEL_VISION  = "meta-llama/llama-4-scout-17b-16e-instruct"
-        private const val DEFAULT_MODEL_ROUTER  = "openai/gpt-oss-20b"
-        private const val DEFAULT_MAX_TOKENS_CHAT   = 500
-        private const val DEFAULT_MAX_TOKENS_VISION = 200
-        private const val DEFAULT_MAX_TOKENS_ROUTER = 1000
+        // ✅ SỬA: Dùng chung AppConfigDefaults.defaultOf() thay vì tự giữ map riêng —
+        // để logic tra cứu mặc định chỉ tồn tại ở đúng 1 nơi trong toàn bộ codebase.
+        private val DEFAULT_MODEL_TEXT    get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_TEXT)
+        private val DEFAULT_MODEL_VISION  get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_VISION)
+        private val DEFAULT_MODEL_ROUTER  get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_ROUTER)
+        private val DEFAULT_MAX_TOKENS_CHAT   get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MAX_TOKENS_CHAT).toInt()
+        private val DEFAULT_MAX_TOKENS_VISION get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MAX_TOKENS_VISION).toInt()
+        private val DEFAULT_MAX_TOKENS_ROUTER get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MAX_TOKENS_ROUTER).toInt()
 
         private const val SAFE_FALLBACK_INTENT =
             """{"plugin":"chat","action":"none","params":{}}"""
 
         private const val PREFS_NAME = "groq_rate_limit_prefs"
-        private val PERSISTED_MODELS = listOf(
-            DEFAULT_MODEL_TEXT, DEFAULT_MODEL_VISION, DEFAULT_MODEL_ROUTER
-        )
+        private val PERSISTED_MODELS by lazy {
+            listOf(DEFAULT_MODEL_TEXT, DEFAULT_MODEL_VISION, DEFAULT_MODEL_ROUTER)
+        }
 
         private const val PROMPT_LOG_SIZE = 10
         private const val PROMPT_LOG_MAX_CHARS = 20_000

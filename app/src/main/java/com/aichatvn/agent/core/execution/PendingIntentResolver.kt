@@ -70,7 +70,7 @@ class PendingIntentResolver @Inject constructor(
             return null
         }
 
-        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.5f)
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
         val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
 
         val localEntities = mutableMapOf<String, Any>()
@@ -217,7 +217,7 @@ class PendingIntentResolver @Inject constructor(
             }
 
             logger.d("PendingIntentResolver", "[$traceId] Heuristic không khớp tự động được '$currentAskedParam'. Gọi LLM.")
-            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
             val foundAliasesContext = matchResult.aliasMatches
                 .filter { it.second >= configAliasThreshold }
                 .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang ID thực tế: \"${it.first.answer}\"" }

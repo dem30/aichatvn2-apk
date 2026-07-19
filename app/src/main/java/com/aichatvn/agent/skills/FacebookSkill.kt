@@ -74,8 +74,10 @@ class FacebookSkill @Inject constructor(
                     return failure("Thiếu recipient_id hoặc nội dung tin nhắn/ảnh cần gửi.")
                 }
 
-                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                // ✅ SỬA: thiếu default -> ngầm định "" khi đọc DB thất bại, trong khi seed thật
+                // có URL/token cụ thể (cùng lỗi đã sửa ở ChatSkill.kt). Dùng defaultOf() để khớp seed.
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_GATEWAY_URL)).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN)).trim()
 
                 // 🔍 TRUY VẤN: Lấy thực thể trang đã lưu trong cơ sở dữ liệu SQLite theo Page ID động
                 val pageEntity = withContext(Dispatchers.IO) {
