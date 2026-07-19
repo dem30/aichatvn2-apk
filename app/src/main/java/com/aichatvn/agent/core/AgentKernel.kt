@@ -289,9 +289,12 @@ class AgentKernel @Inject constructor(
     withTimeout(15_000L) {
         val matches = search(message, username)
         val qa = matches.firstOrNull()?.qa
-        val localAnswer: String = runLocalQAEventAnalysis(message)
-
-        qa?.answer ?: localAnswer
+        // ✅ SỬA: Trước đây runLocalQAEventAnalysis() được gán vào val nên LUÔN được thực thi
+        // (query DB camera/tuya/eventLog + phân tích thời gian tiếng Việt), kể cả khi qa != null
+        // đã có câu trả lời khớp sẵn từ catalog. Elvis operator (?:) chỉ chọn giá trị nào được DÙNG,
+        // không ngăn được việc vế phải đã bị evaluate trước đó. Đưa lời gọi vào trực tiếp vế phải
+        // của ?: để nó chỉ chạy khi thật sự cần (qa == null).
+        qa?.answer ?: runLocalQAEventAnalysis(message)
     }
 }
 
@@ -452,8 +455,12 @@ class AgentKernel @Inject constructor(
 
     private val QUANTITY_KEYWORDS = setOf("bao nhieu", "may lan", "so luong", "tong cong", "duoc may", "dem")
     
+    // ✅ SỬA: Bỏ từ khóa "nguoi" đơn lẻ — trước đây khiến hầu hết câu có chữ "người" (vd "người
+    // dùng", "người quen"...) đều bị gán nhầm targetObject = "person". Đồng bộ với danh sách ở
+    // ChatSkill.kt (vốn đã không có "nguoi" đơn lẻ) để hai luồng QA cục bộ và Two-Pass AI phân loại
+    // object nhất quán với nhau.
     private val OBJECT_LABEL_KEYWORDS = mapOf(
-        "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom", "nguoi"),
+        "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom"),
         "car" to listOf("oto", "xe hoi", "xe oto", "xe bon banh"),
         "motorbike" to listOf("xe may", "xe hai banh"),
         "dog" to listOf("con cho", "cho "),
@@ -854,14 +861,39 @@ class AgentKernel @Inject constructor(
     }
 
     private fun mentionsAppDomain(msg: String): Boolean {
-        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
-        val domainKeywords = listOf(
-            "camera", "canh bao", "phat hien", "nguoi la", "xam nhap", "quay",
-            "den", "cua", "quat", "dieu hoa", "thiet bi", "bat", "tat",
-            "tin nhan", "nhan tin",
+        val original = msg.trim()
+        val norm = StringSimilarityUtil.normalizeVietnamese(original)
+
+        fun containsWord(haystack: String, keyword: String, ignoreCase: Boolean = false): Boolean {
+            val opts = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
+            return Regex("(?<!\\p{L})${Regex.escape(keyword)}(?!\\p{L})", opts).containsMatchIn(haystack)
+        }
+
+        // ✅ SỬA: Cụm từ dài/đặc thù, ít khả năng trùng với từ khác dù bỏ dấu -> vẫn so khớp
+        // trên bản chuẩn hóa (chấp nhận người dùng gõ thiếu dấu).
+        val safeNormalizedKeywords = listOf(
+            "camera", "canh bao", "phat hien", "nguoi la", "xam nhap",
+            "dieu hoa", "thiet bi", "tin nhan", "nhan tin",
             "liet ke", "lich su", "hom qua", "may gio", "kiem tra"
         )
-        return domainKeywords.any { norm.contains(it) }
+
+        // ✅ SỬA: Trước đây các từ đơn âm này (den/cua/bat/tat/quay) so khớp trên bản ĐÃ BỎ DẤU,
+        // khiến các từ tiếng Việt cực kỳ phổ biến nhưng khác nghĩa hoàn toàn bị nhận nhầm là domain
+        // keyword: "của" -> "cua" (trùng "cửa"), "đến" -> "den" (trùng "đèn"), "bắt đầu" -> "bat"
+        // (trùng "bật"). Hậu quả: hầu hết mọi câu chat bình thường đều bị gắn thêm
+        // buildToolCallingGuard() vào prompt, tốn token Groq vô ích và có nguy cơ khiến AI tự ý trả
+        // JSON gọi tool db_search cho câu hỏi không liên quan.
+        // -> Các từ này chỉ khác nhau ở DẤU, nên bắt buộc so khớp trên bản GIỮ NGUYÊN dấu gốc.
+        // Đánh đổi: nếu người dùng gõ hoàn toàn không dấu ("tat den"), các từ này sẽ không được nhận
+        // diện qua nhánh domain-keyword nữa — nhưng lệnh điều khiển thiết bị thật sự vẫn được xử lý
+        // riêng ở luồng tryDeviceCommand()/routingPipeline phía trên trong chat(), không phụ thuộc
+        // vào mentionsAppDomain(). Hàm này chỉ quyết định có nhúng thêm tool-calling guard hay không.
+        val diacriticSensitiveKeywords = listOf("đèn", "cửa", "quạt", "bật", "tắt", "quay")
+
+        val matchesSafe = safeNormalizedKeywords.any { kw -> containsWord(norm, kw) }
+        val matchesSensitive = diacriticSensitiveKeywords.any { kw -> containsWord(original, kw, ignoreCase = true) }
+
+        return matchesSafe || matchesSensitive
     }
 
     private fun isExitLockPhrase(msg: String): Boolean {
