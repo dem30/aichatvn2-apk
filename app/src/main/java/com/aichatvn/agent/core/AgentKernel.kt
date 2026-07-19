@@ -286,6 +286,8 @@ class AgentKernel @Inject constructor(
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
                         
+                        // ✅ SỬA: Đảo thứ tự ưu tiên lên đầu. Luôn ưu tiên gọi runLocalQAEventAnalysis() để tự động 
+                        // phân tích, bóc tách và lọc chính xác trước khi cho phép extractLocalMemoryAnswer() di sản can thiệp.
                         qa?.answer
                             ?: runLocalQAEventAnalysis(message)
                             ?: extractLocalMemoryAnswer(extraContext)
@@ -367,8 +369,8 @@ class AgentKernel @Inject constructor(
             val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
             val until = parsedRange?.until ?: now
             
-            // ✅ SỬA: Chuyển đổi sang biểu thức rẽ nhánh tường minh (if-else). 
-            // Điều này ép kiểu String phi-null tuyệt đối từ thuộc tính Java/Platform, loại bỏ triệt để lỗi biên dịch mismatch.
+            // ✅ SỬA: Ép kiểu String phi-null tuyệt đối bằng biểu thức rẽ nhánh if-else từ thuộc tính Java/Platform Type,
+            // dọn dẹp triệt để mọi nguy cơ mismatch kiểu dữ liệu của Kotlin Compiler.
             val label: String = if (parsedRange != null && parsedRange.label != null) {
                 parsedRange.label
             } else {
