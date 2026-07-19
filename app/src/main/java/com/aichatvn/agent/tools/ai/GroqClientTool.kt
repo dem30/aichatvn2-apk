@@ -225,6 +225,18 @@ class GroqClientTool @Inject constructor(
     private suspend fun maxTokensVision() = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_VISION, DEFAULT_MAX_TOKENS_VISION)
     private suspend fun maxTokensRouter() = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_ROUTER, DEFAULT_MAX_TOKENS_ROUTER)
 
+    // ✅ MỚI: báo giới hạn token thẳng vào prompt, để model TỰ LIỆU cách trả lời đủ ý trong
+    // giới hạn đó — thay vì chỉ dựa vào "max_tokens" ở tầng API (Groq vẫn cắt cứng đúng tại
+    // token đó, bất kể nội dung dở dang hay chưa). Hai lớp này bổ trợ nhau, không thay thế
+    // nhau: dòng chỉ dẫn dưới đây giúp model tự rút gọn/kết thúc gọn gàng; "max_tokens" API
+    // vẫn giữ lại làm lưới an toàn cuối cùng đề phòng model không tuân lệnh.
+    // Lưu ý: model không đếm token chính xác tuyệt đối như tokenizer, đây là ước lượng model
+    // tự diễn giải — không phải cam kết cứng 100% dưới N token.
+    private fun tokenBudgetInstruction(maxTokens: Int): String =
+        "\n\n⚠️ GIỚI HẠN ĐỘ DÀI: Trả lời trong phạm vi tối đa khoảng $maxTokens token. " +
+        "Hãy tự liệu để hoàn chỉnh câu trả lời (không bỏ dở giữa chừng, không bỏ dở JSON nếu có) " +
+        "trong giới hạn này — ưu tiên ngắn gọn, súc tích hơn là dài dòng rồi bị cắt cụt."
+
     private fun loadPersistedRateLimits(): Map<String, GroqRateLimitInfo> {
         val map = mutableMapOf<String, GroqRateLimitInfo>()
         for (model in PERSISTED_MODELS) {
@@ -339,12 +351,12 @@ class GroqClientTool @Inject constructor(
             val maxTokens = maxTokensChat()
 
             val messages = JSONArray()
-            if (extraContext.isNotBlank()) {
-                messages.put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", extraContext)
-                })
-            }
+            // ✅ SỬA: báo giới hạn token vào system message để model tự liệu độ dài câu trả lời
+            val budgetNote = tokenBudgetInstruction(maxTokens)
+            messages.put(JSONObject().apply {
+                put("role", "system")
+                put("content", if (extraContext.isNotBlank()) extraContext + budgetNote else budgetNote.trim())
+            })
             for (h in history.takeLast(10)) {
                 messages.put(JSONObject().apply {
                     put("role", h["role"] ?: "user")
@@ -410,8 +422,11 @@ class GroqClientTool @Inject constructor(
         val model     = modelRouter()
         val maxTokens = maxTokensRouter()
 
+        // ✅ SỬA: báo giới hạn token vào cuối prompt để model tự liệu độ dài
+        val promptWithBudget = prompt + tokenBudgetInstruction(maxTokens)
+
         val messages = JSONArray().apply {
-            put(JSONObject().apply { put("role", "user"); put("content", prompt) })
+            put(JSONObject().apply { put("role", "user"); put("content", promptWithBudget) })
         }
 
         val logId = logPrompt(
@@ -498,7 +513,9 @@ class GroqClientTool @Inject constructor(
             val dataUrl = "data:image/jpeg;base64,$base64"
 
             // ✅ MỚI (Tuần 1): Nối cấu trúc JSON ép buộc của Camera Vision vào cuối prompt thô
-            val structuredPrompt = prompt + STRUCTURED_VISION_SUFFIX
+            // ✅ SỬA: nối thêm giới hạn token vào cuối cùng, để model tự liệu cách kết thúc JSON
+            // gọn gàng trong giới hạn thay vì bị cắt cụt giữa chừng.
+            val structuredPrompt = prompt + STRUCTURED_VISION_SUFFIX + tokenBudgetInstruction(maxTokens)
 
             val messages = JSONArray().apply {
                 put(JSONObject().apply {
@@ -519,10 +536,24 @@ class GroqClientTool @Inject constructor(
                 requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens))
             )
 
+            // ✅ SỬA: thay vì đoán số token đủ cho cả suy luận + JSON (không đáng tin, model
+            // suy luận dài ngắn tuỳ ảnh), ÉP model bỏ qua hẳn bước suy luận cho các model họ
+            // Qwen3 (Groq hỗ trợ reasoning_effort="none" — tắt hẳn <think>, xem console.groq.com/docs/reasoning).
+            // Chỉ áp dụng khi chắc chắn model hỗ trợ field này — model khác (vd đổi sang model
+            // không thuộc họ Qwen3 trong tương lai) có thể trả 400 nếu gửi field lạ, nên phải
+            // check tên model tường minh thay vì gửi mù cho mọi model.
+            val isQwen3Reasoning = model.startsWith("qwen/qwen3", ignoreCase = true)
+
             val body = JSONObject().apply {
                 put("model", model)
                 put("messages", messages)
                 put("max_tokens", maxTokens)
+                if (isQwen3Reasoning) {
+                    put("reasoning_effort", "none")
+                    // reasoning_format="hidden": lớp bảo hiểm thứ 2 — dù reasoning_effort chưa
+                    // được tôn trọng đầy đủ, Groq vẫn không được để lọt <think> vào content.
+                    put("reasoning_format", "hidden")
+                }
             }.toString()
 
             val parsed = client.newCall(
@@ -567,6 +598,18 @@ class GroqClientTool @Inject constructor(
                 .getJSONObject("message")
                 .getString("content")
                 .trim()
+
+            // ✅ SỬA: nếu có <think> mở nhưng không có </think> đóng, nghĩa là response đã bị
+            // max_tokens cắt cụt GIỮA khối suy luận — chưa bao giờ ra tới JSON thật. Trước đây
+            // regex bên dưới không match trong trường hợp này, để lọt nguyên văn suy luận tiếng
+            // Anh làm "kết quả", khiến JSON parse thất bại và cảnh báo không bao giờ kích hoạt.
+            val hasOpenThink = raw.contains("<think>", ignoreCase = true)
+            val hasCloseThink = raw.contains("</think>", ignoreCase = true)
+            if (hasOpenThink && !hasCloseThink) {
+                logger.e("GroqClientTool", "$caller bị cắt cụt giữa khối <think> (max_tokens không đủ), body=$bodyStr")
+                throw IllegalStateException("Response bị cắt cụt giữa khối suy luận (max_tokens không đủ)")
+            }
+
             raw.replace(Regex("<think>[\\s\\S]*?</think>", setOf(RegexOption.IGNORE_CASE)), "")
                 .trim()
         } catch (e: Exception) {

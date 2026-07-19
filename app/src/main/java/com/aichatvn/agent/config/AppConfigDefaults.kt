@@ -168,7 +168,10 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_VISION,
-            value = "200",
+            // ✅ SỬA: không còn cần đoán số lớn để "chừa chỗ cho suy luận" — GroqClientTool giờ
+            // gửi kèm reasoning_effort="none" cho model họ Qwen3, model bỏ qua hẳn <think> nên
+            // 350 token là đủ rộng rãi cho riêng phần JSON kết quả (objects/state/confidence/description).
+            value = "350",
             type = "int",
             pluginId = "groq",
             label = "Max tokens – vision",
