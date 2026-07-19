@@ -34,7 +34,7 @@ class IntentExecutor @Inject constructor(
         val normalizedIntent = intent.copy(params = normalizedParams)
 
         val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
-        device?.toString()?.let { chatHistoryManager.updateLastDevice(it) }
+        device?.toString()?.let { chatHistoryManager.updateLastDevice(context.username, it) }
 
         val missing = ParameterResolver.getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action, plugins)
 
@@ -127,13 +127,23 @@ class IntentExecutor @Inject constructor(
                     ),
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question,
+                    // ✅ ĐÃ SỬA: gắn đúng username của người đang thao tác (context.username) —
+                    // trước đây thiếu field này khiến pending mặc định rơi vào 1 hàng đợi global,
+                    // không phân biệt được ai đang chờ trả lời câu hỏi nào. Đây là gốc rễ khiến
+                    // pending của user A có thể bị user B (kênh khác) vô tình hủy/ghi đè.
+                    username = context.username,
                     createdAt = System.currentTimeMillis()
                 )
             )
             is PluginResult.Success -> {
-                chatHistoryManager.removePendingIntent(plugin.manifest.id, intent.action)
+                chatHistoryManager.removePendingIntent(context.username, plugin.manifest.id, intent.action)
                 dialogManager.updateFocus(
-                    "default_user",
+                    // ✅ ĐÃ SỬA: dùng context.username thay vì hardcode "default_user" — trước đây
+                    // MỌI user hoàn tất 1 lệnh đều ghi đè focus hội thoại của "default_user" (chủ
+                    // nhà), bất kể ai vừa thao tác thật. Với DialogManagerImpl lưu focus theo
+                    // ConcurrentHashMap<String, ConversationFocus>, hardcode này khiến focus không
+                    // bao giờ tách được theo user như thiết kế.
+                    context.username,
                     ConversationFocus(
                         pluginId = plugin.manifest.id,
                         action = normalizedIntent.action,
@@ -151,7 +161,7 @@ class IntentExecutor @Inject constructor(
                     )
                 )
             }
-            else -> chatHistoryManager.removePendingIntent(plugin.manifest.id, intent.action)
+            else -> chatHistoryManager.removePendingIntent(context.username, plugin.manifest.id, intent.action)
         }
 
         val replyForHistory = when (executionResult) {
@@ -179,7 +189,7 @@ class IntentExecutor @Inject constructor(
             )
         ))
 
-        chatHistoryManager.addTurn(context.originalQuery, replyForHistory)
+        chatHistoryManager.addTurn(context.username, context.originalQuery, replyForHistory)
 
         return executionResult
     }

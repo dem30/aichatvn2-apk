@@ -394,7 +394,7 @@ class RoutingPipeline @Inject constructor(
         val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE).toFloat())
 
-        val currentPendingForCancel = chatHistoryManager.getActivePendingIntents().firstOrNull()
+        val currentPendingForCancel = chatHistoryManager.getActivePendingIntents(username).firstOrNull()
         val pendingStateForCancel = currentPendingForCancel?.let {
             PendingState(
                 isActive = true,
@@ -413,12 +413,12 @@ class RoutingPipeline @Inject constructor(
 
             if (mode == PipelineMode.EXECUTE) {
                 if (cancelDecision.pluginId != null && cancelDecision.action != null) {
-                    chatHistoryManager.removePendingIntent(cancelDecision.pluginId, cancelDecision.action)
+                    chatHistoryManager.removePendingIntent(username, cancelDecision.pluginId, cancelDecision.action)
                 } else {
-                    chatHistoryManager.clearPendingIntent()
+                    chatHistoryManager.clearPendingIntent(username)
                 }
                 val replyText = "✅ Đã huỷ lệnh \"$cancelledAction\" của \"$cancelledPluginId\"."
-                chatHistoryManager.addTurn(userMessage, replyText)
+                chatHistoryManager.addTurn(username, userMessage, replyText)
                 logger.d("RoutingPipeline", "[$traceId] [Tầng 0] Cancel Resolver xác nhận huỷ pending: $cancelledPluginId.$cancelledAction")
                 return PipelineResult(
                     routerOutcome = RouterOutcome.Matched(
@@ -436,7 +436,7 @@ class RoutingPipeline @Inject constructor(
             logger.d("RoutingPipeline", "[$traceId] [Tầng 0] Pronoun Resolver: \"${pronounResult.resolvedFrom}\" -> \"${pronounResult.resolvedTo}\". Câu sau khi viết lại: \"$resolvedMessage\"")
         }
 
-        val pendings = chatHistoryManager.getActivePendingIntents()
+        val pendings = chatHistoryManager.getActivePendingIntents(username)
         val isT1Matched = pendings.isNotEmpty() && cancelDecision !is CancelDecision.CancelPending
 
         if (mode == PipelineMode.EXECUTE) {
@@ -453,9 +453,9 @@ class RoutingPipeline @Inject constructor(
                     val r = resolvedResult.result
                     val finalResult = when (r) {
                         is PluginResult.Success -> {
-                            chatHistoryManager.removePendingIntent(pendings.first().pluginId, pendings.first().action)
+                            chatHistoryManager.removePendingIntent(username, pendings.first().pluginId, pendings.first().action)
                             
-                            val remainingPendings = chatHistoryManager.getActivePendingIntents()
+                            val remainingPendings = chatHistoryManager.getActivePendingIntents(username)
                             if (remainingPendings.isNotEmpty()) {
                                 val nextPending = remainingPendings.first()
                                 val targetPlugin = plugins.find { it.manifest.id == nextPending.pluginId }
@@ -493,7 +493,7 @@ class RoutingPipeline @Inject constructor(
                             PluginResult.NeedMoreInfo(r.missingParams, banner, r.options)
                         }
                         is PluginResult.Failure -> {
-                            chatHistoryManager.removePendingIntent(pendings.first().pluginId, pendings.first().action)
+                            chatHistoryManager.removePendingIntent(username, pendings.first().pluginId, pendings.first().action)
                             r
                         }
                     }
@@ -700,7 +700,7 @@ class RoutingPipeline @Inject constructor(
 
                     return if (pendingResults.isNotEmpty()) {
                         val (firstPlugin, firstActionName, firstPendingRes) = pendingResults.first()
-                        val activePending = chatHistoryManager.getActivePendingIntents()
+                        val activePending = chatHistoryManager.getActivePendingIntents(username)
                             .firstOrNull { it.pluginId == firstPlugin.manifest.id && it.action == firstActionName }
 
                         val actionDesc = firstPlugin.manifest.actions.find { it.name == firstActionName }?.description ?: firstActionName
@@ -846,7 +846,7 @@ class RoutingPipeline @Inject constructor(
 
                     return if (pendingResults.isNotEmpty()) {
                         val (firstPlugin, firstActionName, firstPendingRes) = pendingResults.first()
-                        val activePending = chatHistoryManager.getActivePendingIntents()
+                        val activePending = chatHistoryManager.getActivePendingIntents(username)
                             .firstOrNull { it.pluginId == firstPlugin.manifest.id && it.action == firstActionName }
 
                         val actionDesc = firstPlugin.manifest.actions.find { it.name == firstActionName }?.description ?: firstActionName
@@ -1031,10 +1031,10 @@ class RoutingPipeline @Inject constructor(
             }
         }
 
-        val shortHistory = chatHistoryManager.getRecentTurnsAsText()
-        val lastDevice = chatHistoryManager.lastMentionedDeviceId ?: "none"
+        val shortHistory = chatHistoryManager.getRecentTurnsAsText(context.username)
+        val lastDevice = chatHistoryManager.getLastMentionedDevice(context.username) ?: "none"
 
-        val activePendingInfo = chatHistoryManager.getActivePendingIntents().firstOrNull()?.let {
+        val activePendingInfo = chatHistoryManager.getActivePendingIntents(context.username).firstOrNull()?.let {
             "⚠️ Lệnh đang chờ hoàn thành: ${it.pluginId}.${it.action}, Các trường chưa điền: ${it.missingParams.joinToString()}"
         } ?: "Không có lệnh dở dang"
 

@@ -165,10 +165,10 @@ class AgentKernel @Inject constructor(
             return ChatResponse("", "empty_message_guard", null)
         }
 
-        val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(plugins)
+        val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(username, plugins)
 
         if (request.allowDeviceControl) {
-            val lockedPluginId = chatHistoryManager.getLockedPlugin()
+            val lockedPluginId = chatHistoryManager.getLockedPlugin(username)
             
             for (plugin in plugins) {
                 if (lockedPluginId != null && plugin.manifest.id != lockedPluginId) continue
@@ -682,7 +682,7 @@ class AgentKernel @Inject constructor(
             normMsg.contains("dang bi ket")
 
         if (isAskingPending) {
-            val active = chatHistoryManager.getActivePendingIntents()
+            val active = chatHistoryManager.getActivePendingIntents(username)
             if (active.isEmpty()) {
                 return RouterOutcome.Matched(
                     DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Hiện tại không có yêu cầu điều khiển thiết bị nào đang chờ xử lý.")))
@@ -702,13 +702,13 @@ class AgentKernel @Inject constructor(
             )
         }
 
-        chatHistoryManager.pendingLockRequest?.let { pluginId ->
-            return handleLockConfirmation(userMessage, pluginId)
+        chatHistoryManager.getPendingLockRequest(username)?.let { pluginId ->
+            return handleLockConfirmation(userMessage, username, pluginId)
         }
 
-        chatHistoryManager.getLockedPlugin()?.let { lockedId ->
+        chatHistoryManager.getLockedPlugin(username)?.let { lockedId ->
             if (isExitLockPhrase(userMessage)) {
-                chatHistoryManager.unlockPlugin()
+                chatHistoryManager.unlockPlugin(username)
                 val matchedPlugin = plugins.find { it.manifest.id == lockedId }
                 val displayName = matchedPlugin?.manifest?.name ?: lockedId
                 return RouterOutcome.Matched(
@@ -727,7 +727,7 @@ class AgentKernel @Inject constructor(
         }
 
         detectLockTrigger(userMessage)?.let { targetPluginId ->
-            chatHistoryManager.setPendingLockRequest(targetPluginId)
+            chatHistoryManager.setPendingLockRequest(username, targetPluginId)
             val matchedPlugin = plugins.find { it.manifest.id == targetPluginId }
             val displayName = matchedPlugin?.manifest?.name ?: targetPluginId
             return RouterOutcome.Matched(
@@ -748,7 +748,7 @@ class AgentKernel @Inject constructor(
         val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD).toFloat())
         val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
 
-        val activePending = chatHistoryManager.getActivePendingIntents().firstOrNull()
+        val activePending = chatHistoryManager.getActivePendingIntents(username).firstOrNull()
         @Suppress("UNCHECKED_CAST")
         val activeOptions = activePending?.knownParams?.get("_options") as? Map<String, String> ?: emptyMap()
 
@@ -864,19 +864,19 @@ class AgentKernel @Inject constructor(
         return matched?.manifest?.id
     }
 
-    private fun handleLockConfirmation(userMessage: String, pluginId: String): RouterOutcome {
+    private fun handleLockConfirmation(userMessage: String, username: String, pluginId: String): RouterOutcome {
         val matchedPlugin = plugins.find { it.manifest.id == pluginId }
         val displayName = matchedPlugin?.manifest?.name ?: pluginId
         return when (parseYesNo(userMessage)) {
             true -> {
-                chatHistoryManager.lockPlugin(pluginId)
-                chatHistoryManager.clearLockRequest()
+                chatHistoryManager.lockPlugin(username, pluginId)
+                chatHistoryManager.clearLockRequest(username)
                 RouterOutcome.Matched(
                     DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
                 )
             }
             false -> {
-                chatHistoryManager.clearLockRequest()
+                chatHistoryManager.clearLockRequest(username)
                 RouterOutcome.Matched(
                     DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
                 )
@@ -887,10 +887,10 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    fun getLockedPluginId(): String? = chatHistoryManager.getLockedPlugin()
+    fun getLockedPluginId(username: String = "default_user"): String? = chatHistoryManager.getLockedPlugin(username)
 
-    fun getLockedPluginName(): String? {
-        val id = getLockedPluginId() ?: return null
+    fun getLockedPluginName(username: String = "default_user"): String? {
+        val id = getLockedPluginId(username) ?: return null
         return plugins.find { it.manifest.id == id }?.manifest?.name ?: id
     }
 

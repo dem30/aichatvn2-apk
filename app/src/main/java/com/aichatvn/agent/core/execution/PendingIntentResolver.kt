@@ -48,11 +48,11 @@ class PendingIntentResolver @Inject constructor(
         mode: PipelineMode = PipelineMode.EXECUTE
     ): DeviceCommandResult? {
         val targetPlugin = devicePlugins.find { it.manifest.id == pending.pluginId } ?: run {
-            chatHistoryManager.clearPendingIntent()
+            chatHistoryManager.clearPendingIntent(pending.username)
             return null
         }
         val targetAction = targetPlugin.manifest.actions.find { it.name == pending.action } ?: run {
-            chatHistoryManager.clearPendingIntent()
+            chatHistoryManager.clearPendingIntent(pending.username)
             return null
         }
 
@@ -61,7 +61,7 @@ class PendingIntentResolver @Inject constructor(
             logger.w("PendingIntentResolver", "[$traceId] ⚠️ Pending bị lặp lại không có tiến triển -> xóa pending")
             
             if (mode == PipelineMode.EXECUTE) {
-                chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+                chatHistoryManager.removePendingIntent(pending.username, pending.pluginId, pending.action)
                 val failedPending = pending.copy(
                     knownParams = pending.knownParams + mapOf("_cancelReason" to "no_progress")
                 )
@@ -71,7 +71,10 @@ class PendingIntentResolver @Inject constructor(
         }
 
         val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
-        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, "default_user", aliasThreshold = aliasThreshold)
+        // ✅ ĐÃ SỬA: dùng pending.username (chủ sở hữu thật của pending này) thay vì hardcode
+        // "default_user" — trước đây match theo alias/intent riêng của chủ nhà dù người đang
+        // trả lời dở dang có thể là 1 guest khác (Facebook/Telegram) hoàn toàn không liên quan.
+        val matchResult = trainingSkill.fuzzyMatchCategorized(userMessage, pending.username, aliasThreshold = aliasThreshold)
 
         val localEntities = mutableMapOf<String, Any>()
         EMAIL_REGEX.find(userMessage)?.value?.let { localEntities["email"] = it }
@@ -250,7 +253,7 @@ class PendingIntentResolver @Inject constructor(
             )
 
             if (parsedJson.optBoolean("unrelated", false)) {
-                chatHistoryManager.clearPendingIntent()
+                chatHistoryManager.clearPendingIntent(pending.username)
                 return null
             } else {
                 parsedJson.optJSONObject("params")?.toMap() ?: emptyMap()
@@ -317,14 +320,14 @@ class PendingIntentResolver @Inject constructor(
                     lastInteractionAt = System.currentTimeMillis()
                 )
             )
-            chatHistoryManager.addTurn(userMessage, question)
+            chatHistoryManager.addTurn(pending.username, userMessage, question)
             return DeviceCommandResult(
                 pluginId = targetPlugin.manifest.id,
                 result = PluginResult.NeedMoreInfo(stillMissing, question, options)
             )
         }
 
-        chatHistoryManager.removePendingIntent(pending.pluginId, pending.action)
+        chatHistoryManager.removePendingIntent(pending.username, pending.pluginId, pending.action)
         val executionResult = try {
             targetPlugin.execute(pending.action, normalizedMergedParams)
         } catch (e: Exception) {
@@ -336,7 +339,7 @@ class PendingIntentResolver @Inject constructor(
             is PluginResult.Failure -> executionResult.error
             is PluginResult.NeedMoreInfo -> executionResult.question
         }
-        chatHistoryManager.addTurn(userMessage, replyForHistory)
+        chatHistoryManager.addTurn(pending.username, userMessage, replyForHistory)
 
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
