@@ -16,7 +16,7 @@ import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException // ✅ Chống nuốt coroutine exception
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -169,6 +169,9 @@ class ChatSkill @Inject constructor(
 
             val until = parsedRange?.until ?: now
             val rawLogs = database.eventLogDao().getLogsInTimeframe(since, until)
+            
+            // ✅ SỬA: Bổ sung bộ lọc danh mục bổ trợ. Nếu không khớp thiết bị cụ thể theo tên nhưng câu nói chứa từ "camera" hoặc "thiết bị",
+            // hệ thống vẫn lọc đúng danh mục thay vì lấy sạch tất cả lịch sử thô sơ.
             val filteredLogs = when {
                 matchedCamera != null -> rawLogs.filter {
                     it.sourceId == matchedCamera.id || it.summary.contains(matchedCamera.customername, ignoreCase = true)
@@ -177,6 +180,8 @@ class ChatSkill @Inject constructor(
                     it.sourceId == matchedDevice.id || it.summary.contains(matchedDevice.name, ignoreCase = true)
                 }
                 matchedPlatform != null -> rawLogs.filter { it.source == matchedPlatform }
+                normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> rawLogs.filter { it.source == "camera" }
+                normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> rawLogs.filter { it.source == "tuya" }
                 else -> rawLogs.filter { it.eventType in setOf("person_detected", "state_change") }
             }
 
@@ -192,6 +197,8 @@ class ChatSkill @Inject constructor(
                     matchedCamera != null -> "camera ${matchedCamera.customername}"
                     matchedDevice != null -> "thiết bị ${matchedDevice.name}"
                     matchedPlatform != null -> "kênh $matchedPlatform"
+                    normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> "các camera"
+                    normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> "các thiết bị đóng ngắt"
                     else -> "hệ thống"
                 }
                 val stateKeyword = extractStateKeyword(userMessage, normalizedMsg)
@@ -201,10 +208,10 @@ class ChatSkill @Inject constructor(
                 val stateNote = if (stateKeyword != null) " (trạng thái: ${stateKeyword.first()})" else ""
                 val objectNote = if (objectLabel != null) " (đối tượng: $objectLabel)" else ""
                 return@withContext buildString {
-                    append("<SYSTEM_MEMORY>\n") // Chuẩn hóa tag Giai đoạn 3
+                    append("<SYSTEM_MEMORY>\n") 
                     append("Trong khoảng $rangeLabel, $subjectLabel ghi nhận ${countedLogs.size} sự kiện$stateNote$objectNote.\n")
                     append("Hãy trả lời trực tiếp con số này, không cần liệt kê chi tiết trừ khi người dùng hỏi thêm.\n")
-                    append("</SYSTEM_MEMORY>") // Chuẩn hóa tag Giai đoạn 3
+                    append("</SYSTEM_MEMORY>") 
                 }
             }
 
@@ -238,7 +245,7 @@ class ChatSkill @Inject constructor(
             if (activityLines.isEmpty() && unreadLines.isEmpty() && worldState == null) return@withContext ""
 
             buildString {
-                append("<SYSTEM_MEMORY>\n") // Chuẩn hóa tag Giai đoạn 3
+                append("<SYSTEM_MEMORY>\n") 
                 if (matchedCamera != null) {
                     append("--- Nhật ký hoạt động Camera ${matchedCamera.customername} ($rangeLabel) ---\n")
                 } else if (matchedDevice != null) {
@@ -263,7 +270,7 @@ class ChatSkill @Inject constructor(
                     append("\n")
                 }
                 append("Hãy sử dụng dữ liệu chính xác này để trả lời câu hỏi của người dùng. Tuyệt đối không tự bịa đặt thông tin không có trong nhật ký.\n")
-                append("</SYSTEM_MEMORY>") // Chuẩn hóa tag Giai đoạn 3
+                append("</SYSTEM_MEMORY>") 
             }
         } catch (e: Exception) {
             logger.e("ChatSkill", "buildMemoryContext error: ${e.message}", e)
@@ -343,9 +350,6 @@ class ChatSkill @Inject constructor(
         }
     }
 
-    /**
-     * ✅ KHẮC PHỤC LỖI #2: Dọn dẹp an toàn chuỗi Base64 (loại bỏ tiền tố data:image/jpeg;base64,) trước khi decode.
-     */
     private fun saveIncomingChatImage(imageBase64: String): String? {
         return try {
             val cleanBase64 = if (imageBase64.contains(",")) {
@@ -426,7 +430,6 @@ class ChatSkill @Inject constructor(
                         database.cameraDao().getCustomerSetting(rawSenderId)?.lastFacebookPageId
                     } ?: extraContext.removePrefix("page_id:")
 
-                    // ✅ KHẮC PHỤC LỖI #3: Phòng vệ kiểm tra rỗng Page ID sớm để tránh request Facebook bị lỗi.
                     if (pageId.isNullOrBlank()) {
                         logger.w("ChatSkill", "⚠️ Gửi Messenger thất bại: Không tìm thấy Page ID hợp lệ cho sender $rawSenderId.")
                         return PluginResult.Failure("⚠️ Không thể xác định Page ID hợp lệ để phản hồi Facebook.")
@@ -447,8 +450,6 @@ class ChatSkill @Inject constructor(
                         sendTelegramMessage(botToken, rawSenderId, message)
                     }
                 } else if (username.startsWith("website_")) {
-                    // ✅ SỬA: trước đây không truyền default -> ngầm định "" khi đọc DB thất bại,
-                    // trong khi seed thật có URL/token cụ thể. Dùng defaultOf() để khớp seed.
                     val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_GATEWAY_URL)).trim()
                     val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN)).trim()
                     sendWebsiteReply(gatewayUrl, gatewayToken, rawSenderId, message, if (hasImage) imageBase64 else null)
@@ -526,7 +527,7 @@ class ChatSkill @Inject constructor(
                         message = message,
                         username = username,
                         imageBase64 = imageBase64,
-                        fileUrl = resolvedFileUrl, // ✅ KHẮC PHỤC LỖI #1: Truyền resolvedFileUrl (đã lưu máy) thay vì fileUrl rỗng lên AgentKernel
+                        fileUrl = resolvedFileUrl, 
                         extraContext = finalExtraContext,
                         chatMode = _chatMode.value.name,
                         allowDeviceControl = !blockExternalDeviceControl
@@ -566,7 +567,7 @@ class ChatSkill @Inject constructor(
                 )
             }
         } catch (e: CancellationException) {
-            throw e // ✅ Khôi phục coroutine cancellation, bảo vệ vòng đời ứng dụng
+            throw e 
         } catch (e: Exception) {
             logger.e("ChatSkill", "Error: ${e.message}", e)
             PluginResult.Failure(e.message ?: "Failed to process query")

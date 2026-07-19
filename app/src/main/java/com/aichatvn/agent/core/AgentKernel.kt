@@ -281,18 +281,26 @@ class AgentKernel @Inject constructor(
 
         var responseText = try {
             when (usedMode.lowercase()) {
+              // ─── TRONG CHAT MODE "qa" ───
                 "qa" -> {
                     withTimeout(15_000L) {
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
                         
-                        // ✅ SỬA: Sát nhập hoàn toàn luồng xử lý cho QA Mode cục bộ không dùng LLM.
-                        // Nếu không khớp Q&A mẫu nào, nó tự phân tích ngữ pháp, timeframe, đếm số lần và Yes/No từ lịch sử.
+                        // ✅ SỬA: Đảo thứ tự ưu tiên. Luôn ưu tiên gọi runLocalQAEventAnalysis() để tự động 
+                        // phân tích, bóc tách và lọc chính xác trước khi cho phép extractLocalMemoryAnswer() di sản
+                        // (vốn chứa hỗn hợp camera và Tuya chưa lọc kỹ) can thiệp.
                         qa?.answer
-                            ?: extractLocalMemoryAnswer(extraContext)
                             ?: runLocalQAEventAnalysis(message)
+                            ?: extractLocalMemoryAnswer(extraContext)
                     }
                 }
+
+
+
+
+              
+                
 
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
