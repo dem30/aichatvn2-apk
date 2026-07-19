@@ -64,14 +64,24 @@ class DatabaseSearchHelper @Inject constructor(
         // Tải các dòng dữ liệu thô trong khung thời gian yêu cầu
         val rawLogs = eventLogDao.getLogsInTimeframe(contract.sinceMs, contract.untilMs)
 
-        // 1. Lọc theo Phân loại nguồn (Camera / Thiết bị Tuya / Kênh Chat)
+        // 1. ✅ NÂNG CẤP: Lọc theo Phân loại nguồn (Camera / Thiết bị Tuya / Kênh Chat)
+        // Nếu sourceCategory là "chat", tự động mở rộng truy vấn tìm kiếm trên cả 3 nền tảng facebook, telegram, website
         var filtered = if (contract.sourceCategory != null) {
-            rawLogs.filter { it.source.equals(contract.sourceCategory, ignoreCase = true) }
+            if (contract.sourceCategory.equals("chat", ignoreCase = true)) {
+                rawLogs.filter { 
+                    it.source.equals("facebook", ignoreCase = true) || 
+                    it.source.equals("telegram", ignoreCase = true) || 
+                    it.source.equals("website", ignoreCase = true) 
+                }
+            } else {
+                rawLogs.filter { it.source.equals(contract.sourceCategory, ignoreCase = true) }
+            }
         } else {
             rawLogs
         }
 
-        // 2. Lọc theo Tên thiết bị hoặc ID nguồn cụ thể
+        // 2. ✅ SỬA: Sử dụng isNullOrBlank() an toàn. Nếu chuỗi rỗng "" hoặc blank lọt xuống đây,
+        // hệ thống sẽ bỏ qua, không kích hoạt bộ lọc theo ID để tương thích đúng với logic fallback của AgentKernel.
         if (!contract.sourceIdOrName.isNullOrBlank()) {
             val normHint = StringSimilarityUtil.normalizeVietnamese(contract.sourceIdOrName.lowercase())
             filtered = filtered.filter { log ->
@@ -113,7 +123,6 @@ class DatabaseSearchHelper @Inject constructor(
 
         // 6. TIẾN HÀNH TỔNG HỢP VÀ TỰ TÍNH TOÁN (Heuristic Query Aggregation)
         val summaryText = buildString {
-            // ✅ SỬA: Đọc an toàn thông tin nhãn thời gian bằng toán tử Elvis
             val resolvedLabel = contract.timeframeLabel ?: "hôm nay"
             append("--- Nhật ký tìm kiếm tự động [${resolvedLabel.uppercase()}] ---\n")
             
