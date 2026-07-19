@@ -281,15 +281,19 @@ class AgentKernel @Inject constructor(
 
         var responseText = try {
             when (usedMode.lowercase()) {
-                "qa" -> {
-                    withTimeout(15_000L) {
-                        val matches = search(message, username)
-                        val qa = matches.firstOrNull()?.qa
-                        val localAnswer: String = runLocalQAEventAnalysis(message)
+              
 
-                        qa?.answer ?: localAnswer
-                    }
-                }
+
+
+                "qa" -> {
+    withTimeout(15_000L) {
+        val matches = search(message, username)
+        val qa = matches.firstOrNull()?.qa
+        val localAnswer: String = runLocalQAEventAnalysis(message)
+
+        qa?.answer ?: localAnswer
+    }
+}
 
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
@@ -366,6 +370,8 @@ class AgentKernel @Inject constructor(
             val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
             val until = parsedRange?.until ?: now
             
+            // ✅ SỬA: Ép kiểu String phi-null tuyệt đối bằng biểu thức rẽ nhánh if-else từ thuộc tính Java/Platform Type,
+            // dọn dẹp triệt độ mọi nguy cơ mismatch kiểu dữ liệu của Kotlin Compiler.
             val label: String = if (parsedRange != null && parsedRange.label != null) {
                 parsedRange.label
             } else {
@@ -401,10 +407,15 @@ class AgentKernel @Inject constructor(
             var sourceName: String? = null
 
             when {
+                // ✅ ĐÃ SỬA: cùng lý do như interceptAndExecuteToolCall() — fallback về `.id` khi
+                // tên thân thiện rỗng, tránh sourceIdOrName cuối cùng nhận "" khiến
+                // DatabaseSearchHelper bỏ qua bước lọc theo đúng camera/thiết bị.
                 matchedCam != null -> { sourceCategory = "camera"; sourceName = matchedCam.customername.ifBlank { matchedCam.id } }
                 matchedDev != null -> { sourceCategory = "tuya"; sourceName = matchedDev.name.ifBlank { matchedDev.id } }
                 normalized.contains("camera") || normalized.contains("cam") -> sourceCategory = "camera"
                 normalized.contains("den") || normalized.contains("quat") || normalized.contains("thiet bi") -> sourceCategory = "tuya"
+                // ✅ ĐÃ SỬA: Lọc chi tiết theo nền tảng kênh chat di động di sản thay vì dồn chung về "chat".
+                // Đồng bộ hóa với DatabaseSearchHelper mới để hỗ trợ cả 3 nhãn facebook, telegram, website độc lập.
                 normalized.contains("facebook") || normalized.contains("fb") -> sourceCategory = "facebook"
                 normalized.contains("telegram") -> sourceCategory = "telegram"
                 normalized.contains("website") || normalized.contains("web") -> sourceCategory = "website"
@@ -492,6 +503,12 @@ class AgentKernel @Inject constructor(
             var resolvedSourceName: String? = null
             if (!sourceHint.isNullOrBlank()) {
                 val normHint = StringSimilarityUtil.normalizeVietnamese(sourceHint.lowercase())
+                // ✅ ĐÃ SỬA: bổ sung so khớp theo `.id` (không chỉ customername/name) — trước đây
+                // chỉ so tên thân thiện, nên nếu buildToolCallingGuard() liệt kê whitelist gồm cả
+                // ID (vd "camera 1"), Groq có thể hợp lệ trả về source="camera 1" nhưng bước resolve
+                // này lại không khớp được với ID đó -> resolvedSourceCategory rơi về null, dữ liệu
+                // tra cứu vẫn sai dù prompt đã đúng. Đồng bộ lại với logic đã đúng sẵn ở
+                // runLocalQAEventAnalysis() (nhánh QA cục bộ), vốn đã match cả customername/name lẫn id.
                 val matchedCamera = try {
                     database.cameraDao().getActiveCameras().find {
                         val normCamName = StringSimilarityUtil.normalizeVietnamese(it.customername.lowercase())
@@ -510,6 +527,11 @@ class AgentKernel @Inject constructor(
                 } else null
 
                 when {
+                    // ✅ ĐÃ SỬA: fallback về `.id` khi tên thân thiện rỗng — trước đây nếu
+                    // customername/name là chuỗi rỗng (không phải null), sourceIdOrName sẽ nhận
+                    // giá trị "" (vì `?:` chỉ bắt null, không bắt rỗng). DatabaseSearchHelper coi
+                    // "" là blank nên BỎ QUA HẲN bước lọc theo đúng camera/thiết bị, trả về log của
+                    // TẤT CẢ camera/thiết bị trong cùng category thay vì chỉ camera/thiết bị đã match.
                     matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id } }
                     matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id } }
                     normHint.contains("facebook") || normHint.contains("fb") -> resolvedSourceCategory = "facebook"
@@ -542,13 +564,19 @@ class AgentKernel @Inject constructor(
 
             val searchResult = databaseSearchHelper.executeSearchContract(contract)
 
+            // ✅ SỬA (Lực lượng Chốt Chặn Lâm Thời): Thêm chỉ thị lâm thời cực kỳ nghiêm ngặt tại đây.
+            // Điều này ép AI Pass 2 bắt buộc phải nhìn nhận kết quả trống "không ghi nhận sự kiện phù hợp"
+            // là câu trả lời thực tế cuối cùng, cấm tuyệt đối AI tự ý gọi lại tool db_search vô ích.
             val enrichedContext = buildString {
                 append(baseContext)
                 append("\n\n")
                 append("<SYSTEM_MEMORY>\n")
                 append(searchResult.summaryText)
-                append("\n\n👉 CHỈ THỊ: Hãy sử dụng dữ liệu thực tế chính xác trong tag <SYSTEM_MEMORY> này để trả lời đầy đủ câu hỏi của người dùng. TUYỆT ĐỐI không được bịa đặt mốc thời gian không có trong tag.")
-                append("\n</SYSTEM_MEMORY>")
+                append("\n\n👉 CHỈ THỊ LÂM THỜI (HỆ THỐNG ĐÃ TRUY VẤN XONG):\n")
+                append("- Đây là kết quả tìm kiếm thực tế cuối cùng từ cơ sở dữ liệu SQLite.\n")
+                append("- Nếu kết quả trống hoặc báo 'không ghi nhận sự kiện phù hợp / hoạt động bình thường', nghĩa là thực tế KHÔNG có sự kiện gì diễn ra. Bạn hãy trả lời trực tiếp cho người dùng là không ghi nhận sự kiện nào.\n")
+                append("- TUYỆT ĐỐI KHÔNG ĐƯỢC TRẢ VỀ JSON GỌI TOOL NỮA. Hãy trả lời bằng văn bản tự nhiên Tiếng Việt ngay lập tức.\n")
+                append("</SYSTEM_MEMORY>")
             }
 
             logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
@@ -620,8 +648,12 @@ class AgentKernel @Inject constructor(
 
     private suspend fun buildHistorySnapshot(username: String): List<Map<String, String>> {
         return try {
-            val raw = database.chatMessageDao().getMessages(username, 6).reversed()
-            val recentCutoffIndex = raw.size - 2
+            // ✅ SỬA: Thay vì lấy 6 tin nhắn cũ nhất rồi đảo ngược lộn xộn (getMessages(username, 6).reversed()),
+            // ta lấy 500 tin nhắn và chỉ trích xuất 6 tin nhắn gần đây nhất, GIỮ NGUYÊN thứ tự thời gian tăng dần (ASC).
+            // Điều này giúp Groq hiểu đúng trình tự đối thoại thực tế, không bị mất mạch ngữ cảnh.
+            val allMessages = database.chatMessageDao().getMessages(username, 500)
+            val raw = allMessages.takeLast(6)
+            val recentCutoffIndex = raw.size - 2 // 2 lượt cuối cùng coi là "gần đây"
             raw.mapIndexed { index, msg ->
                 val isRecent = index >= recentCutoffIndex
                 val maxLen = when {

@@ -170,8 +170,6 @@ class ChatSkill @Inject constructor(
             val until = parsedRange?.until ?: now
             val rawLogs = database.eventLogDao().getLogsInTimeframe(since, until)
             
-            // ✅ SỬA: Bổ sung bộ lọc danh mục bổ trợ. Nếu không khớp thiết bị cụ thể theo tên nhưng câu nói chứa từ "camera" hoặc "thiết bị",
-            // hệ thống vẫn lọc đúng danh mục thay vì lấy sạch tất cả lịch sử thô sơ.
             val filteredLogs = when {
                 matchedCamera != null -> rawLogs.filter {
                     it.sourceId == matchedCamera.id || it.summary.contains(matchedCamera.customername, ignoreCase = true)
@@ -510,7 +508,11 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                val memoryContext = if (imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(message)) {
+                // ✅ SỬA: Đúng thiết kế RAG Lai thế hệ mới — Ở câu hỏi đầu tiên (Pass 1), local KHÔNG hề search trước 
+                // để tránh lãng phí tài nguyên và làm phình (bloat) token vô ích. 
+                // Ta chỉ chạy buildMemoryContext() khi ở chế độ QA cục bộ (không dùng AI), 
+                // còn ở chế độ AI (Groq/Combined), ta hoàn toàn để Groq tự phân tích và gọi tool quyết định tìm kiếm (Two-Pass).
+                val memoryContext = if (_chatMode.value == ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(message)) {
                     buildMemoryContext(username, message) 
                 } else {
                     ""
