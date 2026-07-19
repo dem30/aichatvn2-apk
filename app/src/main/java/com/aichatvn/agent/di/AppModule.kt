@@ -1,6 +1,7 @@
 package com.aichatvn.agent.di
 
 import com.aichatvn.agent.utils.DatabaseSearchHelper
+import com.aichatvn.agent.utils.TimeRangeResolver // ✅ THÊM IMPORT: Cung cấp TimeRangeResolver cho AppModule
 import android.content.Context
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
@@ -11,7 +12,7 @@ import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.router.RoutingPipeline
 import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.data.EventLogDao // ✅ MỚI: Thêm import để cung cấp EventLogDao cho Hilt
+import com.aichatvn.agent.data.EventLogDao 
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -43,7 +44,6 @@ object AppModule {
         return AppDatabase.getDatabase(context)
     }
 
-    // ===== ✅ MỚI: Cung cấp EventLogDao từ AppDatabase cho Hilt nhận diện =====
     @Provides
     @Singleton
     fun provideEventLogDao(database: AppDatabase): EventLogDao {
@@ -97,8 +97,6 @@ object AppModule {
     @Singleton
     fun provideVisionPlugin(skill: VisionPlugin): Plugin = skill
 
-    
-    // Đăng ký Plugin Facebook Assistant mới
     @Provides
     @IntoSet
     @Singleton
@@ -122,7 +120,7 @@ object AppModule {
     @Provides
     @Singleton
     fun provideAgentKernel(
-        plugins: Set<@JvmSuppressWildcards Plugin>, // ✅ KHẮC PHỤC LỖI: Thêm @JvmSuppressWildcards để ép kiểu generics Java tương thích Dagger [10]
+        plugins: Set<@JvmSuppressWildcards Plugin>, 
         groqClient: GroqClientTool,
         trainingSkill: TrainingSkill,
         chatHistoryManager: ChatHistoryManager,
@@ -131,6 +129,7 @@ object AppModule {
         routingPipeline: RoutingPipeline,
         intentExecutor: IntentExecutor,
         databaseSearchHelper: DatabaseSearchHelper,
+        timeRangeResolver: TimeRangeResolver, // ✅ SỬA: Nhận thêm TimeRangeResolver từ Hilt để đưa vào AgentKernel
         logger: Logger
     ): AgentKernel {
         return AgentKernel(
@@ -143,6 +142,7 @@ object AppModule {
             routingPipeline,
             intentExecutor,
             databaseSearchHelper,
+            timeRangeResolver, // ✅ SỬA: Truyền đúng tham số thứ 10 vào AgentKernel
             logger
         )
     }

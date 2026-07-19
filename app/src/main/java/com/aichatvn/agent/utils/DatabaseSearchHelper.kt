@@ -17,12 +17,11 @@ import javax.inject.Singleton
 
 @Singleton
 class DatabaseSearchHelper @Inject constructor(
+    // ✅ KHÔI PHỤC: Đúng thứ tự tham số nguyên bản để khớp hoàn hảo với AppModule.kt và triệt tiêu lỗi biên dịch di sản
     private val eventLogDao: EventLogDao,
+    private val timeRangeResolver: TimeRangeResolver,
     private val objectAliasResolver: ObjectAliasResolver,
-    private val logger: Logger,
-    // ✅ SỬA: Đưa TimeRangeResolver xuống cuối làm tham số mặc định. 
-    // Điều này giúp AppModule.kt khi khởi tạo thủ công với 3 tham số vẫn biên dịch thành công mà không bị lỗi chữ ký hàm.
-    private val timeRangeResolver: TimeRangeResolver = TimeRangeResolver() 
+    private val logger: Logger
 ) {
 
     companion object {
