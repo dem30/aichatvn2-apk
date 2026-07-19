@@ -19,8 +19,8 @@ import com.aichatvn.agent.utils.DatabaseSearchHelper
 import com.aichatvn.agent.utils.TimeRangeResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withContext // ✅ SỬA: Thêm import bị thiếu cho ngữ cảnh runLocalQAEventAnalysis
-import kotlinx.coroutines.Dispatchers // ✅ SỬA: Thêm import bị thiếu cho ngữ cảnh runLocalQAEventAnalysis
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
@@ -141,7 +141,7 @@ class AgentKernel @Inject constructor(
     private val routingPipeline: RoutingPipeline,
     private val intentExecutor: IntentExecutor,
     private val databaseSearchHelper: DatabaseSearchHelper,
-    private val timeRangeResolver: TimeRangeResolver, // ✅ TIÊM THÊM: Hỗ trợ phân tích mốc thời gian cục bộ cho QA Mode
+    private val timeRangeResolver: TimeRangeResolver,
     private val logger: Logger
 ) {
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
@@ -281,26 +281,16 @@ class AgentKernel @Inject constructor(
 
         var responseText = try {
             when (usedMode.lowercase()) {
-              // ─── TRONG CHAT MODE "qa" ───
                 "qa" -> {
                     withTimeout(15_000L) {
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
                         
-                        // ✅ SỬA: Đảo thứ tự ưu tiên. Luôn ưu tiên gọi runLocalQAEventAnalysis() để tự động 
-                        // phân tích, bóc tách và lọc chính xác trước khi cho phép extractLocalMemoryAnswer() di sản
-                        // (vốn chứa hỗn hợp camera và Tuya chưa lọc kỹ) can thiệp.
                         qa?.answer
                             ?: runLocalQAEventAnalysis(message)
                             ?: extractLocalMemoryAnswer(extraContext)
                     }
                 }
-
-
-
-
-              
-                
 
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
@@ -365,7 +355,7 @@ class AgentKernel @Inject constructor(
     }
 
     /**
-     * ✅ MỚI: Bộ phân tích ngữ pháp Tiếng Việt cục bộ dành riêng cho QA Mode (Không tốn token Groq).
+     * Bộ phân tích ngữ pháp Tiếng Việt cục bộ dành riêng cho QA Mode (Không tốn token Groq).
      */
     private suspend fun runLocalQAEventAnalysis(userQuery: String): String = withContext(Dispatchers.IO) {
         try {
@@ -376,7 +366,14 @@ class AgentKernel @Inject constructor(
             val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalized, now)
             val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
             val until = parsedRange?.until ?: now
-            val label = parsedRange?.label ?: "hôm nay"
+            
+            // ✅ SỬA: Chuyển đổi sang biểu thức rẽ nhánh tường minh (if-else). 
+            // Điều này ép kiểu String phi-null tuyệt đối từ thuộc tính Java/Platform, loại bỏ triệt để lỗi biên dịch mismatch.
+            val label: String = if (parsedRange != null && parsedRange.label != null) {
+                parsedRange.label
+            } else {
+                "hôm nay"
+            }
 
             // 2. Phân loại loại câu hỏi (đếm số lần, kiểm tra có hay không)
             val isQuantity = QUANTITY_KEYWORDS.any { normalized.contains(it) }
