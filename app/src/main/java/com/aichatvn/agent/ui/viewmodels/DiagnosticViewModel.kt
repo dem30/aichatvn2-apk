@@ -77,9 +77,9 @@ class DiagnosticsViewModel @Inject constructor(
     /**
      * Dọn dẹp tiến trình dở dang để kiểm tra luồng mới từ đầu.
      */
-    fun resetPendingSession() {
+    fun resetPendingSession(username: String = "default_user") {
         viewModelScope.launch {
-            chatHistoryManager.clearPendingIntent()
+            chatHistoryManager.clearPendingIntent(username)
             _pipelineTrace.value = null
         }
     }
@@ -87,10 +87,10 @@ class DiagnosticsViewModel @Inject constructor(
     /**
      * Xóa kết quả trace cũ và giải phóng session dở dang cùng lúc.
      */
-    fun clearPipelineTrace() {
+    fun clearPipelineTrace(username: String = "default_user") {
         _pipelineTrace.value = null
         viewModelScope.launch {
-            chatHistoryManager.clearPendingIntent()
+            chatHistoryManager.clearPendingIntent(username)
         }
     }
 
