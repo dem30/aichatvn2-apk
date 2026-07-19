@@ -281,18 +281,19 @@ class AgentKernel @Inject constructor(
 
         var responseText = try {
             when (usedMode.lowercase()) {
+              
+
+
+
                 "qa" -> {
-                    withTimeout(15_000L) {
-                        val matches = search(message, username)
-                        val qa = matches.firstOrNull()?.qa
-                        
-                        // ✅ SỬA: Đảo thứ tự ưu tiên lên đầu. Luôn ưu tiên gọi runLocalQAEventAnalysis() để tự động 
-                        // phân tích, bóc tách và lọc chính xác trước khi cho phép extractLocalMemoryAnswer() di sản can thiệp.
-                        qa?.answer
-                            ?: runLocalQAEventAnalysis(message)
-                            ?: extractLocalMemoryAnswer(extraContext)
-                    }
-                }
+    withTimeout(15_000L) {
+        val matches = search(message, username)
+        val qa = matches.firstOrNull()?.qa
+        val localAnswer: String = runLocalQAEventAnalysis(message)
+
+        qa?.answer ?: localAnswer
+    }
+}
 
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
