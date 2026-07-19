@@ -7,19 +7,22 @@ import com.aichatvn.agent.core.router.RoutingPipeline
 import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.QAEntity
+import com.aichatvn.agent.data.model.SearchContract
+import com.aichatvn.agent.data.model.QuestionType
+import com.aichatvn.agent.data.model.AggregationType
 import com.aichatvn.agent.skills.SearchMatch
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
-import com.aichatvn.agent.utils.DatabaseSearchHelper // ✅ MỚI: Nhập Helper từ Giai đoạn 1
-import kotlinx.coroutines.CancellationException     // ✅ MỚI: Khắc phục lỗi nuốt coroutine exception
+import com.aichatvn.agent.utils.DatabaseSearchHelper
+import com.aichatvn.agent.utils.TimeRangeResolver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
 
-// ✅ MỚI: Cấu trúc lưu trữ cuộc gọi công cụ của AI
 private data class ToolCall(val tool: String, val params: Map<String, String>)
 
 data class DiagnosticTier(
@@ -135,7 +138,8 @@ class AgentKernel @Inject constructor(
     private val database: AppDatabase,
     private val routingPipeline: RoutingPipeline,
     private val intentExecutor: IntentExecutor,
-    private val databaseSearchHelper: DatabaseSearchHelper, // ✅ MỚI: Tiêm Helper từ Giai đoạn 1
+    private val databaseSearchHelper: DatabaseSearchHelper,
+    private val timeRangeResolver: TimeRangeResolver, // ✅ TIÊM THÊM: Hỗ trợ phân tích mốc thời gian cục bộ cho QA Mode
     private val logger: Logger
 ) {
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
@@ -162,10 +166,9 @@ class AgentKernel @Inject constructor(
         val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(plugins)
 
         if (request.allowDeviceControl) {
-            val lockedPluginId = chatHistoryManager.getLockedPlugin() // ✅ Kiểm tra trạng thái khóa bảo vệ
+            val lockedPluginId = chatHistoryManager.getLockedPlugin()
             
             for (plugin in plugins) {
-                // ✅ VÁ LỖ HỔNG: Nếu đang khóa plugin A, bỏ qua việc quét trigger prefix của plugin B, C...
                 if (lockedPluginId != null && plugin.manifest.id != lockedPluginId) continue
                 
                 for (action in plugin.manifest.actions) {
@@ -253,8 +256,6 @@ class AgentKernel @Inject constructor(
         val usedMode = request.chatMode
         val usedPluginId = if (routerFailed) "router_error" else null
 
-        // ✅ MỚI: Đọc từ config thay vì code cứng "3-4 câu"
-        // ✅ SỬA: bỏ literal 4 trùng lặp, dùng defaultOf() để không thể lệch khỏi seed (cùng pattern với 2 threshold bên dưới)
         val maxSentences = configProvider.getInt(
             AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES,
             AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES).toInt()
@@ -266,32 +267,28 @@ class AgentKernel @Inject constructor(
             "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
             "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
 
-        // ✅ SỬA (Gđ 2 tối ưu): Chỉ mang theo JSON contract khi câu hỏi thật sự đụng tới
-        // camera/thiết bị/kênh chat — tránh gửi schema cho mọi tin nhắn chat thường.
-        val TOOL_CALLING_GUARD =
-            "\n\n🚨 Nếu câu hỏi cần dữ liệu thực tế về camera/thiết bị/tin nhắn mà bạn CHƯA có " +
-            "trong ngữ cảnh, trả về DUY NHẤT JSON này (không giải thích, không markdown):\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\"," +
-            "\"object\":\"person|car|motorbike|dog|cat|package|all\"}\n" +
-            "Nếu dữ liệu đã có sẵn trong ngữ cảnh, trả lời trực tiếp, đừng gọi tool nữa."
+        val dynamicToolGuard = if (mentionsAppDomain(message)) buildToolCallingGuard() else ""
 
         val guard = buildString {
             append(ANTI_HALLUCINATION_GUARD)
             if (routerFailed) {
                 append("\n⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm.")
             }
-            if (mentionsAppDomain(message)) {
-                append(TOOL_CALLING_GUARD)
-            }
+            append(dynamicToolGuard)
         }
 
         var responseText = try {
             when (usedMode.lowercase()) {
                 "qa" -> {
-                    withTimeout(15_000L) { // ✅ SỬA: Tách biệt Timeout 15s cho Pass 1
+                    withTimeout(15_000L) {
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
-                        qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
+                        
+                        // ✅ SỬA: Sát nhập hoàn toàn luồng xử lý cho QA Mode cục bộ không dùng LLM.
+                        // Nếu không khớp Q&A mẫu nào, nó tự phân tích ngữ pháp, timeframe, đếm số lần và Yes/No từ lịch sử.
+                        qa?.answer
+                            ?: extractLocalMemoryAnswer(extraContext)
+                            ?: runLocalQAEventAnalysis(message)
                     }
                 }
 
@@ -303,7 +300,6 @@ class AgentKernel @Inject constructor(
                         if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                     }
 
-                    // ✅ SỬA: Lượt gọi Groq 1 (First Pass) với Timeout riêng biệt 15s
                     val responsePass1 = withTimeout(15_000L) {
                         groqClient.chat(
                             message = message,
@@ -313,7 +309,6 @@ class AgentKernel @Inject constructor(
                         )
                     }
 
-                    // Gọi kiểm duyệt ngầm thực thi gọi Tool hai lượt
                     interceptAndExecuteToolCall(message, responsePass1, username, cleanContext, historySnapshot)
                 }
 
@@ -333,7 +328,6 @@ class AgentKernel @Inject constructor(
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                         }
 
-                        // ✅ SỬA: Lượt gọi Groq 1 (First Pass) với Timeout riêng biệt 15s
                         val responsePass1 = withTimeout(15_000L) {
                             groqClient.chat(
                                 message = message,
@@ -343,13 +337,12 @@ class AgentKernel @Inject constructor(
                             )
                         }
 
-                        // Gọi kiểm duyệt ngầm thực thi gọi Tool hai lượt
                         interceptAndExecuteToolCall(message, responsePass1, username, fullContext, historySnapshot)
                     }
                 }
             }
         } catch (e: CancellationException) {
-            throw e // ✅ KHẮC PHỤC LỖI: Ném trả lại CancellationException để Coroutine xử lý tự nhiên, tránh rò rỉ luồng
+            throw e
         } catch (e: Exception) {
             logger.e("AgentKernel", "❌ Lỗi hệ thống trong luồng chat: ${e.message}", e)
             "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
@@ -362,26 +355,120 @@ class AgentKernel @Inject constructor(
     }
 
     /**
-     * ✅ MỚI (Tích hợp Gđ 2): Đánh giá, chặn đứng Tool Call, kiểm soát phân quyền và gọi Groq lượt hai
+     * ✅ MỚI: Bộ phân tích ngữ pháp Tiếng Việt cục bộ dành riêng cho QA Mode (Không tốn token Groq).
      */
+    private suspend fun runLocalQAEventAnalysis(userQuery: String): String = withContext(Dispatchers.IO) {
+        try {
+            val now = System.currentTimeMillis()
+            val normalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userQuery.lowercase())
+
+            // 1. Phân giải mốc thời gian cục bộ bằng TimeRangeParser
+            val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalized, now)
+            val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
+            val until = parsedRange?.until ?: now
+            val label = parsedRange?.label ?: "hôm nay"
+
+            // 2. Phân loại loại câu hỏi (đếm số lần, kiểm tra có hay không)
+            val isQuantity = QUANTITY_KEYWORDS.any { normalized.contains(it) }
+            val isYesNo = normalized.contains("co ") && (normalized.contains("khong") || normalized.contains("phai khong") || normalized.contains("chua"))
+            
+            val questionType = when {
+                isQuantity -> QuestionType.QUANTITY
+                isYesNo -> QuestionType.YES_NO
+                else -> QuestionType.OTHER
+            }
+
+            val aggregation = if (isQuantity) AggregationType.COUNT else AggregationType.NONE
+
+            // 3. Nhận diện thiết bị Tuya, Camera hoặc Kênh chat đang hoạt động trong DB
+            val activeCameras = database.cameraDao().getActiveCameras()
+            val activeDevices = database.tuyaDeviceDao().getAllDevices()
+
+            val matchedCam = activeCameras.find { cam ->
+                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(cam.customername.lowercase())
+                normalized.contains(normName) || normalized.contains(cam.id.lowercase())
+            }
+            val matchedDev = activeDevices.find { dev ->
+                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase())
+                normalized.contains(normName) || normalized.contains(dev.id.lowercase())
+            }
+
+            var sourceCategory: String? = null
+            var sourceName: String? = null
+
+            when {
+                matchedCam != null -> { sourceCategory = "camera"; sourceName = matchedCam.customername }
+                matchedDev != null -> { sourceCategory = "tuya"; sourceName = matchedDev.name }
+                normalized.contains("camera") || normalized.contains("cam") -> sourceCategory = "camera"
+                normalized.contains("den") || normalized.contains("quat") || normalized.contains("thiet bi") -> sourceCategory = "tuya"
+                normalized.contains("tin nhan") || normalized.contains("nhan tin") -> sourceCategory = "chat"
+            }
+
+            // 4. Nhận diện trạng thái thiết bị Tuya
+            val deviceState = when {
+                normalized.contains("bat") || normalized.contains("mo") -> "true"
+                normalized.contains("tat") -> "false"
+                else -> null
+            }
+
+            // 5. Đóng gói thành SearchContract và chuyển thẳng xuống DatabaseSearchHelper để tính toán số liệu
+            val contract = SearchContract(
+                questionType = questionType,
+                sinceMs = since,
+                untilMs = until,
+                timeframeLabel = label,
+                sourceCategory = sourceCategory,
+                sourceIdOrName = sourceName ?: matchedCam?.id ?: matchedDev?.id,
+                targetObject = extractObjectLabel(normalized),
+                deviceState = deviceState,
+                aggregation = aggregation
+            )
+
+            val searchResult = databaseSearchHelper.executeSearchContract(contract)
+            searchResult.summaryText
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Lỗi phân tích sự kiện cục bộ trong QA Mode: ${e.message}", e)
+            "Không thể phân tích dữ liệu cục bộ lúc này."
+        }
+    }
+
+    private val QUANTITY_KEYWORDS = setOf("bao nhieu", "may lan", "so luong", "tong cong", "duoc may", "dem")
+    
+    private val OBJECT_LABEL_KEYWORDS = mapOf(
+        "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom", "nguoi"),
+        "car" to listOf("oto", "xe hoi", "xe oto", "xe bon banh"),
+        "motorbike" to listOf("xe may", "xe hai banh"),
+        "dog" to listOf("con cho", "cho "),
+        "cat" to listOf("con meo", "meo "),
+        "package" to listOf("goi hang", "buu kien", "shipper")
+    )
+
+    private fun extractObjectLabel(normalizedMsg: String): String? =
+        OBJECT_LABEL_KEYWORDS.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
+
+    private fun extractStateKeyword(originalMessage: String, normalizedMsg: String): List<String>? = when {
+        originalMessage.contains("tắt", ignoreCase = true) || normalizedMsg.contains("off") ->
+            listOf("tắt", "off", "Tắt", "OFF")
+        originalMessage.contains("bật", ignoreCase = true) || normalizedMsg.contains("on") ->
+            listOf("bật", "on", "Bật", "ON")
+        else -> null
+    }
+
     private suspend fun interceptAndExecuteToolCall(
         originalMessage: String,
         responseRaw: String,
         username: String,
         baseContext: String,
         historySnapshot: List<Map<String, String>>,
-        toolDepth: Int = 0 // Khống chế độ sâu lặp (Tool Loop Guard)
+        toolDepth: Int = 0
     ): String {
-        // Phân tích an toàn tìm kiếm chuỗi JSON gọi tool (không chứa chứa contains("tool") mong manh)
         val toolCall = parseToolCall(responseRaw) ?: return responseRaw
 
-        // Bẫy chống lặp vô tận (Tool Loop Guard)
         if (toolDepth >= 1) {
             logger.w("AgentKernel", "⚠️ [Tool Loop Guard] Đã đạt giới hạn lặp tool (depth=$toolDepth). Ngắt lặp!")
             return "Hệ thống phát hiện yêu cầu tìm kiếm lặp lại quá nhiều lần, xin lỗi vì chưa thể hoàn thành chi tiết này."
         }
 
-        // Chốt chặn bảo mật phân quyền ngay tại tầng điều khiển của AgentKernel
         if (username != "default_user") {
             logger.w("AgentKernel", "⚠️ Chặn gọi Tool truy cập lịch sử từ tài khoản khách ngoại tuyến: $username")
             return "Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị chỉ có thể được truy cập bởi tài khoản Quản trị viên (Chủ nhà) trên ứng dụng nội bộ thôi ạ."
@@ -390,17 +477,62 @@ class AgentKernel @Inject constructor(
         logger.i("AgentKernel", "📥 [Two-Pass Intercepted] Phát hiện AI yêu cầu gọi Tool: '${toolCall.tool}' (tham số: ${toolCall.params})")
 
         return try {
-            val timeframe = toolCall.params["timeframe"] ?: "today"
+            val rawTimeframe = toolCall.params["timeframe"] ?: "today"
             val objectLabel = toolCall.params["object"] ?: "all"
+            val sourceHint = toolCall.params["source"]?.trim()
 
-            // Thực thi tìm kiếm thông qua DatabaseSearchHelper của Gđ 1
-            val searchResult = databaseSearchHelper.executeSearch(
-                timeframe = timeframe,
-                objectLabel = objectLabel,
-                allowedEventTypes = listOf("person_detected", "state_change", "incoming_message") // Lọc các nhóm sự kiện an ninh/vận hành
+            var resolvedSourceCategory: String? = null
+            var resolvedSourceName: String? = null
+            if (!sourceHint.isNullOrBlank()) {
+                val normHint = StringSimilarityUtil.normalizeVietnamese(sourceHint.lowercase())
+                val matchedCamera = try {
+                    database.cameraDao().getActiveCameras().find {
+                        StringSimilarityUtil.normalizeVietnamese(it.customername.lowercase()).contains(normHint) ||
+                        normHint.contains(StringSimilarityUtil.normalizeVietnamese(it.customername.lowercase()))
+                    }
+                } catch (e: Exception) { null }
+                val matchedDevice = if (matchedCamera == null) {
+                    try {
+                        database.tuyaDeviceDao().getAllDevices().find {
+                            StringSimilarityUtil.normalizeVietnamese(it.name.lowercase()).contains(normHint) ||
+                            normHint.contains(StringSimilarityUtil.normalizeVietnamese(it.name.lowercase()))
+                        }
+                    } catch (e: Exception) { null }
+                } else null
+
+                when {
+                    matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername }
+                    matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name }
+                    normHint.contains("facebook") || normHint.contains("fb") -> resolvedSourceCategory = "facebook"
+                    normHint.contains("telegram") -> resolvedSourceCategory = "telegram"
+                    normHint.contains("website") || normHint.contains("web") -> resolvedSourceCategory = "website"
+                }
+            }
+
+            val timeframe = if (objectLabel == "all" && resolvedSourceCategory == null && rawTimeframe in setOf("last_3_days", "last_7_days")) {
+                logger.w("AgentKernel", "⚠️ [Cost Guard] Chặn combo tốn kém object=all + $rawTimeframe (không có source thu hẹp), ép về 'today'")
+                "today"
+            } else {
+                rawTimeframe
+            }
+
+            // Phân giải mốc thời gian thực tế
+            val timeRange = timeRangeResolver.resolve(timeframe)
+
+            // ✅ NÂNG CẤP: Chuyển đổi luồng AI Two-Pass sang thực thi Hợp đồng tìm kiếm chuẩn hóa
+            val contract = SearchContract(
+                questionType = QuestionType.OTHER,
+                sinceMs = timeRange.since,
+                untilMs = timeRange.until,
+                timeframeLabel = timeRange.label,
+                sourceCategory = resolvedSourceCategory,
+                sourceIdOrName = resolvedSourceName ?: sourceHint,
+                targetObject = objectLabel,
+                aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE
             )
 
-            // Đóng gói cấu trúc Tag tiêu chuẩn <SYSTEM_MEMORY> gửi kèm ngữ cảnh cho AI
+            val searchResult = databaseSearchHelper.executeSearchContract(contract)
+
             val enrichedContext = buildString {
                 append(baseContext)
                 append("\n\n")
@@ -412,7 +544,6 @@ class AgentKernel @Inject constructor(
 
             logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
 
-            // Lượt gọi Groq 2 (Second Pass) mang theo dữ liệu thật với Timeout riêng biệt 15s
             withTimeout(15_000L) {
                 val responsePass2 = groqClient.chat(
                     message = originalMessage,
@@ -421,7 +552,6 @@ class AgentKernel @Inject constructor(
                     imageUrl = null
                 )
                 
-                // Đệ quy tự vệ chống lặp
                 interceptAndExecuteToolCall(
                     originalMessage = originalMessage,
                     responseRaw = responsePass2,
@@ -432,22 +562,18 @@ class AgentKernel @Inject constructor(
                 )
             }
         } catch (e: CancellationException) {
-            throw e // ✅ KHẮC PHỤC LỖI: Ném trả coroutine exception đúng quy chuẩn
+            throw e
         } catch (e: Exception) {
             logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý dữ liệu Two-Pass Loop, quay về Fallback lượt 1: ${e.message}", e)
             responseRaw
         }
     }
 
-    /**
-     * ✅ MỚI (Tích hợp Gđ 2): Trích xuất bóc tách JSON an toàn, chống bẫy nhận diện sai từ khóa thông thường
-     */
     private fun parseToolCall(response: String): ToolCall? {
         val trimmed = response.trim()
         val jsonStartIndex = trimmed.indexOf('{')
         val jsonEndIndex = trimmed.lastIndexOf('}')
         
-        // Chốt chặn cơ bản: Nếu không có cấu trúc {}, bỏ qua ngay lập tức
         if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonStartIndex >= jsonEndIndex) {
             return null
         }
@@ -461,22 +587,20 @@ class AgentKernel @Inject constructor(
             if (tool == "db_search") {
                 val timeframe = json.optString("timeframe", "today")
                 val objectLabel = json.optString("object", "all")
-                ToolCall(tool, mapOf("timeframe" to timeframe, "object" to objectLabel))
+                val source = json.optString("source", "").trim()
+                ToolCall(tool, buildMap {
+                    put("timeframe", timeframe)
+                    put("object", objectLabel)
+                    if (source.isNotBlank()) put("source", source)
+                })
             } else {
                 null
             }
         } catch (e: Exception) {
-            null // Nếu chuỗi trùng khớp {} nhưng parse JSON thất bại, coi như không phải Tool Call
+            null
         }
     }
 
-    // ✅ MỚI: Cắt ngắn lịch sử chat gửi kèm Groq để chống Token Bloat, thay vì gửi nguyên văn 6 tin nhắn.
-    // Chiến lược kết hợp:
-    //   1. Cắt bất đối xứng theo role — tin "assistant" (thường là nhật ký/giải thích dài) bị cắt
-    //      mạnh hơn tin "user" (thường ngắn, là câu lệnh/câu hỏi).
-    //   2. Trọng số theo độ gần — 2 lượt gần nhất giữ gần như nguyên văn để AI không mất mạch hội
-    //      thoại hiện tại; các lượt cũ hơn trong cửa sổ 6 tin bị cắt ngắn hơn.
-    //   3. Cắt tại ranh giới từ gần nhất dưới ngưỡng, tránh cắt giữa từ.
     private fun truncateSmart(text: String, maxLen: Int): String {
         if (text.length <= maxLen) return text
         val cut = text.substring(0, maxLen)
@@ -488,7 +612,7 @@ class AgentKernel @Inject constructor(
     private suspend fun buildHistorySnapshot(username: String): List<Map<String, String>> {
         return try {
             val raw = database.chatMessageDao().getMessages(username, 6).reversed()
-            val recentCutoffIndex = raw.size - 2 // 2 lượt cuối cùng coi là "gần đây"
+            val recentCutoffIndex = raw.size - 2
             raw.mapIndexed { index, msg ->
                 val isRecent = index >= recentCutoffIndex
                 val maxLen = when {
@@ -505,10 +629,6 @@ class AgentKernel @Inject constructor(
     }
 
     companion object {
-        // ✅ MỚI: Trần cứng số lượng QA match và độ dài answer đưa vào prompt. Trước đây hàm này
-        // nối TẤT CẢ match có similarity >= 0.7 mà không giới hạn — nếu catalogue QA lớn và câu
-        // hỏi mơ hồ (khớp nhiều mục cùng lúc), phần context này có thể phình to không kiểm soát.
-        // 3 match đầu (đã sort theo similarity) gần như luôn đủ để AI chọn đúng câu trả lời.
         private const val MAX_QA_MATCHES_IN_CONTEXT = 3
         private const val MAX_QA_ANSWER_CHARS = 200
     }
@@ -524,6 +644,18 @@ class AgentKernel @Inject constructor(
             }
             "📚 Q: ${match.qa.question}\n   A: $answer (độ tương tự: ${String.format("%.2f", match.similarity)})"
         }
+    }
+
+    private fun extractLocalMemoryAnswer(extraContext: String): String? {
+        val start = extraContext.indexOf("<SYSTEM_MEMORY>")
+        val end = extraContext.indexOf("</SYSTEM_MEMORY>")
+        if (start == -1 || end == -1 || end <= start) return null
+        val inner = extraContext.substring(start + "<SYSTEM_MEMORY>".length, end)
+            .lines()
+            .filterNot { it.contains("Hãy sử dụng dữ liệu") || it.contains("Hãy trả lời trực tiếp") || it.contains("Chuẩn hóa tag") }
+            .joinToString("\n")
+            .trim()
+        return inner.takeIf { it.isNotBlank() }
     }
 
     suspend fun tryDeviceCommand(
@@ -647,19 +779,35 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    // ✅ MỚI: Chỉ 3 domain ứng dụng thật sự hỗ trợ — camera, thiết bị, kênh chat đa nguồn.
-    // Dùng để quyết định có cần gắn JSON contract (TOOL_CALLING_GUARD) vào prompt hay không,
-    // tránh tốn token cho những câu hỏi chat thường không liên quan.
+    private suspend fun buildToolCallingGuard(): String {
+        val cameraNames = try {
+            database.cameraDao().getActiveCameras().map { it.customername }
+        } catch (e: Exception) { emptyList() }
+        val deviceNames = try {
+            database.tuyaDeviceDao().getAllDevices().map { it.name }
+        } catch (e: Exception) { emptyList() }
+
+        return "\n\n🚨 QUY TẮC TRUY VẤN DỮ LIỆU THỰC TẾ:\n" +
+            "Nếu người dùng hỏi về hoạt động của camera/thiết bị/kênh ngoại trong quá khứ hoặc hiện tại mà bạn chưa có thông tin thô, " +
+            "hãy trả về DUY NHẤT một chuỗi JSON thô có cấu trúc sau (tuyệt đối không markdown, không giải thích gì thêm):\n" +
+            "{\n" +
+            "  \"tool\": \"db_search\",\n" +
+            "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
+            "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
+            "  \"source\": \"tên camera hoặc thiết bị mà người dùng nhắc tới\"\n" +
+            "}\n" +
+            (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
+            (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
+            "💬 Kênh chat hỗ trợ: facebook, telegram, website\n" +
+            "Nếu đã được hệ thống cung cấp dữ liệu thô, hãy trả lời tự nhiên, tuyệt đối không trả về JSON nữa."
+    }
+
     private fun mentionsAppDomain(msg: String): Boolean {
         val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
         val domainKeywords = listOf(
-            // camera / an ninh
             "camera", "canh bao", "phat hien", "nguoi la", "xam nhap", "quay",
-            // thiết bị nhà thông minh
             "den", "cua", "quat", "dieu hoa", "thiet bi", "bat", "tat",
-            // tin nhắn đa kênh
             "tin nhan", "nhan tin",
-            // truy vấn dữ liệu chung (áp dụng cho cả 3 domain trên)
             "liet ke", "lich su", "hom qua", "may gio", "kiem tra"
         )
         return domainKeywords.any { norm.contains(it) }
@@ -677,7 +825,6 @@ class AgentKernel @Inject constructor(
         val yesKeywords = setOf("co", "dung", "u", "ok", "dong y", "chuan", "phai", "co nhe", "co chu", "dung roi")
         val noKeywords = setOf("khong", "khoi", "thoi", "huy", "sai", "khong dau", "khong nhe", "bo qua")
         
-        // ✅ SỬA LỖI #2: Sử dụng Regex khớp ranh giới từ để nhận diện ngôn ngữ tự nhiên thông minh hơn
         val isYes = yesKeywords.any { kw -> 
             norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
         }

@@ -2,6 +2,9 @@ package com.aichatvn.agent.utils
 
 import com.aichatvn.agent.data.EventLogDao
 import com.aichatvn.agent.data.model.EventLogEntity
+import com.aichatvn.agent.data.model.SearchContract
+import com.aichatvn.agent.data.model.QuestionType
+import com.aichatvn.agent.data.model.AggregationType
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,13 +30,8 @@ class DatabaseSearchHelper @Inject constructor(
     }
 
     /**
-     * Thực hiện tìm kiếm và phân loại dữ liệu có cấu trúc.
-     *
-     * @param timeframe Khoảng thời gian yêu cầu (today, yesterday...)
-     * @param objectLabel Nhãn đối tượng cần lọc (person, dog...)
-     * @param allowedEventTypes Danh sách loại sự kiện muốn lọc (ví dụ: ["person_detected", "state_change"]). Nếu null sẽ lấy tất cả.
-     * @param allowedSources Danh sách nguồn muốn lọc (ví dụ: ["camera", "tuya"]). Nếu null sẽ lấy tất cả.
-     * @param limit Giới hạn tối đa số lượng dòng log hiển thị tóm tắt để chống Token Bloat.
+     * ✅ Tương thích ngược: Giữ nguyên chữ ký hàm cũ cho các lớp di sản (như ToolExecutor) gọi.
+     * Chuyển đổi các tham số thô thành cấu trúc SearchContract để chạy qua bộ lọc tập trung mới.
      */
     suspend fun executeSearch(
         timeframe: String,
@@ -41,78 +39,122 @@ class DatabaseSearchHelper @Inject constructor(
         allowedEventTypes: List<String>? = null,
         allowedSources: List<String>? = null,
         limit: Int = 20
-    ): SearchResult = withContext(Dispatchers.IO) {
-        
-        // 1. Phân giải thời gian qua TimeRangeResolver
-        val timeRange = timeRangeResolver.resolve(timeframe)
-        
-        // 2. Tải dữ liệu thô từ EventLogDao (De-couple khỏi AppDatabase)
-        val rawLogs = loadEvents(timeRange.since, timeRange.until)
-        
-        // 3. Lọc theo nguồn (sources) và loại sự kiện (eventTypes) được yêu cầu động
-        val categoryFilteredLogs = filterByMetadata(rawLogs, allowedEventTypes, allowedSources)
-        
-        // 4. Lọc theo nhãn đối tượng qua ObjectAliasResolver
-        val objectFilteredLogs = filterByObjectLabel(categoryFilteredLogs, objectLabel)
-        
-        // 5. Định dạng dữ liệu và đóng gói SearchResult có cấu trúc
-        buildSearchResult(objectFilteredLogs, timeRange.label, objectLabel, limit)
-    }
-
-    private suspend fun loadEvents(since: Long, until: Long): List<EventLogEntity> {
-        return eventLogDao.getLogsInTimeframe(since, until)
-    }
-
-    private fun filterByMetadata(
-        logs: List<EventLogEntity>,
-        allowedEventTypes: List<String>?,
-        allowedSources: List<String>?
-    ): List<EventLogEntity> {
-        return logs.filter { log ->
-            val matchType = allowedEventTypes == null || log.eventType in allowedEventTypes
-            val matchSource = allowedSources == null || log.source in allowedSources
-            matchType && matchSource
-        }
-    }
-
-    private fun filterByObjectLabel(logs: List<EventLogEntity>, objectLabel: String): List<EventLogEntity> {
-        return logs.filter { log ->
-            objectAliasResolver.matches(log.summary, objectLabel)
-        }
-    }
-
-    private fun buildSearchResult(
-        logs: List<EventLogEntity>,
-        rangeLabel: String,
-        objectLabel: String,
-        limit: Int
     ): SearchResult {
-        val totalCount = logs.size
+        val timeRange = timeRangeResolver.resolve(timeframe)
+        val contract = SearchContract(
+            questionType = QuestionType.OTHER,
+            sinceMs = timeRange.since,
+            untilMs = timeRange.until,
+            timeframeLabel = timeRange.label,
+            sourceCategory = allowedSources?.firstOrNull(),
+            targetObject = objectLabel,
+            aggregation = AggregationType.NONE
+        )
+        return executeSearchContract(contract, limit)
+    }
+
+    /**
+     * ✅ NÂNG CẤP: Trung tâm xử lý Hợp đồng tìm kiếm chung.
+     * Thực hiện bóc tách, lọc sâu, dán nhãn Yes/No, đếm tần suất và tính toán logic tự động.
+     */
+    suspend fun executeSearchContract(
+        contract: SearchContract,
+        limit: Int = 20
+    ): SearchResult = withContext(Dispatchers.IO) {
+        // Tải các dòng dữ liệu thô trong khung thời gian yêu cầu
+        val rawLogs = eventLogDao.getLogsInTimeframe(contract.sinceMs, contract.untilMs)
+
+        // 1. Lọc theo Phân loại nguồn (Camera / Thiết bị Tuya / Kênh Chat)
+        var filtered = if (contract.sourceCategory != null) {
+            rawLogs.filter { it.source.equals(contract.sourceCategory, ignoreCase = true) }
+        } else {
+            rawLogs
+        }
+
+        // 2. Lọc theo Tên thiết bị hoặc ID nguồn cụ thể
+        if (!contract.sourceIdOrName.isNullOrBlank()) {
+            val normHint = StringSimilarityUtil.normalizeVietnamese(contract.sourceIdOrName.lowercase())
+            filtered = filtered.filter { log ->
+                val normId = StringSimilarityUtil.normalizeVietnamese(log.sourceId.lowercase())
+                val normSummary = StringSimilarityUtil.normalizeVietnamese(log.summary.lowercase())
+                normId.contains(normHint) || normSummary.contains(normHint)
+            }
+        }
+
+        // 3. Lọc theo trạng thái vật lý của thiết bị Tuya nếu có (true = bật, false = tắt)
+        if (contract.deviceState != null) {
+            filtered = filtered.filter { log ->
+                log.value.equals(contract.deviceState, ignoreCase = true) ||
+                (contract.deviceState == "true" && log.summary.contains("bật", ignoreCase = true)) ||
+                (contract.deviceState == "false" && log.summary.contains("tắt", ignoreCase = true))
+            }
+        }
+
+        // 4. Lọc theo lớp vật thể an ninh bằng ObjectAliasResolver (person, car, dog...)
+        if (contract.targetObject != null && contract.targetObject.lowercase() != "all" && contract.targetObject.lowercase() != "none") {
+            filtered = filtered.filter { log ->
+                objectAliasResolver.matches(log.summary, contract.targetObject)
+            }
+        }
+
+        // 5. Lọc sâu theo các từ khóa miêu tả mở rộng
+        if (contract.detailsKeywords.isNotEmpty()) {
+            filtered = filtered.filter { log ->
+                contract.detailsKeywords.any { keyword ->
+                    log.summary.contains(keyword, ignoreCase = true)
+                }
+            }
+        }
+
+        val totalCount = filtered.size
         val isTruncated = totalCount > limit
-        
-        // Sắp xếp các sự kiện mới nhất lên đầu để lấy ra (take), sau đó đảo ngược thời gian tăng dần để AI đọc liền mạch câu chuyện
-        val sortedLogs = logs.sortedByDescending { it.timestamp }
+        val sortedLogs = filtered.sortedByDescending { it.timestamp }
         val truncatedLogs = sortedLogs.take(limit).reversed()
-        
-        val activityLines = truncatedLogs.map { log ->
-            val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
-            "• [$timeStr] ${log.summary}"
-        }
 
-        val objectNote = if (objectLabel.lowercase() != "all") " (lọc theo vật thể: $objectLabel)" else ""
+        // 6. TIẾN HÀNH TỔNG HỢP VÀ TỰ TÍNH TOÁN (Heuristic Query Aggregation)
         val summaryText = buildString {
-            append("--- Nhật ký tìm kiếm tự động$objectNote ($rangeLabel) ---\n")
-            if (activityLines.isEmpty()) {
-                append("Không tìm thấy sự kiện nào trùng khớp.")
+            append("--- Nhật ký tìm kiếm tự động [${contract.timeframeLabel.uppercase()}] ---\n")
+            
+            if (filtered.isEmpty()) {
+                if (contract.questionType == QuestionType.YES_NO) {
+                    append("💡 Câu trả lời: KHÔNG. Hệ thống không ghi nhận bất kỳ sự kiện nào trùng khớp.\n")
+                } else {
+                    append("Hệ thống hoạt động bình thường, không ghi nhận sự kiện phù hợp.\n")
+                }
             } else {
-                append(activityLines.joinToString("\n"))
-            }
-            if (isTruncated) {
-                append("\n*(Còn ${totalCount - limit} sự kiện cũ hơn đã được ẩn đi để tối ưu ngữ cảnh)*")
+                when (contract.aggregation) {
+                    AggregationType.COUNT -> {
+                        append("💡 Thống kê tần suất: Ghi nhận tổng cộng $totalCount lần diễn ra sự kiện.\n")
+                        val onCount = filtered.count { it.summary.contains("bật", ignoreCase = true) || it.value == "true" }
+                        val offCount = filtered.count { it.summary.contains("tắt", ignoreCase = true) || it.value == "false" }
+                        if (onCount > 0 || offCount > 0) {
+                            append("-> Trong đó có $onCount lần bật thiết bị và $offCount lần tắt thiết bị.\n")
+                        }
+                    }
+                    AggregationType.COMPARE -> {
+                        val cameraCount = filtered.count { it.source == "camera" }
+                        val deviceCount = filtered.count { it.source == "tuya" }
+                        append("💡 Phân tích so sánh: Camera ghi nhận $cameraCount lần an ninh, Thiết bị có $deviceCount lần thay đổi trạng thái.\n")
+                    }
+                    AggregationType.NONE -> {
+                        if (contract.questionType == QuestionType.YES_NO) {
+                            append("💡 Câu trả lời: CÓ. Hệ thống xác nhận ghi nhận sự kiện trùng khớp yêu cầu.\n")
+                        }
+                    }
+                }
+
+                append("\nChi tiết nhật ký hoạt động:\n")
+                truncatedLogs.forEach { log ->
+                    val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
+                    append("• [$timeStr] ${log.summary}\n")
+                }
+                if (isTruncated) {
+                    append("*(Đã ẩn bớt ${totalCount - limit} sự kiện cũ để tối ưu)*\n")
+                }
             }
         }
 
-        return SearchResult(
+        SearchResult(
             logs = truncatedLogs,
             summaryText = summaryText,
             totalCount = totalCount,

@@ -69,8 +69,6 @@ class GroqClientTool @Inject constructor(
     companion object {
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-        // ✅ SỬA: Dùng chung AppConfigDefaults.defaultOf() thay vì tự giữ map riêng —
-        // để logic tra cứu mặc định chỉ tồn tại ở đúng 1 nơi trong toàn bộ codebase.
         private val DEFAULT_MODEL_TEXT    get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_TEXT)
         private val DEFAULT_MODEL_VISION  get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_VISION)
         private val DEFAULT_MODEL_ROUTER  get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_ROUTER)
@@ -89,12 +87,31 @@ class GroqClientTool @Inject constructor(
         private const val PROMPT_LOG_SIZE = 10
         private const val PROMPT_LOG_MAX_CHARS = 20_000
 
-        // ✅ MỚI (Tuần 1 - Phase 1): Ép Groq Vision trả JSON có cấu trúc ổn định thay vì
-        // văn bản tự do — để CameraSkill parse logic chính xác thay vì chỉ contains() từ khóa thô.
+        // ✅ Cấu trúc prompt Vision thế hệ mới trả về định dạng phẳng chứa mảng objects chi tiết
         private const val STRUCTURED_VISION_SUFFIX = """
 
 🚨 BẮT BUỘC TRẢ VỀ JSON THÔ THEO ĐỊNH DẠNG SAU, KHÔNG GIẢI THÍCH THÊM, KHÔNG BỌC TRONG MARKDOWN ```json:
-{"objects": ["CHỈ dùng đúng các nhãn tiếng Anh viết thường sau, không tự bịa nhãn khác: person, car, motorbike, dog, cat, package, unknown"], "state": "suspicious hoặc normal", "confidence": 0.0 đến 1.0, "description": "mô tả tóm tắt bằng tiếng Việt về những gì bạn thấy"}"""
+{
+  "state": "normal hoặc suspicious",
+  "confidence": 0.0 đến 1.0,
+  "objects": [
+    {
+      "type": "CHỈ dùng đúng các nhãn: person, car, motorbike, dog, cat, package, unknown",
+      "details": "mô tả đặc điểm cụ thể như quần áo, màu sắc, dáng dấp",
+      "location": "vị trí xuất hiện trong bức hình",
+      "relations": "mối quan hệ không gian với vật thể khác (cạnh bên, đè lên, ở dưới...)"
+    }
+  ],
+  "description": "mô tả tóm tắt bằng tiếng Việt về toàn cảnh bức hình",
+  "question_classification": {
+    "has_person": true hoặc false,
+    "has_vehicle": true hoặc false,
+    "has_animal": true hoặc false
+  }
+}"""
+
+        private fun isReasoningModel(model: String): Boolean =
+            model.startsWith("qwen/qwen3", ignoreCase = true)
     }
 
     private val client = OkHttpClient.Builder()
@@ -225,13 +242,6 @@ class GroqClientTool @Inject constructor(
     private suspend fun maxTokensVision() = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_VISION, DEFAULT_MAX_TOKENS_VISION)
     private suspend fun maxTokensRouter() = configProvider.getInt(AppConfigDefaults.GROQ_MAX_TOKENS_ROUTER, DEFAULT_MAX_TOKENS_ROUTER)
 
-    // ✅ MỚI: báo giới hạn token thẳng vào prompt, để model TỰ LIỆU cách trả lời đủ ý trong
-    // giới hạn đó — thay vì chỉ dựa vào "max_tokens" ở tầng API (Groq vẫn cắt cứng đúng tại
-    // token đó, bất kể nội dung dở dang hay chưa). Hai lớp này bổ trợ nhau, không thay thế
-    // nhau: dòng chỉ dẫn dưới đây giúp model tự rút gọn/kết thúc gọn gàng; "max_tokens" API
-    // vẫn giữ lại làm lưới an toàn cuối cùng đề phòng model không tuân lệnh.
-    // Lưu ý: model không đếm token chính xác tuyệt đối như tokenizer, đây là ước lượng model
-    // tự diễn giải — không phải cam kết cứng 100% dưới N token.
     private fun tokenBudgetInstruction(maxTokens: Int): String =
         "\n\n⚠️ GIỚI HẠN ĐỘ DÀI: Trả lời trong phạm vi tối đa khoảng $maxTokens token. " +
         "Hãy tự liệu để hoàn chỉnh câu trả lời (không bỏ dở giữa chừng, không bỏ dở JSON nếu có) " +
@@ -351,7 +361,6 @@ class GroqClientTool @Inject constructor(
             val maxTokens = maxTokensChat()
 
             val messages = JSONArray()
-            // ✅ SỬA: báo giới hạn token vào system message để model tự liệu độ dài câu trả lời
             val budgetNote = tokenBudgetInstruction(maxTokens)
             messages.put(JSONObject().apply {
                 put("role", "system")
@@ -390,6 +399,10 @@ class GroqClientTool @Inject constructor(
                 put("model", model)
                 put("messages", messages)
                 put("max_tokens", maxTokens)
+                if (isReasoningModel(model)) {
+                    put("reasoning_effort", "none")
+                    put("reasoning_format", "hidden")
+                }
             }.toString()
 
             val parsed = client.newCall(
@@ -422,7 +435,6 @@ class GroqClientTool @Inject constructor(
         val model     = modelRouter()
         val maxTokens = maxTokensRouter()
 
-        // ✅ SỬA: báo giới hạn token vào cuối prompt để model tự liệu độ dài
         val promptWithBudget = prompt + tokenBudgetInstruction(maxTokens)
 
         val messages = JSONArray().apply {
@@ -440,6 +452,10 @@ class GroqClientTool @Inject constructor(
             put("messages", messages)
             put("max_tokens", maxTokens)
             put("temperature", 0)
+            if (isReasoningModel(model)) {
+                put("reasoning_effort", "none")
+                put("reasoning_format", "hidden")
+            }
         }.toString()
 
         val resultPair = try {
@@ -452,46 +468,28 @@ class GroqClientTool @Inject constructor(
                     .build()
             ).execute().use { response ->
                 captureRateLimit(response, model)
-                val bodyStr = response.body?.string() ?: ""
-                val usage = parseUsage(bodyStr)
-
-                if (!response.isSuccessful) {
-                    logger.e("GroqClientTool", "routeIntent HTTP ${response.code}: $bodyStr")
-                    updatePromptLogResult(logId, "❌ HTTP ${response.code}", usage)
-                    throw GroqRoutingException("Router HTTP ${response.code}")
+                
+                // ✅ SỬA: routeIntent chính thức sử dụng hàm parseResponse chung của hệ thống.
+                // Loại bỏ thẻ suy luận <think> nếu model router tự sinh ra, chống trả về chuỗi rỗng trước khi router parse JSON.
+                val parsed = parseResponse(response, "routeIntent")
+                if (parsed.text.startsWith("❌") || parsed.text.startsWith("⚠️") || parsed.text.startsWith("Lỗi API:")) {
+                    throw GroqRoutingException("Router error: ${parsed.text}")
                 }
-                if (bodyStr.isBlank()) {
-                    updatePromptLogResult(logId, "❌ Empty response", usage)
-                    throw GroqRoutingException("Router trả về response rỗng")
-                }
-                Pair(bodyStr, usage)
+                Pair(parsed.text, parsed.usage)
             }
         } catch (e: GroqRoutingException) {
             throw e
         } catch (e: Exception) {
-            logger.e("GroqClientTool", "routeIntent network error: ${e.message}", e)
-            updatePromptLogResult(logId, "❌ Network error: ${e.message}", null)
-            throw GroqRoutingException("Lỗi mạng khi gọi router: ${e.message}")
+            logger.e("GroqClientTool", "routeIntent network or parse error: ${e.message}", e)
+            updatePromptLogResult(logId, "❌ Parse error: ${e.message}", null)
+            throw GroqRoutingException("Lỗi mạng/phân giải khi gọi router: ${e.message}")
         }
 
-        val bodyStr = resultPair.first
+        val resultText = resultPair.first
         val usage = resultPair.second
 
-        val resultText = try {
-            JSONObject(bodyStr)
-                .getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .getString("content")
-                .trim()
-                .takeIf { it.isNotBlank() }
-        } catch (e: Exception) {
-            logger.e("GroqClientTool", "routeIntent parse error: ${e.message}, body=$bodyStr")
-            null
-        }
-
-        if (resultText == null) {
-            updatePromptLogResult(logId, "⚠️ Empty/invalid content -> fallback chat", usage)
+        if (resultText.isBlank()) {
+            updatePromptLogResult(logId, "⚠️ Empty content -> fallback", usage)
             return@withContext SAFE_FALLBACK_INTENT
         }
 
@@ -512,9 +510,6 @@ class GroqClientTool @Inject constructor(
             val base64  = Base64.encodeToString(imageBytes, Base64.NO_WRAP)
             val dataUrl = "data:image/jpeg;base64,$base64"
 
-            // ✅ MỚI (Tuần 1): Nối cấu trúc JSON ép buộc của Camera Vision vào cuối prompt thô
-            // ✅ SỬA: nối thêm giới hạn token vào cuối cùng, để model tự liệu cách kết thúc JSON
-            // gọn gàng trong giới hạn thay vì bị cắt cụt giữa chừng.
             val structuredPrompt = prompt + STRUCTURED_VISION_SUFFIX + tokenBudgetInstruction(maxTokens)
 
             val messages = JSONArray().apply {
@@ -536,22 +531,12 @@ class GroqClientTool @Inject constructor(
                 requestBodyForLog(model, messages, mapOf("max_tokens" to maxTokens))
             )
 
-            // ✅ SỬA: thay vì đoán số token đủ cho cả suy luận + JSON (không đáng tin, model
-            // suy luận dài ngắn tuỳ ảnh), ÉP model bỏ qua hẳn bước suy luận cho các model họ
-            // Qwen3 (Groq hỗ trợ reasoning_effort="none" — tắt hẳn <think>, xem console.groq.com/docs/reasoning).
-            // Chỉ áp dụng khi chắc chắn model hỗ trợ field này — model khác (vd đổi sang model
-            // không thuộc họ Qwen3 trong tương lai) có thể trả 400 nếu gửi field lạ, nên phải
-            // check tên model tường minh thay vì gửi mù cho mọi model.
-            val isQwen3Reasoning = model.startsWith("qwen/qwen3", ignoreCase = true)
-
             val body = JSONObject().apply {
                 put("model", model)
                 put("messages", messages)
                 put("max_tokens", maxTokens)
-                if (isQwen3Reasoning) {
+                if (isReasoningModel(model)) {
                     put("reasoning_effort", "none")
-                    // reasoning_format="hidden": lớp bảo hiểm thứ 2 — dù reasoning_effort chưa
-                    // được tôn trọng đầy đủ, Groq vẫn không được để lọt <think> vào content.
                     put("reasoning_format", "hidden")
                 }
             }.toString()
@@ -599,10 +584,6 @@ class GroqClientTool @Inject constructor(
                 .getString("content")
                 .trim()
 
-            // ✅ SỬA: nếu có <think> mở nhưng không có </think> đóng, nghĩa là response đã bị
-            // max_tokens cắt cụt GIỮA khối suy luận — chưa bao giờ ra tới JSON thật. Trước đây
-            // regex bên dưới không match trong trường hợp này, để lọt nguyên văn suy luận tiếng
-            // Anh làm "kết quả", khiến JSON parse thất bại và cảnh báo không bao giờ kích hoạt.
             val hasOpenThink = raw.contains("<think>", ignoreCase = true)
             val hasCloseThink = raw.contains("</think>", ignoreCase = true)
             if (hasOpenThink && !hasCloseThink) {
@@ -610,11 +591,20 @@ class GroqClientTool @Inject constructor(
                 throw IllegalStateException("Response bị cắt cụt giữa khối suy luận (max_tokens không đủ)")
             }
 
-            raw.replace(Regex("<think>[\\s\\S]*?</think>", setOf(RegexOption.IGNORE_CASE)), "")
+            val stripped = raw.replace(Regex("<think>[\\s\\S]*?</think>", setOf(RegexOption.IGNORE_CASE)), "")
                 .trim()
+
+            // ✅ SỬA: Siết chặt chuỗi rỗng sau khi bóc tách khối suy luận để đảm bảo
+            // các lớp gọi API luôn nhận được dữ liệu thô hợp lệ hoặc lỗi rõ ràng thay vì bong bóng chat trống.
+            if (stripped.isBlank()) {
+                logger.e("GroqClientTool", "$caller: nội dung rỗng sau khi bóc <think> (model đã dùng hết token để suy luận), body=$bodyStr")
+                throw IllegalStateException("Nội dung trả về rỗng sau khi bóc khối suy luận")
+            }
+
+            stripped
         } catch (e: Exception) {
             logger.e("GroqClientTool", "$caller parse error: ${e.message}, body=$bodyStr")
-            "Không thể đọc phản hồi từ AI."
+            "Không thể đọc phản hồi từ AI. Vui lòng thử lại."
         }
         return GroqParsedResponse(text, usage)
     }
