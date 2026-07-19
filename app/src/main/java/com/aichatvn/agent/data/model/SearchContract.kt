@@ -7,11 +7,12 @@ data class SearchContract(
     val questionType: QuestionType = QuestionType.OTHER,
     val sinceMs: Long,
     val untilMs: Long,
-    val timeframeLabel: String = "hôm nay",
+    // ✅ SỬA: Chuyển sang kiểu String? để tương thích tuyệt đối với mọi kiểu dữ liệu nền tảng trả về từ parser
+    val timeframeLabel: String? = "hôm nay", 
     val sourceCategory: String? = null, // camera, tuya, chat
     val sourceIdOrName: String? = null,
-    val targetObject: String? = null,   // person, car, dog, cat, package...
+    val targetObject: String? = null,   // person, car, dog...
     val detailsKeywords: List<String> = emptyList(),
-    val deviceState: String? = null,     // "true" (bật), "false" (tắt)
+    val deviceState: String? = null,     // "true", "false"
     val aggregation: AggregationType = AggregationType.NONE
 )

@@ -17,7 +17,6 @@ import javax.inject.Singleton
 
 @Singleton
 class DatabaseSearchHelper @Inject constructor(
-    // ✅ KHÔI PHỤC: Đúng thứ tự tham số nguyên bản để khớp hoàn hảo với AppModule.kt và triệt tiêu lỗi biên dịch di sản
     private val eventLogDao: EventLogDao,
     private val timeRangeResolver: TimeRangeResolver,
     private val objectAliasResolver: ObjectAliasResolver,
@@ -114,7 +113,9 @@ class DatabaseSearchHelper @Inject constructor(
 
         // 6. TIẾN HÀNH TỔNG HỢP VÀ TỰ TÍNH TOÁN (Heuristic Query Aggregation)
         val summaryText = buildString {
-            append("--- Nhật ký tìm kiếm tự động [${contract.timeframeLabel.uppercase()}] ---\n")
+            // ✅ SỬA: Đọc an toàn thông tin nhãn thời gian bằng toán tử Elvis
+            val resolvedLabel = contract.timeframeLabel ?: "hôm nay"
+            append("--- Nhật ký tìm kiếm tự động [${resolvedLabel.uppercase()}] ---\n")
             
             if (filtered.isEmpty()) {
                 if (contract.questionType == QuestionType.YES_NO) {
