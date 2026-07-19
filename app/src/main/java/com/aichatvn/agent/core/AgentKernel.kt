@@ -12,19 +12,15 @@ import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
-
-// ✅ Nhập khẩu các file tiện ích mới bạn vừa tạo trong thư mục utils
-import com.aichatvn.agent.utils.AccessManager
-import com.aichatvn.agent.utils.PromptGuard
-import com.aichatvn.agent.utils.ToolCallParser
-import com.aichatvn.agent.utils.ToolExecutor
-import com.aichatvn.agent.utils.ToolCall
-
-import kotlinx.coroutines.CancellationException // ✅ Khắc phục lỗi nuốt coroutine exception
+import com.aichatvn.agent.utils.DatabaseSearchHelper // ✅ MỚI: Nhập Helper từ Giai đoạn 1
+import kotlinx.coroutines.CancellationException     // ✅ MỚI: Khắc phục lỗi nuốt coroutine exception
 import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
+
+// ✅ MỚI: Cấu trúc lưu trữ cuộc gọi công cụ của AI
+private data class ToolCall(val tool: String, val params: Map<String, String>)
 
 data class DiagnosticTier(
     val tierName: String,
@@ -139,13 +135,7 @@ class AgentKernel @Inject constructor(
     private val database: AppDatabase,
     private val routingPipeline: RoutingPipeline,
     private val intentExecutor: IntentExecutor,
-    
-    // ✅ TIÊM TRỰC TIẾP CÁC LỚP TIỆN ÍCH DỄ MỞ RỘNG (De-couple hoàn toàn)
-    private val accessManager: AccessManager,
-    private val promptGuard: PromptGuard,
-    private val toolCallParser: ToolCallParser,
-    private val toolExecutor: ToolExecutor,
-    
+    private val databaseSearchHelper: DatabaseSearchHelper, // ✅ MỚI: Tiêm Helper từ Giai đoạn 1
     private val logger: Logger
 ) {
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
@@ -263,13 +253,39 @@ class AgentKernel @Inject constructor(
         val usedMode = request.chatMode
         val usedPluginId = if (routerFailed) "router_error" else null
 
-        // ✅ Tận dụng PromptGuard vừa tạo để dựng prompt bảo vệ sạch sẽ
-        val guard = promptGuard.buildGuard(routerFailed, (outcome as? RouterOutcome.RouterFailed)?.reason)
+        // ✅ MỚI: Đọc từ config thay vì code cứng "3-4 câu"
+        val maxSentences = configProvider.getInt(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES, 4)
+
+        val ANTI_HALLUCINATION_GUARD =
+            "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
+            "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
+            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
+            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
+
+        // ✅ MỚI (Tích hợp Gđ 2): Prompt chỉ thị AI tự trả về JSON gọi Tool khi thiếu thông tin lịch sử
+        val TOOL_CALLING_GUARD =
+            "\n\n🚨 QUY TẮC TRUY VẤN DỮ LIỆU LỊCH SỬ:\n" +
+            "Nếu người dùng yêu cầu tìm kiếm, liệt kê, kiểm tra, hỏi về quá khứ/lịch sử hoặc " +
+            "hỏi thông tin về các sự kiện của camera/thiết bị (ví dụ: 'có con chó nào không', 'liệt kê đi', " +
+            "'mấy giờ xe vào', 'ai nhắn tin'...) nhưng trong đoạn chat chưa có dữ liệu lịch sử thô này:\n" +
+            "Bạn BẮT BUỘC phải phản hồi bằng một chuỗi JSON thô theo đúng định dạng sau để hệ thống truy vấn " +
+            "giúp bạn (không bọc trong markdown, không giải thích gì thêm, không viết chữ nào khác ngoài JSON):\n" +
+            "{\"tool\": \"db_search\", \"timeframe\": \"today|yesterday|last_3_days|last_7_days\", \"object\": \"person|car|motorbike|dog|cat|package|all\"}\n" +
+            "Nếu dữ liệu lịch sử thô ĐÃ có sẵn trong ngữ cảnh chat trước đó hoặc bạn vừa được hệ thống cung cấp " +
+            "ở trên, hãy trả lời trực tiếp một cách tự nhiên, TUYỆT ĐỐI không gọi lại tool nữa."
+
+        val guard = if (routerFailed) {
+            ANTI_HALLUCINATION_GUARD + "\n" +
+                "⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm." +
+                TOOL_CALLING_GUARD
+        } else {
+            ANTI_HALLUCINATION_GUARD + TOOL_CALLING_GUARD
+        }
 
         var responseText = try {
             when (usedMode.lowercase()) {
                 "qa" -> {
-                    withTimeout(15_000L) { // Timeout Pass 1 độc lập
+                    withTimeout(15_000L) { // ✅ SỬA: Tách biệt Timeout 15s cho Pass 1
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
                         qa?.answer ?: "Không tìm thấy câu trả lời phù hợp trong danh sách huấn luyện."
@@ -284,7 +300,7 @@ class AgentKernel @Inject constructor(
                         if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                     }
 
-                    // Timeout Pass 1 độc lập
+                    // ✅ SỬA: Lượt gọi Groq 1 (First Pass) với Timeout riêng biệt 15s
                     val responsePass1 = withTimeout(15_000L) {
                         groqClient.chat(
                             message = message,
@@ -294,7 +310,7 @@ class AgentKernel @Inject constructor(
                         )
                     }
 
-                    // Chặn và kiểm tra thực thi gọi Tool hai lượt tuần tự
+                    // Gọi kiểm duyệt ngầm thực thi gọi Tool hai lượt
                     interceptAndExecuteToolCall(message, responsePass1, username, cleanContext, historySnapshot)
                 }
 
@@ -314,7 +330,7 @@ class AgentKernel @Inject constructor(
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                         }
 
-                        // Timeout Pass 1 độc lập
+                        // ✅ SỬA: Lượt gọi Groq 1 (First Pass) với Timeout riêng biệt 15s
                         val responsePass1 = withTimeout(15_000L) {
                             groqClient.chat(
                                 message = message,
@@ -324,13 +340,13 @@ class AgentKernel @Inject constructor(
                             )
                         }
 
-                        // Chặn và kiểm tra thực thi gọi Tool hai lượt tuần tự
+                        // Gọi kiểm duyệt ngầm thực thi gọi Tool hai lượt
                         interceptAndExecuteToolCall(message, responsePass1, username, fullContext, historySnapshot)
                     }
                 }
             }
         } catch (e: CancellationException) {
-            throw e // ✅ Khôi phục coroutine cancellation, bảo vệ vòng đời ứng dụng
+            throw e // ✅ KHẮC PHỤC LỖI: Ném trả lại CancellationException để Coroutine xử lý tự nhiên, tránh rò rỉ luồng
         } catch (e: Exception) {
             logger.e("AgentKernel", "❌ Lỗi hệ thống trong luồng chat: ${e.message}", e)
             "Xin lỗi, hệ thống AI đang bận. Vui lòng thử lại sau."
@@ -343,9 +359,7 @@ class AgentKernel @Inject constructor(
     }
 
     /**
-     * ✅ TỐI ƯU HOÀN HẢO (Two-Pass Interceptor):
-     * Phối hợp các class trong thư mục `utils` để kiểm tra tool, kiểm tra quyền, thực thi và gọi Groq lượt 2.
-     * Tích hợp Tool Loop Guard khống chế độ sâu lặp tối đa = 1 để chống lỗi hệ thống.
+     * ✅ MỚI (Tích hợp Gđ 2): Đánh giá, chặn đứng Tool Call, kiểm soát phân quyền và gọi Groq lượt hai
      */
     private suspend fun interceptAndExecuteToolCall(
         originalMessage: String,
@@ -355,44 +369,47 @@ class AgentKernel @Inject constructor(
         historySnapshot: List<Map<String, String>>,
         toolDepth: Int = 0 // Khống chế độ sâu lặp (Tool Loop Guard)
     ): String {
-        // 1. Phân tích an toàn tìm kiếm chuỗi JSON gọi tool qua ToolCallParser của bạn
-        val toolCall = toolCallParser.parse(responseRaw) ?: return responseRaw
+        // Phân tích an toàn tìm kiếm chuỗi JSON gọi tool (không chứa chứa contains("tool") mong manh)
+        val toolCall = parseToolCall(responseRaw) ?: return responseRaw
 
-        // 2. Chốt chặn chống lặp vô tận (Tool Loop Guard)
+        // Bẫy chống lặp vô tận (Tool Loop Guard)
         if (toolDepth >= 1) {
             logger.w("AgentKernel", "⚠️ [Tool Loop Guard] Đã đạt giới hạn lặp tool (depth=$toolDepth). Ngắt lặp!")
             return "Hệ thống phát hiện yêu cầu tìm kiếm lặp lại quá nhiều lần, xin lỗi vì chưa thể hoàn thành chi tiết này."
         }
 
-        // 3. Chốt chặn bảo mật (De-couple thông qua AccessManager của bạn)
-        if (!accessManager.canReadEventLog(username)) {
-            logger.w("AgentKernel", "⚠️ Chốt chặn bảo mật chặn đứng yêu cầu đọc nhật ký từ: '$username'")
+        // Chốt chặn bảo mật phân quyền ngay tại tầng điều khiển của AgentKernel
+        if (username != "default_user") {
+            logger.w("AgentKernel", "⚠️ Chặn gọi Tool truy cập lịch sử từ tài khoản khách ngoại tuyến: $username")
             return "Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị chỉ có thể được truy cập bởi tài khoản Quản trị viên (Chủ nhà) trên ứng dụng nội bộ thôi ạ."
         }
 
-        logger.i("AgentKernel", "📥 [Two-Pass Intercepted] AI yêu cầu gọi Tool: '${toolCall.tool}'")
+        logger.i("AgentKernel", "📥 [Two-Pass Intercepted] Phát hiện AI yêu cầu gọi Tool: '${toolCall.tool}' (tham số: ${toolCall.params})")
 
-        // 4. Ủy quyền thực thi Tool qua ToolExecutor tập trung của bạn
-        val toolResult = toolExecutor.execute(toolCall)
-        
-        if (!toolResult.success) {
-            return toolResult.payload // Nếu thực thi tool thất bại (hoặc lỗi), trả thông báo lỗi thân thiện
-        }
-
-        // 5. Đóng gói cấu trúc Tag tiêu chuẩn <SYSTEM_MEMORY> gửi kèm ngữ cảnh cho AI
-        val enrichedContext = buildString {
-            append(baseContext)
-            append("\n\n")
-            append("<SYSTEM_MEMORY>\n")
-            append(toolResult.payload)
-            append("\n\n👉 CHỈ THỊ: Hãy sử dụng dữ liệu thực tế chính xác trong tag <SYSTEM_MEMORY> này để trả lời đầy đủ câu hỏi của người dùng. TUYỆT ĐỐI không được bịa đặt mốc thời gian không có trong tag.")
-            append("\n</SYSTEM_MEMORY>")
-        }
-
-        logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
-
-        // 6. Lượt gọi Groq 2 (Second Pass) mang theo dữ liệu thật với Timeout riêng biệt 15 giây
         return try {
+            val timeframe = toolCall.params["timeframe"] ?: "today"
+            val objectLabel = toolCall.params["object"] ?: "all"
+
+            // Thực thi tìm kiếm thông qua DatabaseSearchHelper của Gđ 1
+            val searchResult = databaseSearchHelper.executeSearch(
+                timeframe = timeframe,
+                objectLabel = objectLabel,
+                allowedEventTypes = listOf("person_detected", "state_change", "incoming_message") // Lọc các nhóm sự kiện an ninh/vận hành
+            )
+
+            // Đóng gói cấu trúc Tag tiêu chuẩn <SYSTEM_MEMORY> gửi kèm ngữ cảnh cho AI
+            val enrichedContext = buildString {
+                append(baseContext)
+                append("\n\n")
+                append("<SYSTEM_MEMORY>\n")
+                append(searchResult.summaryText)
+                append("\n\n👉 CHỈ THỊ: Hãy sử dụng dữ liệu thực tế chính xác trong tag <SYSTEM_MEMORY> này để trả lời đầy đủ câu hỏi của người dùng. TUYỆT ĐỐI không được bịa đặt mốc thời gian không có trong tag.")
+                append("\n</SYSTEM_MEMORY>")
+            }
+
+            logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
+
+            // Lượt gọi Groq 2 (Second Pass) mang theo dữ liệu thật với Timeout riêng biệt 15s
             withTimeout(15_000L) {
                 val responsePass2 = groqClient.chat(
                     message = originalMessage,
@@ -412,13 +429,317 @@ class AgentKernel @Inject constructor(
                 )
             }
         } catch (e: CancellationException) {
-            throw e // ✅ Khôi phục coroutine cancellation, bảo vệ vòng đời ứng dụng
+            throw e // ✅ KHẮC PHỤC LỖI: Ném trả coroutine exception đúng quy chuẩn
         } catch (e: Exception) {
             logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý dữ liệu Two-Pass Loop, quay về Fallback lượt 1: ${e.message}", e)
             responseRaw
         }
     }
 
+    /**
+     * ✅ MỚI (Tích hợp Gđ 2): Trích xuất bóc tách JSON an toàn, chống bẫy nhận diện sai từ khóa thông thường
+     */
+    private fun parseToolCall(response: String): ToolCall? {
+        val trimmed = response.trim()
+        val jsonStartIndex = trimmed.indexOf('{')
+        val jsonEndIndex = trimmed.lastIndexOf('}')
+        
+        // Chốt chặn cơ bản: Nếu không có cấu trúc {}, bỏ qua ngay lập tức
+        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonStartIndex >= jsonEndIndex) {
+            return null
+        }
+
+        val potentialJson = trimmed.substring(jsonStartIndex, jsonEndIndex + 1).trim()
+        
+        return try {
+            val json = org.json.JSONObject(potentialJson)
+            val tool = json.optString("tool", "")
+            
+            if (tool == "db_search") {
+                val timeframe = json.optString("timeframe", "today")
+                val objectLabel = json.optString("object", "all")
+                ToolCall(tool, mapOf("timeframe" to timeframe, "object" to objectLabel))
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null // Nếu chuỗi trùng khớp {} nhưng parse JSON thất bại, coi như không phải Tool Call
+        }
+    }
+
     // ✅ MỚI: Cắt ngắn lịch sử chat gửi kèm Groq để chống Token Bloat, thay vì gửi nguyên văn 6 tin nhắn.
-    // ... (Bảo lưu nguyên vẹn truncateSmart, buildHistorySnapshot, buildQAContextForAgent, tryDeviceCommand, explainDeviceCommand, executePluginAction, process, isExitLockPhrase, parseYesNo, detectLockTrigger, handleLockConfirmation, getLockedPluginId, getLockedPluginName, Intent, DeviceCommandResult, RouterOutcome, PluginResult) ...
+    // Chiến lược kết hợp:
+    //   1. Cắt bất đối xứng theo role — tin "assistant" (thường là nhật ký/giải thích dài) bị cắt
+    //      mạnh hơn tin "user" (thường ngắn, là câu lệnh/câu hỏi).
+    //   2. Trọng số theo độ gần — 2 lượt gần nhất giữ gần như nguyên văn để AI không mất mạch hội
+    //      thoại hiện tại; các lượt cũ hơn trong cửa sổ 6 tin bị cắt ngắn hơn.
+    //   3. Cắt tại ranh giới từ gần nhất dưới ngưỡng, tránh cắt giữa từ.
+    private fun truncateSmart(text: String, maxLen: Int): String {
+        if (text.length <= maxLen) return text
+        val cut = text.substring(0, maxLen)
+        val lastSpace = cut.lastIndexOf(' ')
+        val safeCut = if (lastSpace >= (maxLen * 0.6).toInt()) cut.substring(0, lastSpace) else cut
+        return "$safeCut…"
+    }
+
+    private suspend fun buildHistorySnapshot(username: String): List<Map<String, String>> {
+        return try {
+            val raw = database.chatMessageDao().getMessages(username, 6).reversed()
+            val recentCutoffIndex = raw.size - 2 // 2 lượt cuối cùng coi là "gần đây"
+            raw.mapIndexed { index, msg ->
+                val isRecent = index >= recentCutoffIndex
+                val maxLen = when {
+                    isRecent && msg.role == "assistant" -> 300
+                    isRecent -> 200
+                    msg.role == "assistant" -> 70
+                    else -> 120
+                }
+                mapOf("role" to msg.role, "content" to truncateSmart(msg.content, maxLen))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    companion object {
+        // ✅ MỚI: Trần cứng số lượng QA match và độ dài answer đưa vào prompt. Trước đây hàm này
+        // nối TẤT CẢ match có similarity >= 0.7 mà không giới hạn — nếu catalogue QA lớn và câu
+        // hỏi mơ hồ (khớp nhiều mục cùng lúc), phần context này có thể phình to không kiểm soát.
+        // 3 match đầu (đã sort theo similarity) gần như luôn đủ để AI chọn đúng câu trả lời.
+        private const val MAX_QA_MATCHES_IN_CONTEXT = 3
+        private const val MAX_QA_ANSWER_CHARS = 200
+    }
+
+    private suspend fun buildQAContextForAgent(message: String, username: String): String {
+        val matches = search(message, username, 0.7f)
+            .sortedByDescending { it.similarity }
+            .take(MAX_QA_MATCHES_IN_CONTEXT)
+        if (matches.isEmpty()) return ""
+        return matches.joinToString("\n") { match ->
+            val answer = match.qa.answer.let {
+                if (it.length > MAX_QA_ANSWER_CHARS) it.take(MAX_QA_ANSWER_CHARS) + "…" else it
+            }
+            "📚 Q: ${match.qa.question}\n   A: $answer (độ tương tự: ${String.format("%.2f", match.similarity)})"
+        }
+    }
+
+    suspend fun tryDeviceCommand(
+        userMessage: String,
+        username: String = "default_user"
+    ): RouterOutcome {
+        val traceId = "TR-${System.currentTimeMillis() % 100000}-${(100..999).random()}"
+        logger.d("AgentKernel", "[$traceId] 🚀 Bắt đầu tiếp nhận thông điệp: '$userMessage'")
+
+        val normMsg = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
+        val isAskingPending = normMsg.contains("dang cho gi") || 
+            normMsg.contains("kiem tra yeu cau") || 
+            (normMsg.contains("cho") && normMsg.contains("gi") && normMsg.contains("pending")) ||
+            normMsg.contains("dang bi ket")
+
+        if (isAskingPending) {
+            val active = chatHistoryManager.getActivePendingIntents()
+            if (active.isEmpty()) {
+                return RouterOutcome.Matched(
+                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Hiện tại không có yêu cầu điều khiển thiết bị nào đang chờ xử lý.")))
+                )
+            }
+            val first = active.first()
+            val targetPlugin = plugins.find { it.manifest.id == first.pluginId }
+            val targetAction = targetPlugin?.manifest?.actions?.find { it.name == first.action }
+            val pluginName = targetPlugin?.manifest?.name ?: first.pluginId
+            val actionDesc = targetAction?.description ?: first.action
+            val banner = routingPipeline.buildPendingBanner(first, pluginName, actionDesc)
+            
+            @Suppress("UNCHECKED_CAST")
+            val currentOptions = first.knownParams["_options"] as? Map<String, String> ?: emptyMap()
+            return RouterOutcome.Matched(
+                DeviceCommandResult(first.pluginId, PluginResult.NeedMoreInfo(first.missingParams, banner, currentOptions))
+            )
+        }
+
+        chatHistoryManager.pendingLockRequest?.let { pluginId ->
+            return handleLockConfirmation(userMessage, pluginId)
+        }
+
+        chatHistoryManager.getLockedPlugin()?.let { lockedId ->
+            if (isExitLockPhrase(userMessage)) {
+                chatHistoryManager.unlockPlugin()
+                val matchedPlugin = plugins.find { it.manifest.id == lockedId }
+                val displayName = matchedPlugin?.manifest?.name ?: lockedId
+                return RouterOutcome.Matched(
+                    DeviceCommandResult(lockedId, PluginResult.Success(mapOf("message" to "✅ Đã thoát chế độ điều khiển riêng cho \"$displayName\".")))
+                )
+            }
+            val result = routingPipeline.process(userMessage, username, PipelineMode.EXECUTE, traceId, forcedPluginIds = listOf(lockedId))
+            val outcome = result.routerOutcome
+            return if (outcome == null || outcome is RouterOutcome.NotACommand) {
+                RouterOutcome.Matched(
+                    DeviceCommandResult(lockedId, PluginResult.Failure("⚠️ Tôi không hiểu lệnh điều khiển riêng cho \"$lockedId\". Vui lòng nói lại, hoặc gõ \"thoát\" để quay lại chat thường."))
+                )
+            } else {
+                outcome
+            }
+        }
+
+        detectLockTrigger(userMessage)?.let { targetPluginId ->
+            chatHistoryManager.setPendingLockRequest(targetPluginId)
+            val matchedPlugin = plugins.find { it.manifest.id == targetPluginId }
+            val displayName = matchedPlugin?.manifest?.name ?: targetPluginId
+            return RouterOutcome.Matched(
+                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Bạn muốn vào chế độ điều khiển riêng biệt cho \"$displayName\", đúng không?")))
+            )
+        }
+
+        val result = routingPipeline.process(userMessage, username, PipelineMode.EXECUTE, traceId)
+        return result.routerOutcome ?: RouterOutcome.RouterFailed("Pipeline execution error")
+    }
+
+    suspend fun explainDeviceCommand(
+        userMessage: String,
+        username: String = "default_user"
+    ): DiagnosticInfo {
+        val result = routingPipeline.process(userMessage, username, PipelineMode.DIAGNOSTIC, "DIAGNOSTIC-TRACE")
+        val matchResult = result.matchResult ?: TrainingSkill.MatchResult(emptyList(), emptyList(), emptyMap())
+        val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, 0.3f)
+        val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, 0.2f)
+
+        val activePending = chatHistoryManager.getActivePendingIntents().firstOrNull()
+        @Suppress("UNCHECKED_CAST")
+        val activeOptions = activePending?.knownParams?.get("_options") as? Map<String, String> ?: emptyMap()
+
+        return DiagnosticInfo(
+            query = userMessage,
+            tiers = result.tiers,
+            resolvedIntents = matchResult.intentMatches
+                .filter { it.second >= intentThreshold }
+                .map { "${it.first.question} (${String.format("%.2f", it.second)})" },
+            resolvedAliases = matchResult.bestAliasMatches.mapValues { it.value.first.answer },
+            intentMatches = matchResult.intentMatches,
+            aliasMatches = matchResult.aliasMatches,
+            bestAliasMatches = matchResult.bestAliasMatches,
+            intentThreshold = intentThreshold,
+            aliasThreshold = aliasThreshold,
+            executionOutcome = result.finalOutcome,
+            traces = result.traces,
+            missingParams = activePending?.missingParams ?: emptyList(),
+            options = activeOptions,
+            askedQuestion = activePending?.askedQuestion
+        )
+    }
+
+    suspend fun executePluginAction(
+        pluginId: String,
+        action: String,
+        params: Map<String, Any>
+    ): PluginResult {
+        return intentExecutor.executePluginAction(pluginId, action, params)
+    }
+
+    suspend fun process(userMessage: String): PluginResult {
+        val outcome = tryDeviceCommand(userMessage)
+        return when (outcome) {
+            is RouterOutcome.Matched -> outcome.result.result
+            is RouterOutcome.RouterFailed -> PluginResult.Failure(outcome.reason)
+            is RouterOutcome.NotACommand -> PluginResult.Failure("Không phải lệnh thiết bị")
+        }
+    }
+
+    private fun isExitLockPhrase(msg: String): Boolean {
+        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
+        val exitPhrases = setOf("thoat dieu khien", "ra khoi dieu khien", "ket thuc dieu khien", "thoat")
+        return norm in exitPhrases
+    }
+
+    private fun parseYesNo(msg: String): Boolean? {
+        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
+        
+        val yesKeywords = setOf("co", "dung", "u", "ok", "dong y", "chuan", "phai", "co nhe", "co chu", "dung roi")
+        val noKeywords = setOf("khong", "khoi", "thoi", "huy", "sai", "khong dau", "khong nhe", "bo qua")
+        
+        // ✅ SỬA LỖI #2: Sử dụng Regex khớp ranh giới từ để nhận diện ngôn ngữ tự nhiên thông minh hơn
+        val isYes = yesKeywords.any { kw -> 
+            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
+        }
+        val isNo = noKeywords.any { kw -> 
+            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
+        }
+        
+        return when {
+            isYes && !isNo -> true
+            isNo && !isYes -> false
+            else -> null
+        }
+    }
+
+    private fun detectLockTrigger(userMessage: String): String? {
+        val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
+        val m = Regex("^(dieu khien|khoa dieu khien)\\s+(thiet bi\\s+)?(.+)$").find(norm) ?: return null
+        val target = m.groupValues[3].trim()
+        if (target.isBlank()) return null
+
+        val matched = plugins.firstOrNull { p ->
+            p.manifest.routable && (
+                target.contains(p.manifest.id, ignoreCase = true) ||
+                StringSimilarityUtil.normalizeVietnamese(p.manifest.name).contains(target, ignoreCase = true)
+            )
+        }
+        return matched?.manifest?.id
+    }
+
+    private fun handleLockConfirmation(userMessage: String, pluginId: String): RouterOutcome {
+        val matchedPlugin = plugins.find { it.manifest.id == pluginId }
+        val displayName = matchedPlugin?.manifest?.name ?: pluginId
+        return when (parseYesNo(userMessage)) {
+            true -> {
+                chatHistoryManager.lockPlugin(pluginId)
+                chatHistoryManager.clearLockRequest()
+                RouterOutcome.Matched(
+                    DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
+                )
+            }
+            false -> {
+                chatHistoryManager.clearLockRequest()
+                RouterOutcome.Matched(
+                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
+                )
+            }
+            null -> RouterOutcome.Matched(
+                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Xác nhận vào chế độ điều khiển riêng cho \"$displayName\" chứ? (có/không)")))
+            )
+        }
+    }
+
+    fun getLockedPluginId(): String? = chatHistoryManager.getLockedPlugin()
+
+    fun getLockedPluginName(): String? {
+        val id = getLockedPluginId() ?: return null
+        return plugins.find { it.manifest.id == id }?.manifest?.name ?: id
+    }
+
+    data class Intent(
+        val pluginId: String,
+        val action: String,
+        val params: Map<String, Any> = emptyMap()
+    )
+
+    data class DeviceCommandResult(
+        val pluginId: String,
+        val result: PluginResult
+    )
+
+    sealed class RouterOutcome {
+        data class Matched(val result: DeviceCommandResult) : RouterOutcome()
+        object NotACommand : RouterOutcome()
+        data class RouterFailed(val reason: String) : RouterOutcome()
+    }
+
+    sealed class PluginResult {
+        data class Success(val data: Any) : PluginResult()
+        data class Failure(val error: String) : PluginResult()
+        data class NeedMoreInfo(
+            val missingParams: List<String>, 
+            val question: String,
+            val options: Map<String, String> = emptyMap()
+        ) : PluginResult()
+    }
 }
