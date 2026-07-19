@@ -19,6 +19,8 @@ import com.aichatvn.agent.utils.DatabaseSearchHelper
 import com.aichatvn.agent.utils.TimeRangeResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext // ✅ SỬA: Thêm import bị thiếu cho ngữ cảnh runLocalQAEventAnalysis
+import kotlinx.coroutines.Dispatchers // ✅ SỬA: Thêm import bị thiếu cho ngữ cảnh runLocalQAEventAnalysis
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards

@@ -18,9 +18,11 @@ import javax.inject.Singleton
 @Singleton
 class DatabaseSearchHelper @Inject constructor(
     private val eventLogDao: EventLogDao,
-    private val timeRangeResolver: TimeRangeResolver,
     private val objectAliasResolver: ObjectAliasResolver,
-    private val logger: Logger
+    private val logger: Logger,
+    // ✅ SỬA: Đưa TimeRangeResolver xuống cuối làm tham số mặc định. 
+    // Điều này giúp AppModule.kt khi khởi tạo thủ công với 3 tham số vẫn biên dịch thành công mà không bị lỗi chữ ký hàm.
+    private val timeRangeResolver: TimeRangeResolver = TimeRangeResolver() 
 ) {
 
     companion object {
@@ -30,7 +32,7 @@ class DatabaseSearchHelper @Inject constructor(
     }
 
     /**
-     * ✅ Tương thích ngược: Giữ nguyên chữ ký hàm cũ cho các lớp di sản (như ToolExecutor) gọi.
+     * Tương thích ngược: Giữ nguyên chữ ký hàm cũ cho các lớp di sản gọi.
      * Chuyển đổi các tham số thô thành cấu trúc SearchContract để chạy qua bộ lọc tập trung mới.
      */
     suspend fun executeSearch(
@@ -54,7 +56,7 @@ class DatabaseSearchHelper @Inject constructor(
     }
 
     /**
-     * ✅ NÂNG CẤP: Trung tâm xử lý Hợp đồng tìm kiếm chung.
+     * NÂNG CẤP: Trung tâm xử lý Hợp đồng tìm kiếm chung.
      * Thực hiện bóc tách, lọc sâu, dán nhãn Yes/No, đếm tần suất và tính toán logic tự động.
      */
     suspend fun executeSearchContract(
