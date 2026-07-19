@@ -281,19 +281,15 @@ class AgentKernel @Inject constructor(
 
         var responseText = try {
             when (usedMode.lowercase()) {
-              
-
-
-
                 "qa" -> {
-    withTimeout(15_000L) {
-        val matches = search(message, username)
-        val qa = matches.firstOrNull()?.qa
-        val localAnswer: String = runLocalQAEventAnalysis(message)
+                    withTimeout(15_000L) {
+                        val matches = search(message, username)
+                        val qa = matches.firstOrNull()?.qa
+                        val localAnswer: String = runLocalQAEventAnalysis(message)
 
-        qa?.answer ?: localAnswer
-    }
-}
+                        qa?.answer ?: localAnswer
+                    }
+                }
 
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
@@ -363,15 +359,13 @@ class AgentKernel @Inject constructor(
     private suspend fun runLocalQAEventAnalysis(userQuery: String): String = withContext(Dispatchers.IO) {
         try {
             val now = System.currentTimeMillis()
-            val normalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userQuery.lowercase())
+            val normalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userQuery.lowercase()) ?: ""
 
             // 1. Phân giải mốc thời gian cục bộ bằng TimeRangeParser
             val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalized, now)
             val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
             val until = parsedRange?.until ?: now
             
-            // ✅ SỬA: Ép kiểu String phi-null tuyệt đối bằng biểu thức rẽ nhánh if-else từ thuộc tính Java/Platform Type,
-            // dọn dẹp triệt độ mọi nguy cơ mismatch kiểu dữ liệu của Kotlin Compiler.
             val label: String = if (parsedRange != null && parsedRange.label != null) {
                 parsedRange.label
             } else {
@@ -395,11 +389,11 @@ class AgentKernel @Inject constructor(
             val activeDevices = database.tuyaDeviceDao().getAllDevices()
 
             val matchedCam = activeCameras.find { cam ->
-                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(cam.customername.lowercase())
+                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(cam.customername.lowercase()) ?: ""
                 normalized.contains(normName) || normalized.contains(cam.id.lowercase())
             }
             val matchedDev = activeDevices.find { dev ->
-                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase())
+                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase()) ?: ""
                 normalized.contains(normName) || normalized.contains(dev.id.lowercase())
             }
 
@@ -407,15 +401,10 @@ class AgentKernel @Inject constructor(
             var sourceName: String? = null
 
             when {
-                // ✅ ĐÃ SỬA: cùng lý do như interceptAndExecuteToolCall() — fallback về `.id` khi
-                // tên thân thiện rỗng, tránh sourceIdOrName cuối cùng nhận "" khiến
-                // DatabaseSearchHelper bỏ qua bước lọc theo đúng camera/thiết bị.
                 matchedCam != null -> { sourceCategory = "camera"; sourceName = matchedCam.customername.ifBlank { matchedCam.id } }
                 matchedDev != null -> { sourceCategory = "tuya"; sourceName = matchedDev.name.ifBlank { matchedDev.id } }
                 normalized.contains("camera") || normalized.contains("cam") -> sourceCategory = "camera"
                 normalized.contains("den") || normalized.contains("quat") || normalized.contains("thiet bi") -> sourceCategory = "tuya"
-                // ✅ ĐÃ SỬA: Lọc chi tiết theo nền tảng kênh chat di động di sản thay vì dồn chung về "chat".
-                // Đồng bộ hóa với DatabaseSearchHelper mới để hỗ trợ cả 3 nhãn facebook, telegram, website độc lập.
                 normalized.contains("facebook") || normalized.contains("fb") -> sourceCategory = "facebook"
                 normalized.contains("telegram") -> sourceCategory = "telegram"
                 normalized.contains("website") || normalized.contains("web") -> sourceCategory = "website"
@@ -503,12 +492,6 @@ class AgentKernel @Inject constructor(
             var resolvedSourceName: String? = null
             if (!sourceHint.isNullOrBlank()) {
                 val normHint = StringSimilarityUtil.normalizeVietnamese(sourceHint.lowercase())
-                // ✅ ĐÃ SỬA: bổ sung so khớp theo `.id` (không chỉ customername/name) — trước đây
-                // chỉ so tên thân thiện, nên nếu buildToolCallingGuard() liệt kê whitelist gồm cả
-                // ID (vd "camera 1"), Groq có thể hợp lệ trả về source="camera 1" nhưng bước resolve
-                // này lại không khớp được với ID đó -> resolvedSourceCategory rơi về null, dữ liệu
-                // tra cứu vẫn sai dù prompt đã đúng. Đồng bộ lại với logic đã đúng sẵn ở
-                // runLocalQAEventAnalysis() (nhánh QA cục bộ), vốn đã match cả customername/name lẫn id.
                 val matchedCamera = try {
                     database.cameraDao().getActiveCameras().find {
                         val normCamName = StringSimilarityUtil.normalizeVietnamese(it.customername.lowercase())
@@ -527,11 +510,6 @@ class AgentKernel @Inject constructor(
                 } else null
 
                 when {
-                    // ✅ ĐÃ SỬA: fallback về `.id` khi tên thân thiện rỗng — trước đây nếu
-                    // customername/name là chuỗi rỗng (không phải null), sourceIdOrName sẽ nhận
-                    // giá trị "" (vì `?:` chỉ bắt null, không bắt rỗng). DatabaseSearchHelper coi
-                    // "" là blank nên BỎ QUA HẲN bước lọc theo đúng camera/thiết bị, trả về log của
-                    // TẤT CẢ camera/thiết bị trong cùng category thay vì chỉ camera/thiết bị đã match.
                     matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id } }
                     matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id } }
                     normHint.contains("facebook") || normHint.contains("fb") -> resolvedSourceCategory = "facebook"
@@ -950,182 +928,5 @@ class AgentKernel @Inject constructor(
             val question: String,
             val options: Map<String, String> = emptyMap()
         ) : PluginResult()
-    }
-}--- END OF FILE text/plain ---
-
-package com.aichatvn.agent.utils
-
-import com.aichatvn.agent.data.EventLogDao
-import com.aichatvn.agent.data.model.EventLogEntity
-import com.aichatvn.agent.data.model.SearchContract
-import com.aichatvn.agent.data.model.QuestionType
-import com.aichatvn.agent.data.model.AggregationType
-import com.aichatvn.agent.utils.Logger
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
-import javax.inject.Inject
-import javax.inject.Singleton
-
-@Singleton
-class DatabaseSearchHelper @Inject constructor(
-    private val eventLogDao: EventLogDao,
-    private val timeRangeResolver: TimeRangeResolver,
-    private val objectAliasResolver: ObjectAliasResolver,
-    private val logger: Logger
-) {
-
-    companion object {
-        private val DATETIME_FORMATTER: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault())
-                .withZone(ZoneId.systemDefault())
-    }
-
-    /**
-     * Tương thích ngược: Giữ nguyên chữ ký hàm cũ cho các lớp di sản gọi.
-     * Chuyển đổi các tham số thô thành cấu trúc SearchContract để chạy qua bộ lọc tập trung mới.
-     */
-    suspend fun executeSearch(
-        timeframe: String,
-        objectLabel: String,
-        allowedEventTypes: List<String>? = null,
-        allowedSources: List<String>? = null,
-        limit: Int = 20
-    ): SearchResult {
-        val timeRange = timeRangeResolver.resolve(timeframe)
-        val contract = SearchContract(
-            questionType = QuestionType.OTHER,
-            sinceMs = timeRange.since,
-            untilMs = timeRange.until,
-            timeframeLabel = timeRange.label,
-            sourceCategory = allowedSources?.firstOrNull(),
-            targetObject = objectLabel,
-            aggregation = AggregationType.NONE
-        )
-        return executeSearchContract(contract, limit)
-    }
-
-    /**
-     * NÂNG CẤP: Trung tâm xử lý Hợp đồng tìm kiếm chung.
-     * Thực hiện bóc tách, lọc sâu, dán nhãn Yes/No, đếm tần suất và tính toán logic tự động.
-     */
-    suspend fun executeSearchContract(
-        contract: SearchContract,
-        limit: Int = 20
-    ): SearchResult = withContext(Dispatchers.IO) {
-        // Tải các dòng dữ liệu thô trong khung thời gian yêu cầu
-        val rawLogs = eventLogDao.getLogsInTimeframe(contract.sinceMs, contract.untilMs)
-
-        // 1. NÂNG CẤP: Lọc theo Phân loại nguồn (Camera / Thiết bị Tuya / Kênh Chat)
-        // Nếu sourceCategory là "chat", tự động mở rộng truy vấn tìm kiếm trên cả 3 nền tảng facebook, telegram, website
-        var filtered = if (contract.sourceCategory != null) {
-            if (contract.sourceCategory.equals("chat", ignoreCase = true)) {
-                rawLogs.filter { 
-                    it.source.equals("facebook", ignoreCase = true) || 
-                    it.source.equals("telegram", ignoreCase = true) || 
-                    it.source.equals("website", ignoreCase = true) 
-                }
-            } else {
-                rawLogs.filter { it.source.equals(contract.sourceCategory, ignoreCase = true) }
-            }
-        } else {
-            rawLogs
-        }
-
-        // 2. SỬA: Sử dụng isNullOrBlank() an toàn. Nếu chuỗi rỗng "" hoặc blank lọt xuống đây,
-        // hệ thống sẽ bỏ qua, không kích hoạt bộ lọc theo ID để tương thích đúng với logic fallback của AgentKernel.
-        if (!contract.sourceIdOrName.isNullOrBlank()) {
-            val normHint = StringSimilarityUtil.normalizeVietnamese(contract.sourceIdOrName.lowercase())
-            filtered = filtered.filter { log ->
-                val normId = StringSimilarityUtil.normalizeVietnamese(log.sourceId.lowercase())
-                val normSummary = StringSimilarityUtil.normalizeVietnamese(log.summary.lowercase())
-                normId.contains(normHint) || normSummary.contains(normHint)
-            }
-        }
-
-        // 3. Lọc theo trạng thái vật lý của thiết bị Tuya nếu có (true = bật, false = tắt)
-        if (contract.deviceState != null) {
-            filtered = filtered.filter { log ->
-                log.value.equals(contract.deviceState, ignoreCase = true) ||
-                (contract.deviceState == "true" && log.summary.contains("bật", ignoreCase = true)) ||
-                (contract.deviceState == "false" && log.summary.contains("tắt", ignoreCase = true))
-            }
-        }
-
-        // 4. Lọc theo lớp vật thể an ninh bằng ObjectAliasResolver (person, car, dog...)
-        if (contract.targetObject != null && contract.targetObject.lowercase() != "all" && contract.targetObject.lowercase() != "none") {
-            filtered = filtered.filter { log ->
-                objectAliasResolver.matches(log.summary, contract.targetObject)
-            }
-        }
-
-        // 5. Lọc sâu theo các từ khóa miêu tả mở rộng
-        if (contract.detailsKeywords.isNotEmpty()) {
-            filtered = filtered.filter { log ->
-                contract.detailsKeywords.any { keyword ->
-                    log.summary.contains(keyword, ignoreCase = true)
-                }
-            }
-        }
-
-        val totalCount = filtered.size
-        val isTruncated = totalCount > limit
-        val sortedLogs = filtered.sortedByDescending { it.timestamp }
-        val truncatedLogs = sortedLogs.take(limit).reversed()
-
-        // 6. TIẾN HÀNH TỔNG HỢP VÀ TỰ TÍNH TOÁN (Heuristic Query Aggregation)
-        val summaryText = buildString {
-            // SỬA: Đọc an toàn thông tin nhãn thời gian bằng toán tử Elvis
-            val resolvedLabel = contract.timeframeLabel ?: "hôm nay"
-            append("--- Nhật ký tìm kiếm tự động [${resolvedLabel.uppercase()}] ---\n")
-            
-            if (filtered.isEmpty()) {
-                if (contract.questionType == QuestionType.YES_NO) {
-                    append("💡 Câu trả lời: KHÔNG. Hệ thống không ghi nhận bất kỳ sự kiện nào trùng khớp.\n")
-                } else {
-                    append("Hệ thống hoạt động bình thường, không ghi nhận sự kiện phù hợp.\n")
-                }
-            } else {
-                when (contract.aggregation) {
-                    AggregationType.COUNT -> {
-                        append("💡 Thống kê tần suất: Ghi nhận tổng cộng $totalCount lần diễn ra sự kiện.\n")
-                        val onCount = filtered.count { it.summary.contains("bật", ignoreCase = true) || it.value == "true" }
-                        val offCount = filtered.count { it.summary.contains("tắt", ignoreCase = true) || it.value == "false" }
-                        if (onCount > 0 || offCount > 0) {
-                            append("-> Trong đó có $onCount lần bật thiết bị và $offCount lần tắt thiết bị.\n")
-                        }
-                    }
-                    AggregationType.COMPARE -> {
-                        val cameraCount = filtered.count { it.source == "camera" }
-                        val deviceCount = filtered.count { it.source == "tuya" }
-                        append("💡 Phân tích so sánh: Camera ghi nhận $cameraCount lần an ninh, Thiết bị có $deviceCount lần thay đổi trạng thái.\n")
-                    }
-                    AggregationType.NONE -> {
-                        if (contract.questionType == QuestionType.YES_NO) {
-                            append("💡 Câu trả lời: CÓ. Hệ thống xác nhận ghi nhận sự kiện trùng khớp yêu cầu.\n")
-                        }
-                    }
-                }
-
-                append("\nChi tiết nhật ký hoạt động:\n")
-                truncatedLogs.forEach { log ->
-                    val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
-                    append("• [$timeStr] ${log.summary}\n")
-                }
-                if (isTruncated) {
-                    append("*(Đã ẩn bớt ${totalCount - limit} sự kiện cũ để tối ưu)*\n")
-                }
-            }
-        }
-
-        SearchResult(
-            logs = truncatedLogs,
-            summaryText = summaryText,
-            totalCount = totalCount,
-            isTruncated = isTruncated
-        )
     }
 }
