@@ -8,9 +8,10 @@ import com.aichatvn.agent.core.ChatHistoryManager
 import com.aichatvn.agent.core.DialogManager
 import com.aichatvn.agent.core.DialogManagerImpl
 import com.aichatvn.agent.core.plugin.Plugin
-import com.aichatvn.agent.core.router.RoutingPipeline  // ✅ Thêm import này nếu chưa có
-import com.aichatvn.agent.core.execution.IntentExecutor // ✅ Thêm import này nếu chưa có
+import com.aichatvn.agent.core.router.RoutingPipeline
+import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.EventLogDao // ✅ MỚI: Thêm import để cung cấp EventLogDao cho Hilt
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -40,6 +41,13 @@ object AppModule {
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
         return AppDatabase.getDatabase(context)
+    }
+
+    // ===== ✅ MỚI: Cung cấp EventLogDao từ AppDatabase cho Hilt nhận diện =====
+    @Provides
+    @Singleton
+    fun provideEventLogDao(database: AppDatabase): EventLogDao {
+        return database.eventLogDao()
     }
 
     @Provides
@@ -112,9 +120,9 @@ object AppModule {
 
     // ===== AGENT KERNEL =====
     @Provides
-    @Singleton // ✅ Đã xóa bỏ phần annotation bị lặp lại ở đây để tránh lỗi biên dịch [3]
+    @Singleton
     fun provideAgentKernel(
-        plugins: Set<Plugin>,
+        plugins: Set<@JvmSuppressWildcards Plugin>, // ✅ KHẮC PHỤC LỖI: Thêm @JvmSuppressWildcards để ép kiểu generics Java tương thích Dagger [10]
         groqClient: GroqClientTool,
         trainingSkill: TrainingSkill,
         chatHistoryManager: ChatHistoryManager,
@@ -122,7 +130,7 @@ object AppModule {
         database: AppDatabase,
         routingPipeline: RoutingPipeline,
         intentExecutor: IntentExecutor,
-        databaseSearchHelper: DatabaseSearchHelper, // ✅ Thêm tham số tiêm vào đây [3]
+        databaseSearchHelper: DatabaseSearchHelper,
         logger: Logger
     ): AgentKernel {
         return AgentKernel(
@@ -134,7 +142,7 @@ object AppModule {
             database,
             routingPipeline,
             intentExecutor,
-            databaseSearchHelper, // ✅ Truyền tham số mới vào constructor chuẩn [3]
+            databaseSearchHelper,
             logger
         )
     }
