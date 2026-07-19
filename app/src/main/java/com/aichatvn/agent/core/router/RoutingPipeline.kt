@@ -22,7 +22,7 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
-import com.aichatvn.agent.utils.toMap // Sử dụng hàm mở rộng dùng chung
+import com.aichatvn.agent.utils.toMap
 import org.json.JSONObject
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
@@ -32,20 +32,11 @@ import javax.inject.Singleton
 
 private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
 
-// ✅ ĐÃ SỬA: các tiểu từ tình thái/lịch sự không mang thông tin định tuyến (vd "luôn" trong
-// "tắt luôn đèn" chỉ nghĩa "tiện thể", không phải tham số hay hành động). Trước đây các từ này
-// không được lọc ra, nên khi chúng đứng sát điểm cắt mệnh đề (vd ngay trước "và"), chúng bị dính
-// nhầm vào 1 trong 2 mệnh đề, khiến mệnh đề đó dài hơn thực chất -> coverageRatio bị pha loãng
-// xuống dưới ngưỡng 0.70 -> cả mệnh đề (chứa 1-2 ý định thật) bị ClauseSpotter loại bỏ ÂM THẦM.
-// Strip các từ này khỏi từng mệnh đề NGAY SAU khi tách câu (trước khi tính coverageRatio ở
-// Tier3ClauseSpotterStage/Tier4MetadataStage), để độ dài mệnh đề phản ánh đúng nội dung cần khớp.
 private val CLAUSE_FILLER_WORDS = listOf(
     "giúp tôi", "giúp mình", "hộ tôi", "hộ mình", "dùm tôi", "dùm mình",
     "luôn", "dùm", "nha", "nhé", "nhá", "thôi", "nè", "ạ"
 )
 
-// Dùng negative lookaround thay vì \b vì \b không nhận diện đúng ranh giới với ký tự có dấu
-// tiếng Việt (giống cách negationWords đang được kiểm tra bên dưới trong hàm process()).
 private fun stripFillerWords(text: String): String {
     var result = text
     for (filler in CLAUSE_FILLER_WORDS) {
@@ -68,7 +59,6 @@ class RoutingPipeline @Inject constructor(
     private val database: AppDatabase,
     private val logger: Logger,
     
-    // ✅ TIÊM CÁC STAGE ĐỘC LẬP
     private val tier2SlotResolverStage: Tier2SlotResolverStage,
     private val tier3ClauseSpotterStage: Tier3ClauseSpotterStage,
     private val tier4MetadataStage: Tier4MetadataStage
@@ -313,7 +303,6 @@ class RoutingPipeline @Inject constructor(
         if (matchedAliasValue != null) return matchedAliasValue
 
         if (context.resolvedQuery.isNotBlank()) {
-            // ✅ SỬA: literal 0.2f lệch với seed thật (0.5) — dùng defaultOf() để không thể lệch nữa
             val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
             val containsMatch = context.globalMatchResult.aliasMatches
                 .filter { it.first.category == param.semanticType && it.second >= configAliasThreshold }
@@ -401,7 +390,6 @@ class RoutingPipeline @Inject constructor(
 
         val simulatedTiers = mutableListOf<DiagnosticTier>()
         var finalOutcome: String? = null
-        // ✅ SỬA: 3 literal fallback lệch seed thật (0.3f≠0.5, 0.2f≠0.5, 0.80f≠0.85) — dùng defaultOf()
         val intentThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_FUZZY_THRESHOLD).toFloat())
         val aliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
         val tier2HighConf = configProvider.getFloat(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_TIER2_HIGH_CONFIDENCE).toFloat())
@@ -454,7 +442,7 @@ class RoutingPipeline @Inject constructor(
         if (mode == PipelineMode.EXECUTE) {
             if (pendings.isNotEmpty()) {
                 val resolvedResult = pendingIntentResolver.tryResolvePendingIntent(
-                    pending = pendings.first(), // ✅ Sửa thành 'pending' đúng chữ ký gốc
+                    pending = pendings.first(), 
                     userMessage = userMessage,
                     devicePlugins = devicePlugins,
                     traceId = traceId,
@@ -559,22 +547,6 @@ class RoutingPipeline @Inject constructor(
             aliasThreshold = aliasThreshold
         )
 
-        // ✅ ĐÃ SỬA: bỏ "và", "đồng thời", "sau đó", "rồi" khỏi danh sách điểm cắt cứng.
-        //
-        // LÝ DO: các từ nối này MƠ HỒ về mặt ngữ nghĩa — "và" có thể nối 2 mệnh đề độc lập
-        // ("bật đèn và tắt quạt") nhưng cũng có thể chỉ nối 2 đối tượng trong CÙNG một ý định
-        // ("bật đèn và quạt phòng khách" = 1 lệnh bật cả 2 thiết bị). Tách cứng bằng regex tại
-        // đúng vị trí từ này không có cách nào phân biệt 2 trường hợp trên, và tệ hơn: khi người
-        // dùng chêm tiểu từ ("luôn", "cho tôi"...) ngay sát từ nối (vd "...thông báo cho tôi luôn
-        // và tắt luôn đèn..."), điểm cắt sẽ vô tình gộp 2 ý định thật vào 1 mệnh đề bị pha loãng,
-        // khiến coverageRatio (Tier3/Tier4) rớt dưới ngưỡng 0.70 và cả mệnh đề bị loại bỏ ÂM THẦM
-        // (mất luôn các action thật sự hợp lệ trong đó).
-        //
-        // Cơ chế multi-intent trong CÙNG một mệnh đề (xem isMultiIntent ở Tier3ClauseSpotterStage,
-        // dùng findTokenOrderMatch dò nhiều cụm đã train chồng lấp trong 1 khối văn bản) đã tự xử
-        // lý được các câu ghép nhiều lệnh mà không cần tách trước theo "và"/"rồi". Chỉ giữ lại dấu
-        // ",", ";" làm điểm cắt cứng vì đây là ranh giới tường minh do người dùng chủ động gõ, ít
-        // mơ hồ và không bị tiểu từ dính sai bên.
         val clauseSeparator = Regex("[,;]", RegexOption.IGNORE_CASE)
         val clauses = clauseSeparator.split(resolvedMessage)
             .map { stripFillerWords(it.trim()) }
@@ -602,19 +574,22 @@ class RoutingPipeline @Inject constructor(
 
         if (hasNegation) {
             if (mode == PipelineMode.EXECUTE) {
-                logger.d("RoutingPipeline", "[$traceId] ⚠️ Phát hiện từ khóa phủ định -> Bypass thẳng xuống Tầng 5 (LLM) để hiểu đúng ngữ nghĩa.")
+                // ✅ SỬA: Thay vì rơi xuống LLM Router Tầng 5 đắt đỏ khi gặp câu phủ định, 
+                // ta lập tức gửi tín hiệu NotACommand để đẩy thẳng xuống Chat LLM. 
+                // Chat LLM vốn thông minh hơn sẽ tự hiểu ngữ nghĩa phủ định và truy vấn DB nếu cần.
+                logger.d("RoutingPipeline", "[$traceId] ⚠️ Phát hiện từ khóa phủ định -> Đẩy thẳng xuống Chat thường (Bỏ qua LLM Router Tầng 5)")
                 return PipelineResult(
-                    routerOutcome = executeTier3LlmRouting(context, devicePlugins, traceId),
+                    routerOutcome = RouterOutcome.NotACommand,
                     matchResult = matchResult
                 )
             } else {
                 if (finalOutcome == null) {
-                    finalOutcome = "🔵 [Màng lọc Phủ định Cục bộ] Phát hiện từ khóa phủ định trong câu lệnh. Hệ thống bypass toàn bộ bộ lọc tĩnh xuống Tầng 5 (LLM Fallback) để đảm bảo hiểu đúng ngữ nghĩa."
+                    finalOutcome = "🔵 [Màng lọc Phủ định Cục bộ] Phát hiện từ khóa phủ định. Đã chuyển thẳng xuống Chat thường để đảm bảo hiểu đúng ngữ nghĩa."
                 }
                 simulatedTiers.add(DiagnosticTier("Tầng 2: So khớp Ý định tĩnh (Exact/Fuzzy Intent Match)", 2, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
                 simulatedTiers.add(DiagnosticTier("Tầng 3: Tách mệnh đề đa lệnh & Slot-Filling (Clause Spotter)", 3, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
                 simulatedTiers.add(DiagnosticTier("Tầng 4: So khớp Mô tả & Nhãn Plugin (Metadata Matcher)", 4, false, "• Bỏ qua do phát hiện từ khóa phủ định."))
-                simulatedTiers.add(DiagnosticTier("Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)", 5, true, "• [KÍCH HOẠT] Đã chuyển xuống LLM xử lý."))
+                simulatedTiers.add(DiagnosticTier("Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)", 5, false, "• [ĐÃ BỎ] Không kích hoạt LLM Router để tiết kiệm Token."))
                 return PipelineResult(
                     routerOutcome = null,
                     tiers = simulatedTiers,
@@ -625,7 +600,6 @@ class RoutingPipeline @Inject constructor(
             }
         }
 
-        // ✅ ỦY QUYỀN SANG TIER 2 STAGE
         val layer2Result = tier2SlotResolverStage.process(context, devicePlugins, this)
         val isT2Matched = layer2Result != null && layer2Result.confidence >= tier2HighConf
 
@@ -677,7 +651,6 @@ class RoutingPipeline @Inject constructor(
             )
         }
 
-        // ✅ ỦY QUYỀN SANG TIER 3 STAGE
         val layer3Result = if (mode == PipelineMode.EXECUTE || !isT2Matched) {
             tier3ClauseSpotterStage.process(context, devicePlugins, this)
         } else {
@@ -824,7 +797,6 @@ class RoutingPipeline @Inject constructor(
             )
         }
 
-        // ✅ ỦY QUYỀN SANG TIER 4 STAGE
         val layer4Result = if (mode == PipelineMode.EXECUTE || (!isT2Matched && layer3Result is Layer3Result.NoMatch)) {
             tier4MetadataStage.process(context, devicePlugins, this)
         } else {
@@ -914,17 +886,13 @@ class RoutingPipeline @Inject constructor(
                 is Layer3Result.NoMatch -> { }
             }
 
-            if (!isPotentialCommand(resolvedMessage)) {
-                logger.d("RoutingPipeline", "[$traceId] 🍃 [Tầng 4 Miss] Không chứa từ khóa chỉ định lệnh -> Bypass thẳng xuống Chat (bỏ qua Tầng 5)")
-                return PipelineResult(
-                    routerOutcome = RouterOutcome.NotACommand,
-                    matchResult = matchResult
-                )
-            }
-
-            logger.d("RoutingPipeline", "[$traceId] 🔵 [Tầng 4 Miss] -> LLM")
+            // ✅ SỬA: Thay vì rơi xuống LLM Router Tầng 5 đắt đỏ khi Tầng 1-4 không khớp lệnh, 
+            // ta loại bỏ hoàn toàn cuộc gọi Router LLM.
+            // Hệ thống lập tức trả về RouterOutcome.NotACommand để đẩy thẳng xuống Chat LLM, 
+            // giúp tiết kiệm token hệ thống và giảm hơn 1.5 giây độ trễ cho mỗi tin nhắn thông thường.
+            logger.d("RoutingPipeline", "[$traceId] 🍃 [Tầng 4 Miss] -> Không khớp lệnh tĩnh, đẩy thẳng xuống Chat thường (Bỏ hoàn toàn Tầng 5 LLM Router để tối ưu)")
             return PipelineResult(
-                routerOutcome = executeTier3LlmRouting(context, devicePlugins, traceId),
+                routerOutcome = RouterOutcome.NotACommand,
                 matchResult = matchResult
             )
         } else {
@@ -979,10 +947,10 @@ class RoutingPipeline @Inject constructor(
 
             val isT5Matched = !isT2Matched && layer3Result is Layer3Result.NoMatch && layer4Result is Layer3Result.NoMatch
             if (isT5Matched && finalOutcome == null) {
-                finalOutcome = "🔵 [Bypass Tầng 5] Đã chuyển xuống Tầng 5 để LLM phân giải tự do. Hệ thống không tự động chạy thật ở tầng này nhằm tiết kiệm token API Groq."
+                finalOutcome = "🔵 [Bypass Tầng 5] Đã bỏ qua Tầng 5 LLM Router ở chế độ chạy thực tế nhằm tiết kiệm Token tối đa."
             }
             val t5Details = if (isT5Matched) {
-                "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Câu lệnh sẽ được gửi lên Groq LLM để phân rã tự do."
+                "• Không khớp bất kỳ mẫu tĩnh hay heuristic nào. Ở chế độ chạy thực tế, Tầng 5 LLM Router đã bị loại bỏ để tối ưu hóa tài nguyên."
             } else {
                 "• Bypass (Bỏ qua gọi LLM) nhằm tiết kiệm tài nguyên do các tầng heuristic phía trên đã giải quyết xong."
             }
@@ -990,7 +958,7 @@ class RoutingPipeline @Inject constructor(
                 DiagnosticTier(
                     tierName = "Tầng 5: Phân loại thông minh bằng AI (LLM Fallback)",
                     tierNum = 5,
-                    matched = isT5Matched,
+                    matched = false, // Luôn đánh dấu false ở Diagnostic vì đã decommission tầng này
                     details = t5Details
                 )
             )
@@ -1014,12 +982,12 @@ class RoutingPipeline @Inject constructor(
         return original.copy(bestAliasMatches = updatedBest)
     }
 
+    // ✅ Tầng 5 di sản (Chỉ giữ lại làm Helper tham chiếu nếu cần, không còn được gọi trong luồng EXECUTE nữa)
     private suspend fun executeTier3LlmRouting(
         context: RoutingContext,
         devicePlugins: List<Plugin>,
         traceId: String
     ): RouterOutcome {
-        // ✅ SỬA: literal 0.2f lệch với seed thật (0.5) — dùng defaultOf()
         val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
 
         val foundAliases = context.globalMatchResult.aliasMatches
@@ -1041,10 +1009,6 @@ class RoutingPipeline @Inject constructor(
                 val paramsInfo = meta.action.parameters.joinToString(", ") { p ->
                     "${p.name} (kiểu: ${p.type}, yêu cầu: ${p.required}, vai trò: ${p.semanticType})"
                 }
-                // ✅ ĐÃ SỬA: bỏ định dạng "pluginId.actionName" nối bằng dấu chấm — model yếu
-                // (vd gpt-oss-20b) từng nhầm cả cụm là 1 giá trị duy nhất và copy nguyên vào field
-                // "plugin" của JSON trả về (vd trả "smart_switch.set" thay vì "smart_switch").
-                // Tách rõ 2 nhãn plugin=/action= để không còn dấu chấm mập mờ.
                 "  - plugin=\"${meta.plugin.manifest.id}\" action=\"${meta.action.name}\": ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
             }
         } else {
@@ -1101,9 +1065,6 @@ class RoutingPipeline @Inject constructor(
         val rawIntent = parseIntentResponse(routerResultJson) ?: return RouterOutcome.RouterFailed("Tầng 5 LLM parse error")
         if (rawIntent.pluginId == "chat") return RouterOutcome.NotACommand
 
-        // ✅ ĐÃ SỬA: Phòng vệ khi LLM (nhất là model yếu) vẫn lỡ gộp "pluginId.actionName" vào
-        // field plugin dù prompt đã yêu cầu tách riêng (quy tắc 5 ở trên) — tự tách lại theo dấu
-        // chấm đầu tiên và thử tra cứu lại, tránh RouterFailed oan trong khi params đã đúng.
         var targetPlugin = devicePlugins.find { it.manifest.id == rawIntent.pluginId }
         var effectiveAction = rawIntent.action
 
