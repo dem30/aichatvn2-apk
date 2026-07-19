@@ -1,5 +1,6 @@
 package com.aichatvn.agent.di
 
+import com.aichatvn.agent.utils.DatabaseSearchHelper
 import android.content.Context
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
@@ -113,27 +114,34 @@ object AppModule {
     // ===== AGENT KERNEL =====
     @Provides
     @Singleton
-    fun provideAgentKernel(
-        plugins: Set<@JvmSuppressWildcards Plugin>,
-        groqClient: GroqClientTool,
-        trainingSkill: TrainingSkill,
-        chatHistoryManager: ChatHistoryManager,
-        configProvider: AppConfigProvider,
-        database: AppDatabase,
-        routingPipeline: com.aichatvn.agent.core.router.RoutingPipeline,
-        intentExecutor: com.aichatvn.agent.core.execution.IntentExecutor,
-        logger: Logger
-    ): AgentKernel {
-        return AgentKernel(
-            plugins,
-            groqClient,
-            trainingSkill,
-            chatHistoryManager,
-            configProvider,
-            database,
-            routingPipeline,
-            intentExecutor,
-            logger
-        )
-    }
+    @Provides
+@Singleton
+fun provideAgentKernel(
+    plugins: Set<Plugin>,
+    groqClient: GroqClientTool,
+    trainingSkill: TrainingSkill,
+    chatHistoryManager: ChatHistoryManager,
+    configProvider: AppConfigProvider,
+    database: AppDatabase,
+    routingPipeline: RoutingPipeline,
+    intentExecutor: IntentExecutor,
+    databaseSearchHelper: DatabaseSearchHelper, // ✅ Thêm tham số tiêm vào đây
+    logger: Logger
+): AgentKernel {
+    return AgentKernel(
+        plugins,
+        groqClient,
+        trainingSkill,
+        chatHistoryManager,
+        configProvider,
+        database,
+        routingPipeline,
+        intentExecutor,
+        databaseSearchHelper, // ✅ Truyền tham số mới vào constructor chuẩn
+        logger
+    )
+}
+
+
+    
 }
