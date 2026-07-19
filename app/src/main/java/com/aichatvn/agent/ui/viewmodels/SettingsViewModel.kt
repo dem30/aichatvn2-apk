@@ -49,6 +49,14 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
+data class PromptLogTotals(
+    val callCount: Int = 0,
+    val sumPromptTokens: Int = 0,
+    val sumCompletionTokens: Int = 0,
+    val sumTotalTokens: Int = 0,
+    val missingUsageCount: Int = 0
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -131,6 +139,21 @@ class SettingsViewModel @Inject constructor(
 
     val allConfigs: StateFlow<List<AppConfigEntity>> = configProvider.allConfigs
     val promptLog: StateFlow<List<PromptLogEntry>> = groqClient.promptLog
+
+    // ✅ MỚI: Tổng token của các cuộc gọi ĐANG có trong log (log chỉ giữ tối đa
+    // PROMPT_LOG_SIZE=10 cuộc gọi gần nhất trong RAM — đây là tổng của phiên hiện tại,
+    // KHÔNG phải tổng cộng dồn từ lúc cài app. Muốn tổng vĩnh viễn cần lưu DB riêng.
+    val promptLogTotals: StateFlow<PromptLogTotals> = promptLog
+        .map { entries ->
+            PromptLogTotals(
+                callCount = entries.size,
+                sumPromptTokens = entries.sumOf { it.promptTokens ?: 0 },
+                sumCompletionTokens = entries.sumOf { it.completionTokens ?: 0 },
+                sumTotalTokens = entries.sumOf { it.totalTokens ?: 0 },
+                missingUsageCount = entries.count { it.totalTokens == null }
+            )
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PromptLogTotals())
 
     val facebookPages: StateFlow<List<FacebookPageEntity>> = database.facebookPageDao().getAllPagesFlow()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -411,6 +434,55 @@ class SettingsViewModel @Inject constructor(
             } catch (e: Exception) {
                 logger.e("SettingsViewModel", "Export error: ${e.message}", e)
                 _exportResult.value = "❌ Lỗi: ${e.message}"
+                ""
+            }
+        }
+    }
+
+    // ✅ MỚI: Xuất nhật ký cuộc gọi Groq (kèm tổng token) ra file text trong Downloads
+    // để kiểm tra ngoài app — vì log trong RAM chỉ giữ 10 cuộc gọi gần nhất.
+    suspend fun exportPromptLog(context: Context): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                val entries = groqClient.promptLog.value
+                val totals = promptLogTotals.value
+
+                val text = buildString {
+                    appendLine("AIChatVN2 — Nhật ký cuộc gọi Groq")
+                    appendLine("Xuất lúc: ${java.text.SimpleDateFormat("HH:mm:ss dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())}")
+                    appendLine("Số cuộc gọi trong log (tối đa 10 gần nhất): ${totals.callCount}")
+                    appendLine("Tổng prompt tokens: ${totals.sumPromptTokens}")
+                    appendLine("Tổng completion tokens: ${totals.sumCompletionTokens}")
+                    appendLine("Tổng tokens: ${totals.sumTotalTokens}")
+                    if (totals.missingUsageCount > 0) {
+                        appendLine("⚠️ ${totals.missingUsageCount} cuộc gọi không có dữ liệu usage (lỗi/timeout) — không tính vào tổng trên.")
+                    }
+                    appendLine("=".repeat(50))
+
+                    entries.forEachIndexed { idx, e ->
+                        appendLine()
+                        appendLine("#${idx + 1} [${e.caller}] model=${e.model}  lúc=${java.text.SimpleDateFormat("HH:mm:ss dd/MM", java.util.Locale.getDefault()).format(java.util.Date(e.sentAt))}")
+                        appendLine("tokens: ${e.promptTokens ?: "?"} → ${e.completionTokens ?: "?"} = ${e.totalTokens?.toString() ?: "không có usage"}")
+                        appendLine("--- Nội dung gửi đi ---")
+                        appendLine(e.prompt)
+                        if (e.response != null) {
+                            appendLine("--- Groq trả về ---")
+                            appendLine(e.response)
+                        }
+                        appendLine("-".repeat(50))
+                    }
+                }
+
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists()) dir.mkdirs()
+                val file = File(dir, "aichatvn_prompt_log_${System.currentTimeMillis()}.txt")
+                file.writeText(text)
+
+                _exportResult.value = "✅ Đã xuất log (${totals.callCount} cuộc gọi, ${totals.sumTotalTokens} tokens): ${file.absolutePath}"
+                file.absolutePath
+            } catch (e: Exception) {
+                logger.e("SettingsViewModel", "Export prompt log error: ${e.message}", e)
+                _exportResult.value = "❌ Lỗi xuất log: ${e.message}"
                 ""
             }
         }

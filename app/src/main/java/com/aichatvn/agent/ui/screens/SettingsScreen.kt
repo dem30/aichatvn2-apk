@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -44,6 +45,7 @@ import com.aichatvn.agent.data.model.EventLogEntity
 import com.aichatvn.agent.data.model.WorldStateEntity    
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.ui.viewmodels.SettingsViewModel
+import com.aichatvn.agent.ui.viewmodels.PromptLogTotals
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -68,6 +70,7 @@ fun SettingsScreen(
     val exportResult     by viewModel.exportResult.collectAsState()
     val allConfigs       by viewModel.allConfigs.collectAsState()
     val promptLog        by viewModel.promptLog.collectAsState()
+    val promptLogTotals  by viewModel.promptLogTotals.collectAsState()
     val configSaveResult by viewModel.configSaveResult.collectAsState()
     val facebookPages    by viewModel.facebookPages.collectAsState() 
     
@@ -221,7 +224,11 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
-            PromptLogSection(promptLog = promptLog)
+            PromptLogSection(
+                promptLog = promptLog,
+                totals = promptLogTotals,
+                onExport = { scope.launch { viewModel.exportPromptLog(context) } }
+            )
 
             HorizontalDivider()
 
@@ -796,7 +803,11 @@ private fun ConfigItemRow(
 }
 
 @Composable
-private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
+private fun PromptLogSection(
+    promptLog: List<PromptLogEntry>,
+    totals: PromptLogTotals,
+    onExport: () -> Unit
+) {
     var expanded by remember { mutableStateOf(false) }
 
     Row(
@@ -830,6 +841,40 @@ private fun PromptLogSection(promptLog: List<PromptLogEntry>) {
         return
     }
 
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text(
+                "Tổng ${totals.callCount} cuộc gọi gần nhất: ${totals.sumPromptTokens} → ${totals.sumCompletionTokens} = ${totals.sumTotalTokens} tokens",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            if (totals.missingUsageCount > 0) {
+                Text(
+                    "⚠️ ${totals.missingUsageCount} cuộc gọi thiếu dữ liệu usage, chưa tính vào tổng",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                )
+            }
+            Text(
+                "⚠️ Log chỉ giữ tối đa 10 cuộc gọi gần nhất trong RAM — đây là tổng của phiên hiện tại, không phải tổng cộng dồn toàn bộ lịch sử app.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+            )
+            Spacer(Modifier.height(6.dp))
+            Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Xuất log ra file (Downloads)")
+            }
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+
     promptLog.forEachIndexed { idx, entry ->
         PromptLogCard(index = idx + 1, entry = entry)
     }
@@ -843,6 +888,8 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
         "analyzeImage" -> MaterialTheme.colorScheme.secondary
         else           -> MaterialTheme.colorScheme.onSurface
     }
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -861,7 +908,31 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
                         Text(entry.caller, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, color = callerColor)
                     }
                 }
-                Text(fmtTs(entry.sentAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(fmtTs(entry.sentAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                    IconButton(
+                        onClick = {
+                            val combined = buildString {
+                                appendLine("--- Nội dung gửi đi ---")
+                                appendLine(entry.prompt)
+                                if (entry.response != null) {
+                                    appendLine("--- Groq trả về ---")
+                                    appendLine(entry.response)
+                                }
+                            }
+                            clipboardManager.setText(AnnotatedString(combined))
+                            Toast.makeText(context, "📋 Đã copy nội dung log #$index", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Copy nội dung",
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                    }
+                }
             }
             Spacer(Modifier.height(2.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
