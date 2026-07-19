@@ -8,11 +8,12 @@ import com.aichatvn.agent.core.ChatHistoryManager
 import com.aichatvn.agent.core.DialogManager
 import com.aichatvn.agent.core.DialogManagerImpl
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.router.RoutingPipeline  // ✅ Thêm import này nếu chưa có
+import com.aichatvn.agent.core.execution.IntentExecutor // ✅ Thêm import này nếu chưa có
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
-// ❌ ĐÃ GỠ BỎ: import com.aichatvn.agent.utils.VoiceAssistantManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -109,39 +110,32 @@ object AppModule {
         return DialogManagerImpl()
     }
 
-    // ❌ ĐÃ GỠ BỎ: provideVoiceAssistantManager() cũ tại đây để tránh lỗi biên dịch do thiếu class vật lý
-
     // ===== AGENT KERNEL =====
     @Provides
-    @Singleton
-    @Provides
-@Singleton
-fun provideAgentKernel(
-    plugins: Set<Plugin>,
-    groqClient: GroqClientTool,
-    trainingSkill: TrainingSkill,
-    chatHistoryManager: ChatHistoryManager,
-    configProvider: AppConfigProvider,
-    database: AppDatabase,
-    routingPipeline: RoutingPipeline,
-    intentExecutor: IntentExecutor,
-    databaseSearchHelper: DatabaseSearchHelper, // ✅ Thêm tham số tiêm vào đây
-    logger: Logger
-): AgentKernel {
-    return AgentKernel(
-        plugins,
-        groqClient,
-        trainingSkill,
-        chatHistoryManager,
-        configProvider,
-        database,
-        routingPipeline,
-        intentExecutor,
-        databaseSearchHelper, // ✅ Truyền tham số mới vào constructor chuẩn
-        logger
-    )
-}
-
-
-    
+    @Singleton // ✅ Đã xóa bỏ phần annotation bị lặp lại ở đây để tránh lỗi biên dịch [3]
+    fun provideAgentKernel(
+        plugins: Set<Plugin>,
+        groqClient: GroqClientTool,
+        trainingSkill: TrainingSkill,
+        chatHistoryManager: ChatHistoryManager,
+        configProvider: AppConfigProvider,
+        database: AppDatabase,
+        routingPipeline: RoutingPipeline,
+        intentExecutor: IntentExecutor,
+        databaseSearchHelper: DatabaseSearchHelper, // ✅ Thêm tham số tiêm vào đây [3]
+        logger: Logger
+    ): AgentKernel {
+        return AgentKernel(
+            plugins,
+            groqClient,
+            trainingSkill,
+            chatHistoryManager,
+            configProvider,
+            database,
+            routingPipeline,
+            intentExecutor,
+            databaseSearchHelper, // ✅ Truyền tham số mới vào constructor chuẩn [3]
+            logger
+        )
+    }
 }
