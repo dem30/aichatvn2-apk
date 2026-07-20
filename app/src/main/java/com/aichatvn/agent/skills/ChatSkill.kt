@@ -80,6 +80,8 @@ class ChatSkill @Inject constructor(
     private var currentUsername: String = "default_user"
     private val messagesMutex = Mutex()
 
+    private val chatMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
     companion object {
         private val PAST_QUERY_KEYWORDS = setOf(
             "mấy hôm trước", "hôm qua", "hôm nay", "gần đây", "vừa rồi", "lúc nãy",
@@ -111,13 +113,13 @@ class ChatSkill @Inject constructor(
         words.any { com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(text, it) }
 
     private val OBJECT_LABEL_KEYWORDS = mapOf(
-        "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom"),
-        "car" to listOf("oto", "xe hoi", "xe oto"),
-        "motorbike" to listOf("xe may"),
-        "dog" to listOf("con cho", "cho "),
-        "cat" to listOf("con meo", "meo "),
-        "package" to listOf("goi hang", "buu kien", "shipper")
-    )
+    "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom"),
+    "car" to listOf("oto", "xe hoi", "xe oto"),
+    "motorbike" to listOf("xe may"),
+    "dog" to listOf("con cho", "cho "),
+    "cat" to listOf("con meo", "meo "),
+    "package" to listOf("goi hang", "buu kien", "shipper")   // ← thêm lại dòng này
+)
 
     private fun extractObjectLabel(normalizedMsg: String): String? =
         OBJECT_LABEL_KEYWORDS.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
@@ -309,6 +311,72 @@ class ChatSkill @Inject constructor(
         return clearHistory(username)
     }
 
+    /**
+     * Đồng bộ hóa và cấu trúc JSON cho các sự kiện tin nhắn ngoại kênh gửi đến
+     */
+    private suspend fun recordIncomingChatEvent(
+        message: String,
+        username: String,
+        timestamp: Long
+    ): String = withContext(Dispatchers.IO) {
+        val mutex = chatMutexes.getOrPut(username) { Mutex() }
+        mutex.withLock {
+            val platform = username.substringBefore("_")
+            val rawId = username.substringAfter("_")
+            val normMsg = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(message.lowercase()) ?: ""
+
+            val intent = when {
+                normMsg.contains("gia bao nhieu") || normMsg.contains("bao gia") || normMsg.contains("mua") || normMsg.contains("ban") -> "ask_price"
+                normMsg.contains("loi") || normMsg.contains("hong") || normMsg.contains("bao hanh") || normMsg.contains("ho tro") -> "support"
+                else -> "general"
+            }
+
+            val urgency = if (normMsg.contains("gap") || normMsg.contains("ngay") || normMsg.contains("khan") || normMsg.contains("nguy") || normMsg.contains("trom") || normMsg.contains("chay")) "high" else "normal"
+
+            val existingState = database.worldStateDao().getState("chat", username)
+            val prevUnread = existingState?.let {
+                try { org.json.JSONObject(it.attributesJson).optInt("unread_count", 0) } catch (e: Exception) { 0 }
+            } ?: 0
+            val newUnread = prevUnread + 1
+
+            val eventPayload = org.json.JSONObject().apply {
+                put("platform", platform)
+                put("senderId", rawId)
+                put("session_status", "waiting_agent")
+                put("customer_intent", intent)
+                put("urgency", urgency)
+                put("unread_count", newUnread)
+                put("last_message", message.take(80))
+            }.toString()
+
+            // 1. Cập nhật trạng thái sống World State
+            database.worldStateDao().upsertState(
+                com.aichatvn.agent.data.model.WorldStateEntity(
+                    id = "chat:$username",
+                    source = "chat",
+                    sourceId = username,
+                    attributesJson = eventPayload,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+
+            // 2. Ghi EventLog cấu trúc JSON (Sử dụng username đầy đủ để đồng bộ nhóm với openThread/toggleBotSmartMode)
+            database.eventLogDao().insertLog(
+                com.aichatvn.agent.data.model.EventLogEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    timestamp = timestamp,
+                    source = platform,
+                    sourceId = username, // ✅ ĐÃ SỬA: Đổi từ rawId sang username để đồng bộ nhóm
+                    eventType = "chat_session_state_change",
+                    value = eventPayload,
+                    summary = "Tin nhắn mới từ [$platform] $rawId (Ý định: $intent, Độ khẩn cấp: $urgency, Chưa đọc: $newUnread)"
+                )
+            )
+
+            eventPayload
+        }
+    }
+
     suspend fun saveExternalUserMessage(message: String, username: String, fileUrl: String? = null, imageBase64: String? = null) {
         val resolvedFileUrl = if (!imageBase64.isNullOrEmpty()) {
             saveIncomingChatImage(imageBase64)
@@ -329,17 +397,8 @@ class ChatSkill @Inject constructor(
         withContext(Dispatchers.IO) {
             database.chatMessageDao().insertMessage(userMessage)
             
-            database.eventLogDao().insertLog(
-                com.aichatvn.agent.data.model.EventLogEntity(
-                    id = java.util.UUID.randomUUID().toString(),
-                    timestamp = userMessage.timestamp,
-                    source = username.substringBefore("_"),
-                    sourceId = username.substringAfter("_"),
-                    eventType = "incoming_message",
-                    value = message.take(200),
-                    summary = "Tin nhắn mới từ ${username.substringBefore("_")} (${username.substringAfter("_")}): \"${message.take(80)}\""
-                )
-            )
+            // Gọi hàm dùng chung recordIncomingChatEvent để ghi JSON/WorldState đồng nhất khi tắt Bot
+            recordIncomingChatEvent(message, username, userMessage.timestamp)
         }
         messagesMutex.withLock {
             if (currentUsername == username) {
@@ -375,6 +434,43 @@ class ChatSkill @Inject constructor(
         messagesMutex.withLock {
             currentUsername = username
             reloadMessages(username)
+        }
+
+        withContext(Dispatchers.IO) {
+            val existingState = database.worldStateDao().getState("chat", username)
+            if (existingState != null) {
+                try {
+                    val json = org.json.JSONObject(existingState.attributesJson)
+                    json.put("session_status", "resolved")
+                    json.put("unread_count", 0)
+
+                    val updatedPayload = json.toString()
+                    
+                    database.worldStateDao().upsertState(
+                        com.aichatvn.agent.data.model.WorldStateEntity(
+                            id = "chat:$username",
+                            source = "chat",
+                            sourceId = username,
+                            attributesJson = updatedPayload,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+
+                    database.eventLogDao().insertLog(
+                        com.aichatvn.agent.data.model.EventLogEntity(
+                            id = java.util.UUID.randomUUID().toString(),
+                            timestamp = System.currentTimeMillis(),
+                            source = "chat",
+                            sourceId = username,
+                            eventType = "chat_session_state_change",
+                            value = updatedPayload,
+                            summary = "Phiên chat với ${username.substringAfter("_")} đã được quản trị viên mở đọc và chuyển trạng thái: Đã giải quyết (resolved)."
+                        )
+                    )
+                } catch (e: Exception) {
+                    logger.e("ChatSkill", "Lỗi cập nhật trạng thái đã đọc vào WorldState: ${e.message}")
+                }
+            }
         }
     }
 
@@ -483,17 +579,8 @@ class ChatSkill @Inject constructor(
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(userMessage)
                     if (isExternal) {
-                        database.eventLogDao().insertLog(
-                            com.aichatvn.agent.data.model.EventLogEntity(
-                                id = java.util.UUID.randomUUID().toString(),
-                                timestamp = userMessage.timestamp,
-                                source = username.substringBefore("_"),
-                                sourceId = username.substringAfter("_"),
-                                eventType = "incoming_message",
-                                value = message.take(200),
-                                summary = "Tin nhắn mới từ ${username.substringBefore("_")} (${username.substringAfter("_")}): \"${message.take(80)}\""
-                            )
-                        )
+                        // ✅ SỬA LỖI LỚN BƯỚC 2: Gọi hàm dùng chung bóc tách JSON khi nhận tin nhắn đa kênh (kể cả khi Bot đang BẬT)
+                        recordIncomingChatEvent(message, username, userMessage.timestamp)
                     }
                 }
 
@@ -508,10 +595,6 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                // ✅ SỬA: Đúng thiết kế RAG Lai thế hệ mới — Ở câu hỏi đầu tiên (Pass 1), local KHÔNG hề search trước 
-                // để tránh lãng phí tài nguyên và làm phình (bloat) token vô ích. 
-                // Ta chỉ chạy buildMemoryContext() khi ở chế độ QA cục bộ (không dùng AI), 
-                // còn ở chế độ AI (Groq/Combined), ta hoàn toàn để Groq tự phân tích và gọi tool quyết định tìm kiếm (Two-Pass).
                 val memoryContext = if (_chatMode.value == ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(message)) {
                     buildMemoryContext(username, message) 
                 } else {

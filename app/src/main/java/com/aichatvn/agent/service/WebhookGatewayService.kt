@@ -815,10 +815,6 @@ class WebhookGatewayService : Service() {
                                     emptyMap()
                                 }
 
-                                // ✅ SỬA: trước đây gọi thẳng plugin.execute(...), bỏ qua hoàn toàn
-                                // requiredWorldState — nghĩa là lịch tự động (chạy không người giám
-                                // sát, rủi ro cao nhất) lại là nơi duy nhất KHÔNG được world-state
-                                // bảo vệ. Đổi sang executePluginAction() để áp guard dùng chung.
                                 val result = intentExecutor.executePluginAction(schedule.pluginId, schedule.action, params)
                                 when (result) {
                                     is AgentKernel.PluginResult.Failure ->
@@ -930,6 +926,8 @@ class WebhookGatewayService : Service() {
         }
     }
 
+   // ... [Các phần imports và logic SSE, Tuya sync giữ nguyên 100%] ...
+
     private suspend fun minePatterns() {
         val since = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 
         val now = System.currentTimeMillis()
@@ -949,7 +947,6 @@ class WebhookGatewayService : Service() {
         val existingPatterns = trainingSkillPatternCache()
 
         grouped.forEach { (key, entries) ->
-            // ✅ SỬA LỖI #5: Loại bỏ hoàn toàn nguồn "camera" ra khỏi mô hình khai thác thói quen Bật/Tắt để tránh sinh gợi ý rác
             if (key.source != "tuya") return@forEach
 
             val distinctDays = entries.map { entry ->
@@ -964,15 +961,8 @@ class WebhookGatewayService : Service() {
 
                 val existingCategory = existingPatterns[question + "_category"]
 
-                // ✅ SỬA LỖI: dùng "question" (khóa cố định theo device/hour) để nhận diện pattern,
-                // KHÔNG dùng "answer" (chứa $distinctDays biến động mỗi ngày do cửa sổ 7 ngày trượt).
-                // Trước đây so sánh bằng answer khiến pattern gần như luôn bị coi là "mới" mỗi lần
-                // mining chạy (24h/lần) -> ghi đè category về "pending_pattern", làm mất trạng thái
-                // approved_pattern/ignored_pattern mà người dùng đã chọn trước đó, khiến gợi ý đã
-                // duyệt/bỏ qua cứ hiện lại và có nguy cơ tạo lịch trùng khi bấm "Đồng ý" lần nữa.
                 when (existingCategory) {
                     null -> {
-                        // Chưa từng có -> tạo mới ở trạng thái chờ duyệt
                         val qa = com.aichatvn.agent.data.model.QAEntity(
                             id = java.util.UUID.randomUUID().toString(),
                             question = question,
@@ -985,10 +975,32 @@ class WebhookGatewayService : Service() {
                         )
                         qaDao.insertQA(qa)
                         logger.i("PatternMining", "🔁 Phát hiện thói quen mới chờ duyệt: $answer")
+
+                        val eventPayload = org.json.JSONObject().apply {
+                            put("pattern_id", qa.id)
+                            put("device_id", key.sourceId)
+                            put("device_name", key.sourceId)
+                            put("action", key.eventType)
+                            put("value", key.value)
+                            put("hour", key.hour)
+                            put("confidence", "$distinctDays/7 ngày")
+                            put("recommendation_text", answer)
+                            put("status", "pending")
+                        }.toString()
+
+                        database.eventLogDao().insertLog(
+                            com.aichatvn.agent.data.model.EventLogEntity(
+                                id = java.util.UUID.randomUUID().toString(),
+                                timestamp = now,
+                                source = "system",
+                                sourceId = "brain",
+                                eventType = "pattern_discovered",
+                                value = eventPayload,
+                                summary = "Hệ thống tự học thói quen mới: $answer"
+                            )
+                        )
                     }
                     "pending_pattern" -> {
-                        // Vẫn đang chờ duyệt -> chỉ cập nhật nội dung hiển thị (số ngày mới nhất),
-                        // giữ nguyên category, không tạo id mới.
                         if (existingPatterns[question] != answer) {
                             val qa = com.aichatvn.agent.data.model.QAEntity(
                                 id = existingPatterns[question + "_id"] ?: java.util.UUID.randomUUID().toString(),
@@ -1004,16 +1016,29 @@ class WebhookGatewayService : Service() {
                         }
                     }
                     else -> {
-                        // approved_pattern / ignored_pattern -> người dùng đã quyết định, không đụng vào.
                         logger.d("PatternMining", "⏭️ Bỏ qua pattern đã xử lý (category=$existingCategory): $question")
                     }
                 }
             }
         }
+
+        // ✅ ĐÃ SỬA (Bước 1): Sử dụng WorldStateHelper.setAttribute để MERGE thuộc tính của system:brain thay vì overwrite
+        val pendingCount = qaDao.getAllQAs("default_user").count { it.category == "pending_pattern" }
+        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+            database.worldStateDao(), "system", "brain", "pending_patterns_count", pendingCount.toString()
+        )
+        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+            database.worldStateDao(), "system", "brain", "last_learning_run", System.currentTimeMillis().toString()
+        )
     }
 
-    // ✅ SỬA: trả thêm category theo từng question (key + "_category") để minePatterns()
-    // biết pattern đã được duyệt/bỏ qua hay chưa, tránh ghi đè ngược về "pending_pattern".
+
+
+
+
+
+    
+
     private suspend fun trainingSkillPatternCache(): Map<String, String> {
         return try {
             database.qaDao().getAllQAs("default_user")

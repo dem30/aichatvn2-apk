@@ -29,8 +29,8 @@ class DashboardViewModel @Inject constructor(
     private val deviceRegistry: DeviceRegistry,
     private val agentKernel: AgentKernel,
     private val configProvider: AppConfigProvider,
-    private val database: AppDatabase,               // ✅ ĐÃ THÊM: AppDatabase để truy vấn đề xuất AI
-    private val scheduleSkill: ScheduleSkill,         // ✅ ĐÃ THÊM: ScheduleSkill để thiết lập lịch tự động
+    private val database: AppDatabase,               
+    private val scheduleSkill: ScheduleSkill,         
     private val logger: Logger
 ) : ViewModel() {
 
@@ -48,7 +48,6 @@ class DashboardViewModel @Inject constructor(
     private val _floorplanScale = MutableStateFlow(1f)
     val floorplanScale: StateFlow<Float> = _floorplanScale.asStateFlow()
 
-    // ✅ ĐÃ THÊM: Luồng quan sát các đề xuất thói quen chờ duyệt thời gian thực
     private val _aiRecommendations = MutableStateFlow<List<QAEntity>>(emptyList())
     val aiRecommendations: StateFlow<List<QAEntity>> = _aiRecommendations.asStateFlow()
 
@@ -56,10 +55,9 @@ class DashboardViewModel @Inject constructor(
         refreshDashboardNodes()
         loadFloorplanPath()
         loadFloorplanScale()
-        observePendingPatterns() // ✅ ĐÃ THÊM: Lắng nghe danh sách thói quen
+        observePendingPatterns() 
     }
 
-    // ✅ ĐÃ THÊM: Theo dõi các bản ghi thói quen chờ duyệt
     private fun observePendingPatterns() {
         viewModelScope.launch {
             database.qaDao().getAllQAsFlow("default_user")
@@ -69,24 +67,29 @@ class DashboardViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ĐÃ THÊM: Phê duyệt thói quen, chuyển đổi dữ liệu và kích hoạt tạo lịch tự động trong hệ thống
+     * ✅ CẬP NHẬT (Bước 1): Cấu trúc hóa sự kiện phê duyệt thói quen thành JSON để AI nắm bắt
      */
+
+
+
+     
+                                              // ... [Các phần imports và logic giữ nguyên 100%] ...
+
     fun approvePattern(pattern: QAEntity) {
         viewModelScope.launch {
             _isProcessing.value = true
             _executionMessage.value = null
             try {
-                // Định dạng question: pattern:[source]:[sourceId]:[eventType]:[value]:[hour]h
                 val segments = pattern.question.split(":")
                 if (segments.size >= 6 && segments[0] == "pattern") {
-                    val source = segments[1]     // "tuya" hoặc "camera"
-                    val sourceId = segments[2]   // Tên thiết bị (ví dụ: "Đèn phòng khách")
-                    val eventType = segments[3]  // "state_change"
-                    val value = segments[4]      // "true" hoặc "false"
+                    val source = segments[1]     
+                    val sourceId = segments[2]   
+                    val eventType = segments[3]  
+                    val value = segments[4]      
                     val hourStr = segments[5].removeSuffix("h")
                     val hour = hourStr.toIntOrNull() ?: 12
 
-                    val cronExpr = "0 $hour * * *" // Thiết lập chạy hằng ngày vào giờ chỉ định
+                    val cronExpr = "0 $hour * * *" 
 
                     if (source == "tuya") {
                         val paramsMap = mapOf(
@@ -115,11 +118,29 @@ class DashboardViewModel @Inject constructor(
                                             timestamp = System.currentTimeMillis()
                                         )
                                     )
+
+                                    val approvedPayload = org.json.JSONObject().apply {
+                                        put("pattern_id", pattern.id)
+                                        put("device_name", sourceId)
+                                        put("action", "approve")
+                                        put("cron_expression", cronExpr)
+                                        put("value", value)
+                                    }.toString()
+
+                                    database.eventLogDao().insertLog(
+                                        com.aichatvn.agent.data.model.EventLogEntity(
+                                            id = java.util.UUID.randomUUID().toString(),
+                                            timestamp = System.currentTimeMillis(),
+                                            source = "system",
+                                            sourceId = "brain",
+                                            eventType = "pattern_approved",
+                                            value = approvedPayload,
+                                            summary = "Đã phê duyệt đề xuất tự động hóa: ${if (value.toBoolean()) "Bật" else "Tắt"} $sourceId lúc ${hour}h hằng ngày."
+                                        )
+                                    )
+
+                                    updatePendingPatternsCountInWorldState()
                                 }
-                                // ✅ MỚI: ScheduleSkill.handleAdd giờ trả về data["duplicate"]=true
-                                // nếu đã có lịch trùng từ trước (vd người dùng lỡ bấm "Đồng ý" 2 lần) —
-                                // vẫn đánh dấu approved để ẩn đề xuất khỏi Dashboard, nhưng báo đúng
-                                // sự thật thay vì nói "đã thiết lập" gây hiểu nhầm là vừa tạo mới.
                                 val isDuplicate = (result.data as? Map<*, *>)?.get("duplicate") as? Boolean ?: false
                                 _executionMessage.value = if (isDuplicate) {
                                     "ℹ️ Thói quen này đã có lịch tự động từ trước, không tạo thêm bản trùng."
@@ -149,28 +170,72 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ✅ ĐÃ THÊM: Bỏ qua đề xuất và ẩn khỏi giao diện Dashboard
-     */
     fun ignorePattern(pattern: QAEntity) {
         viewModelScope.launch {
             _executionMessage.value = null
             try {
-                withContext(Dispatchers.IO) {
-                    database.qaDao().insertQA(
-                        pattern.copy(
-                            category = "ignored_pattern",
-                            timestamp = System.currentTimeMillis()
+                // ✅ ĐÃ SỬA (Bước 1): Thêm guard-clause bảo vệ chặt chẽ tránh lỗi bóc tách sai định dạng câu hỏi
+                val segments = pattern.question.split(":")
+                if (segments.size >= 6 && segments[0] == "pattern") {
+                    val sourceId = segments[2]
+                    val value = segments[4]
+                    val hourStr = segments[5].removeSuffix("h")
+
+                    withContext(Dispatchers.IO) {
+                        database.qaDao().insertQA(
+                            pattern.copy(
+                                category = "ignored_pattern",
+                                timestamp = System.currentTimeMillis()
+                            )
                         )
-                    )
+
+                        val ignoredPayload = org.json.JSONObject().apply {
+                            put("pattern_id", pattern.id)
+                            put("device_name", sourceId)
+                            put("action", "ignore")
+                        }.toString()
+
+                        database.eventLogDao().insertLog(
+                            com.aichatvn.agent.data.model.EventLogEntity(
+                                id = java.util.UUID.randomUUID().toString(),
+                                timestamp = System.currentTimeMillis(),
+                                source = "system",
+                                sourceId = "brain",
+                                eventType = "pattern_ignored",
+                                value = ignoredPayload,
+                                summary = "Đã bỏ qua đề xuất tự động hóa: ${if (value.toBoolean()) "Bật" else "Tắt"} $sourceId lúc ${hourStr}h hằng ngày."
+                            )
+                        )
+
+                        updatePendingPatternsCountInWorldState()
+                    }
+                    _executionMessage.value = "🔕 Đã bỏ qua đề xuất này."
+                } else {
+                    _executionMessage.value = "❌ Định dạng đề xuất thói quen không chính xác"
                 }
-                _executionMessage.value = "🔕 Đã bỏ qua đề xuất này."
             } catch (e: Exception) {
                 _executionMessage.value = "❌ Lỗi khi bỏ qua: ${e.message}"
                 logger.e("DashboardViewModel", "Lỗi bỏ qua pattern", e)
             }
         }
     }
+
+    // ✅ ĐÃ SỬA (Bước 1): Sử dụng WorldStateHelper.setAttribute để MERGE dữ liệu của system:brain
+    private suspend fun updatePendingPatternsCountInWorldState() = withContext(Dispatchers.IO) {
+        val pendingCount = database.qaDao().getAllQAs("default_user").count { it.category == "pending_pattern" }
+        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+            database.worldStateDao(), "system", "brain", "pending_patterns_count", pendingCount.toString()
+        )
+        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+            database.worldStateDao(), "system", "brain", "last_interaction_run", System.currentTimeMillis().toString()
+        )
+    }
+
+
+
+
+
+    
 
     private fun loadFloorplanPath() {
         viewModelScope.launch {

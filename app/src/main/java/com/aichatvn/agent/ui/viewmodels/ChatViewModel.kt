@@ -131,6 +131,18 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * ✅ CẬP NHẬT (Bước 2): Ghi nhận sự kiện cướp quyền (Takeover) có cấu trúc JSON vào WorldState & EventLog
+     */
+
+
+
+     
+    // ... [imports và các phần khởi tạo giữ nguyên] ...
+
+    /**
+     * ✅ SỬA LỖI NHỎ (Bước 2): Tự động chuyển đổi trạng thái và reset unread_count về 0 khi Admin gạt tiếp quản (Takeover)
+     */
     fun toggleBotSmartMode(targetUsername: String, isBotEnabled: Boolean) {
         val rawId = targetUsername.substringAfter("_")
         _isBotEnabled.value = isBotEnabled
@@ -149,11 +161,55 @@ class ChatViewModel @Inject constructor(
             } else {
                 database.cameraDao().updateSmartMode(rawId, isBotEnabled, System.currentTimeMillis())
             }
+
+            // Đồng bộ trạng thái tiếp quản phiên chat của người trực vào Bản sao số (World State)
+            val existingState = database.worldStateDao().getState("chat", targetUsername)
+            val json = existingState?.let {
+                try { org.json.JSONObject(it.attributesJson) } catch (e: Exception) { org.json.JSONObject() }
+            } ?: org.json.JSONObject()
+
+            val newStatus = if (isBotEnabled) "waiting_agent" else "agent_handling"
+            json.put("session_status", newStatus)
+            if (!isBotEnabled) {
+                json.put("unread_count", 0) // Reset ngay về 0 khi Admin trực tiếp cướp quyền trực chat
+            }
+            val updatedPayload = json.toString()
+
+            database.worldStateDao().upsertState(
+                com.aichatvn.agent.data.model.WorldStateEntity(
+                    id = "chat:$targetUsername",
+                    source = "chat",
+                    sourceId = targetUsername,
+                    attributesJson = updatedPayload,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+
+            // Lưu nhật ký sự kiện có cấu trúc
+            database.eventLogDao().insertLog(
+                com.aichatvn.agent.data.model.EventLogEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    timestamp = System.currentTimeMillis(),
+                    source = "chat",
+                    sourceId = targetUsername,
+                    eventType = "chat_session_state_change",
+                    value = updatedPayload,
+                    summary = if (isBotEnabled) {
+                        "🤖 Đã bật lại Bot tự động trả lời cho khách $targetUsername."
+                    } else {
+                        "👤 Quản trị viên đã tiếp quản, cướp quyền trực chat và reset tin chưa đọc về 0 cho khách $targetUsername."
+                    }
+                )
+            )
+
             logger.i("ChatViewModel", "👤 Đã cập nhật chế độ Bot cho khách $targetUsername thành: $isBotEnabled")
         }
     }
 
-    // ✅ KHÔI PHỤC: Cài đặt chế độ Chat truyền xuống cho ChatSkill
+
+
+    
+
     fun setChatMode(mode: ChatMode) {
         chatSkill.setChatMode(mode)
     }
