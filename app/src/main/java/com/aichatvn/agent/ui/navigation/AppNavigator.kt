@@ -20,6 +20,7 @@ import com.aichatvn.agent.R
 import com.aichatvn.agent.ui.screens.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichatvn.agent.ui.viewmodels.NavBadgeViewModel
+import com.aichatvn.agent.ui.viewmodels.HouseManagerViewModel // ✅ THÊM IMPORT: ViewModel của Quản gia AI
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
@@ -33,6 +34,9 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
     object Logs       : Screen("logs",        R.string.tab_logs,        Icons.Default.BugReport)
     object Settings   : Screen("settings",    R.string.tab_settings,    Icons.Default.Settings)
     object Tuya       : Screen("tuya",        R.string.tab_settings,    Icons.Default.Devices)
+
+    // ✅ MỚI (Giai đoạn 4): Định nghĩa route cho màn hình Quản gia thông minh
+    object HouseManager : Screen("house_manager", R.string.tab_house_manager, Icons.Default.SmartToy)
 
     companion object {
         // Inbox giờ chỉ là màn con, mở từ icon trong ChatScreen — không nằm trong Bottom Navigation.
@@ -83,9 +87,11 @@ fun AppNavigator(
     val totalUnreadCount by navBadgeViewModel.totalUnreadCount.collectAsState()
 
     // Danh sách các tab chính hiển thị dưới thanh Bottom Navigation (Đã loại bỏ Diagnostics)
+    // ✅ ĐÃ SỬA: Bổ sung Screen.HouseManager vào danh sách tab chính để hiển thị trực quan dưới Bottom Bar
     val screens = listOf(
         Screen.Dashboard,
         Screen.Chat, // ✅ ĐÃ SỬA: Tab "Trò chuyện" giờ là màn chat AI mặc định, không phải Inbox nữa
+        Screen.HouseManager, // ✅ MỚI: Quản gia AI được đưa thành một tab chính thức trên thanh điều hướng Bottom Bar
         Screen.Customer,
         Screen.Training,
         Screen.Schedule,
@@ -167,6 +173,12 @@ fun AppNavigator(
             composable(Screen.Logs.route)        { LogScreen(navController) }
             composable(Screen.Settings.route)    { SettingsScreen(navController) }
             composable(Screen.Tuya.route)        { TuyaScreen(navController) }
+
+            // ✅ MỚI (Giai đoạn 4): Đăng ký composable cho màn hình Quản gia AI, sử dụng Hilt để tự tiêm ViewModel
+            composable(Screen.HouseManager.route) {
+                val houseViewModel: HouseManagerViewModel = hiltViewModel()
+                HouseManagerScreen(viewModel = houseViewModel)
+            }
 
             // ✅ ĐÃ SỬA: route KHÔNG tham số — vừa là màn hình mở đầu app (default_user, xem
             // ChatViewModel.username mặc định), VỪA là root của tab "Trò chuyện" (Screen.Chat).
