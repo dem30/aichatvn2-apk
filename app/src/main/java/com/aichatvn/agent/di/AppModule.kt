@@ -23,6 +23,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 import javax.inject.Singleton
+import javax.inject.Provider // ✅ THÊM IMPORT: Hỗ trợ nạp lazy Provider tránh circular dependency
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -90,7 +91,6 @@ object AppModule {
     @IntoSet
     @Singleton
     fun provideAppConfigSkill(skill: AppConfigSkill): Plugin = skill
-
      
     @Provides
     @IntoSet
@@ -101,6 +101,17 @@ object AppModule {
     @IntoSet
     @Singleton
     fun provideFacebookSkill(skill: FacebookSkill): Plugin = skill
+
+    // ✅ THÊM: Đăng ký và bind Interface HouseManagerSkill vào Hilt Graph
+    @Provides
+    @Singleton
+    fun provideHouseManagerSkill(impl: HouseManagerSkillImpl): HouseManagerSkill = impl
+
+    // ✅ THÊM: Đăng ký Quản gia vào Set<Plugin> để hệ thống quét và nhận diện các action có sẵn
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideHouseManagerSkillPlugin(skill: HouseManagerSkill): Plugin = skill
 
     @Provides
     @Singleton
@@ -116,17 +127,6 @@ object AppModule {
         return DialogManagerImpl()
     }
 
-
-    @Provides
-@IntoSet // Khai báo này đưa HouseManagerSkill vào Set<@JvmSuppressWildcards Plugin> trong AgentKernel
-fun provideHouseManagerSkill(
-    database: AppDatabase,
-    logger: Logger
-): Plugin {
-    return HouseManagerSkillImpl(database, logger)
-}
-
-    
     // ===== AGENT KERNEL =====
     @Provides
     @Singleton
@@ -140,8 +140,10 @@ fun provideHouseManagerSkill(
         routingPipeline: RoutingPipeline,
         intentExecutor: IntentExecutor,
         databaseSearchHelper: DatabaseSearchHelper,
-        timeRangeResolver: TimeRangeResolver, // ✅ SỬA: Nhận thêm TimeRangeResolver từ Hilt để đưa vào AgentKernel
-        logger: Logger
+        timeRangeResolver: TimeRangeResolver,
+        logger: Logger,
+        // ✅ SỬA: Tiêm thêm Provider của Quản gia AI vào chữ ký hàm dựng của Hilt
+        houseManagerProvider: Provider<HouseManagerSkill> 
     ): AgentKernel {
         return AgentKernel(
             plugins,
@@ -153,8 +155,10 @@ fun provideHouseManagerSkill(
             routingPipeline,
             intentExecutor,
             databaseSearchHelper,
-            timeRangeResolver, // ✅ SỬA: Truyền đúng tham số thứ 10 vào AgentKernel
-            logger
+            timeRangeResolver,
+            logger,
+            // ✅ SỬA: Truyền tham số thứ 12 vào hàm dựng của AgentKernel
+            houseManagerProvider 
         )
     }
 }
