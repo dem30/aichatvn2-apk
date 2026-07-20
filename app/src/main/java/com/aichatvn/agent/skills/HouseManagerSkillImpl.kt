@@ -14,8 +14,13 @@ import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.WorldStateHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
+// ✅ MỚI (Giai đoạn 3 - Planner): các import bất đồng bộ cần cho plannerScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -27,6 +32,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.*
+// ✅ MỚI (Giai đoạn 3 - Planner): thiếu trong bản gốc, cần cho activePlansMap/planLogsMap
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
@@ -67,6 +74,14 @@ class HouseManagerSkillImpl @Inject constructor(
     private val mutex = Mutex()
     private var cachedSituation: HouseSituation? = null
 
+    // ✅ MỚI (Giai đoạn 3 - Planner): Scope bất đồng bộ riêng để chạy kịch bản dưới nền,
+    // không phụ thuộc lifecycle của coroutine gọi nó (vd: webhook camera).
+    private val plannerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Quản lý trạng thái các kế hoạch đang chạy / log để hiển thị lên UI Screen sau này
+    private val activePlansMap = ConcurrentHashMap<String, PlanStatus>()
+    private val planLogsMap = ConcurrentHashMap<String, MutableList<String>>()
+
     companion object {
         private val DATETIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
@@ -95,7 +110,7 @@ class HouseManagerSkillImpl @Inject constructor(
                 val states = database.worldStateDao().getAllStatesFlow().first()
                 val cameraStates = states.filter { it.source == "camera" }
                 val isSuspicious = cameraStates.any { getAttr(it, "state") == "suspicious" }
-                
+
                 var suspiciousCount = 0
                 var guestCount = 0
                 cameraStates.forEach { state ->
@@ -122,7 +137,7 @@ class HouseManagerSkillImpl @Inject constructor(
                     totalUnreadChats += unread
                 }
 
-                val ownerPresent = true 
+                val ownerPresent = true
 
                 val computedMood = when {
                     isSuspicious -> HouseMood.ALERT
@@ -208,6 +223,16 @@ class HouseManagerSkillImpl @Inject constructor(
                 logger.e("HouseManager", "Gửi thông báo đẩy mặc định thất bại: ${e.message}")
             }
         }
+
+        // 🚨 KÍCH HOẠT PHẢN ỨNG LIÊN HOÀN CỦA PLANNER:
+        // Nếu phát hiện biến cố an ninh thực tế và KHÔNG phải sự kiện đang bị gộp trùng (tránh kích hoạt lặp rơ-le).
+        // ✅ ĐÃ SỬA: gọi trực tiếp (suspend), KHÔNG bọc thêm plannerScope.launch { } ở đây —
+        // executePlan() bên dưới đã tự launch trên plannerScope và trả về ngay, bọc thêm launch
+        // là dư một tầng coroutine không cần thiết.
+        if (!shouldMerge && camera.id.trim() == "cam_01") { // Ví dụ áp dụng cho camera Sân Trước (cam_01)
+            triggerProtectHouseSequence(camera.id.trim())
+        }
+
         return@withContext emailSent
     }
 
@@ -227,7 +252,7 @@ class HouseManagerSkillImpl @Inject constructor(
             else -> "general"
         }
 
-        val isUrgent = normMsg.contains("gap") || normMsg.contains("ngay") || normMsg.contains("khan") || 
+        val isUrgent = normMsg.contains("gap") || normMsg.contains("ngay") || normMsg.contains("khan") ||
                        normMsg.contains("trom") || normMsg.contains("chay") || normMsg.contains("nguy hiem")
         val urgency = if (isUrgent) "high" else "normal"
 
@@ -291,6 +316,157 @@ class HouseManagerSkillImpl @Inject constructor(
             unreadCount = newUnread,
             summary = "Quản gia đã duyệt thớt chat $unifiedUsername."
         )
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🧠 PLANNER ENGINE (Giai đoạn 3 — Vận hành chuỗi kịch bản liên hoàn nhiều bước)
+    // ─────────────────────────────────────────────────────────────────────────
+    override fun getActivePlans(): List<PlanStatus> {
+        return activePlansMap.values.toList()
+    }
+
+    override suspend fun executePlan(goalName: String, steps: List<ActionStep>) {
+        val planId = "PLAN-${UUID.randomUUID().toString().take(8).uppercase()}"
+        val logsList = Collections.synchronizedList(mutableListOf<String>())
+        planLogsMap[planId] = logsList
+
+        plannerScope.launch {
+            logger.i("HousePlanner", "🎬 Bắt đầu vận hành kế hoạch [$planId]: '$goalName' (${steps.size} bước)")
+            logsList.add("Khởi động kế hoạch lúc ${DATETIME_FORMATTER.format(Instant.now())}")
+
+            activePlansMap[planId] = PlanStatus(
+                planId = planId,
+                goalName = goalName,
+                currentStepIndex = 0,
+                totalSteps = steps.size,
+                status = "RUNNING",
+                logs = logsList
+            )
+
+            for ((index, step) in steps.withIndex()) {
+                // 1. Cập nhật tiến trình cho UI Screen
+                activePlansMap[planId] = activePlansMap[planId]!!.copy(currentStepIndex = index)
+
+                // 2. Chờ hoãn nếu bước này yêu cầu trì hoãn trước khi chạy
+                if (step.delayMs > 0) {
+                    val delaySec = step.delayMs / 1000
+                    logger.d("HousePlanner", "[$planId] Chờ trì hoãn $delaySec giây...")
+                    logsList.add("Bước ${index + 1}: Chờ hoãn $delaySec giây")
+                    delay(step.delayMs)
+                }
+
+                // 3. Đánh giá điều kiện thế giới thực (Precondition check) trước khi chạy bước
+                var proceed = true
+                if (!step.precondition.isNullOrBlank()) {
+                    val condition = WorldStateHelper.parseCondition(step.precondition)
+                    if (condition != null) {
+                        val actualValue = WorldStateHelper.getAttribute(
+                            database.worldStateDao(),
+                            condition.source,
+                            condition.sourceId,
+                            condition.attrKey
+                        )
+                        proceed = actualValue == condition.expected
+                        if (!proceed) {
+                            logger.w("HousePlanner", "[$planId] ⚠️ Bước ${index + 1} bị BỎ QUA do sai điều kiện thực tế (Yêu cầu: ${condition.attrKey}=${condition.expected}, Thực tế: $actualValue)")
+                            logsList.add("Bước ${index + 1}: ⚠️ Bỏ qua — Ràng buộc thế giới thực không khớp (${condition.attrKey}=${condition.expected})")
+                        }
+                    }
+                }
+
+                if (!proceed) continue
+
+                // 4. Kích hoạt thực thi hành động qua IntentExecutor
+                logger.i("HousePlanner", "[$planId] ⚡ Bước ${index + 1}/${steps.size}: Kích hoạt ${step.pluginId}.${step.action}")
+                logsList.add("Bước ${index + 1}: Kích hoạt thực thi ${step.pluginId}.${step.action}")
+
+                try {
+                    val outcome = intentExecutorProvider.get().executePluginAction(
+                        step.pluginId,
+                        step.action,
+                        step.params
+                    )
+
+                    when (outcome) {
+                        is PluginResult.Success -> {
+                            logger.i("HousePlanner", "[$planId] ✅ Bước ${index + 1} thành công.")
+                            logsList.add("Bước ${index + 1}: ✅ Thành công.")
+                        }
+                        is PluginResult.Failure -> {
+                            logger.e("HousePlanner", "[$planId] ❌ Bước ${index + 1} thất bại: ${outcome.error}")
+                            logsList.add("Bước ${index + 1}: ❌ Thất bại: ${outcome.error}")
+                        }
+                        else -> {
+                            logsList.add("Bước ${index + 1}: Chờ bổ sung thông tin.")
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("HousePlanner", "[$planId] ❌ Lỗi hệ thống tại bước ${index + 1}: ${e.message}")
+                    logsList.add("Bước ${index + 1}: ❌ Lỗi hệ thống: ${e.message}")
+                }
+            }
+
+            // 5. Kết thúc kịch bản và lưu trạng thái hoàn thành
+            logger.i("HousePlanner", "🏁 Kế hoạch [$planId] đã hoàn thành chu kỳ chạy.")
+            logsList.add("Kế hoạch hoàn tất lúc ${DATETIME_FORMATTER.format(Instant.now())}")
+            activePlansMap[planId] = activePlansMap[planId]!!.copy(
+                currentStepIndex = steps.size,
+                status = "COMPLETED"
+            )
+
+            // Dọn dẹp kế hoạch cũ khỏi bộ nhớ hiển thị sau 10 phút để tránh tốn RAM
+            delay(10 * 60 * 1000L)
+            activePlansMap.remove(planId)
+            planLogsMap.remove(planId)
+        }
+    }
+
+    // Kịch bản mẫu liên hoàn bảo vệ nhà thông minh 5 bước của Quản gia
+    override suspend fun triggerProtectHouseSequence(cameraId: String) {
+        val steps = listOf(
+            // Bước 1: Bật ngay đèn sân trước của Tuya để dọa trộm
+            ActionStep(
+                pluginId = "smart_switch",
+                action = "set",
+                params = mapOf("device" to "đèn sân trước", "state" to true)
+            ),
+            // Bước 2: Gửi thông báo khẩn cho chủ nhà
+            ActionStep(
+                pluginId = "notification",
+                action = "send",
+                params = mapOf(
+                    "title" to "🚨 PHÁT HIỆN NGHI VẤN SÂN TRƯỚC",
+                    "message" to "Quản gia đã tự động bật đèn sân để răn đe. Đang theo dõi sát sao..."
+                )
+            ),
+            // Bước 3: Đợi 30 giây để trộm tự rút lui
+            ActionStep(
+                pluginId = "camera",
+                action = "scan",
+                params = mapOf("cameraId" to cameraId, "force" to true),
+                delayMs = 30000L // ⏳ Trì hoãn 30 giây trước khi quét lại
+            ),
+            // Bước 4: Kiểm tra lại thế giới thực. Nếu trộm vẫn cố tình ở lại (trạng thái camera vẫn suspicious)
+            // thì hú còi báo động khẩn cấp
+            ActionStep(
+                pluginId = "smart_switch",
+                action = "set",
+                params = mapOf("device" to "còi báo động", "state" to true),
+                delayMs = 5000L,
+                precondition = "camera.$cameraId.state=suspicious" // 🔒 Chỉ hú còi nếu trộm chưa đi!
+            ),
+            // Bước 5: Đưa còi báo động về trạng thái an toàn sau 1 phút hú còi dọa
+            ActionStep(
+                pluginId = "smart_switch",
+                action = "set",
+                // ✅ ĐÃ SỬA LỖI CÚ PHÁP: bản gốc dùng "state" -> false (sai cú pháp, không compile được)
+                params = mapOf("device" to "còi báo động", "state" to false),
+                delayMs = 60000L, // ⏳ Tự động tắt còi sau 1 phút
+                precondition = "tuya.còi báo động.state=true" // Chỉ tắt nếu còi thực sự đang hú
+            )
+        )
+
+        executePlan("Kịch bản liên hoàn bảo vệ an ninh sân trước", steps)
     }
 
     // ✅ ĐÃ SỬA LỖI 2: Di dời hàm sinh body email sang HouseManagerSkillImpl thay vì gọi qua hàm private của CameraSkill
