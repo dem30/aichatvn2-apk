@@ -4,11 +4,11 @@ import android.content.Context
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
-import com.aichatvn.agent.core.execution.IntentExecutor
+// ✅ ĐÃ SỬA: Sửa từ "exec1ution" thành "execution" để Hilt/Kapt nhận diện chính xác
+import com.aichatvn.agent.core.execution.IntentExecutor 
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
-import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.*
 import com.aichatvn.agent.skills.base.BaseSkill
@@ -52,7 +52,7 @@ class HouseManagerSkillImpl @Inject constructor(
         id = id,
         name = name,
         capabilities = PluginCapabilities(dashboard = true),
-        routable = true, // Cho phép AI hiểu và tự kích hoạt các lệnh Quản gia thông qua Chat NLU
+        routable = true,
         visibleOnDashboard = true,
         autoGenerateQA = true,
         actions = listOf(
@@ -106,7 +106,7 @@ class HouseManagerSkillImpl @Inject constructor(
         return when (action) {
             "evaluate" -> {
                 val sit = evaluateSituation()
-                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Đã quy nạp trạng thái: Chế độ ${sit.currentMood}."))
+                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Quy nạp trạng thái thành công."))
             }
             "set_away_mode" -> {
                 val enabled = params["enabled"] as? Boolean ?: return PluginResult.Failure("Thiếu tham số enabled")
@@ -161,12 +161,11 @@ class HouseManagerSkillImpl @Inject constructor(
                     totalUnreadChats += unread
                 }
 
-                // 🧠 ĐỌCaway_mode TỪ BẢN SAO SỐ ĐỂ CẬP NHẬT TRẠNG THÁI SỐNG ĐỘNG
                 val isAway = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "house", "away_mode") == "true"
                 val ownerPresent = !isAway
 
                 val computedMood = when {
-                    isAway -> HouseMood.VACATION // Đi vắng dài ngày
+                    isAway -> HouseMood.VACATION
                     isSuspicious -> HouseMood.ALERT
                     totalUnreadChats > 3 -> HouseMood.BUSY
                     isNightTime() && activeDevicesCount == 0 -> HouseMood.SLEEPING
@@ -194,7 +193,6 @@ class HouseManagerSkillImpl @Inject constructor(
 
                 cachedSituation = situation
 
-                // Lưu trạng thái tổng hợp "system:brain"
                 val brainJson = JSONObject().apply {
                     put("mood", computedMood.name)
                     put("security_level", securityLevel)
@@ -364,7 +362,6 @@ class HouseManagerSkillImpl @Inject constructor(
         )
     }
 
-    // 🧠 GIAI ĐOẠN 4: DUYỆT CHÍNH SÁCH THỰC TẾ (Đọc cấu hình động từ Bản sao số thay vì hardcode)
     override suspend fun checkPolicy(
         pluginId: String,
         action: String,
@@ -372,7 +369,6 @@ class HouseManagerSkillImpl @Inject constructor(
     ): PolicyResult = withContext(Dispatchers.IO) {
         val currentSituation = cachedSituation ?: evaluateSituation()
         
-        // 1. CHÍNH SÁCH BAN ĐÊM (silent_night)
         val isSilentNightEnabled = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "silent_night") ?: "true"
         if (isSilentNightEnabled == "true" && currentSituation.currentMood == HouseMood.SLEEPING && pluginId == "smart_switch" && action == "set") {
             val state = params["state"] as? Boolean ?: false
@@ -388,7 +384,6 @@ class HouseManagerSkillImpl @Inject constructor(
             }
         }
 
-        // 2. CHÍNH SÁCH VẮNG NHÀ AN TOÀN (vacation_safety)
         val isVacationSafetyEnabled = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "vacation_safety") ?: "true"
         if (isVacationSafetyEnabled == "true" && currentSituation.currentMood == HouseMood.VACATION && pluginId == "smart_switch" && action == "set") {
             val state = params["state"] as? Boolean ?: false
@@ -540,7 +535,6 @@ class HouseManagerSkillImpl @Inject constructor(
         executePlan("Kịch bản liên hoàn bảo vệ an ninh sân trước", steps)
     }
 
-    // 🧠 GIAI ĐOẠN 4: CENTRALIZED HABIT MINING (Tự học thói quen người dùng)
     override suspend fun mineUserHabits() = withContext(Dispatchers.IO) {
         logger.i("HouseManager", "🔄 Quản gia bắt đầu tiến trình tự học thói quen người dùng từ nhật ký 7 ngày...")
         

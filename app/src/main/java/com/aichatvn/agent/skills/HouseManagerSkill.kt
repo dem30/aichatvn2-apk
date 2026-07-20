@@ -6,9 +6,35 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.EventLogEntity
 import com.aichatvn.agent.data.model.HouseSituation
 
-// ... [Khai báo ChatDecision, ActionStep, PlanStatus giữ nguyên]
+// ✅ Khai báo lớp dữ liệu ChatDecision tại cấp độ file
+data class ChatDecision(
+    val shouldAutoRespond: Boolean,
+    val intent: String,
+    val urgency: String,
+    val unreadCount: Int,
+    val summary: String
+)
 
-// ✅ MỚI (Giai đoạn 4): Định nghĩa kết quả kiểm duyệt chính sách
+// ✅ Định nghĩa một bước hành động đơn lẻ trong chuỗi kế hoạch
+data class ActionStep(
+    val pluginId: String,            // Plugin đích (vd: smart_switch, camera)
+    val action: String,              // Hành động (vd: set, scan)
+    val params: Map<String, Any>,    // Tham số thực thi
+    val delayMs: Long = 0L,          // Thời gian hoãn chờ (milli-giây) TRƯỚC khi thực hiện bước này
+    val precondition: String? = null // Điều kiện thế giới thực dạng "source.sourceId.key=value"
+)
+
+// ✅ Theo dõi trạng thái tiến trình chạy của một kế hoạch
+data class PlanStatus(
+    val planId: String,
+    val goalName: String,
+    val currentStepIndex: Int,
+    val totalSteps: Int,
+    val status: String,              // RUNNING, COMPLETED, FAILED, BLOCKED
+    val logs: List<String>
+)
+
+// ✅ Khai báo kết quả kiểm duyệt chính sách
 sealed class PolicyResult {
     object Allowed : PolicyResult()
     data class Blocked(val reason: String) : PolicyResult()
@@ -39,9 +65,6 @@ interface HouseManagerSkill : Plugin {
     suspend fun triggerProtectHouseSequence(cameraId: String)
     fun getActivePlans(): List<PlanStatus>
 
-    // ✅ MỚI (Giai đoạn 4 - Policy Engine): Kiểm duyệt chính sách an toàn trước khi cấp điện thiết bị
     suspend fun checkPolicy(pluginId: String, action: String, params: Map<String, Any>): PolicyResult
-
-    // ✅ MỚI (Giai đoạn 4 - Learning Engine): Tự học thói quen người dùng từ nhật ký 7 ngày gần nhất
     suspend fun mineUserHabits()
 }
