@@ -1,7 +1,7 @@
 package com.aichatvn.agent.di
 
 import com.aichatvn.agent.utils.DatabaseSearchHelper
-import com.aichatvn.agent.utils.TimeRangeResolver // ✅ THÊM IMPORT: Cung cấp TimeRangeResolver cho AppModule
+import com.aichatvn.agent.utils.TimeRangeResolver 
 import android.content.Context
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
@@ -23,7 +23,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 import javax.inject.Singleton
-import javax.inject.Provider // ✅ THÊM IMPORT: Hỗ trợ nạp lazy Provider tránh circular dependency
+import javax.inject.Provider // Thêm import Provider
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -102,12 +102,12 @@ object AppModule {
     @Singleton
     fun provideFacebookSkill(skill: FacebookSkill): Plugin = skill
 
-    // ✅ THÊM: Đăng ký và bind Interface HouseManagerSkill vào Hilt Graph
+    // ✅ ĐÃ SỬA LỖI 6: Cung cấp binding Singleton chính xác cho HouseManagerSkill để tránh lỗi Dagger Missing Binding
     @Provides
     @Singleton
     fun provideHouseManagerSkill(impl: HouseManagerSkillImpl): HouseManagerSkill = impl
 
-    // ✅ THÊM: Đăng ký Quản gia vào Set<Plugin> để hệ thống quét và nhận diện các action có sẵn
+    // ✅ ĐÃ SỬA: Đăng ký Quản gia vào Plugin Set từ cùng một Singleton Instance
     @Provides
     @IntoSet
     @Singleton
@@ -142,7 +142,7 @@ object AppModule {
         databaseSearchHelper: DatabaseSearchHelper,
         timeRangeResolver: TimeRangeResolver,
         logger: Logger,
-        // ✅ SỬA: Tiêm thêm Provider của Quản gia AI vào chữ ký hàm dựng của Hilt
+        // ✅ ĐÃ SỬA LỖI 6: Tiêm đúng Provider<HouseManagerSkill> đã cấu hình ở trên vào AgentKernel
         houseManagerProvider: Provider<HouseManagerSkill> 
     ): AgentKernel {
         return AgentKernel(
@@ -157,7 +157,6 @@ object AppModule {
             databaseSearchHelper,
             timeRangeResolver,
             logger,
-            // ✅ SỬA: Truyền tham số thứ 12 vào hàm dựng của AgentKernel
             houseManagerProvider 
         )
     }

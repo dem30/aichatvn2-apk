@@ -64,6 +64,7 @@ class CameraSkill @Inject constructor(
     private val configProvider: AppConfigProvider,
     private val deviceRegistry: DeviceRegistry,
     private val intentExecutorProvider: Provider<IntentExecutor>, 
+    private val houseManagerProvider: Provider<HouseManagerSkill>, // ✅ Kết nối với Quản gia (cùng package nên không cần import riêng)
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
@@ -1084,34 +1085,17 @@ class CameraSkill @Inject constructor(
                             UUID.randomUUID().toString() // Tạo mới hoàn toàn nếu là biến cố độc lập
                         }
 
-                        val customerEmail = camera.customeremail
-                        var emailSent = false
-                        // Chỉ gửi email khi KHÔNG gộp sự kiện (Tránh spam hòm thư của chủ nhà)
-                        if (!shouldMerge && camera.enableNotification == 1 && customerEmail.isNotEmpty()) {
-                            emailSkill.sendEmail(
-                                to = customerEmail,
-                                subject = "🚨 CẢNH BÁO AN NINH KHẨN CẤP!",
-                                body = buildAlertEmailBody(camera, aiComment),
-                                imageBytes = optimizedBytes
-                            )
-                            emailSent = true
-                        }
-
-                        // Push Notification (Gửi đè/Cập nhật yên lặng vào thông báo cũ trên Android tray khi gộp nhờ dùng trùng activeAlertId)
-                      // Push Notification (Bọc try-catch cục bộ để bảo vệ luồng thực thi chung)
-if (camera.enableNotification == 1) {
-    runCatching {
-        notificationSkill.sendNotification(
-            title = "Cảnh Báo Camera ${camera.customername}",
-            message = aiComment.take(100),
-            notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
-            deepLinkRoute = "alert_history?cameraId=$tid"
-        )
-    }.onFailure { e ->
-        logger.e("CameraSkill", "⚠️ Không thể gửi thông báo đẩy: ${e.message}", e)
-    }
-}
-
+                       
+                      
+                      
+                // 🧠 ỦY QUYỀN GỬI THÔNG BÁO VÀ EMAIL MẶC ĐỊNH SANG CHO QUẢN GIA
+                        val emailSent = houseManagerProvider.get().sendDefaultCameraAlerts(
+                            camera = camera,
+                            aiComment = aiComment,
+                            imageBytes = optimizedBytes,
+                            activeAlertId = activeAlertId,
+                            shouldMerge = shouldMerge
+                        )
 
                         
                         

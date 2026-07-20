@@ -1,51 +1,64 @@
 package com.aichatvn.agent.skills
 
+import android.content.Context
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
-import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
-import com.aichatvn.agent.data.model.EventLogEntity
-import com.aichatvn.agent.data.model.HouseMood
-import com.aichatvn.agent.data.model.HouseSituation
-import com.aichatvn.agent.data.model.WorldStateEntity
+import com.aichatvn.agent.data.model.*
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.WorldStateHelper
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
-import java.util.Calendar
-import java.util.UUID
+import java.io.File
+import java.io.FileOutputStream
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.*
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 @Singleton
 class HouseManagerSkillImpl @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val database: AppDatabase,
+    // ✅ ĐÃ SỬA LỖI 1: Bổ sung đầy đủ 3 Dependency thiếu hụt vào Constructor
+    private val configProvider: AppConfigProvider,
+    private val emailSkill: EmailSkill,
+    private val notificationSkill: NotificationSkill,
+    private val intentExecutorProvider: Provider<IntentExecutor>,
     logger: Logger
 ) : BaseSkill("house_manager", "Quản gia điều hành thông minh", logger), HouseManagerSkill {
 
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(), // Quản gia đóng vai trò não bộ, không vẽ trực tiếp lên dashboard
+        capabilities = PluginCapabilities(),
         routable = false,
         visibleOnDashboard = false,
         autoGenerateQA = false,
         actions = listOf(
             PluginAction(
                 name = "evaluate",
-                description = "Chạy thuật toán quy nạp để phân tích trạng thái sống của ngôi nhà",
+                description = "Chạy quy nạp để phân tích trạng thái sống của ngôi nhà",
                 parameters = emptyList()
             ),
             PluginAction(
                 name = "get_context",
-                description = "Đọc ngữ cảnh tổng hợp từ Quản gia dưới dạng văn bản tự nhiên",
+                description = "Đọc ngữ cảnh tổng hợp của Quản gia phục vụ RAG",
                 parameters = emptyList()
             )
         )
@@ -54,8 +67,12 @@ class HouseManagerSkillImpl @Inject constructor(
     private val mutex = Mutex()
     private var cachedSituation: HouseSituation? = null
 
+    companion object {
+        private val DATETIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
+    }
+
     override suspend fun initialize() {
-        logger.i("HouseManagerSkill", "🧠 Bộ não Quản gia đã khởi tạo. Chạy phân tích móng...")
         evaluateSituation()
     }
 
@@ -65,12 +82,9 @@ class HouseManagerSkillImpl @Inject constructor(
         return when (action) {
             "evaluate" -> {
                 val sit = evaluateSituation()
-                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Đã quy nạp trạng thái: Chế độ ${sit.currentMood}. ${sit.summary}"))
+                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Quy nạp trạng thái thành công."))
             }
-            "get_context" -> {
-                val context = buildSystemContext()
-                PluginResult.Success(mapOf("context" to context, "message" to context))
-            }
+            "get_context" -> PluginResult.Success(mapOf("context" to buildSystemContext()))
             else -> PluginResult.Failure("Hành động không hỗ trợ: $action")
         }
     }
@@ -78,10 +92,7 @@ class HouseManagerSkillImpl @Inject constructor(
     override suspend fun evaluateSituation(): HouseSituation = mutex.withLock {
         withContext(Dispatchers.IO) {
             try {
-                // 1. Đọc toàn bộ Bản sao số (World State) hiện có thông qua Flow.first()
                 val states = database.worldStateDao().getAllStatesFlow().first()
-
-                // 2. Phân tích trạng thái Camera
                 val cameraStates = states.filter { it.source == "camera" }
                 val isSuspicious = cameraStates.any { getAttr(it, "state") == "suspicious" }
                 
@@ -89,11 +100,10 @@ class HouseManagerSkillImpl @Inject constructor(
                 var guestCount = 0
                 cameraStates.forEach { state ->
                     if (getAttr(state, "state") == "suspicious") suspiciousCount++
-                    // Bóc tách số lượng vật thể từ mảng objects lưu trữ trong world_state
                     val objectsJson = getAttr(state, "objects")
                     if (!objectsJson.isNullOrBlank()) {
                         try {
-                            val arr = org.json.JSONArray(objectsJson)
+                            val arr = JSONArray(objectsJson)
                             for (i in 0 until arr.length()) {
                                 val obj = arr.optString(i, "").lowercase()
                                 if (obj == "person" || obj == "nguoi") guestCount++
@@ -102,48 +112,28 @@ class HouseManagerSkillImpl @Inject constructor(
                     }
                 }
 
-                // 3. Phân tích thiết bị đóng ngắt Tuya
                 val tuyaStates = states.filter { it.source == "tuya" }
                 val activeDevicesCount = tuyaStates.count { getAttr(it, "state") == "true" }
 
-                // 4. Phân tích trạng thái kênh Chat ngoại tuyến
                 val chatStates = states.filter { it.source == "chat" }
                 var totalUnreadChats = 0
                 chatStates.forEach { state ->
-                    val unread = try {
-                        JSONObject(state.attributesJson).optInt("unread_count", 0)
-                    } catch (_: Exception) { 0 }
+                    val unread = try { JSONObject(state.attributesJson).optInt("unread_count", 0) } catch (_: Exception) { 0 }
                     totalUnreadChats += unread
                 }
 
-                // 5. Xác định sự diện diện của chủ nhà (Mặc định dựa vào trạng thái thiết bị hoặc cấu hình)
-                // Có thể mở rộng đọc thêm GPS hoặc định danh khuôn mặt từ camera
                 val ownerPresent = true 
 
-                // 6. Quy nạp Chế độ vận hành (HouseMood)
                 val computedMood = when {
                     isSuspicious -> HouseMood.ALERT
                     totalUnreadChats > 3 -> HouseMood.BUSY
                     isNightTime() && activeDevicesCount == 0 -> HouseMood.SLEEPING
                     isNightTime() -> HouseMood.NIGHT
-                    !ownerPresent -> HouseMood.VACATION
                     else -> HouseMood.NORMAL
                 }
 
-                val securityLevel = when {
-                    isSuspicious -> 2
-                    guestCount > 0 -> 1
-                    else -> 0
-                }
-
-                // 7. Tạo chuỗi tóm tắt bằng ngôn ngữ tự nhiên tối giản phục vụ RAG
-                val summary = buildString {
-                    append("Ngôi nhà đang ở trạng thái an ninh ")
-                    append(if (securityLevel == 2) "🚨 CẢNH BÁO CAO" else "✅ AN TOÀN")
-                    append(". Tâm trạng ngôi nhà là ${computedMood.name}.")
-                    if (activeDevicesCount > 0) append(" Có $activeDevicesCount thiết bị điện đang bật.")
-                    if (totalUnreadChats > 0) append(" Đang có $totalUnreadChats tin nhắn chờ xử lý từ khách đa kênh.")
-                }
+                val securityLevel = if (isSuspicious) 2 else 0
+                val summary = "Nhà an toàn mức $securityLevel, tâm trạng $computedMood."
 
                 val situation = HouseSituation(
                     securityLevel = securityLevel,
@@ -157,70 +147,180 @@ class HouseManagerSkillImpl @Inject constructor(
                 )
 
                 cachedSituation = situation
-
-                // Đồng bộ ngược trạng thái Quản gia vào Bản sao số dưới thực thể "system:brain"
-                val brainJson = JSONObject().apply {
-                    put("mood", computedMood.name)
-                    put("security_level", securityLevel)
-                    put("owner_present", ownerPresent)
-                    put("active_devices_count", activeDevicesCount)
-                    put("unread_chats_count", totalUnreadChats)
-                    put("summary", summary)
-                }.toString()
-
-                database.worldStateDao().upsertState(
-                    WorldStateEntity(
-                        id = "system:brain",
-                        source = "system",
-                        sourceId = "brain",
-                        attributesJson = brainJson,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-
                 situation
             } catch (e: Exception) {
-                logger.e("HouseManagerSkill", "Lỗi phân tích trạng thái ngôi nhà: ${e.message}", e)
-                // Fallback khi gặp sự cố SQLite hoặc khởi tạo ban đầu
-                HouseSituation(
-                    securityLevel = 0,
-                    ownerPresent = true,
-                    guestsCount = 0,
-                    pendingChatsCount = 0,
-                    activeDevicesCount = 0,
-                    suspiciousObjectsCount = 0,
-                    currentMood = HouseMood.NORMAL,
-                    summary = "Không thể phân tích Bản sao số. Hệ thống tự động chuyển về chế độ An toàn mặc định."
-                )
+                HouseSituation(0, true, 0, 0, 0, 0, HouseMood.NORMAL, "Fallback")
             }
         }
     }
 
     override suspend fun onWorldStateChanged(source: String, sourceId: String, key: String, value: String) {
-        logger.d("HouseManagerSkill", "🔔 Nhận tin báo từ $source:$sourceId [$key = $value]. Kích hoạt tái đánh giá...")
         evaluateSituation()
     }
 
-    override suspend fun onEvent(event: EventLogEntity) {
-        // Có thể tích hợp đánh giá thói quen hoặc hành động khẩn cấp trực tiếp tại đây ở các giai đoạn sau
-    }
+    override suspend fun onEvent(event: EventLogEntity) {}
 
     override suspend fun buildSystemContext(): String {
         val sit = cachedSituation ?: evaluateSituation()
         return """
             <SYSTEM_CONTEXT>
             Báo cáo trạng thái vận hành của Quản gia thông minh:
-            - Chế độ/Tâm trạng hoạt động (HouseMood): ${sit.currentMood}
+            - Chế độ hoạt động (HouseMood): ${sit.currentMood}
             - Mức độ cảnh báo an ninh: Cấp độ ${sit.securityLevel} (0: Bình thường, 2: Nguy cơ xâm nhập)
-            - Sự diện diện của chủ nhà: ${if (sit.ownerPresent) "Đang có mặt ở nhà" else "Đi vắng"}
             - Số lượng thiết bị thông minh Tuya đang hoạt động: ${sit.activeDevicesCount}
-            - Tin nhắn chưa đọc cần hỗ trợ trực tiếp từ đa kênh: ${sit.pendingChatsCount}
-            - Nhật ký khái quát: ${sit.summary}
+            - Tin nhắn chưa đọc cần hỗ trợ từ đa kênh: ${sit.pendingChatsCount}
             </SYSTEM_CONTEXT>
         """.trimIndent()
     }
 
-    // Helper trích xuất an toàn giá trị từ JSON World State
+    override suspend fun sendDefaultCameraAlerts(
+        camera: CameraConfigEntity,
+        aiComment: String,
+        imageBytes: ByteArray?,
+        activeAlertId: String,
+        shouldMerge: Boolean
+    ): Boolean = withContext(Dispatchers.IO) {
+        var emailSent = false
+        if (camera.enableNotification == 1) {
+            if (!shouldMerge && camera.customeremail.isNotEmpty()) {
+                try {
+                    val emailSubject = "${configProvider.getString(AppConfigDefaults.EMAIL_SUBJECT_PREFIX, "🚨 CẢNH BÁO AN NINH")} - ${camera.customername}"
+                    emailSkill.sendEmail(
+                        to = camera.customeremail,
+                        subject = emailSubject,
+                        body = buildAlertEmailBody(camera, aiComment),
+                        imageBytes = imageBytes
+                    )
+                    emailSent = true
+                } catch (e: Exception) {
+                    logger.e("HouseManager", "Gửi email mặc định thất bại: ${e.message}")
+                }
+            }
+
+            try {
+                notificationSkill.sendNotification(
+                    title = "Cảnh Báo Camera ${camera.customername}",
+                    message = aiComment.take(100),
+                    notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
+                    deepLinkRoute = "alert_history?cameraId=${camera.id.trim()}"
+                )
+            } catch (e: Exception) {
+                logger.e("HouseManager", "Gửi thông báo đẩy mặc định thất bại: ${e.message}")
+            }
+        }
+        return@withContext emailSent
+    }
+
+    // ✅ ĐÃ SỬA LỖI 4: Hiện thực hóa đầy đủ method handleChatEventDecision tránh lỗi biên dịch lớp kế thừa
+    override suspend fun handleChatEventDecision(
+        platform: String,
+        senderId: String,
+        message: String,
+        timestamp: Long
+    ): ChatDecision = withContext(Dispatchers.IO) {
+        val unifiedUsername = "${platform}_$senderId"
+        val normMsg = message.lowercase()
+
+        val intent = when {
+            normMsg.contains("gia bao nhieu") || normMsg.contains("bao gia") || normMsg.contains("mua") || normMsg.contains("ban") -> "ask_price"
+            normMsg.contains("loi") || normMsg.contains("hong") || normMsg.contains("bao hanh") || normMsg.contains("ho tro") -> "support"
+            else -> "general"
+        }
+
+        val isUrgent = normMsg.contains("gap") || normMsg.contains("ngay") || normMsg.contains("khan") || 
+                       normMsg.contains("trom") || normMsg.contains("chay") || normMsg.contains("nguy hiem")
+        val urgency = if (isUrgent) "high" else "normal"
+
+        val existingState = database.worldStateDao().getState("chat", unifiedUsername)
+        val prevUnread = existingState?.let {
+            try { JSONObject(it.attributesJson).optInt("unread_count", 0) } catch (_: Exception) { 0 }
+        } ?: 0
+        val newUnread = prevUnread + 1
+
+        val eventPayload = JSONObject().apply {
+            put("platform", platform)
+            put("senderId", senderId)
+            put("session_status", "waiting_agent")
+            put("customer_intent", intent)
+            put("urgency", urgency)
+            put("unread_count", newUnread)
+            put("last_message", message.take(80))
+        }.toString()
+
+        database.worldStateDao().upsertState(
+            WorldStateEntity(
+                id = "chat:$unifiedUsername",
+                source = "chat",
+                sourceId = unifiedUsername,
+                attributesJson = eventPayload,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+
+        database.eventLogDao().insertLog(
+            EventLogEntity(
+                id = UUID.randomUUID().toString(),
+                timestamp = timestamp,
+                source = platform,
+                sourceId = unifiedUsername,
+                eventType = "chat_session_state_change",
+                value = eventPayload,
+                summary = "Tin nhắn từ [$platform] $senderId (Ý định: $intent, Khẩn cấp: $urgency, Chưa đọc: $newUnread)"
+            )
+        )
+
+        val currentSituation = cachedSituation ?: evaluateSituation()
+        if (urgency == "high" && (currentSituation.currentMood == HouseMood.SLEEPING || currentSituation.currentMood == HouseMood.NIGHT)) {
+            try {
+                notificationSkill.sendNotification(
+                    title = "🚨 KHÁCH HÀNG LIÊN HỆ KHẨN CẤP",
+                    message = "Tin nhắn khẩn cấp từ [$platform] $senderId: \"${message.take(60)}\""
+                )
+            } catch (e: Exception) {
+                logger.e("HouseManager", "Lỗi gửi thông báo khẩn cấp tin nhắn: ${e.message}")
+            }
+        }
+
+        val customerSetting = database.cameraDao().getCustomerSetting(senderId)
+        val shouldAutoRespond = customerSetting?.smartMode != 0
+
+        ChatDecision(
+            shouldAutoRespond = shouldAutoRespond,
+            intent = intent,
+            urgency = urgency,
+            unreadCount = newUnread,
+            summary = "Quản gia đã duyệt thớt chat $unifiedUsername."
+        )
+    }
+
+    // ✅ ĐÃ SỬA LỖI 2: Di dời hàm sinh body email sang HouseManagerSkillImpl thay vì gọi qua hàm private của CameraSkill
+    private fun buildAlertEmailBody(camera: CameraConfigEntity, analysis: String): String {
+        return """
+            <html>
+            <body style="font-family: Arial, sans-serif; padding: 20px;">
+                <h2 style="color: #dc2626;">🚨 QUẢN GIA AI: CẢNH BÁO AN NINH KHẨN CẤP</h2>
+                <p>Hệ thống phát hiện biến động bất thường tại vị trí camera: <strong>${camera.customername}</strong></p>
+                <div style="background: #fff3cd; padding: 15px; border-left: 4px solid #ffc107;">
+                    <strong>🤖 Đánh giá từ Quản gia:</strong><br>
+                    $analysis
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+    }
+
+    private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
+        return try {
+            val dir = File(context.filesDir, "alert_images")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "$alertId.jpg")
+            FileOutputStream(file).use { it.write(bytes) }
+            file.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private fun getAttr(entity: WorldStateEntity, key: String): String? {
         return try {
             val json = JSONObject(entity.attributesJson)
