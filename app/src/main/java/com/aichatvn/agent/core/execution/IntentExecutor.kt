@@ -24,7 +24,7 @@ class IntentExecutor @Inject constructor(
     private val chatHistoryManager: ChatHistoryManager,
     private val dialogManager: DialogManager,
     private val configProvider: AppConfigProvider, 
-    logger: Logger,
+    private val logger: Logger,
     // ✅ ĐÃ SỬA LỖI 4: Tiêm Provider của Quản gia (đảm bảo không rủi ro phụ thuộc vòng với AppModule)
     private val houseManagerProvider: javax.inject.Provider<HouseManagerSkill>
 ) {

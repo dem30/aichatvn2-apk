@@ -9,6 +9,7 @@ import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.*
 import com.aichatvn.agent.skills.base.BaseSkill
