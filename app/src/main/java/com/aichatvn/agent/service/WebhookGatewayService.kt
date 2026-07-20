@@ -401,10 +401,18 @@ class WebhookGatewayService : Service() {
                                                     val resolvedImageBase64 = incomingImageBase64Raw
                                                         ?: incomingImageUrl?.let { downloadImageAsBase64(it) }
 
-                                                    val setting = withContext(Dispatchers.IO) {
-                                                        database.cameraDao().getCustomerSetting(senderId)
-                                                    }
-                                                    val isBotEnabled = setting?.smartMode != 0
+                                                    // ✅ ĐÃ SỬA: Giao tin nhắn cho Quản gia AI xử lý để cập nhật World State
+                                                    // ("chat:*" unread_count, urgency, mood BUSY...) — trước đây bước này bị
+                                                    // bỏ qua hoàn toàn nên pendingChatsCount/mood BUSY không bao giờ đúng.
+                                                    // Đồng thời dùng luôn quyết định shouldAutoRespond của nó thay vì tự
+                                                    // truy vấn cameraDao trùng lặp.
+                                                    val chatDecision = houseManagerProvider.get().handleChatEventDecision(
+                                                        platform = platform,
+                                                        senderId = senderId,
+                                                        message = text,
+                                                        timestamp = System.currentTimeMillis()
+                                                    )
+                                                    val isBotEnabled = chatDecision.shouldAutoRespond
 
                                                     if (isBotEnabled) {
                                                         val result = chatSkill.processQuery(
@@ -512,10 +520,15 @@ class WebhookGatewayService : Service() {
                                         logger.i("TelegramPoll", "📥 Nhận tin nhắn Telegram mới: '$effectiveText' từ ChatId: $chatId (ảnh: ${!largestPhotoFileId.isNullOrEmpty()})")
                                         val unifiedUsername = "telegram_$chatId"
 
-                                        val setting = withContext(Dispatchers.IO) {
-                                            database.cameraDao().getCustomerSetting(chatId)
-                                        }
-                                        val isBotEnabled = setting?.smartMode != 0
+                                        // ✅ ĐÃ SỬA: Cùng một điểm vào Quản gia AI như nhánh Facebook/Website,
+                                        // để World State "chat:telegram_*" được cập nhật đầy đủ.
+                                        val chatDecision = houseManagerProvider.get().handleChatEventDecision(
+                                            platform = "telegram",
+                                            senderId = chatId,
+                                            message = effectiveText,
+                                            timestamp = System.currentTimeMillis()
+                                        )
+                                        val isBotEnabled = chatDecision.shouldAutoRespond
 
                                         serviceScope.launch {
                                             val imageBase64 = largestPhotoFileId?.let { downloadTelegramPhotoAsBase64(botToken, it) }

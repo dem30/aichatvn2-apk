@@ -27,8 +27,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -668,18 +666,6 @@ class HouseManagerSkillImpl @Inject constructor(
             </body>
             </html>
         """.trimIndent()
-    }
-
-    private fun saveAlertImage(alertId: String, bytes: ByteArray): String? {
-        return try {
-            val dir = File(context.filesDir, "alert_images")
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "$alertId.jpg")
-            FileOutputStream(file).use { it.write(bytes) }
-            file.absolutePath
-        } catch (e: Exception) {
-            null
-        }
     }
 
     private fun getAttr(entity: WorldStateEntity, key: String): String? {

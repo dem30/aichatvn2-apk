@@ -51,38 +51,46 @@ class HouseManagerViewModel @Inject constructor(
 
     fun refreshAll() {
         viewModelScope.launch {
-            _isRefreshing.value = true
-            try {
-                // 1. Quy nạp trạng thái tình huống sống
-                val sit = houseManagerSkill.evaluateSituation()
-                _situation.value = sit
-                _activePlans.value = houseManagerSkill.getActivePlans()
+            performRefresh()
+        }
+    }
 
-                // 2. Đọc cấu hình chính sách từ Bản sao số (World State)
-                val silentNight = withContext(Dispatchers.IO) {
-                    WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "silent_night") ?: "true"
-                }
-                _isSilentNightPolicyEnabled.value = silentNight == "true"
+    // ✅ ĐÃ SỬA: Tách phần lõi thành hàm suspend riêng (performRefresh) để các hàm
+    // setAwayMode/togglePolicy/mineHabitsNow có thể "await" trực tiếp thay vì gọi
+    // refreshAll() cũ (chỉ bắn 1 coroutine rời rạc, không đợi -> _isRefreshing bị
+    // tắt sớm trong khi dữ liệu vẫn đang tải, gây race trên trạng thái loading).
+    private suspend fun performRefresh() {
+        _isRefreshing.value = true
+        try {
+            // 1. Quy nạp trạng thái tình huống sống
+            val sit = houseManagerSkill.evaluateSituation()
+            _situation.value = sit
+            _activePlans.value = houseManagerSkill.getActivePlans()
 
-                val vacationSafety = withContext(Dispatchers.IO) {
-                    WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "vacation_safety") ?: "true"
-                }
-                _isVacationSafetyPolicyEnabled.value = vacationSafety == "true"
-
-                // 3. Đọc mốc thời gian tự học thói quen gần nhất
-                val lastRunMillis = withContext(Dispatchers.IO) {
-                    WorldStateHelper.getAttribute(database.worldStateDao(), "system", "brain", "last_learning_run")
-                }
-                _lastLearningRunTime.value = lastRunMillis?.toLongOrNull()?.let {
-                    val sdf = SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.getDefault())
-                    sdf.format(Date(it))
-                } ?: "Chưa chạy"
-
-            } catch (e: Exception) {
-                _situation.value = null
-            } finally {
-                _isRefreshing.value = false
+            // 2. Đọc cấu hình chính sách từ Bản sao số (World State)
+            val silentNight = withContext(Dispatchers.IO) {
+                WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "silent_night") ?: "true"
             }
+            _isSilentNightPolicyEnabled.value = silentNight == "true"
+
+            val vacationSafety = withContext(Dispatchers.IO) {
+                WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "vacation_safety") ?: "true"
+            }
+            _isVacationSafetyPolicyEnabled.value = vacationSafety == "true"
+
+            // 3. Đọc mốc thời gian tự học thói quen gần nhất
+            val lastRunMillis = withContext(Dispatchers.IO) {
+                WorldStateHelper.getAttribute(database.worldStateDao(), "system", "brain", "last_learning_run")
+            }
+            _lastLearningRunTime.value = lastRunMillis?.toLongOrNull()?.let {
+                val sdf = SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.getDefault())
+                sdf.format(Date(it))
+            } ?: "Chưa chạy"
+
+        } catch (e: Exception) {
+            _situation.value = null
+        } finally {
+            _isRefreshing.value = false
         }
     }
 
@@ -92,8 +100,8 @@ class HouseManagerViewModel @Inject constructor(
                 // Cập nhật trạng thái away_mode vào SQLite
                 WorldStateHelper.setAttribute(database.worldStateDao(), "system", "house", "away_mode", enabled.toString())
             }
-            // Quy nạp lại tình huống ngay lập tức để UI Screen đổi màu theo Mood
-            refreshAll()
+            // Quy nạp lại tình huống ngay lập tức để UI Screen đổi màu theo Mood (đã await)
+            performRefresh()
         }
     }
 
@@ -107,7 +115,7 @@ class HouseManagerViewModel @Inject constructor(
             } else if (policyId == "vacation_safety") {
                 _isVacationSafetyPolicyEnabled.value = enabled
             }
-            refreshAll()
+            performRefresh()
         }
     }
 
@@ -116,12 +124,10 @@ class HouseManagerViewModel @Inject constructor(
             _isRefreshing.value = true
             try {
                 houseManagerSkill.mineUserHabits()
-                refreshAll()
             } catch (e: Exception) {
                 // Xử lý lỗi
-            } finally {
-                _isRefreshing.value = false
             }
+            performRefresh()
         }
     }
 
