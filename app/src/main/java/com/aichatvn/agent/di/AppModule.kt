@@ -116,6 +116,17 @@ object AppModule {
         return DialogManagerImpl()
     }
 
+
+    @Provides
+@IntoSet // Khai báo này đưa HouseManagerSkill vào Set<@JvmSuppressWildcards Plugin> trong AgentKernel
+fun provideHouseManagerSkill(
+    database: AppDatabase,
+    logger: Logger
+): Plugin {
+    return HouseManagerSkillImpl(database, logger)
+}
+
+    
     // ===== AGENT KERNEL =====
     @Provides
     @Singleton

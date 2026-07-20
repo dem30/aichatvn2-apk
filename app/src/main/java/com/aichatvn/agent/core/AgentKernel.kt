@@ -10,6 +10,7 @@ import com.aichatvn.agent.data.model.QAEntity
 import com.aichatvn.agent.data.model.SearchContract
 import com.aichatvn.agent.data.model.QuestionType
 import com.aichatvn.agent.data.model.AggregationType
+import com.aichatvn.agent.skills.HouseManagerSkill
 import com.aichatvn.agent.skills.SearchMatch
 import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
@@ -142,7 +143,9 @@ class AgentKernel @Inject constructor(
     private val intentExecutor: IntentExecutor,
     private val databaseSearchHelper: DatabaseSearchHelper,
     private val timeRangeResolver: TimeRangeResolver,
-    private val logger: Logger
+    private val logger: Logger,
+    // ✅ Provider tránh phụ thuộc vòng: HouseManagerSkillImpl nằm trong Set<Plugin> mà AgentKernel cũng cần
+    private val houseManagerProvider: javax.inject.Provider<HouseManagerSkill>
 ) {
     fun getAvailablePluginsForUI(): List<Plugin> = plugins.filter { it.manifest.routable }
 
@@ -271,13 +274,28 @@ class AgentKernel @Inject constructor(
 
         val dynamicToolGuard = if (mentionsAppDomain(message)) buildToolCallingGuard() else ""
 
+        // ✅ THÊM: Đọc ngữ cảnh trực quan được quy nạp từ não bộ Quản gia (HouseManagerSkill)
+        val houseManagerContext = try {
+            houseManagerProvider.get().buildSystemContext()
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Không thể lấy ngữ cảnh từ HouseManager: ${e.message}")
+            ""
+        }
+
         val guard = buildString {
             append(ANTI_HALLUCINATION_GUARD)
             if (routerFailed) {
                 append("\n⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm.")
             }
+            // ✅ CHÈN VÀO ĐÂY: Nạp ngữ cảnh sống giúp AI hiểu tình hình căn nhà mà không cần đọc nhật ký rác
+            if (houseManagerContext.isNotEmpty()) {
+                append("\n\n")
+                append(houseManagerContext)
+            }
             append(dynamicToolGuard)
         }
+
+        
 
         var responseText = try {
             when (usedMode.lowercase()) {
