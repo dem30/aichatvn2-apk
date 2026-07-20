@@ -8,6 +8,9 @@ import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.WorldStateHelper
+// ✅ THÊM IMPORTS: Nhận biết giao thức kiểm duyệt chính sách của Quản gia
+import com.aichatvn.agent.skills.HouseManagerSkill
+import com.aichatvn.agent.skills.PolicyResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -20,8 +23,10 @@ class IntentExecutor @Inject constructor(
     private val database: AppDatabase,
     private val chatHistoryManager: ChatHistoryManager,
     private val dialogManager: DialogManager,
-    private val configProvider: AppConfigProvider, // ✅ TIÊM THÊM ĐỂ ĐỌC CẤU HÌNH CHẶN CẤP THIẾT BỊ
-    private val logger: Logger
+    private val configProvider: AppConfigProvider, 
+    logger: Logger,
+    // ✅ ĐÃ SỬA LỖI 4: Tiêm Provider của Quản gia (đảm bảo không rủi ro phụ thuộc vòng với AppModule)
+    private val houseManagerProvider: javax.inject.Provider<HouseManagerSkill>
 ) {
 
     suspend fun executeIntent(
@@ -53,7 +58,6 @@ class IntentExecutor @Inject constructor(
             )
         ))
 
-        // ✅ Đọc ràng buộc và định nghĩa kiểu dữ liệu tường minh tránh lỗi Type Inference (Action-level)
         val actionMeta = plugin.manifest.actions.find { it.name == normalizedIntent.action }
         val worldStateCondition: WorldStateHelper.WorldStateCondition? = actionMeta?.requiredWorldState?.let {
             WorldStateHelper.parseCondition(it)
@@ -65,12 +69,10 @@ class IntentExecutor @Inject constructor(
             false
         }
 
-        // ✅ MỚI (Triển khai Precondition cấp thiết bị): Chèn bộ lọc kiểm tra riêng cấu hình chặn của thiết bị đích
         val deviceGuardBlocked: PluginResult.Failure? = if (missing.isEmpty()) {
             checkDeviceWorldStateGuard(plugin.manifest.id, normalizedIntent.action, normalizedIntent.params)
         } else null
 
-        // Định nghĩa rõ kiểu String cho input và output để TraceNode biên dịch an toàn
         val traceInput: String = if (worldStateCondition != null) {
             "${worldStateCondition.source}.${worldStateCondition.sourceId}.${worldStateCondition.attrKey} == '${worldStateCondition.expected}' ?"
         } else {
@@ -99,20 +101,28 @@ class IntentExecutor @Inject constructor(
             )
         ))
 
+        // ✅ ĐÃ SỬA LỖI 4 (Vùng an toàn): lồng Policy Check của Quản gia trực tiếp vào chuỗi gán executionResult
+        // Việc này bảo đảm hệ thống không bị return "cụt", giữ nguyên dấu vết trace và turn lịch sử hội thoại đầy đủ.
         val executionResult = if (missing.isNotEmpty()) {
             val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
             PluginResult.NeedMoreInfo(missing, question, options)
         } else if (worldStateBlocked) {
             PluginResult.Failure("⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta?.description ?: normalizedIntent.action}\" (Cần trạng thái: ${worldStateCondition?.attrKey} = ${worldStateCondition?.expected}).")
         } else if (deviceGuardBlocked != null) {
-            deviceGuardBlocked // ✅ TRẢ VỀ LỖI CHẶN CẤP THIẾT BỊ NẾU CÓ
+            deviceGuardBlocked 
         } else {
-            try {
-                logger.d("IntentExecutor", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}")
-                plugin.execute(normalizedIntent.action, normalizedIntent.params)
-            } catch (e: Exception) {
-                logger.e("IntentExecutor", "[$traceId] Execute error: ${e.message}", e)
-                PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
+            // 🧠 Kiểm duyệt chính sách vận hành của Quản gia AI trước khi thi hành lệnh vật lý
+            val policyResult = houseManagerProvider.get().checkPolicy(plugin.manifest.id, normalizedIntent.action, normalizedIntent.params)
+            if (policyResult is PolicyResult.Blocked) {
+                PluginResult.Failure(policyResult.reason)
+            } else {
+                try {
+                    logger.d("IntentExecutor", "[$traceId] Execute Action Trực Tiếp: ${plugin.manifest.id}.${normalizedIntent.action}")
+                    plugin.execute(normalizedIntent.action, normalizedIntent.params)
+                } catch (e: Exception) {
+                    logger.e("IntentExecutor", "[$traceId] Execute error: ${e.message}", e)
+                    PluginResult.Failure("Lỗi khi thực hiện lệnh: ${e.message}")
+                }
             }
         }
 
@@ -127,10 +137,6 @@ class IntentExecutor @Inject constructor(
                     ),
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question,
-                    // ✅ ĐÃ SỬA: gắn đúng username của người đang thao tác (context.username) —
-                    // trước đây thiếu field này khiến pending mặc định rơi vào 1 hàng đợi global,
-                    // không phân biệt được ai đang chờ trả lời câu hỏi nào. Đây là gốc rễ khiến
-                    // pending của user A có thể bị user B (kênh khác) vô tình hủy/ghi đè.
                     username = context.username,
                     createdAt = System.currentTimeMillis()
                 )
@@ -138,11 +144,6 @@ class IntentExecutor @Inject constructor(
             is PluginResult.Success -> {
                 chatHistoryManager.removePendingIntent(context.username, plugin.manifest.id, intent.action)
                 dialogManager.updateFocus(
-                    // ✅ ĐÃ SỬA: dùng context.username thay vì hardcode "default_user" — trước đây
-                    // MỌI user hoàn tất 1 lệnh đều ghi đè focus hội thoại của "default_user" (chủ
-                    // nhà), bất kể ai vừa thao tác thật. Với DialogManagerImpl lưu focus theo
-                    // ConcurrentHashMap<String, ConversationFocus>, hardcode này khiến focus không
-                    // bao giờ tách được theo user như thiết kế.
                     context.username,
                     ConversationFocus(
                         pluginId = plugin.manifest.id,
@@ -194,7 +195,6 @@ class IntentExecutor @Inject constructor(
         return executionResult
     }
 
-    // ✅ MỚI: Đánh giá 1 WorldStateCondition đã parse sẵn, trả về true nếu bị chặn.
     suspend fun checkWorldStateBlocked(condition: WorldStateHelper.WorldStateCondition): Boolean {
         val actualValue = WorldStateHelper.getAttribute(
             database.worldStateDao(),
@@ -205,7 +205,6 @@ class IntentExecutor @Inject constructor(
         return actualValue != condition.expected
     }
 
-    // ✅ MỚI: Guard cấp Action-level dùng chung.
     suspend fun checkWorldStateGuard(plugin: Plugin, action: String): PluginResult.Failure? {
         val actionMeta = plugin.manifest.actions.find { it.name == action } ?: return null
         val condition = actionMeta.requiredWorldState?.let { WorldStateHelper.parseCondition(it) } ?: return null
@@ -216,7 +215,6 @@ class IntentExecutor @Inject constructor(
         )
     }
 
-    // ✅ MỚI (Triển khai Precondition cấp thiết bị): Đánh giá điều kiện chặn riêng tư được cấu hình theo từng thiết bị Tuya
     suspend fun checkDeviceWorldStateGuard(
         pluginId: String,
         action: String,
@@ -224,15 +222,6 @@ class IntentExecutor @Inject constructor(
     ): PluginResult.Failure? {
         if (pluginId == "smart_switch" && action == "set") {
             val rawDeviceKey = params["device"]?.toString() ?: params["device_id"]?.toString() ?: params["deviceId"]?.toString() ?: ""
-            // ✅ SỬA: quy đổi về ID thật trước khi build guardKey — trước đây dùng thẳng
-            // rawDeviceKey (có thể là TÊN nếu người dùng gõ tay/nói, hoặc ID nếu chọn từ
-            // menu số, xem TuyaManager.getDeviceInfo()). Vì ParameterResolver.normalizeParams()
-            // không hề quy đổi tên→ID, guardKey trước đây có thể lệch khỏi key mà admin đã
-            // cấu hình (luôn theo ID thật) → precondition bị bỏ qua âm thầm khi người dùng
-            // gõ tên thay vì chọn từ menu. Áp cùng pattern id-trước, tên-sau như
-            // SmartSwitchSkill.handleSet() đã dùng khi ghi world_state.
-            // Đồng thời giữ lại `entity.name` (tên thân thiện đồng bộ từ Tuya/Smart Life app)
-            // để hiển thị trong thông báo — tránh in thẳng ID dài khó đọc cho người dùng.
             val deviceEntity = if (rawDeviceKey.isNotEmpty()) {
                 database.tuyaDeviceDao().getDeviceById(rawDeviceKey)
                     ?: database.tuyaDeviceDao().getDeviceByName(rawDeviceKey)
@@ -284,16 +273,21 @@ class IntentExecutor @Inject constructor(
 
         val normalizedParams = ParameterResolver.normalizeParams(params, plugin, action, plugins, null)
 
-        // ✅ MỚI: Áp world-state guard cấp hành động trước khi thực thi
         checkWorldStateGuard(plugin, action)?.let { blocked ->
             logger.d("IntentExecutor", "executePluginAction bị chặn bởi world-state: $pluginId.$action")
             return blocked
         }
 
-        // ✅ MỚI (Triển khai Precondition cấp thiết bị): Áp world-state guard cấp thiết bị trước khi thực thi
         checkDeviceWorldStateGuard(pluginId, action, normalizedParams)?.let { blocked ->
             logger.d("IntentExecutor", "executePluginAction bị chặn bởi device world-state: $pluginId.$action")
             return blocked
+        }
+
+        // ✅ ĐÃ SỬA LỖI 4: Sử dụng đúng biến pluginId, action và normalizedParams trong hàm này (không gọi normalizedIntent)
+        val policyResult = houseManagerProvider.get().checkPolicy(pluginId, action, normalizedParams)
+        if (policyResult is PolicyResult.Blocked) {
+            logger.w("IntentExecutor", "executePluginAction bị chặn bởi chính sách Quản gia: ${policyResult.reason}")
+            return PluginResult.Failure(policyResult.reason)
         }
 
         return try {

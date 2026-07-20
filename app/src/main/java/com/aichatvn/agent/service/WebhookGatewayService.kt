@@ -40,6 +40,8 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
+// ✅ THÊM IMPORT: Nhận biết interface Quản gia AI
+import com.aichatvn.agent.skills.HouseManagerSkill
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
@@ -73,6 +75,10 @@ class WebhookGatewayService : Service() {
 
     @Inject
     lateinit var deviceRegistry: DeviceRegistry                   
+
+    // ✅ ĐÃ SỬA LỖI 5: Tiêm Provider của Quản gia AI vào cổng dịch vụ
+    @Inject
+    lateinit var houseManagerProvider: javax.inject.Provider<HouseManagerSkill>
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
@@ -917,142 +923,13 @@ class WebhookGatewayService : Service() {
             delay(30_000L) 
             while (isActive) {
                 try {
-                    minePatterns()
+                    // ✅ ĐÃ SỬA: Ủy quyền hoàn toàn tiến trình tự học thói quen SQLite cho Quản gia xử lý
+                    houseManagerProvider.get().mineUserHabits()
                 } catch (e: Exception) {
                     logger.e("PatternMining", "Lỗi khi khai thác mẫu hành vi: ${e.message}", e)
                 }
                 delay(24 * 60 * 60 * 1000L) 
             }
-        }
-    }
-
-   // ... [Các phần imports và logic SSE, Tuya sync giữ nguyên 100%] ...
-
-    private suspend fun minePatterns() {
-        val since = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 
-        val now = System.currentTimeMillis()
-        val logs = database.eventLogDao().getLogsInTimeframe(since, now)
-        if (logs.isEmpty()) return
-
-        val calendar = java.util.Calendar.getInstance()
-        
-        data class GroupKey(val source: String, val sourceId: String, val eventType: String, val value: String, val hour: Int)
-
-        val grouped = logs.groupBy { log ->
-            calendar.timeInMillis = log.timestamp
-            GroupKey(log.source, log.sourceId, log.eventType, log.value, calendar.get(java.util.Calendar.HOUR_OF_DAY))
-        }
-
-        val qaDao = database.qaDao()
-        val existingPatterns = trainingSkillPatternCache()
-
-        grouped.forEach { (key, entries) ->
-            if (key.source != "tuya") return@forEach
-
-            val distinctDays = entries.map { entry ->
-                calendar.timeInMillis = entry.timestamp
-                calendar.get(java.util.Calendar.DAY_OF_YEAR)
-            }.distinct().size
-
-            if (distinctDays >= 4) {
-                val question = "pattern:${key.source}:${key.sourceId}:${key.eventType}:${key.value}:${key.hour}h"
-                val actionLabel = if (key.value.lowercase() == "true") "bật" else "tắt"
-                val answer = "Bạn thường $actionLabel thiết bị ${key.sourceId} vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất). Hệ thống đề xuất đặt lịch tự động cho thói quen này."
-
-                val existingCategory = existingPatterns[question + "_category"]
-
-                when (existingCategory) {
-                    null -> {
-                        val qa = com.aichatvn.agent.data.model.QAEntity(
-                            id = java.util.UUID.randomUUID().toString(),
-                            question = question,
-                            answer = answer,
-                            type = "pattern",
-                            category = "pending_pattern",
-                            createdBy = "default_user",
-                            createdAt = System.currentTimeMillis(),
-                            timestamp = System.currentTimeMillis()
-                        )
-                        qaDao.insertQA(qa)
-                        logger.i("PatternMining", "🔁 Phát hiện thói quen mới chờ duyệt: $answer")
-
-                        val eventPayload = org.json.JSONObject().apply {
-                            put("pattern_id", qa.id)
-                            put("device_id", key.sourceId)
-                            put("device_name", key.sourceId)
-                            put("action", key.eventType)
-                            put("value", key.value)
-                            put("hour", key.hour)
-                            put("confidence", "$distinctDays/7 ngày")
-                            put("recommendation_text", answer)
-                            put("status", "pending")
-                        }.toString()
-
-                        database.eventLogDao().insertLog(
-                            com.aichatvn.agent.data.model.EventLogEntity(
-                                id = java.util.UUID.randomUUID().toString(),
-                                timestamp = now,
-                                source = "system",
-                                sourceId = "brain",
-                                eventType = "pattern_discovered",
-                                value = eventPayload,
-                                summary = "Hệ thống tự học thói quen mới: $answer"
-                            )
-                        )
-                    }
-                    "pending_pattern" -> {
-                        if (existingPatterns[question] != answer) {
-                            val qa = com.aichatvn.agent.data.model.QAEntity(
-                                id = existingPatterns[question + "_id"] ?: java.util.UUID.randomUUID().toString(),
-                                question = question,
-                                answer = answer,
-                                type = "pattern",
-                                category = "pending_pattern",
-                                createdBy = "default_user",
-                                createdAt = System.currentTimeMillis(),
-                                timestamp = System.currentTimeMillis()
-                            )
-                            qaDao.insertQA(qa)
-                        }
-                    }
-                    else -> {
-                        logger.d("PatternMining", "⏭️ Bỏ qua pattern đã xử lý (category=$existingCategory): $question")
-                    }
-                }
-            }
-        }
-
-        // ✅ ĐÃ SỬA (Bước 1): Sử dụng WorldStateHelper.setAttribute để MERGE thuộc tính của system:brain thay vì overwrite
-        val pendingCount = qaDao.getAllQAs("default_user").count { it.category == "pending_pattern" }
-        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-            database.worldStateDao(), "system", "brain", "pending_patterns_count", pendingCount.toString()
-        )
-        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-            database.worldStateDao(), "system", "brain", "last_learning_run", System.currentTimeMillis().toString()
-        )
-    }
-
-
-
-
-
-
-    
-
-    private suspend fun trainingSkillPatternCache(): Map<String, String> {
-        return try {
-            database.qaDao().getAllQAs("default_user")
-                .filter { it.type == "pattern" }
-                .flatMap {
-                    listOf(
-                        it.question to it.answer,
-                        it.question + "_id" to it.id,
-                        it.question + "_category" to it.category
-                    )
-                }
-                .toMap()
-        } catch (e: Exception) {
-            emptyMap()
         }
     }
 

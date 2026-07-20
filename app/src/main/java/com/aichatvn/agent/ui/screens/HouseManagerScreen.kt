@@ -33,14 +33,19 @@ fun HouseManagerScreen(
     val activePlans by viewModel.activePlans.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
 
-    // 1. Phối màu giao diện thích ứng theo trạng thái Mood thực tế của Ngôi nhà
+    // Đọc trạng thái các chính sách và chế độ từ ViewModel
+    val isAway = situation?.ownerPresent == false
+    val isSilentNightEnabled by viewModel.isSilentNightPolicyEnabled.collectAsState()
+    val isVacationSafetyEnabled by viewModel.isVacationSafetyPolicyEnabled.collectAsState()
+    val lastLearningRun by viewModel.lastLearningRunTime.collectAsState()
+
     val themeColorAndIcon = getThemeForMood(situation?.currentMood ?: HouseMood.NORMAL)
     val animatedHeaderColor by animateColorAsState(targetValue = themeColorAndIcon.headerColor)
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Quản Gia AI", fontWeight = FontWeight.Bold) },
+                title = { Text("Quản Gia AI — Điều Hành", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = { viewModel.refreshAll() }) {
                         Icon(
@@ -65,7 +70,7 @@ fun HouseManagerScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Thẻ Tâm trạng & Chế độ vận hành hiện tại
+            // 1. Thẻ Chế độ / Mood Header Card
             item {
                 MoodHeaderCard(
                     mood = situation?.currentMood ?: HouseMood.NORMAL,
@@ -74,17 +79,43 @@ fun HouseManagerScreen(
                 )
             }
 
-            // Thẻ Chỉ số Bản sao số (World State Index)
+            // 2. Chế độ Vắng nhà (Vacation Mode Toggle) — điều khiển hai chiều
+            item {
+                VacationModeCard(
+                    isAway = isAway,
+                    onToggle = { viewModel.setAwayMode(it) }
+                )
+            }
+
+            // 3. Bảng điều khiển Chính sách (Dynamic Policy Controls)
+            item {
+                PolicyControlCard(
+                    isSilentNightEnabled = isSilentNightEnabled,
+                    isVacationSafetyEnabled = isVacationSafetyEnabled,
+                    onToggleSilentNight = { viewModel.togglePolicy("silent_night", it) },
+                    onToggleVacationSafety = { viewModel.togglePolicy("vacation_safety", it) }
+                )
+            }
+
+            // 4. Kích hoạt Học máy thủ công (Manual Habit Mining)
+            item {
+                HabitMiningCard(
+                    lastRun = lastLearningRun,
+                    onMineNow = { viewModel.mineHabitsNow() }
+                )
+            }
+
+            // 5. Thẻ Chỉ số Bản sao số (World State Index Overview)
             item {
                 SituationOverviewGrid(situation = situation)
             }
 
-            // Thẻ Kịch bản khẩn cấp (Panic Action Button)
+            // 6. Thẻ kích hoạt Báo động khẩn cấp (Panic Action Button)
             item {
                 PanicTriggerCard(onPanic = { viewModel.triggerPanicSequence("cam_01") })
             }
 
-            // Tiêu đề phân khu Kịch bản nền (Planner)
+            // Tiêu đề phân khu Kịch bản nền (Planner Timeline)
             item {
                 Text(
                     text = "Kịch bản liên hoàn đang vận hành",
@@ -94,7 +125,7 @@ fun HouseManagerScreen(
                 )
             }
 
-            // Danh sách các Plan đang chạy thực tế
+            // 7. Danh sách các kịch bản Planner đang chạy dưới nền
             if (activePlans.isEmpty()) {
                 item {
                     EmptyPlansCard()
@@ -109,8 +140,145 @@ fun HouseManagerScreen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// UI COMPONENTS HỖ TRỢ
+// UI COMPONENTS ĐIỀU KHIỂN & TRỰC QUAN HÓA
 // ─────────────────────────────────────────────────────────────────────────
+
+@Composable
+fun VacationModeCard(
+    isAway: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isAway) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Chế độ Vắng nhà (Vacation Mode)",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = if (isAway) "Hệ thống đang siết chặt an ninh tối đa." else "Chủ nhà đang có mặt bình thường.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
+            }
+            Switch(
+                checked = isAway,
+                onCheckedChange = onToggle
+            )
+        }
+    }
+}
+
+@Composable
+fun PolicyControlCard(
+    isSilentNightEnabled: Boolean,
+    isVacationSafetyEnabled: Boolean,
+    onToggleSilentNight: (Boolean) -> Unit,
+    onToggleVacationSafety: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Kiểm soát Chính sách Ngôi nhà (Policy Engine)",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+
+            // Dòng 1: silent_night
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Chính sách ban đêm yên tĩnh", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("Chặn tivi, còi báo động ồn ào khi đi ngủ", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                Switch(checked = isSilentNightEnabled, onCheckedChange = onToggleSilentNight)
+            }
+
+            Divider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // Dòng 2: vacation_safety
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Chính sách an toàn vắng nhà", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("Chặn bật máy bơm, bình nóng lạnh khi vắng nhà", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+                Switch(checked = isVacationSafetyEnabled, onCheckedChange = onToggleVacationSafety)
+            }
+        }
+    }
+}
+
+@Composable
+fun HabitMiningCard(
+    lastRun: String,
+    onMineNow: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Tự học Thói quen (Learning)",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = "Chạy gần nhất: $lastRun",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
+            }
+            Button(
+                onClick = onMineNow,
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                // ✅ ĐÃ SỬA: Icons.Default.School không có trong bộ icon lõi (core),
+                // chỉ có trong material-icons-extended -> gây lỗi unresolved reference
+                // nếu project chưa thêm dependency đó. Thay bằng icon lõi PlayArrow.
+                Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Tự học")
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Học ngay", fontSize = 12.sp)
+            }
+        }
+    }
+}
 
 @Composable
 fun MoodHeaderCard(
@@ -265,8 +433,7 @@ fun PlanStatusCard(plan: PlanStatus) {
             }
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Thanh tiến trình chạy các bước
-            // ✅ ĐÃ SỬA: bảo vệ chia 0 -> tránh NaN khi totalSteps == 0 (coerceIn không chặn được NaN)
+            // ✅ Bảo vệ phép chia 0 -> phòng chống crash NaN khi totalSteps == 0
             LinearProgressIndicator(
                 progress = {
                     if (plan.totalSteps > 0)
@@ -289,7 +456,6 @@ fun PlanStatusCard(plan: PlanStatus) {
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(4.dp))
-            // Hiện 3 dòng log chạy mới nhất
             plan.logs.takeLast(3).forEach { log ->
                 Text(
                     text = "• $log",
@@ -327,7 +493,7 @@ fun EmptyPlansCard() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// CƠ CHẾ QUY QUY ĐỊNH TÔNG MÀU ĐỘNG (THEME MAPPER)
+// CƠ CHẾ QUY ĐỊNH TÔNG MÀU ĐỘNG (THEME MAPPER)
 // ─────────────────────────────────────────────────────────────────────────
 
 data class MoodTheme(val headerColor: Color, val contentColor: Color, val icon: ImageVector)

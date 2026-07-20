@@ -8,13 +8,13 @@ import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.*
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.WorldStateHelper
 import dagger.hilt.android.qualifiers.ApplicationContext
-// ✅ MỚI (Giai đoạn 3 - Planner): các import bất đồng bộ cần cho plannerScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,7 +32,6 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.*
-// ✅ MỚI (Giai đoạn 3 - Planner): thiếu trong bản gốc, cần cho activePlansMap/planLogsMap
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Provider
@@ -42,7 +41,6 @@ import javax.inject.Singleton
 class HouseManagerSkillImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: AppDatabase,
-    // ✅ ĐÃ SỬA LỖI 1: Bổ sung đầy đủ 3 Dependency thiếu hụt vào Constructor
     private val configProvider: AppConfigProvider,
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
@@ -53,19 +51,34 @@ class HouseManagerSkillImpl @Inject constructor(
     override val manifest = PluginManifest(
         id = id,
         name = name,
-        capabilities = PluginCapabilities(),
-        routable = false,
-        visibleOnDashboard = false,
-        autoGenerateQA = false,
+        capabilities = PluginCapabilities(dashboard = true),
+        routable = true, // Cho phép AI hiểu và tự kích hoạt các lệnh Quản gia thông qua Chat NLU
+        visibleOnDashboard = true,
+        autoGenerateQA = true,
         actions = listOf(
             PluginAction(
                 name = "evaluate",
-                description = "Chạy quy nạp để phân tích trạng thái sống của ngôi nhà",
+                description = "Yêu cầu Quản gia phân tích trạng thái sống hiện tại của căn nhà",
                 parameters = emptyList()
             ),
             PluginAction(
-                name = "get_context",
-                description = "Đọc ngữ cảnh tổng hợp của Quản gia phục vụ RAG",
+                name = "set_away_mode",
+                description = "Bật hoặc tắt chế độ vắng nhà dài ngày (Vacation mode)",
+                parameters = listOf(
+                    PluginParameter("enabled", "boolean", "true để bật, false để tắt vắng nhà", true, "boolean")
+                )
+            ),
+            PluginAction(
+                name = "set_policy",
+                description = "Bật hoặc tắt một chính sách an toàn của căn nhà",
+                parameters = listOf(
+                    PluginParameter("policyId", "string", "Mã chính sách (silent_night / vacation_safety)", true, "string"),
+                    PluginParameter("enabled", "boolean", "true để kích hoạt chính sách", true, "boolean")
+                )
+            ),
+            PluginAction(
+                name = "mine_habits",
+                description = "Kích hoạt Quản gia phân tích hành vi để đề xuất thói quen mới",
                 parameters = emptyList()
             )
         )
@@ -74,11 +87,7 @@ class HouseManagerSkillImpl @Inject constructor(
     private val mutex = Mutex()
     private var cachedSituation: HouseSituation? = null
 
-    // ✅ MỚI (Giai đoạn 3 - Planner): Scope bất đồng bộ riêng để chạy kịch bản dưới nền,
-    // không phụ thuộc lifecycle của coroutine gọi nó (vd: webhook camera).
     private val plannerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    // Quản lý trạng thái các kế hoạch đang chạy / log để hiển thị lên UI Screen sau này
     private val activePlansMap = ConcurrentHashMap<String, PlanStatus>()
     private val planLogsMap = ConcurrentHashMap<String, MutableList<String>>()
 
@@ -97,9 +106,24 @@ class HouseManagerSkillImpl @Inject constructor(
         return when (action) {
             "evaluate" -> {
                 val sit = evaluateSituation()
-                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Quy nạp trạng thái thành công."))
+                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Đã quy nạp trạng thái: Chế độ ${sit.currentMood}."))
             }
-            "get_context" -> PluginResult.Success(mapOf("context" to buildSystemContext()))
+            "set_away_mode" -> {
+                val enabled = params["enabled"] as? Boolean ?: return PluginResult.Failure("Thiếu tham số enabled")
+                WorldStateHelper.setAttribute(database.worldStateDao(), "system", "house", "away_mode", enabled.toString())
+                val sit = evaluateSituation()
+                PluginResult.Success(mapOf("situation" to sit, "message" to "✅ Đã chuyển đổi Chế độ vắng nhà: $enabled."))
+            }
+            "set_policy" -> {
+                val policyId = params["policyId"] as? String ?: return PluginResult.Failure("Thiếu policyId")
+                val enabled = params["enabled"] as? Boolean ?: return PluginResult.Failure("Thiếu enabled")
+                WorldStateHelper.setAttribute(database.worldStateDao(), "system", "policy", policyId, enabled.toString())
+                PluginResult.Success(mapOf("message" to "✅ Đã cập nhật chính sách '$policyId' sang: $enabled"))
+            }
+            "mine_habits" -> {
+                mineUserHabits()
+                PluginResult.Success(mapOf("message" to "✅ Quản gia đã phân tích và khai thác thói quen xong."))
+            }
             else -> PluginResult.Failure("Hành động không hỗ trợ: $action")
         }
     }
@@ -137,9 +161,12 @@ class HouseManagerSkillImpl @Inject constructor(
                     totalUnreadChats += unread
                 }
 
-                val ownerPresent = true
+                // 🧠 ĐỌCaway_mode TỪ BẢN SAO SỐ ĐỂ CẬP NHẬT TRẠNG THÁI SỐNG ĐỘNG
+                val isAway = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "house", "away_mode") == "true"
+                val ownerPresent = !isAway
 
                 val computedMood = when {
+                    isAway -> HouseMood.VACATION // Đi vắng dài ngày
                     isSuspicious -> HouseMood.ALERT
                     totalUnreadChats > 3 -> HouseMood.BUSY
                     isNightTime() && activeDevicesCount == 0 -> HouseMood.SLEEPING
@@ -148,7 +175,11 @@ class HouseManagerSkillImpl @Inject constructor(
                 }
 
                 val securityLevel = if (isSuspicious) 2 else 0
-                val summary = "Nhà an toàn mức $securityLevel, tâm trạng $computedMood."
+                val summary = if (isAway) {
+                    "Gia đình đang đi vắng. Quản gia đã siết chặt chính sách an ninh phòng chống quá tải điện."
+                } else {
+                    "Nhà đang ở chế độ $computedMood. An toàn mức $securityLevel."
+                }
 
                 val situation = HouseSituation(
                     securityLevel = securityLevel,
@@ -162,6 +193,27 @@ class HouseManagerSkillImpl @Inject constructor(
                 )
 
                 cachedSituation = situation
+
+                // Lưu trạng thái tổng hợp "system:brain"
+                val brainJson = JSONObject().apply {
+                    put("mood", computedMood.name)
+                    put("security_level", securityLevel)
+                    put("owner_present", ownerPresent)
+                    put("active_devices_count", activeDevicesCount)
+                    put("unread_chats_count", totalUnreadChats)
+                    put("summary", summary)
+                }.toString()
+
+                database.worldStateDao().upsertState(
+                    WorldStateEntity(
+                        id = "system:brain",
+                        source = "system",
+                        sourceId = "brain",
+                        attributesJson = brainJson,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+
                 situation
             } catch (e: Exception) {
                 HouseSituation(0, true, 0, 0, 0, 0, HouseMood.NORMAL, "Fallback")
@@ -224,19 +276,13 @@ class HouseManagerSkillImpl @Inject constructor(
             }
         }
 
-        // 🚨 KÍCH HOẠT PHẢN ỨNG LIÊN HOÀN CỦA PLANNER:
-        // Nếu phát hiện biến cố an ninh thực tế và KHÔNG phải sự kiện đang bị gộp trùng (tránh kích hoạt lặp rơ-le).
-        // ✅ ĐÃ SỬA: gọi trực tiếp (suspend), KHÔNG bọc thêm plannerScope.launch { } ở đây —
-        // executePlan() bên dưới đã tự launch trên plannerScope và trả về ngay, bọc thêm launch
-        // là dư một tầng coroutine không cần thiết.
-        if (!shouldMerge && camera.id.trim() == "cam_01") { // Ví dụ áp dụng cho camera Sân Trước (cam_01)
+        if (!shouldMerge && camera.id.trim() == "cam_01") { 
             triggerProtectHouseSequence(camera.id.trim())
         }
 
         return@withContext emailSent
     }
 
-    // ✅ ĐÃ SỬA LỖI 4: Hiện thực hóa đầy đủ method handleChatEventDecision tránh lỗi biên dịch lớp kế thừa
     override suspend fun handleChatEventDecision(
         platform: String,
         senderId: String,
@@ -318,9 +364,48 @@ class HouseManagerSkillImpl @Inject constructor(
         )
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 🧠 PLANNER ENGINE (Giai đoạn 3 — Vận hành chuỗi kịch bản liên hoàn nhiều bước)
-    // ─────────────────────────────────────────────────────────────────────────
+    // 🧠 GIAI ĐOẠN 4: DUYỆT CHÍNH SÁCH THỰC TẾ (Đọc cấu hình động từ Bản sao số thay vì hardcode)
+    override suspend fun checkPolicy(
+        pluginId: String,
+        action: String,
+        params: Map<String, Any>
+    ): PolicyResult = withContext(Dispatchers.IO) {
+        val currentSituation = cachedSituation ?: evaluateSituation()
+        
+        // 1. CHÍNH SÁCH BAN ĐÊM (silent_night)
+        val isSilentNightEnabled = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "silent_night") ?: "true"
+        if (isSilentNightEnabled == "true" && currentSituation.currentMood == HouseMood.SLEEPING && pluginId == "smart_switch" && action == "set") {
+            val state = params["state"] as? Boolean ?: false
+            val deviceKey = params["device"]?.toString() ?: ""
+            val isRestricted = deviceKey.contains("tivi", ignoreCase = true) || 
+                               deviceKey.contains("loa", ignoreCase = true) || 
+                               deviceKey.contains("còi", ignoreCase = true)
+                               
+            if (state && isRestricted) {
+                return@withContext PolicyResult.Blocked(
+                    "❌ Bị chặn bởi Chính sách Quản gia: Cả nhà đang ngủ, chặn kích hoạt các thiết bị gây tiếng ồn '$deviceKey'."
+                )
+            }
+        }
+
+        // 2. CHÍNH SÁCH VẮNG NHÀ AN TOÀN (vacation_safety)
+        val isVacationSafetyEnabled = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "vacation_safety") ?: "true"
+        if (isVacationSafetyEnabled == "true" && currentSituation.currentMood == HouseMood.VACATION && pluginId == "smart_switch" && action == "set") {
+            val state = params["state"] as? Boolean ?: false
+            val deviceKey = params["device"]?.toString() ?: ""
+            val isHeavyLoad = deviceKey.contains("bơm", ignoreCase = true) || 
+                               deviceKey.contains("bình nóng", ignoreCase = true)
+                               
+            if (state && isHeavyLoad) {
+                return@withContext PolicyResult.Blocked(
+                    "❌ Bị chặn bởi Chính sách Quản gia: Đang ở chế độ vắng nhà, chặn bật thiết bị phụ tải lớn '$deviceKey' để phòng chống cháy nổ."
+                )
+            }
+        }
+
+        return@withContext PolicyResult.Allowed
+    }
+
     override fun getActivePlans(): List<PlanStatus> {
         return activePlansMap.values.toList()
     }
@@ -344,10 +429,8 @@ class HouseManagerSkillImpl @Inject constructor(
             )
 
             for ((index, step) in steps.withIndex()) {
-                // 1. Cập nhật tiến trình cho UI Screen
                 activePlansMap[planId] = activePlansMap[planId]!!.copy(currentStepIndex = index)
 
-                // 2. Chờ hoãn nếu bước này yêu cầu trì hoãn trước khi chạy
                 if (step.delayMs > 0) {
                     val delaySec = step.delayMs / 1000
                     logger.d("HousePlanner", "[$planId] Chờ trì hoãn $delaySec giây...")
@@ -355,7 +438,6 @@ class HouseManagerSkillImpl @Inject constructor(
                     delay(step.delayMs)
                 }
 
-                // 3. Đánh giá điều kiện thế giới thực (Precondition check) trước khi chạy bước
                 var proceed = true
                 if (!step.precondition.isNullOrBlank()) {
                     val condition = WorldStateHelper.parseCondition(step.precondition)
@@ -376,7 +458,6 @@ class HouseManagerSkillImpl @Inject constructor(
 
                 if (!proceed) continue
 
-                // 4. Kích hoạt thực thi hành động qua IntentExecutor
                 logger.i("HousePlanner", "[$planId] ⚡ Bước ${index + 1}/${steps.size}: Kích hoạt ${step.pluginId}.${step.action}")
                 logsList.add("Bước ${index + 1}: Kích hoạt thực thi ${step.pluginId}.${step.action}")
 
@@ -406,7 +487,6 @@ class HouseManagerSkillImpl @Inject constructor(
                 }
             }
 
-            // 5. Kết thúc kịch bản và lưu trạng thái hoàn thành
             logger.i("HousePlanner", "🏁 Kế hoạch [$planId] đã hoàn thành chu kỳ chạy.")
             logsList.add("Kế hoạch hoàn tất lúc ${DATETIME_FORMATTER.format(Instant.now())}")
             activePlansMap[planId] = activePlansMap[planId]!!.copy(
@@ -414,23 +494,19 @@ class HouseManagerSkillImpl @Inject constructor(
                 status = "COMPLETED"
             )
 
-            // Dọn dẹp kế hoạch cũ khỏi bộ nhớ hiển thị sau 10 phút để tránh tốn RAM
             delay(10 * 60 * 1000L)
             activePlansMap.remove(planId)
             planLogsMap.remove(planId)
         }
     }
 
-    // Kịch bản mẫu liên hoàn bảo vệ nhà thông minh 5 bước của Quản gia
     override suspend fun triggerProtectHouseSequence(cameraId: String) {
         val steps = listOf(
-            // Bước 1: Bật ngay đèn sân trước của Tuya để dọa trộm
             ActionStep(
                 pluginId = "smart_switch",
                 action = "set",
                 params = mapOf("device" to "đèn sân trước", "state" to true)
             ),
-            // Bước 2: Gửi thông báo khẩn cho chủ nhà
             ActionStep(
                 pluginId = "notification",
                 action = "send",
@@ -439,37 +515,151 @@ class HouseManagerSkillImpl @Inject constructor(
                     "message" to "Quản gia đã tự động bật đèn sân để răn đe. Đang theo dõi sát sao..."
                 )
             ),
-            // Bước 3: Đợi 30 giây để trộm tự rút lui
             ActionStep(
                 pluginId = "camera",
                 action = "scan",
                 params = mapOf("cameraId" to cameraId, "force" to true),
-                delayMs = 30000L // ⏳ Trì hoãn 30 giây trước khi quét lại
+                delayMs = 30000L 
             ),
-            // Bước 4: Kiểm tra lại thế giới thực. Nếu trộm vẫn cố tình ở lại (trạng thái camera vẫn suspicious)
-            // thì hú còi báo động khẩn cấp
             ActionStep(
                 pluginId = "smart_switch",
                 action = "set",
                 params = mapOf("device" to "còi báo động", "state" to true),
                 delayMs = 5000L,
-                precondition = "camera.$cameraId.state=suspicious" // 🔒 Chỉ hú còi nếu trộm chưa đi!
+                precondition = "camera.$cameraId.state=suspicious" 
             ),
-            // Bước 5: Đưa còi báo động về trạng thái an toàn sau 1 phút hú còi dọa
             ActionStep(
                 pluginId = "smart_switch",
                 action = "set",
-                // ✅ ĐÃ SỬA LỖI CÚ PHÁP: bản gốc dùng "state" -> false (sai cú pháp, không compile được)
                 params = mapOf("device" to "còi báo động", "state" to false),
-                delayMs = 60000L, // ⏳ Tự động tắt còi sau 1 phút
-                precondition = "tuya.còi báo động.state=true" // Chỉ tắt nếu còi thực sự đang hú
+                delayMs = 60000L, 
+                precondition = "tuya.còi báo động.state=true" 
             )
         )
 
         executePlan("Kịch bản liên hoàn bảo vệ an ninh sân trước", steps)
     }
 
-    // ✅ ĐÃ SỬA LỖI 2: Di dời hàm sinh body email sang HouseManagerSkillImpl thay vì gọi qua hàm private của CameraSkill
+    // 🧠 GIAI ĐOẠN 4: CENTRALIZED HABIT MINING (Tự học thói quen người dùng)
+    override suspend fun mineUserHabits() = withContext(Dispatchers.IO) {
+        logger.i("HouseManager", "🔄 Quản gia bắt đầu tiến trình tự học thói quen người dùng từ nhật ký 7 ngày...")
+        
+        val since = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000 
+        val now = System.currentTimeMillis()
+        val logs = database.eventLogDao().getLogsInTimeframe(since, now)
+        if (logs.isEmpty()) {
+            logger.d("HouseManager", "Nhật ký trống, dừng tiến trình học.")
+            return@withContext
+        }
+
+        val calendar = Calendar.getInstance()
+        data class GroupKey(val source: String, val sourceId: String, val eventType: String, val value: String, val hour: Int)
+
+        val grouped = logs.groupBy { log ->
+            calendar.timeInMillis = log.timestamp
+            GroupKey(log.source, log.sourceId, log.eventType, log.value, calendar.get(Calendar.HOUR_OF_DAY))
+        }
+
+        val qaDao = database.qaDao()
+        val existingPatterns = getTrainingSkillPatternCache()
+
+        grouped.forEach { (key, entries) ->
+            if (key.source != "tuya") return@forEach
+
+            val distinctDays = entries.map { entry ->
+                calendar.timeInMillis = entry.timestamp
+                calendar.get(Calendar.DAY_OF_YEAR)
+            }.distinct().size
+
+            if (distinctDays >= 4) {
+                val question = "pattern:${key.source}:${key.sourceId}:${key.eventType}:${key.value}:${key.hour}h"
+                val actionLabel = if (key.value.lowercase() == "true") "bật" else "tắt"
+                val answer = "Bạn thường $actionLabel thiết bị ${key.sourceId} vào khoảng ${key.hour}h hằng ngày ($distinctDays/7 ngày gần nhất). Hệ thống đề xuất đặt lịch tự động cho thói quen này."
+
+                val existingCategory = existingPatterns[question + "_category"]
+
+                when (existingCategory) {
+                    null -> {
+                        val qa = QAEntity(
+                            id = UUID.randomUUID().toString(),
+                            question = question,
+                            answer = answer,
+                            type = "pattern",
+                            category = "pending_pattern",
+                            createdBy = "default_user",
+                            createdAt = System.currentTimeMillis(),
+                            timestamp = System.currentTimeMillis()
+                        )
+                        qaDao.insertQA(qa)
+                        logger.i("HouseManager", "🔁 Phát hiện thói quen mới chờ duyệt: $answer")
+
+                        val eventPayload = JSONObject().apply {
+                            put("pattern_id", qa.id)
+                            put("device_id", key.sourceId)
+                            put("device_name", key.sourceId)
+                            put("action", key.eventType)
+                            put("value", key.value)
+                            put("hour", key.hour)
+                            put("confidence", "$distinctDays/7 ngày")
+                            put("recommendation_text", answer)
+                            put("status", "pending")
+                        }.toString()
+
+                        database.eventLogDao().insertLog(
+                            EventLogEntity(
+                                id = UUID.randomUUID().toString(),
+                                timestamp = now,
+                                source = "system",
+                                sourceId = "brain",
+                                eventType = "pattern_discovered",
+                                value = eventPayload,
+                                summary = "Hệ thống tự học thói quen mới: $answer"
+                            )
+                        )
+                    }
+                    "pending_pattern" -> {
+                        if (existingPatterns[question] != answer) {
+                            val qa = QAEntity(
+                                id = existingPatterns[question + "_id"] ?: UUID.randomUUID().toString(),
+                                question = question,
+                                answer = answer,
+                                type = "pattern",
+                                category = "pending_pattern",
+                                createdBy = "default_user",
+                                createdAt = System.currentTimeMillis(),
+                                timestamp = System.currentTimeMillis()
+                            )
+                            qaDao.insertQA(qa)
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+
+        val pendingCount = qaDao.getAllQAs("default_user").count { it.category == "pending_pattern" }
+        WorldStateHelper.setAttribute(database.worldStateDao(), "system", "brain", "pending_patterns_count", pendingCount.toString())
+        WorldStateHelper.setAttribute(database.worldStateDao(), "system", "brain", "last_learning_run", System.currentTimeMillis().toString())
+        logger.i("HouseManager", "✅ Tiến trình tự học thói quen hoàn tất. Ghi nhận $pendingCount đề xuất thói quen chờ duyệt.")
+    }
+
+    private suspend fun getTrainingSkillPatternCache(): Map<String, String> {
+        return try {
+            database.qaDao().getAllQAs("default_user")
+                .filter { it.type == "pattern" }
+                .flatMap {
+                    listOf(
+                        it.question to it.answer,
+                        it.question + "_id" to it.id,
+                        it.question + "_category" to it.category
+                    )
+                }
+                .toMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
     private fun buildAlertEmailBody(camera: CameraConfigEntity, analysis: String): String {
         return """
             <html>

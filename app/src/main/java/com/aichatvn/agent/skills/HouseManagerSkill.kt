@@ -6,33 +6,13 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.EventLogEntity
 import com.aichatvn.agent.data.model.HouseSituation
 
-// ✅ ĐÃ SỬA: Khai báo lớp dữ liệu ChatDecision tại cấp độ file để tránh lỗi Unresolved Reference
-data class ChatDecision(
-    val shouldAutoRespond: Boolean,
-    val intent: String,
-    val urgency: String,
-    val unreadCount: Int,
-    val summary: String
-)
+// ... [Khai báo ChatDecision, ActionStep, PlanStatus giữ nguyên]
 
-// ✅ MỚI (Giai đoạn 3 - Planner): Định nghĩa một bước hành động đơn lẻ trong chuỗi kế hoạch
-data class ActionStep(
-    val pluginId: String,            // Plugin đích (vd: smart_switch, camera)
-    val action: String,              // Hành động (vd: set, scan)
-    val params: Map<String, Any>,    // Tham số thực thi
-    val delayMs: Long = 0L,          // Thời gian hoãn chờ (milli-giây) TRƯỚC khi thực hiện bước này
-    val precondition: String? = null // Điều kiện thế giới thực dạng "source.sourceId.key=value"
-)
-
-// ✅ MỚI (Giai đoạn 3 - Planner): Theo dõi trạng thái tiến trình chạy của một kế hoạch
-data class PlanStatus(
-    val planId: String,
-    val goalName: String,
-    val currentStepIndex: Int,
-    val totalSteps: Int,
-    val status: String,              // RUNNING, COMPLETED, FAILED, BLOCKED
-    val logs: List<String>
-)
+// ✅ MỚI (Giai đoạn 4): Định nghĩa kết quả kiểm duyệt chính sách
+sealed class PolicyResult {
+    object Allowed : PolicyResult()
+    data class Blocked(val reason: String) : PolicyResult()
+}
 
 interface HouseManagerSkill : Plugin {
     suspend fun evaluateSituation(): HouseSituation
@@ -55,13 +35,13 @@ interface HouseManagerSkill : Plugin {
         timestamp: Long
     ): ChatDecision
 
-    // 🧠 MỚI (Giai đoạn 3 - Planner Engine):
-    // Cho phép Quản gia tiếp nhận một chuỗi hành động và tự chạy bất đồng bộ dưới nền
     suspend fun executePlan(goalName: String, steps: List<ActionStep>)
-
-    // Kích hoạt kịch bản mẫu "Bảo vệ nhà liên hoàn" khi phát hiện có xâm nhập bất thường
     suspend fun triggerProtectHouseSequence(cameraId: String)
-
-    // Lấy danh sách các kế hoạch đang chạy để hiển thị lên Screen UI sau này
     fun getActivePlans(): List<PlanStatus>
+
+    // ✅ MỚI (Giai đoạn 4 - Policy Engine): Kiểm duyệt chính sách an toàn trước khi cấp điện thiết bị
+    suspend fun checkPolicy(pluginId: String, action: String, params: Map<String, Any>): PolicyResult
+
+    // ✅ MỚI (Giai đoạn 4 - Learning Engine): Tự học thói quen người dùng từ nhật ký 7 ngày gần nhất
+    suspend fun mineUserHabits()
 }
