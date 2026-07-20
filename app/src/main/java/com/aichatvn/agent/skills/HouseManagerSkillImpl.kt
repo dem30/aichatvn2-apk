@@ -1,6 +1,5 @@
 package com.aichatvn.agent.skills
 
-import android.content.Context
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
@@ -15,7 +14,6 @@ import com.aichatvn.agent.data.model.*
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.WorldStateHelper
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,7 +36,6 @@ import javax.inject.Singleton
 
 @Singleton
 class HouseManagerSkillImpl @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val database: AppDatabase,
     private val configProvider: AppConfigProvider,
     private val emailSkill: EmailSkill,

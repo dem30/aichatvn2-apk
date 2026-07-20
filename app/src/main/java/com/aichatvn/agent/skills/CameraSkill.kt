@@ -1780,7 +1780,6 @@ class CameraSkill @Inject constructor(
                     <strong>🤖 Phân tích AI:</strong><br>
                     $analysis
                 </div>
-                <p><small>Bug evidence attachment in the email.</small></p>
             </body>
             </html>
         """.trimIndent()
