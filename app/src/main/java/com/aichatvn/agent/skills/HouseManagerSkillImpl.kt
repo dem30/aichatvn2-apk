@@ -508,58 +508,62 @@ class HouseManagerSkillImpl @Inject constructor(
         """.trimIndent()
     }
 
-    override suspend fun sendDefaultCameraAlerts(
-        camera: CameraConfigEntity,
-        aiComment: String,
-        imageBytes: ByteArray?,
-        activeAlertId: String,
-        shouldMerge: Boolean
-    ): Boolean = withContext(Dispatchers.IO) {
-        var emailSent = false
-        if (camera.enableNotification == 1) {
-            if (!shouldMerge && camera.customeremail.isNotEmpty()) {
-                try {
-                    val emailSubject = "${configProvider.getString(AppConfigDefaults.EMAIL_SUBJECT_PREFIX, "🚨 CẢNH BÁO AN NINH")} - ${camera.customername}"
-                    emailSkill.sendEmail(
-                        to = camera.customeremail,
-                        subject = emailSubject,
-                        body = buildAlertEmailBody(camera, aiComment),
-                        imageBytes = imageBytes
-                    )
-                    emailSent = true
-                } catch (e: Exception) {
-                    logger.e("HouseManager", "Gửi email mặc định thất bại: ${e.message}")
-                }
-            }
 
+
+    
+    
+// Thay thế hàm sendDefaultCameraAlerts trong HouseManagerSkillImpl.kt:
+
+override suspend fun sendDefaultCameraAlerts(
+    camera: CameraConfigEntity,
+    aiComment: String,
+    imageBytes: ByteArray?,
+    activeAlertId: String,
+    shouldMerge: Boolean
+): Boolean = withContext(Dispatchers.IO) {
+    var emailSent = false
+    
+    // 1. Chỉ thực hiện gửi thông báo (Email và Push Notification) nếu camera bật tính năng này
+    if (camera.enableNotification == 1) {
+        if (!shouldMerge && camera.customeremail.isNotEmpty()) {
             try {
-                notificationSkill.sendNotification(
-                    title = "Cảnh Báo Camera ${camera.customername}",
-                    message = aiComment.take(100),
-                    notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
-                    deepLinkRoute = "alert_history?cameraId=${camera.id.trim()}"
+                val emailSubject = "${configProvider.getString(AppConfigDefaults.EMAIL_SUBJECT_PREFIX, "🚨 CẢNH BÁO AN NINH")} - ${camera.customername}"
+                emailSkill.sendEmail(
+                    to = camera.customeremail,
+                    subject = emailSubject,
+                    body = buildAlertEmailBody(camera, aiComment),
+                    imageBytes = imageBytes
                 )
+                emailSent = true
             } catch (e: Exception) {
-                logger.e("HouseManager", "Gửi thông báo đẩy mặc định thất bại: ${e.message}")
+                logger.e("HouseManager", "Gửi email mặc định thất bại: ${e.message}")
             }
         }
 
-        // ✅ ĐÃ SỬA: Đọc danh sách ID camera kích hoạt kịch bản liên hoàn được chủ nhà cấu hình
-        // động từ AppConfig thay vì hardcode "cam_01" — mỗi nhà lắp camera và đặt ID khác nhau.
-        val triggerCameraIds = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01").trim()
-        val isTriggerCamera = if (triggerCameraIds.isEmpty()) {
-            true // Để trống = tất cả camera đều có quyền kích hoạt kịch bản liên hoàn
-        } else {
-            triggerCameraIds.split(",").map { it.trim() }.contains(camera.id.trim())
+        try {
+            notificationSkill.sendNotification(
+                title = "Cảnh Báo Camera ${camera.customername}",
+                message = aiComment.take(100),
+                notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
+                deepLinkRoute = "alert_history?cameraId=${camera.id.trim()}"
+            )
+        } catch (e: Exception) {
+            logger.e("HouseManager", "Gửi thông báo đẩy mặc định thất bại: ${e.message}")
         }
-
-        if (!shouldMerge && isTriggerCamera) {
-            triggerProtectHouseSequence(camera.id.trim())
-        }
-
-        return@withContext emailSent
     }
 
+    // 🔴 ĐÃ LOẠI BỎ: Đoạn code tự động kích hoạt triggerProtectHouseSequence() chạy ngầm cũ [12].
+    // Từ bây giờ, việc kích hoạt kịch bản răn đe vật lý khi có trộm sẽ được quản lý tập trung 
+    // và duy nhất bởi bộ điều phối đa nhóm kịch bản (onWorldStateChanged) dựa trên Bản sao số [12, 13].
+
+    return@withContext emailSent
+}
+
+
+
+
+
+    
     override suspend fun handleChatEventDecision(
         platform: String,
         senderId: String,

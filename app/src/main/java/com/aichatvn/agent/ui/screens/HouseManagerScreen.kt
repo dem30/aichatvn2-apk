@@ -1216,20 +1216,40 @@ fun VisualTriggerBuilderDialog(
                     }
                 }
 
-                Text("Bước 2: Chọn thiết bị áp dụng", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                when (selectedSource) {
-                    "camera" -> {
-                        if (availableCameras.isEmpty()) {
-                            Text("Chưa lắp camera nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                        } else {
-                            DeviceSelectorDropdown(
-                                label = "Chọn camera giám sát",
-                                list = availableCameras.map { it.id to (it.customername.ifBlank { it.id }) },
-                                selectedId = selectedEntityId,
-                                onSelected = { selectedEntityId = it }
-                            )
-                        }
+
+
+                
+
+                // Tìm đoạn code này trong VisualTriggerBuilderDialog ở HouseManagerScreen.kt:
+Text("Bước 2: Chọn thiết bị áp dụng", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+when (selectedSource) {
+    "camera" -> {
+        if (availableCameras.isEmpty()) {
+            Text("Chưa lắp camera nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+        } else {
+            // Thay thế đoạn DeviceSelectorDropdown bên dưới bằng bản cập nhật hiển thị chi tiết:
+            DeviceSelectorDropdown(
+                label = "Chọn camera giám sát",
+                list = availableCameras.map { camera ->
+                    val displayLabel = buildString {
+                        append(camera.customername.ifBlank { "Chưa đặt tên" })
+                        
+                        append(" (${camera.id})") // Đính kèm ID camera thật ở cuối để bảo đảm phân biệt được
                     }
+                    camera.id to displayLabel
+                },
+                selectedId = selectedEntityId,
+                onSelected = { selectedEntityId = it }
+            )
+        }
+    }
+    // Các nhánh "tuya" và "chat" bên dưới giữ nguyên...
+
+
+
+
+
+                    
                     "tuya" -> {
                         if (availableDevices.isEmpty()) {
                             Text("Chưa đồng bộ thiết bị Tuya nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
