@@ -49,6 +49,8 @@ fun HouseManagerScreen(
     val protectCameraIds by viewModel.protectCameraIds.collectAsState()
     val availableTuyaDevices by viewModel.availableTuyaDevices.collectAsState()
     val availableCameras by viewModel.availableCameras.collectAsState()
+    // ✅ MỚI: Danh sách thớt chat khách hàng thật để nạp cho picker chatSession
+    val availableChatSessions by viewModel.availableChatSessions.collectAsState()
 
     // ✅ MỚI: Trạng thái của bộ Planner Tự Do (No-Code Planner Builder)
     val protectActions by viewModel.protectActions.collectAsState()
@@ -72,6 +74,8 @@ fun HouseManagerScreen(
                 plugins = alertActionPlugins,
                 tuyaDevices = availableTuyaDevices,
                 activeCameras = availableCameras,
+                // ✅ MỚI: nạp danh sách thớt chat thật cho Quản gia chọn lựa trực quan
+                activeChatSessions = availableChatSessions,
                 onSave = { cfg ->
                     viewModel.addProtectAction(cfg)
                     showActionSheet = false

@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -75,6 +76,11 @@ class HouseManagerViewModel @Inject constructor(
 
     private val _availableCameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
     val availableCameras: StateFlow<List<CameraConfigEntity>> = _availableCameras.asStateFlow()
+
+    // ✅ MỚI: Danh sách thớt chat khách hàng thật đang có trong Bản sao số (world_state,
+    // source = "chat") — nạp cho picker chatSession trong AlertActionFormSheet.
+    private val _availableChatSessions = MutableStateFlow<List<String>>(emptyList())
+    val availableChatSessions: StateFlow<List<String>> = _availableChatSessions.asStateFlow()
 
     // ✅ MỚI: Danh sách kịch bản tự do (No-Code Planner) do chủ nhà tự xây từ AlertActionFormSheet
     private val _protectActions = MutableStateFlow<List<AlertActionConfig>>(emptyList())
@@ -139,6 +145,12 @@ class HouseManagerViewModel @Inject constructor(
 
                 _availableTuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
                 _availableCameras.value = database.cameraDao().getAllCameras()
+
+                // ✅ MỚI (Đọc thớt chat): Lọc tất cả trạng thái trong Bản sao số có source = "chat"
+                // để lấy danh sách username động (vd: facebook_1234, telegram_5678) cho picker.
+                _availableChatSessions.value = database.worldStateDao().getAllStatesFlow().first()
+                    .filter { it.source == "chat" }
+                    .map { it.sourceId.trim() }
             }
 
         } catch (e: Exception) {

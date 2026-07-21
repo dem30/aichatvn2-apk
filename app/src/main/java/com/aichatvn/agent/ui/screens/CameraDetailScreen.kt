@@ -997,6 +997,9 @@ fun AlertActionFormSheet(
     plugins: List<com.aichatvn.agent.core.plugin.Plugin>,
     tuyaDevices: List<TuyaDeviceEntity>,
     activeCameras: List<CameraConfigEntity>,
+    // ✅ MỚI: mặc định danh sách rỗng để không phá vỡ 2 lệnh gọi cũ trong chính file này
+    // (chưa truyền activeChatSessions) — chỉ HouseManagerScreen.kt truyền giá trị thật.
+    activeChatSessions: List<String> = emptyList(),
     onSave: (AlertActionConfig) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -1195,6 +1198,212 @@ fun AlertActionFormSheet(
                                         cameraExpanded = false
                                     }
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // 🧠 MỚI (Dropdown Source): Vẽ bộ chọn nguồn dữ liệu Quản gia trực quan
+                param.semanticType == "precondition_source" -> {
+                    var expanded by remember { mutableStateOf(false) }
+                    val currentVal = paramValues[param.name] ?: ""
+                    val displayText = when (currentVal) {
+                        "camera" -> "Mắt quét Camera"
+                        "tuya" -> "Thiết bị đóng ngắt Tuya"
+                        "chat" -> "Hội thoại Đa kênh"
+                        else -> currentVal.ifBlank { "Chọn nguồn kiểm tra..." }
+                    }
+                    ExposedDropdownMenuBox(
+                        expanded = expanded,
+                        onExpandedChange = { expanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = displayText,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Chọn nguồn dữ liệu") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            listOf(
+                                "camera" to "Mắt quét Camera",
+                                "tuya" to "Thiết bị đóng ngắt Tuya",
+                                "chat" to "Hội thoại Đa kênh"
+                            ).forEach { (key, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        paramValues[param.name] = key
+                                        // Reset các trường liên quan khi đổi nguồn để chống chọn lệch chéo
+                                        paramValues["device"] = ""
+                                        paramValues["camera"] = ""
+                                        paramValues["chatSession"] = ""
+                                        // ✅ ĐÃ SỬA UX: nguồn chat không có thuộc tính "state", nên mặc định
+                                        // đưa về "session_status" để Dropdown thuộc tính không hiển thị rác.
+                                        paramValues["attribute"] = if (key == "chat") "session_status" else "state"
+                                        paramValues["expected"] = ""
+                                        expanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 🧠 MỚI (Dropdown Attribute): Tự thay đổi danh sách thuộc tính tương ứng theo Nguồn đã chọn
+                param.semanticType == "precondition_attribute" -> {
+                    var expanded by remember { mutableStateOf(false) }
+                    val currentSource = paramValues["source"] ?: "camera"
+                    val currentVal = paramValues[param.name] ?: "state"
+
+                    val options = when (currentSource) {
+                        "camera" -> listOf("state" to "Trạng thái an ninh (state)", "objects" to "Vật thể phát hiện (objects)")
+                        "tuya" -> listOf("state" to "Trạng thái đóng ngắt (state)")
+                        "chat" -> listOf("session_status" to "Trạng thái phiên (session_status)", "unread_count" to "Số tin chưa đọc (unread_count)")
+                        else -> listOf("state" to "Trạng thái hoạt động (state)")
+                    }
+                    val displayText = options.find { it.first == currentVal }?.second ?: currentVal
+
+                    ExposedDropdownMenuBox(
+                        expanded = expanded,
+                        onExpandedChange = { expanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = displayText,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Chọn thuộc tính cần kiểm tra") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            options.forEach { (key, label) ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        paramValues[param.name] = key
+                                        paramValues["expected"] = "" // Reset expected value khi đổi thuộc tính
+                                        expanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 🧠 MỚI (Dropdown Expected): Tự thay đổi danh sách trạng thái mong muốn theo thuộc tính
+                param.semanticType == "precondition_expected" -> {
+                    var expanded by remember { mutableStateOf(false) }
+                    val currentSource = paramValues["source"] ?: "camera"
+                    val currentAttr = paramValues["attribute"] ?: "state"
+                    val currentVal = paramValues[param.name] ?: ""
+
+                    val options = when {
+                        currentSource == "camera" && currentAttr == "state" ->
+                            listOf("normal" to "Bình thường (normal)", "suspicious" to "Phát hiện bất thường (suspicious)")
+                        currentSource == "tuya" && currentAttr == "state" ->
+                            listOf("true" to "Đang bật (true)", "false" to "Đang tắt (false)")
+                        currentSource == "chat" && currentAttr == "session_status" ->
+                            listOf("waiting_agent" to "Đang chờ người trực (waiting_agent)", "resolved" to "Đã giải quyết (resolved)")
+                        currentSource == "chat" && currentAttr == "unread_count" ->
+                            listOf("0" to "0 tin nhắn", "1" to "1 tin nhắn", "2" to "2 tin nhắn", "3" to "3 tin nhắn")
+                        else -> emptyList() // Trả rỗng để tự fallback về ô gõ chữ tự do nếu là thuộc tính tùy biến sâu
+                    }
+                    val displayText = options.find { it.first == currentVal }?.second ?: currentVal
+
+                    if (options.isEmpty()) {
+                        OutlinedTextField(
+                            value = currentVal,
+                            onValueChange = { paramValues[param.name] = it },
+                            label = { Text("Trạng thái mong muốn (tự gõ)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                    } else {
+                        ExposedDropdownMenuBox(
+                            expanded = expanded,
+                            onExpandedChange = { expanded = it }
+                        ) {
+                            OutlinedTextField(
+                                value = displayText,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Chọn trạng thái mong muốn") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                                modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = expanded,
+                                onDismissRequest = { expanded = false }
+                            ) {
+                                options.forEach { (key, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label) },
+                                        onClick = {
+                                            paramValues[param.name] = key
+                                            expanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 🧠 MỚI (Dropdown Chat Session): Vẽ bộ chọn thớt chat khách hàng đa kênh trực quan —
+                // đây là phần vá lỗ hổng logic: nếu thiếu picker này, nhánh "chat" không có cách nào
+                // biết đang kiểm tra thớt của khách hàng nào.
+                param.semanticType == "chatSession" -> {
+                    var chatExpanded by remember { mutableStateOf(false) }
+                    val selectedSession = paramValues[param.name] ?: ""
+                    val displayText = selectedSession.substringAfter("_")
+
+                    ExposedDropdownMenuBox(
+                        expanded = chatExpanded,
+                        onExpandedChange = { chatExpanded = it }
+                    ) {
+                        OutlinedTextField(
+                            value = displayText.ifBlank { "Chọn hội thoại..." },
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Chọn thớt chat khách hàng") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = chatExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = chatExpanded,
+                            onDismissRequest = { chatExpanded = false }
+                        ) {
+                            if (activeChatSessions.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Chưa có thớt chat đa kênh nào hoạt động") },
+                                    onClick = {},
+                                    enabled = false
+                                )
+                            } else {
+                                activeChatSessions.forEach { session ->
+                                    val platform = session.substringBefore("_")
+                                    val rawId = session.substringAfter("_")
+                                    DropdownMenuItem(
+                                        text = { Text("$rawId ($platform)") },
+                                        onClick = {
+                                            paramValues[param.name] = session
+                                            chatExpanded = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }

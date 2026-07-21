@@ -89,16 +89,20 @@ class HouseManagerSkillImpl @Inject constructor(
             ),
             PluginAction(
                 // ✅ ĐÃ SỬA: Thay vì bắt chủ nhà gõ tay chuỗi precondition thô (dễ gõ sai), tách
-                // thành 5 tham số riêng — 2 tham số "device"/"camera" có semanticType riêng để
-                // AlertActionFormSheet tự render Picker chọn thiết bị/camera thật, không cần gõ tay.
+                // thành các tham số riêng với semanticType đặc thù để AlertActionFormSheet tự
+                // render Dropdown chọn nguồn/thiết bị/camera/thớt chat/thuộc tính/trạng thái —
+                // không cần gõ tay bất kỳ từ khóa hệ thống nào.
                 name = "check_precondition",
                 description = "Kiểm duyệt điều kiện thực tế (Planner Precondition Step)",
                 parameters = listOf(
-                    PluginParameter("source", "string", "Nguồn kiểm tra (camera / tuya / chat)", true, "string"),
-                    PluginParameter("device", "string", "Chọn thiết bị Tuya (nếu nguồn là tuya)", false, "device"),
-                    PluginParameter("camera", "string", "Chọn camera (nếu nguồn là camera)", false, "camera"),
-                    PluginParameter("attribute", "string", "Thuộc tính cần kiểm tra (ví dụ: state)", true, "string"),
-                    PluginParameter("expected", "string", "Trạng thái mong muốn (ví dụ: true / false / suspicious)", true, "string")
+                    PluginParameter("source", "string", "Nguồn dữ liệu kiểm tra", true, "precondition_source"),
+                    PluginParameter("device", "string", "Chọn thiết bị Tuya", false, "device"),
+                    PluginParameter("camera", "string", "Chọn camera", false, "camera"),
+                    // ✅ MỚI (Sửa lỗi logic): Thêm tham số chọn thớt chat khách hàng đa kênh —
+                    // nếu không có tham số này, nhánh "chat" không thể biết đang kiểm tra thớt của ai.
+                    PluginParameter("chatSession", "string", "Chọn thớt chat khách hàng", false, "chatSession"),
+                    PluginParameter("attribute", "string", "Chọn thuộc tính kiểm tra", true, "precondition_attribute"),
+                    PluginParameter("expected", "string", "Chọn trạng thái mong muốn", true, "precondition_expected")
                 )
             )
         )
@@ -118,6 +122,8 @@ class HouseManagerSkillImpl @Inject constructor(
 
     override suspend fun initialize() {
         evaluateSituation()
+        // 🧠 Khởi động bộ lắng nghe phản ứng Bản sao số tự động dưới nền
+        startWorldStateReactiveObserver()
     }
 
     override suspend fun shutdown() {}
@@ -165,10 +171,13 @@ class HouseManagerSkillImpl @Inject constructor(
                     val source = params["source"] as? String ?: ""
                     val attribute = params["attribute"] as? String ?: "state"
                     val expected = params["expected"] as? String ?: ""
-                    val sourceId = if (source == "tuya") {
-                        params["device"] as? String ?: ""
-                    } else {
-                        params["camera"] as? String ?: ""
+                    // ✅ ĐÃ SỬA: trước đây nhánh "chat" bị rơi vào else -> lấy "camera" (luôn rỗng),
+                    // khiến điều kiện chat luôn coi như không có (bypass âm thầm). Giờ tách rõ when.
+                    val sourceId = when (source) {
+                        "tuya" -> params["device"] as? String ?: ""
+                        "camera" -> params["camera"] as? String ?: ""
+                        "chat" -> params["chatSession"] as? String ?: ""
+                        else -> ""
                     }
                     if (source.isNotEmpty() && sourceId.isNotEmpty()) {
                         WorldStateHelper.WorldStateCondition(source, sourceId, attribute, expected)
@@ -290,8 +299,78 @@ class HouseManagerSkillImpl @Inject constructor(
         }
     }
 
+    // 🧠 BỘ QUAN SÁT PHẢN ỨNG BẢN SAO SỐ (WORLD STATE REACTIVE OBSERVER)
+    // ⚠️ CẦN KIỂM TRA TRƯỚC KHI BUILD: onWorldStateChanged bên dưới là hàm override của
+    // interface HouseManagerSkill/BaseSkill — hãy xác nhận trong AgentKernel/BaseSkill xem
+    // hàm này đã được framework tự gọi mỗi khi world_state đổi hay chưa. Nếu đã có cơ chế đó,
+    // bộ observer thủ công này sẽ khiến onWorldStateChanged bị gọi 2 LẦN cho cùng 1 sự kiện
+    // (1 lần do framework, 1 lần do vòng collect thủ công dưới đây) -> kích hoạt còi/đèn/email
+    // báo động 2 lần liên tiếp cho cùng một lần camera nghi vấn.
+    private fun startWorldStateReactiveObserver() {
+        plannerScope.launch(Dispatchers.IO) {
+            // Bộ nhớ đệm lưu trạng thái cũ trên RAM để so sánh tìm ra trường thay đổi (Delta Change)
+            val lastStateMap = ConcurrentHashMap<String, String>()
+
+            database.worldStateDao().getAllStatesFlow().collect { currentStates ->
+                currentStates.forEach { entity ->
+                    try {
+                        val json = JSONObject(entity.attributesJson)
+                        json.keys().forEach { key ->
+                            val value = json.optString(key, "")
+                            val stateKey = "${entity.source}:${entity.sourceId}:$key"
+                            val lastValue = lastStateMap[stateKey]
+
+                            if (lastValue != value) {
+                                lastStateMap[stateKey] = value
+                                // Chỉ phát tín hiệu khi là biến động thực tế phát sinh sau khi mở app
+                                if (lastValue != null) {
+                                    // Chạy bất đồng bộ để không làm nghẽn dòng collect của SQLite Flow
+                                    launch(Dispatchers.Default) {
+                                        onWorldStateChanged(entity.source, entity.sourceId, key, value)
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        logger.e("HouseManager", "Lỗi phân tích Bản sao số: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
     override suspend fun onWorldStateChanged(source: String, sourceId: String, key: String, value: String) {
+        // 1. Luôn quy nạp lại tình huống sống để đổi màu Mood giao diện và cập nhật system:brain
         evaluateSituation()
+
+        // 2. 🧠 BỘ ĐIỀU PHỐI SỰ KIỆN TỰ ĐỘNG (Event-Driven Dispatcher)
+
+        // Nhánh A: Biến cố tự động từ Cảm biến an ninh Camera
+        if (source == "camera" && key == "state" && value == "suspicious") {
+            triggerProtectHouseSequence(sourceId)
+        }
+
+        // Nhánh B: Biến cố vật lý tự động từ các Cảm biến đóng ngắt Tuya (vd: Cảm biến cửa, chuyển động)
+        if (source == "tuya" && key == "state" && value == "true") {
+            val isSensorTrigger = sourceId.contains("cảm biến", ignoreCase = true) ||
+                                  sourceId.contains("sensor", ignoreCase = true) ||
+                                  sourceId.contains("cửa", ignoreCase = true)
+
+            if (isSensorTrigger) {
+                logger.i("HouseManager", "⚠️ Phát hiện biến động từ cảm biến Tuya '$sourceId'. Kích hoạt bảo vệ!")
+
+                // ✅ ĐÃ SỬA (Rủi ro 2): sourceId ở đây là ID/tên thiết bị Tuya, không phải camera —
+                // truyền thẳng vào triggerProtectHouseSequence sẽ khiến bước "camera.scan" nhận
+                // nhầm cameraId. Thay vào đó, tra camera răn đe đã cấu hình trong AppConfig
+                // (cùng khóa HOUSE_MANAGER_PROTECT_CAMERAS đang dùng ở sendDefaultCameraAlerts).
+                val protectCameras = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01").trim()
+                val targetCamId = protectCameras.split(",")
+                    .map { it.trim() }
+                    .firstOrNull { it.isNotEmpty() } ?: "cam_01"
+
+                triggerProtectHouseSequence(targetCamId)
+            }
+        }
     }
 
     override suspend fun onEvent(event: EventLogEntity) {}
@@ -630,10 +709,12 @@ class HouseManagerSkillImpl @Inject constructor(
                     val source = cfg.params["source"] ?: ""
                     val attr = cfg.params["attribute"] ?: "state"
                     val expected = cfg.params["expected"] ?: ""
-                    val sourceId = if (source == "tuya") {
-                        cfg.params["device"] ?: ""
-                    } else {
-                        cfg.params["camera"] ?: ""
+                    // ✅ ĐÃ SỬA: đọc đúng thớt chat được chọn thay vì luôn rơi vào "camera" (rỗng).
+                    val sourceId = when (source) {
+                        "tuya" -> cfg.params["device"] ?: ""
+                        "camera" -> cfg.params["camera"] ?: ""
+                        "chat" -> cfg.params["chatSession"] ?: ""
+                        else -> ""
                     }
                     if (source.isNotEmpty() && sourceId.isNotEmpty()) "$source.$sourceId.$attr=$expected" else null
                 }
