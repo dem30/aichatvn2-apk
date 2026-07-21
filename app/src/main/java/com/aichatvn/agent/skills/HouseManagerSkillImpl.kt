@@ -333,7 +333,7 @@ class HouseManagerSkillImpl @Inject constructor(
                 val summary = if (isAway) {
                     "Gia đình đang đi vắng. Quản gia đã siết chặt chính sách an ninh phòng chống quá tải điện."
                 } else {
-                    "Nhà đang ở chế độ $computedMood. An toàn mức $securityLevel."
+                    "Nhà đang ở chế độ ${computedMood.displayName()}. An toàn mức $securityLevel."
                 }
 
                 val situation = HouseSituation(
@@ -434,10 +434,14 @@ class HouseManagerSkillImpl @Inject constructor(
             val condition = WorldStateHelper.parseCondition(group.triggerSource)
             if (condition != null) {
                 // Kiểm duyệt xem sự kiện Bản sao số hiện tại có khớp "ngòi nổ" của nhóm kịch bản này không
+                // ✅ ĐÃ SỬA: so khớp "value" trước đây phân biệt hoa/thường trong khi "sourceId" thì
+                // không — nếu ai đó sửa tay JSON triggerSource với hoa/thường khác (vd "SUSPICIOUS"),
+                // ngòi nổ sẽ không bao giờ khớp mà không có dấu hiệu lỗi nào. Nay đồng nhất: cả hai
+                // đều so khớp không phân biệt hoa/thường.
                 val isTriggerMatched = source == condition.source &&
                         (condition.sourceId == "*" || sourceId.trim().equals(condition.sourceId.trim(), ignoreCase = true)) &&
                         key == condition.attrKey &&
-                        value == condition.expected
+                        value.trim().equals(condition.expected.trim(), ignoreCase = true)
 
                 if (isTriggerMatched) {
                     logger.i("HouseManager", "🔥 Nhóm kịch bản '${group.label}' được kích hoạt từ ngòi nổ: $source.$sourceId.$key=$value")
@@ -1055,8 +1059,20 @@ override suspend fun sendDefaultCameraAlerts(
         }
     }
 
+    // ✅ ĐÃ SỬA: Trước đây khung giờ "ban đêm" bị code cứng (22h-6h), chủ nhà không xem/sửa
+    // được từ UI. Nay đọc từ AppConfig (HouseManagerScreen -> SleepScheduleCard cho phép chỉnh
+    // trực tiếp). Vẫn giữ nguyên mặc định 22h-6h nếu chủ nhà chưa từng cấu hình.
     private fun isNightTime(): Boolean {
         val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return hour >= 22 || hour < 6
+        val startHour = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_SLEEP_START_HOUR, "22")
+            .toIntOrNull()?.coerceIn(0, 23) ?: 22
+        val endHour = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_SLEEP_END_HOUR, "6")
+            .toIntOrNull()?.coerceIn(0, 23) ?: 6
+
+        return when {
+            startHour == endHour -> false // Khung giờ rỗng -> không bao giờ coi là ban đêm
+            startHour < endHour -> hour in startHour until endHour
+            else -> hour >= startHour || hour < endHour // Vắt qua nửa đêm, vd 22h -> 6h sáng hôm sau
+        }
     }
 }

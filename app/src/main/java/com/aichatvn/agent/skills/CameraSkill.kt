@@ -1038,15 +1038,27 @@ class CameraSkill @Inject constructor(
                     } else {
                         defaultNegativeKw()
                     }
-                    
-                    isSuspicious = if (visionParsed.structuredSuspicious != null) {
-                        logger.d("CameraSkill", "🧩 [Structured Vision] camera=$tid state=${visionParsed.structuredSuspicious}")
-                        visionParsed.structuredSuspicious
-                    } else {
-                        val textClean = aiComment.lowercase()
-                        val hasPositive = positiveKeywords.any { textClean.contains(it) }
-                        val hasNegative = negativeKeywords.any { textClean.contains(it) }
-                        hasPositive && !hasNegative
+
+                    val textClean = aiComment.lowercase()
+                    val hasPositive = positiveKeywords.any { textClean.contains(it) }
+                    val hasNegative = negativeKeywords.any { textClean.contains(it) }
+                    val keywordMatch = hasPositive && !hasNegative
+
+                    // ✅ ĐÃ SỬA: Trước đây hễ AI trả JSON có cấu trúc (structuredSuspicious != null,
+                    // xảy ra ở HẦU HẾT mọi lần gọi vì GroqClientTool luôn thêm STRUCTURED_VISION_SUFFIX)
+                    // thì từ khoá cảnh báo (aiPositiveKeywords/aiNegativeKeywords) do chủ nhà tự cấu
+                    // hình BỊ BỎ QUA HOÀN TOÀN — khiến chuỗi hành động liên hoàn không bao giờ khớp
+                    // với những gì chủ nhà đã cấu hình. Nay: nếu chủ nhà đã tự đặt từ khoá riêng
+                    // (khác mặc định hệ thống), tôn trọng kết quả khớp từ khoá — kết hợp OR với
+                    // structuredSuspicious để không bỏ sót khi AI tự tin xác nhận "suspicious".
+                    val hasCustomKeywords = camera.aiPositiveKeywords.isNotEmpty() || camera.aiNegativeKeywords.isNotEmpty()
+                    isSuspicious = when {
+                        hasCustomKeywords -> keywordMatch || visionParsed.structuredSuspicious == true
+                        visionParsed.structuredSuspicious != null -> {
+                            logger.d("CameraSkill", "🧩 [Structured Vision] camera=$tid state=${visionParsed.structuredSuspicious}")
+                            visionParsed.structuredSuspicious
+                        }
+                        else -> keywordMatch
                     }
                     
                     if (isSuspicious) {

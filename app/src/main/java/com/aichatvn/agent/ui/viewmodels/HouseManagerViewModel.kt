@@ -57,6 +57,14 @@ class HouseManagerViewModel @Inject constructor(
     private val _lastLearningRunTime = MutableStateFlow("Chưa chạy")
     val lastLearningRunTime: StateFlow<String> = _lastLearningRunTime.asStateFlow()
 
+    // ✅ MỚI: Khung giờ "Đang ngủ / Ban đêm" chủ nhà tự chỉnh — thay cho hardcode cứng
+    // 22h-6h trước đây trong HouseManagerSkillImpl.isNightTime().
+    private val _sleepStartHour = MutableStateFlow(22)
+    val sleepStartHour: StateFlow<Int> = _sleepStartHour.asStateFlow()
+
+    private val _sleepEndHour = MutableStateFlow(6)
+    val sleepEndHour: StateFlow<Int> = _sleepEndHour.asStateFlow()
+
     // ✅ MỚI: Ánh xạ thiết bị Quản gia (Device Mapping) — đồng bộ hai chiều với
     // Bảng cấu hình Thiết bị Răn đe trên HouseManagerScreen. Thay cho hardcode
     // "đèn sân trước" / "còi báo động" / "cam_01" trong kịch bản Planner.
@@ -139,6 +147,14 @@ class HouseManagerViewModel @Inject constructor(
                 sdf.format(Date(it))
             } ?: "Chưa chạy"
 
+            // 3b. Đọc khung giờ ngủ (Sleep Schedule) do chủ nhà tự cấu hình
+            withContext(Dispatchers.IO) {
+                _sleepStartHour.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_SLEEP_START_HOUR, "22")
+                    .toIntOrNull()?.coerceIn(0, 23) ?: 22
+                _sleepEndHour.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_SLEEP_END_HOUR, "6")
+                    .toIntOrNull()?.coerceIn(0, 23) ?: 6
+            }
+
             // 4. Đọc cấu hình ánh xạ thiết bị Quản gia + nạp danh sách thiết bị/camera thật
             // của chủ nhà để hiển thị picker chọn lựa trên Bảng cấu hình Thiết bị Răn đe.
             withContext(Dispatchers.IO) {
@@ -214,6 +230,17 @@ class HouseManagerViewModel @Inject constructor(
                 configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, lightDevice)
                 configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, sirenDevice)
                 configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, cameraIds.joinToString(","))
+            }
+            performRefresh()
+        }
+    }
+
+    // ✅ MỚI: Lưu khung giờ ngủ khi chủ nhà chỉnh trên SleepScheduleCard.
+    fun saveSleepSchedule(startHour: Int, endHour: Int) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                configProvider.set(AppConfigDefaults.HOUSE_MANAGER_SLEEP_START_HOUR, startHour.coerceIn(0, 23).toString())
+                configProvider.set(AppConfigDefaults.HOUSE_MANAGER_SLEEP_END_HOUR, endHour.coerceIn(0, 23).toString())
             }
             performRefresh()
         }

@@ -66,6 +66,11 @@ object AppConfigDefaults {
     // (chỉ chạy qua nút Panic thủ công + fallback camera cũ) — WORKFLOWS hiện chưa có UI riêng,
     // phải sửa JSON tay cho tới khi có màn hình quản lý Nhóm kịch bản.
     const val HOUSE_MANAGER_WORKFLOWS         = "house_manager.workflows"
+    // ✅ MỚI: Khung giờ "Đang ngủ / Ban đêm" do chủ nhà tự chỉnh trên HouseManagerScreen —
+    // thay cho hardcode cứng "hour >= 22 || hour < 6" trong isNightTime() trước đây.
+    // Nếu start > end nghĩa là khung giờ vắt qua nửa đêm (vd 22 -> 6 sáng hôm sau).
+    const val HOUSE_MANAGER_SLEEP_START_HOUR  = "house_manager.sleep_start_hour"
+    const val HOUSE_MANAGER_SLEEP_END_HOUR    = "house_manager.sleep_end_hour"
 
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
@@ -371,6 +376,22 @@ object AppConfigDefaults {
             pluginId = "house_manager",
             label = "Các nhóm kịch bản điều hành Quản gia",
             description = "JSON chứa danh sách các nhóm kịch bản liên hoàn được Quản gia tự học hoặc chủ nhà tự xây. Mẫu seed dùng camera 'cam_01' làm ví dụ — chỉnh lại triggerSource cho khớp camera/thiết bị thật của bạn."
+        ),
+        AppConfigEntity(
+            key = HOUSE_MANAGER_SLEEP_START_HOUR,
+            value = "22",
+            type = "int",
+            pluginId = "house_manager",
+            label = "Giờ bắt đầu ngủ",
+            description = "Giờ trong ngày (0-23) mà Quản gia bắt đầu coi là 'giờ ngủ' để chuyển Mood sang Đang ngủ/Ban đêm và áp dụng Chính sách ban đêm yên tĩnh. Mặc định 22h, giữ đúng hành vi cũ khi chưa cấu hình."
+        ),
+        AppConfigEntity(
+            key = HOUSE_MANAGER_SLEEP_END_HOUR,
+            value = "6",
+            type = "int",
+            pluginId = "house_manager",
+            label = "Giờ thức dậy",
+            description = "Giờ trong ngày (0-23) mà Quản gia coi là kết thúc 'giờ ngủ'. Mặc định 6h sáng, giữ đúng hành vi cũ khi chưa cấu hình."
         ),
 
         // ── GLOBAL ──

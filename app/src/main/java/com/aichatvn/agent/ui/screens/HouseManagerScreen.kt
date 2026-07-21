@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.HouseMood
+import com.aichatvn.agent.data.model.displayName
 import com.aichatvn.agent.data.model.HouseSituation
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.skills.PlanStatus
@@ -43,6 +44,9 @@ fun HouseManagerScreen(
     val isSilentNightEnabled by viewModel.isSilentNightPolicyEnabled.collectAsState()
     val isVacationSafetyEnabled by viewModel.isVacationSafetyPolicyEnabled.collectAsState()
     val lastLearningRun by viewModel.lastLearningRunTime.collectAsState()
+    // ✅ MỚI: Khung giờ "Đang ngủ" chủ nhà tự chỉnh — thay cho hardcode cứng 22h-6h trước đây.
+    val sleepStartHour by viewModel.sleepStartHour.collectAsState()
+    val sleepEndHour by viewModel.sleepEndHour.collectAsState()
 
     // ✅ MỚI: Ánh xạ thiết bị Quản gia + danh sách thiết bị/camera thật để hiển thị picker
     val protectLightDevice by viewModel.protectLightDevice.collectAsState()
@@ -113,6 +117,18 @@ fun HouseManagerScreen(
                     isVacationSafetyEnabled = isVacationSafetyEnabled,
                     onToggleSilentNight = { viewModel.togglePolicy("silent_night", it) },
                     onToggleVacationSafety = { viewModel.togglePolicy("vacation_safety", it) }
+                )
+            }
+
+            // 🧠 MỚI: Bảng cấu hình khung giờ ngủ — trước đây "isNightTime()" bị code cứng
+            // 22h-6h trong HouseManagerSkillImpl.kt, chủ nhà không xem/sửa được. Nay chủ nhà
+            // tự chọn giờ bắt đầu/kết thúc bằng nút bấm, lưu qua AppConfig và áp dụng ngay
+            // cho toàn bộ logic Mood tự động (SLEEPING/NIGHT) + chính sách ban đêm yên tĩnh.
+            item {
+                SleepScheduleCard(
+                    startHour = sleepStartHour,
+                    endHour = sleepEndHour,
+                    onSave = { start, end -> viewModel.saveSleepSchedule(start, end) }
                 )
             }
 
@@ -299,6 +315,102 @@ fun PolicyControlCard(
                     Text("Chặn bật máy bơm, bình nóng lạnh khi vắng nhà", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
                 Switch(checked = isVacationSafetyEnabled, onCheckedChange = onToggleVacationSafety)
+            }
+        }
+    }
+}
+
+// 🧠 MỚI: Cho phép chủ nhà tự chỉnh khung giờ "Đang ngủ / Ban đêm" thay vì code cứng 22h-6h.
+// Giờ bắt đầu > giờ kết thúc nghĩa là khung giờ vắt qua nửa đêm (vd 22h -> 6h sáng hôm sau),
+// giống cách hiểu tự nhiên của người dùng — không cần giải thích kỹ thuật gì thêm.
+@Composable
+fun SleepScheduleCard(
+    startHour: Int,
+    endHour: Int,
+    onSave: (start: Int, end: Int) -> Unit
+) {
+    var draftStart by remember(startHour) { mutableStateOf(startHour) }
+    var draftEnd by remember(endHour) { mutableStateOf(endHour) }
+    val hasChanges = draftStart != startHour || draftEnd != endHour
+
+    fun formatHour(h: Int) = "%02d:00".format(h)
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Khung giờ ngủ của gia đình",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleSmall
+            )
+            Text(
+                text = "Quản gia dùng khung giờ này để tự chuyển sang Chế độ Đang ngủ / Ban đêm và áp dụng Chính sách ban đêm yên tĩnh ở trên.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                HourStepper(
+                    label = "Bắt đầu ngủ",
+                    hour = draftStart,
+                    onChange = { draftStart = it }
+                )
+                HourStepper(
+                    label = "Thức dậy",
+                    hour = draftEnd,
+                    onChange = { draftEnd = it }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Đang áp dụng: từ ${formatHour(draftStart)} đến ${formatHour(draftEnd)} hằng ngày",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (hasChanges) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = { onSave(draftStart, draftEnd) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Lưu khung giờ ngủ", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HourStepper(
+    label: String,
+    hour: Int,
+    onChange: (Int) -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // ⚠️ Dùng nút chữ thay vì Icons.Default.Remove: icon này không có trong bộ icon
+            // lõi (core), chỉ có trong material-icons-extended -> gây lỗi unresolved reference
+            // nếu project chưa thêm dependency đó (giống trường hợp Icons.Default.School trước đây).
+            IconButton(onClick = { onChange(((hour - 1) + 24) % 24) }) {
+                Text("−", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            }
+            Text(
+                text = "%02d:00".format(hour),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            IconButton(onClick = { onChange((hour + 1) % 24) }) {
+                Icon(imageVector = Icons.Default.Add, contentDescription = "Tăng giờ")
             }
         }
     }
@@ -665,13 +777,13 @@ fun MoodHeaderCard(
         ) {
             Icon(
                 imageVector = theme.icon,
-                contentDescription = mood.name,
+                contentDescription = mood.displayName(),
                 tint = theme.contentColor,
                 modifier = Modifier.size(48.dp)
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "CHẾ ĐỘ: ${mood.name}",
+                text = "CHẾ ĐỘ: ${mood.displayName()}",
                 fontSize = 20.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = theme.contentColor,
