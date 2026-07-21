@@ -993,7 +993,7 @@ private fun MiniAlertRow(alert: AlertEntity) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AlertActionFormSheet(
+fun AlertActionFormSheet(
     plugins: List<com.aichatvn.agent.core.plugin.Plugin>,
     tuyaDevices: List<TuyaDeviceEntity>,
     activeCameras: List<CameraConfigEntity>,
