@@ -57,6 +57,15 @@ object AppConfigDefaults {
     // ✅ MỚI: Danh sách hành động tự do (No-Code Planner) do chủ nhà tự xây bằng UI, lưu JSON.
     // Để trống "[]" = kích hoạt fallback kịch bản 5 bước mặc định an toàn.
     const val HOUSE_MANAGER_PROTECT_ACTIONS   = "house_manager.protect_house_actions"
+    // ✅ MỚI: Danh sách Nhóm kịch bản (Workflow Groups) — mỗi nhóm tự khai báo triggerSource
+    // riêng (vd: "camera.cam_01.state=suspicious", "chat.*.urgency=high"), cho phép Quản gia
+    // phản ứng công bằng với MỌI nguồn sự kiện (camera/tuya/chat/email/notification/...),
+    // không chỉ riêng camera như HOUSE_MANAGER_PROTECT_ACTIONS cũ.
+    // ⚠️ Cơ chế này chạy SONG SONG, không thay thế HOUSE_MANAGER_PROTECT_ACTIONS: UI No-Code
+    // Planner hiện tại (AlertActionFormSheet/CustomPlannerCard) vẫn ghi vào PROTECT_ACTIONS
+    // (chỉ chạy qua nút Panic thủ công + fallback camera cũ) — WORKFLOWS hiện chưa có UI riêng,
+    // phải sửa JSON tay cho tới khi có màn hình quản lý Nhóm kịch bản.
+    const val HOUSE_MANAGER_WORKFLOWS         = "house_manager.workflows"
 
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
@@ -334,6 +343,34 @@ object AppConfigDefaults {
             pluginId = "house_manager",
             label = "Chuỗi kịch bản răn đe Quản gia",
             description = "JSON chứa danh sách các bước hành động tự do do người dùng cấu hình khi có trộm. Để trống = dùng kịch bản 5 bước mặc định."
+        ),
+        AppConfigEntity(
+            key = HOUSE_MANAGER_WORKFLOWS,
+            value = """
+                [
+                  {
+                    "id": "wf_security",
+                    "label": "Kịch bản Bảo vệ an ninh Sân trước",
+                    "triggerSource": "camera.cam_01.state=suspicious",
+                    "enabled": true,
+                    "steps": [
+                      {"pluginId":"smart_switch", "action":"set", "params":{"device":"đèn sân trước", "state":"true"}},
+                      {"pluginId":"notification", "action":"send", "params":{"title":"🚨 PHÁT HIỆN NGHI VẤN SÂN TRƯỚC", "message":"Quản gia đã phát hiện bất thường và đang kích hoạt các kịch bản an toàn."}},
+                      {"pluginId":"house_manager", "action":"delay", "params":{"delayMs":"30000"}},
+                      {"pluginId":"camera", "action":"scan", "params":{"cameraId":"cam_01", "force":"true"}},
+                      {"pluginId":"house_manager", "action":"delay", "params":{"delayMs":"5000"}},
+                      {"pluginId":"house_manager", "action":"check_precondition", "params":{"source":"camera", "camera":"cam_01", "attribute":"state", "expected":"suspicious"}},
+                      {"pluginId":"smart_switch", "action":"set", "params":{"device":"còi báo động", "state":"true"}},
+                      {"pluginId":"house_manager", "action":"delay", "params":{"delayMs":"60000"}},
+                      {"pluginId":"smart_switch", "action":"set", "params":{"device":"còi báo động", "state":"false"}}
+                    ]
+                  }
+                ]
+            """.trimIndent(),
+            type = "string",
+            pluginId = "house_manager",
+            label = "Các nhóm kịch bản điều hành Quản gia",
+            description = "JSON chứa danh sách các nhóm kịch bản liên hoàn được Quản gia tự học hoặc chủ nhà tự xây. Mẫu seed dùng camera 'cam_01' làm ví dụ — chỉnh lại triggerSource cho khớp camera/thiết bị thật của bạn."
         ),
 
         // ── GLOBAL ──

@@ -143,6 +143,28 @@ class IntentExecutor @Inject constructor(
             )
             is PluginResult.Success -> {
                 chatHistoryManager.removePendingIntent(context.username, plugin.manifest.id, intent.action)
+
+                // 🧠 MỚI (Kiến trúc Bình đẳng hóa Bản sao số): Tự động ghi kết quả thi hành thành
+                // công vào world_state — để mọi plugin (kể cả email/notification không có state
+                // vật lý) đều để lại dấu vết cho check_precondition/Workflow Group đối chiếu.
+                val now = System.currentTimeMillis()
+                val statePayload = org.json.JSONObject().apply {
+                    put("last_action", normalizedIntent.action)
+                    put("status", "success")
+                    put("timestamp", now)
+                    normalizedIntent.params.forEach { (k, v) -> put(k, v.toString()) }
+                }.toString()
+
+                database.worldStateDao().upsertState(
+                    com.aichatvn.agent.data.model.WorldStateEntity(
+                        id = "${plugin.manifest.id}:${normalizedIntent.action}",
+                        source = plugin.manifest.id,
+                        sourceId = normalizedIntent.action,
+                        attributesJson = statePayload,
+                        updatedAt = now
+                    )
+                )
+
                 dialogManager.updateFocus(
                     context.username,
                     ConversationFocus(
@@ -291,7 +313,30 @@ class IntentExecutor @Inject constructor(
         }
 
         return try {
-            plugin.execute(action, normalizedParams)
+            val result = plugin.execute(action, normalizedParams)
+
+            // 🧠 MỚI (Kiến trúc Bình đẳng hóa Bản sao số): Tự động ghi kết quả thi hành thành công
+            // vào world_state cho cả đường gọi trực tiếp executePluginAction (Planner/Workflow).
+            if (result is PluginResult.Success) {
+                val now = System.currentTimeMillis()
+                val statePayload = org.json.JSONObject().apply {
+                    put("last_action", action)
+                    put("status", "success")
+                    put("timestamp", now)
+                    normalizedParams.forEach { (k, v) -> put(k, v.toString()) }
+                }.toString()
+
+                database.worldStateDao().upsertState(
+                    com.aichatvn.agent.data.model.WorldStateEntity(
+                        id = "$pluginId:$action",
+                        source = pluginId,
+                        sourceId = action,
+                        attributesJson = statePayload,
+                        updatedAt = now
+                    )
+                )
+            }
+            result
         } catch (e: Exception) {
             logger.e("IntentExecutor", "Lỗi Dashboard", e)
             PluginResult.Failure(e.message ?: "Unknown error")

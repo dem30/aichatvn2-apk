@@ -34,6 +34,82 @@ import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
 
+// ✅ MỚI (Kiến trúc Nhóm Kịch bản): Định nghĩa cấu trúc nhóm kịch bản tự chọn của gia chủ —
+// mỗi nhóm có 1 ngòi nổ (triggerSource) riêng và danh sách bước thi hành liên hoàn, cho phép
+// Quản gia phản ứng công bằng với MỌI nguồn sự kiện, không chỉ hardcode camera/tuya.
+data class WorkflowGroup(
+    val id: String,
+    val label: String,
+    val triggerSource: String,      // Ngòi nổ, ví dụ: "camera.cam_01.state=suspicious" hoặc "tuya.sensor_door.state=true"
+    val enabled: Boolean = true,
+    val steps: List<AlertActionConfig> = emptyList()
+)
+
+fun workflowGroupsFromJson(json: String): List<WorkflowGroup> {
+    return try {
+        val arr = JSONArray(json.ifBlank { "[]" })
+        (0 until arr.length()).map { i ->
+            val obj = arr.getJSONObject(i)
+            val stepsArr = obj.optJSONArray("steps") ?: JSONArray()
+            val stepsList = (0 until stepsArr.length()).map { j ->
+                val sObj = stepsArr.getJSONObject(j)
+                val paramsObj = sObj.optJSONObject("params") ?: JSONObject()
+                val paramsMap = mutableMapOf<String, String>()
+                paramsObj.keys().forEach { k -> paramsMap[k] = paramsObj.optString(k) }
+                AlertActionConfig(
+                    pluginId = sObj.optString("pluginId"),
+                    action = sObj.optString("action"),
+                    params = paramsMap
+                )
+            }
+            WorkflowGroup(
+                id = obj.optString("id"),
+                label = obj.optString("label"),
+                triggerSource = obj.optString("triggerSource"),
+                enabled = obj.optBoolean("enabled", true),
+                steps = stepsList
+            )
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+/**
+ * Mã hóa danh sách nhóm kịch bản thành chuỗi JSON — chiều ghi tương ứng với workflowGroupsFromJson.
+ */
+fun workflowGroupsToJson(groups: List<WorkflowGroup>): String {
+    return try {
+        val arr = JSONArray()
+        groups.forEach { group ->
+            val obj = JSONObject().apply {
+                put("id", group.id)
+                put("label", group.label)
+                put("triggerSource", group.triggerSource)
+                put("enabled", group.enabled)
+
+                val stepsArr = JSONArray()
+                group.steps.forEach { step ->
+                    val sObj = JSONObject().apply {
+                        put("pluginId", step.pluginId)
+                        put("action", step.action)
+
+                        val paramsObj = JSONObject()
+                        step.params.forEach { (k, v) -> paramsObj.put(k, v) }
+                        put("params", paramsObj)
+                    }
+                    stepsArr.put(sObj)
+                }
+                put("steps", stepsArr)
+            }
+            arr.put(obj)
+        }
+        arr.toString()
+    } catch (e: Exception) {
+        "[]"
+    }
+}
+
 @Singleton
 class HouseManagerSkillImpl @Inject constructor(
     private val database: AppDatabase,
@@ -343,32 +419,76 @@ class HouseManagerSkillImpl @Inject constructor(
         // 1. Luôn quy nạp lại tình huống sống để đổi màu Mood giao diện và cập nhật system:brain
         evaluateSituation()
 
-        // 2. 🧠 BỘ ĐIỀU PHỐI SỰ KIỆN TỰ ĐỘNG (Event-Driven Dispatcher)
+        // 2. 🧠 BỘ ĐIỀU PHỐI ĐA NHÓM KỊCH BẢN TỰ DO (Dynamic Group-Based Orchestrator)
+        // ⚠️ THAY ĐỔI KIẾN TRÚC: nhánh camera/tuya hardcode cũ (kèm fix targetCamId Rủi ro 2)
+        // đã được GỠ BỎ hoàn toàn. Từ giờ, việc kích hoạt tự động CHỈ đến từ các Nhóm kịch bản
+        // (HOUSE_MANAGER_WORKFLOWS) — HOUSE_MANAGER_PROTECT_ACTIONS/light/siren/camera_ids cũ
+        // không còn tự kích hoạt được nữa, chỉ còn dùng cho nút Panic thủ công
+        // (triggerProtectHouseSequence gọi trực tiếp từ UI).
+        val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]").trim()
+        val groups = workflowGroupsFromJson(workflowsJson)
 
-        // Nhánh A: Biến cố tự động từ Cảm biến an ninh Camera
-        if (source == "camera" && key == "state" && value == "suspicious") {
-            triggerProtectHouseSequence(sourceId)
-        }
+        groups.forEach { group ->
+            if (!group.enabled) return@forEach
 
-        // Nhánh B: Biến cố vật lý tự động từ các Cảm biến đóng ngắt Tuya (vd: Cảm biến cửa, chuyển động)
-        if (source == "tuya" && key == "state" && value == "true") {
-            val isSensorTrigger = sourceId.contains("cảm biến", ignoreCase = true) ||
-                                  sourceId.contains("sensor", ignoreCase = true) ||
-                                  sourceId.contains("cửa", ignoreCase = true)
+            val condition = WorldStateHelper.parseCondition(group.triggerSource)
+            if (condition != null) {
+                // Kiểm duyệt xem sự kiện Bản sao số hiện tại có khớp "ngòi nổ" của nhóm kịch bản này không
+                val isTriggerMatched = source == condition.source &&
+                        (condition.sourceId == "*" || sourceId.trim().equals(condition.sourceId.trim(), ignoreCase = true)) &&
+                        key == condition.attrKey &&
+                        value == condition.expected
 
-            if (isSensorTrigger) {
-                logger.i("HouseManager", "⚠️ Phát hiện biến động từ cảm biến Tuya '$sourceId'. Kích hoạt bảo vệ!")
+                if (isTriggerMatched) {
+                    logger.i("HouseManager", "🔥 Nhóm kịch bản '${group.label}' được kích hoạt từ ngòi nổ: $source.$sourceId.$key=$value")
 
-                // ✅ ĐÃ SỬA (Rủi ro 2): sourceId ở đây là ID/tên thiết bị Tuya, không phải camera —
-                // truyền thẳng vào triggerProtectHouseSequence sẽ khiến bước "camera.scan" nhận
-                // nhầm cameraId. Thay vào đó, tra camera răn đe đã cấu hình trong AppConfig
-                // (cùng khóa HOUSE_MANAGER_PROTECT_CAMERAS đang dùng ở sendDefaultCameraAlerts).
-                val protectCameras = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01").trim()
-                val targetCamId = protectCameras.split(",")
-                    .map { it.trim() }
-                    .firstOrNull { it.isNotEmpty() } ?: "cam_01"
+                    // Quy đổi động các tham số bước chạy (ví dụ: __CAMERA_ID__ -> ID camera/nguồn báo động thật)
+                    val compiledSteps = group.steps.map { cfg ->
+                        var delayVal = 0L
+                        var preconditionVal: String? = null
 
-                triggerProtectHouseSequence(targetCamId)
+                        if (cfg.pluginId == "house_manager" && cfg.action == "delay") {
+                            delayVal = cfg.params["delayMs"]?.toLongOrNull() ?: 0L
+                        }
+                        if (cfg.pluginId == "house_manager" && cfg.action == "check_precondition") {
+                            val rawPrecondition = cfg.params["precondition"]
+                            preconditionVal = rawPrecondition ?: run {
+                                val pSource = cfg.params["source"] ?: ""
+                                val pAttr = cfg.params["attribute"] ?: "state"
+                                val pExpected = cfg.params["expected"] ?: ""
+                                // ✅ Giữ nguyên fix "chat" -> chatSession đã áp dụng trước đó (không để
+                                // rơi về nhánh "camera" rỗng như bản gốc tài liệu đề xuất lần này).
+                                val pSourceId = when (pSource) {
+                                    "tuya" -> cfg.params["device"] ?: ""
+                                    "camera" -> cfg.params["camera"] ?: ""
+                                    "chat" -> cfg.params["chatSession"] ?: ""
+                                    else -> ""
+                                }
+                                if (pSource.isNotEmpty() && pSourceId.isNotEmpty()) "$pSource.$pSourceId.$pAttr=$pExpected" else null
+                            }
+                        }
+
+                        val updatedParams = cfg.params.mapValues { (_, v) ->
+                            val resolvedValue = if (v == "__CAMERA_ID__") sourceId else v
+                            when {
+                                resolvedValue.equals("true", ignoreCase = true) -> true
+                                resolvedValue.equals("false", ignoreCase = true) -> false
+                                resolvedValue.toLongOrNull() != null -> resolvedValue.toLong()
+                                else -> resolvedValue
+                            }
+                        }
+
+                        ActionStep(
+                            pluginId = cfg.pluginId,
+                            action = cfg.action,
+                            params = updatedParams,
+                            delayMs = delayVal,
+                            precondition = preconditionVal
+                        )
+                    }
+
+                    executePlan(group.label, compiledSteps)
+                }
             }
         }
     }

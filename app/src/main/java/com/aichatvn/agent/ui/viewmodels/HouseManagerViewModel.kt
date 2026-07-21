@@ -11,10 +11,11 @@ import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.HouseSituation
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.model.alertActionsFromJson
-import com.aichatvn.agent.data.model.alertActionsToJson
 import com.aichatvn.agent.skills.HouseManagerSkill
 import com.aichatvn.agent.skills.PlanStatus
+import com.aichatvn.agent.skills.WorkflowGroup
+import com.aichatvn.agent.skills.workflowGroupsFromJson
+import com.aichatvn.agent.skills.workflowGroupsToJson
 import com.aichatvn.agent.utils.WorldStateHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -83,8 +84,14 @@ class HouseManagerViewModel @Inject constructor(
     val availableChatSessions: StateFlow<List<String>> = _availableChatSessions.asStateFlow()
 
     // ✅ MỚI: Danh sách kịch bản tự do (No-Code Planner) do chủ nhà tự xây từ AlertActionFormSheet
+    // — GIỮ LẠI làm cầu nối tương thích ngược, đồng bộ 1 chiều từ nhóm "wf_security".
     private val _protectActions = MutableStateFlow<List<AlertActionConfig>>(emptyList())
     val protectActions: StateFlow<List<AlertActionConfig>> = _protectActions.asStateFlow()
+
+    // ✅ MỚI: Toàn bộ các Nhóm kịch bản (Workflow Groups) — nguồn sự thật duy nhất cho việc
+    // kích hoạt tự động; UI đa nhóm (MultiWorkflowPlannerSection) đọc/ghi trực tiếp qua đây.
+    private val _workflowGroups = MutableStateFlow<List<WorkflowGroup>>(emptyList())
+    val workflowGroups: StateFlow<List<WorkflowGroup>> = _workflowGroups.asStateFlow()
 
     // Danh sách plugin khả dụng để hiển thị trong dropdown chọn plugin/action của AlertActionFormSheet
     val alertActionPlugins: List<Plugin> = agentKernel.getAvailablePluginsForUI()
@@ -139,9 +146,12 @@ class HouseManagerViewModel @Inject constructor(
                 _protectSirenDevice.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "còi báo động")
                 _protectCameraIds.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01")
 
-                // ✅ MỚI: Đọc danh sách kịch bản tự do đã lưu (JSON) để hiển thị trên CustomPlannerCard
-                val actionsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_ACTIONS, "[]")
-                _protectActions.value = alertActionsFromJson(actionsJson)
+                // ✅ ĐỒNG BỘ ĐỘC QUYỀN: đọc 1 lần từ HOUSE_MANAGER_WORKFLOWS, populate cả danh
+                // sách đầy đủ (UI đa nhóm) lẫn cầu nối tương thích ngược "wf_security".
+                val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]")
+                val groups = workflowGroupsFromJson(workflowsJson)
+                _workflowGroups.value = groups
+                _protectActions.value = groups.find { it.id == "wf_security" }?.steps ?: emptyList()
 
                 _availableTuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
                 _availableCameras.value = database.cameraDao().getAllCameras()
@@ -221,11 +231,83 @@ class HouseManagerViewModel @Inject constructor(
         saveProtectActions(updated)
     }
 
+    /**
+     * ✅ SỬA LỖI LOGIC GHI ĐÈ: nhắm đúng nhóm "wf_security" theo id — không còn dùng
+     * groups.first() làm fallback vị trí (tránh ghi đè nhầm nhóm khác đứng đầu mảng).
+     */
     private fun saveProtectActions(list: List<AlertActionConfig>) {
         viewModelScope.launch(Dispatchers.IO) {
-            configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_ACTIONS, alertActionsToJson(list))
+            val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]").trim()
+            val groups = workflowGroupsFromJson(workflowsJson).toMutableList()
+
+            val index = groups.indexOfFirst { it.id == "wf_security" }
+            if (index != -1) {
+                groups[index] = groups[index].copy(steps = list)
+            } else {
+                groups.add(
+                    WorkflowGroup(
+                        id = "wf_security",
+                        label = "Kịch bản Bảo vệ an ninh Sân trước",
+                        triggerSource = "camera.cam_01.state=suspicious",
+                        enabled = true,
+                        steps = list
+                    )
+                )
+            }
+
+            configProvider.set(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, workflowGroupsToJson(groups))
             performRefresh()
         }
+    }
+
+    // ─── CÁC API ĐIỀU HÀNH ĐA NHÓM DÀNH CHO TRÌNH SOẠN THẢO TRỰC QUAN ───
+
+    private fun saveAllWorkflows(groups: List<WorkflowGroup>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configProvider.set(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, workflowGroupsToJson(groups))
+            performRefresh()
+        }
+    }
+
+    // Tạo mới một nhóm kịch bản — người dùng chọn qua VisualTriggerBuilderDialog, không cần biết JSON.
+    fun createWorkflowGroup(label: String, sourceType: String, entityId: String, expectedValue: String) {
+        val compiledTrigger = when (sourceType) {
+            "camera" -> "camera.$entityId.state=$expectedValue"
+            "tuya" -> "tuya.$entityId.state=$expectedValue"
+            "chat" -> "chat.$entityId.urgency=$expectedValue"
+            else -> "system.brain.state=normal"
+        }
+
+        val newGroup = WorkflowGroup(
+            id = "wf_" + UUID.randomUUID().toString().take(8),
+            label = label,
+            triggerSource = compiledTrigger,
+            enabled = true,
+            steps = emptyList()
+        )
+        saveAllWorkflows(_workflowGroups.value + newGroup)
+    }
+
+    fun deleteWorkflowGroup(groupId: String) {
+        saveAllWorkflows(_workflowGroups.value.filter { it.id != groupId })
+    }
+
+    fun toggleWorkflowGroup(groupId: String, enabled: Boolean) {
+        saveAllWorkflows(_workflowGroups.value.map { if (it.id == groupId) it.copy(enabled = enabled) else it })
+    }
+
+    fun addStepToGroup(groupId: String, step: AlertActionConfig) {
+        saveAllWorkflows(_workflowGroups.value.map { group ->
+            if (group.id == groupId) group.copy(steps = group.steps + step) else group
+        })
+    }
+
+    fun removeStepFromGroup(groupId: String, stepIndex: Int) {
+        saveAllWorkflows(_workflowGroups.value.map { group ->
+            if (group.id == groupId) {
+                group.copy(steps = group.steps.filterIndexed { index, _ -> index != stepIndex })
+            } else group
+        })
     }
 
     fun triggerPanicSequence(cameraId: String) {

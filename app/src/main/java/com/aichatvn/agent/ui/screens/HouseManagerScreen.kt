@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -52,38 +53,13 @@ fun HouseManagerScreen(
     // ✅ MỚI: Danh sách thớt chat khách hàng thật để nạp cho picker chatSession
     val availableChatSessions by viewModel.availableChatSessions.collectAsState()
 
-    // ✅ MỚI: Trạng thái của bộ Planner Tự Do (No-Code Planner Builder)
-    val protectActions by viewModel.protectActions.collectAsState()
+    // ✅ MỚI: showActionSheet cấp toàn màn hình cũ đã được thay bằng ModalBottomSheet
+    // theo-nhóm bên trong MultiWorkflowPlannerSection (mỗi nhóm tự quản lý bước riêng).
     val alertActionPlugins = viewModel.alertActionPlugins
-    var showActionSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val themeColorAndIcon = getThemeForMood(situation?.currentMood ?: HouseMood.NORMAL)
     val animatedHeaderColor by animateColorAsState(targetValue = themeColorAndIcon.headerColor)
-
-    // ⚠️ CẦN KIỂM TRA: AlertActionFormSheet được tái sử dụng từ màn hình Camera hiện có
-    // trong project (chưa nằm trong các file bạn đã upload) — hãy đảm bảo import đúng
-    // package của nó và chữ ký tham số (plugins/tuyaDevices/activeCameras/onSave/onCancel)
-    // khớp với bản gốc trước khi build.
-    if (showActionSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showActionSheet = false },
-            sheetState = sheetState
-        ) {
-            AlertActionFormSheet(
-                plugins = alertActionPlugins,
-                tuyaDevices = availableTuyaDevices,
-                activeCameras = availableCameras,
-                // ✅ MỚI: nạp danh sách thớt chat thật cho Quản gia chọn lựa trực quan
-                activeChatSessions = availableChatSessions,
-                onSave = { cfg ->
-                    viewModel.addProtectAction(cfg)
-                    showActionSheet = false
-                },
-                onCancel = { showActionSheet = false }
-            )
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -140,13 +116,33 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 🧠 MỚI: Bảng cấu hình kịch bản tự do (No-Code Planner Builder) — chủ nhà tự thêm
-            // bất kỳ số bước nào (trì hoãn, kiểm duyệt điều kiện, gọi plugin bất kỳ) qua UI.
+            // 🧠 MỚI: Bảng điều hành đa Nhóm kịch bản (Workflow Groups) — chủ nhà tự tạo không
+            // giới hạn số nhóm, mỗi nhóm có ngòi nổ riêng (camera/tuya/chat) và chuỗi bước tự do.
             item {
-                CustomPlannerCard(
-                    actions = protectActions,
-                    onAddAction = { showActionSheet = true },
-                    onRemoveAction = { viewModel.removeProtectAction(it) }
+                var activeGroupIdForAddingStep by remember { mutableStateOf<String?>(null) }
+
+                if (activeGroupIdForAddingStep != null) {
+                    ModalBottomSheet(
+                        onDismissRequest = { activeGroupIdForAddingStep = null },
+                        sheetState = sheetState
+                    ) {
+                        AlertActionFormSheet(
+                            plugins = alertActionPlugins,
+                            tuyaDevices = availableTuyaDevices,
+                            activeCameras = availableCameras,
+                            activeChatSessions = availableChatSessions,
+                            onSave = { cfg ->
+                                viewModel.addStepToGroup(activeGroupIdForAddingStep!!, cfg)
+                                activeGroupIdForAddingStep = null
+                            },
+                            onCancel = { activeGroupIdForAddingStep = null }
+                        )
+                    }
+                }
+
+                MultiWorkflowPlannerSection(
+                    viewModel = viewModel,
+                    onAddStepClick = { groupId -> activeGroupIdForAddingStep = groupId }
                 )
             }
 
@@ -908,5 +904,426 @@ fun getThemeForMood(mood: HouseMood): MoodTheme {
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             icon = Icons.Default.Home
         )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// TRÌNH SOẠN THẢO ĐA NHÓM KỊCH BẢN (VISUAL MULTI-WORKFLOW EDITOR)
+// ─────────────────────────────────────────────────────────────────────────
+
+@Composable
+fun MultiWorkflowPlannerSection(
+    viewModel: HouseManagerViewModel,
+    onAddStepClick: (String) -> Unit // Truyền groupId đang được chọn để thêm bước
+) {
+    val groups by viewModel.workflowGroups.collectAsState()
+    val availableCameras by viewModel.availableCameras.collectAsState()
+    val availableDevices by viewModel.availableTuyaDevices.collectAsState()
+
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    if (showCreateDialog) {
+        VisualTriggerBuilderDialog(
+            availableCameras = availableCameras,
+            availableDevices = availableDevices,
+            onDismiss = { showCreateDialog = false },
+            onConfirm = { name, source, entity, value ->
+                viewModel.createWorkflowGroup(name, source, entity, value)
+                showCreateDialog = false
+            }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Danh sách kịch bản tự động",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Button(
+                onClick = { showCreateDialog = true },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Icon(imageVector = Icons.Default.Add, contentDescription = "Tạo")
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Tạo kịch bản mới", fontSize = 12.sp)
+            }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+
+        if (groups.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Chưa có kịch bản nào được thiết lập. Hãy bấm nút phía trên để tạo kịch bản tự động đầu tiên.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            groups.forEach { group ->
+                WorkflowGroupCard(
+                    group = group,
+                    availableCameras = availableCameras,
+                    availableDevices = availableDevices,
+                    onToggle = { enabled -> viewModel.toggleWorkflowGroup(group.id, enabled) },
+                    onDelete = { viewModel.deleteWorkflowGroup(group.id) },
+                    onAddStep = { onAddStepClick(group.id) },
+                    onRemoveStep = { index -> viewModel.removeStepFromGroup(group.id, index) }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun WorkflowGroupCard(
+    group: com.aichatvn.agent.skills.WorkflowGroup,
+    availableCameras: List<CameraConfigEntity>,
+    availableDevices: List<TuyaDeviceEntity>,
+    onToggle: (Boolean) -> Unit,
+    onDelete: () -> Unit,
+    onAddStep: () -> Unit,
+    onRemoveStep: (Int) -> Unit
+) {
+    var isExpanded by remember { mutableStateOf(false) }
+
+    // Tự động dịch chuỗi trigger kỹ thuật dưới nền thành câu tiếng Việt thân thiện
+    val friendlyTriggerText = remember(group.triggerSource, availableCameras, availableDevices) {
+        translateTriggerToFriendlyVietnamese(group.triggerSource, availableCameras, availableDevices)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (group.enabled) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = group.label,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = friendlyTriggerText,
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = group.enabled,
+                        onCheckedChange = onToggle,
+                        modifier = Modifier.scale(0.8f)
+                    )
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Xóa nhóm",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded }
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Xem chi tiết",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = if (isExpanded) "Thu gọn danh sách bước" else "Xem chi tiết các bước (${group.steps.size} bước)",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(10.dp))
+                if (group.steps.isEmpty()) {
+                    Text(
+                        text = "ℹ️ Kịch bản này chưa có bước hành động nào. Hãy bấm 'Thêm bước' bên dưới để xây dựng kịch bản.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                } else {
+                    group.steps.forEachIndexed { index, step ->
+                        val stepText = when {
+                            step.pluginId == "house_manager" && step.action == "delay" ->
+                                "⏳ Trì hoãn ${step.params["delayMs"] ?: "0"} mili-giây"
+                            step.pluginId == "house_manager" && step.action == "check_precondition" ->
+                                "🔒 Kiểm duyệt điều kiện thực tế: ${step.params["precondition"] ?: "Không xác định"}"
+                            else ->
+                                "⚡ Gọi hành động ${step.pluginId}.${step.action}"
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = "Bước ${index + 1}: $stepText", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { onRemoveStep(index) }, modifier = Modifier.size(24.dp)) {
+                                Icon(imageVector = Icons.Default.Close, contentDescription = "Xóa bước", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onAddStep,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Thêm bước", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Thêm bước hành động", fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * ✅ BỘ CHUYỂN ĐỔI NGÔN NGỮ TỰ NHIÊN: Dịch trigger thô thành tiếng Việt
+ */
+fun translateTriggerToFriendlyVietnamese(
+    triggerSource: String,
+    availableCameras: List<CameraConfigEntity>,
+    availableDevices: List<TuyaDeviceEntity>
+): String {
+    val condition = com.aichatvn.agent.utils.WorldStateHelper.parseCondition(triggerSource)
+        ?: return "Khi kích hoạt thủ công kịch bản"
+
+    val friendlyName = when (condition.source) {
+        "camera" -> {
+            val cam = availableCameras.find { it.id.trim() == condition.sourceId.trim() }
+            "Camera ${cam?.customername?.ifBlank { condition.sourceId } ?: condition.sourceId}"
+        }
+        "tuya" -> {
+            val dev = availableDevices.find { it.id.trim() == condition.sourceId.trim() }
+            "Thiết bị ${dev?.name?.ifBlank { condition.sourceId } ?: condition.sourceId}"
+        }
+        "chat" -> {
+            if (condition.sourceId == "*") "Mọi kênh hỗ trợ khách hàng" else "Kênh chat ${condition.sourceId}"
+        }
+        else -> condition.sourceId
+    }
+
+    val actionText = when (condition.attrKey) {
+        "state" -> when (condition.expected) {
+            "suspicious" -> "phát hiện có dấu hiệu nghi vấn (xâm nhập/có người)"
+            "true" -> "được BẬT lên"
+            "false" -> "bị TẮT đi"
+            else -> "thay đổi trạng thái sang '${condition.expected}'"
+        }
+        "urgency" -> {
+            if (condition.expected == "high") "phát hiện tin nhắn chứa nội dung KHẨN CẤP" else "nhận tin nhắn thường"
+        }
+        else -> "thay đổi giá trị '${condition.attrKey}' thành '${condition.expected}'"
+    }
+
+    return "🔥 Ngòi nổ: Khi $friendlyName $actionText"
+}
+
+/**
+ * Hộp thoại dựng kịch bản thả chọn — người dùng không cần gõ bất kỳ chuỗi kỹ thuật nào.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun VisualTriggerBuilderDialog(
+    availableCameras: List<CameraConfigEntity>,
+    availableDevices: List<TuyaDeviceEntity>,
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, source: String, entityId: String, value: String) -> Unit
+) {
+    var groupName by remember { mutableStateOf("") }
+    var selectedSource by remember { mutableStateOf("camera") } // camera | tuya | chat
+    var selectedEntityId by remember { mutableStateOf("") }
+    var selectedExpectedValue by remember { mutableStateOf("suspicious") }
+
+    LaunchedEffect(selectedSource) {
+        selectedEntityId = when (selectedSource) {
+            "camera" -> availableCameras.firstOrNull()?.id ?: ""
+            "tuya" -> availableDevices.firstOrNull()?.id ?: ""
+            "chat" -> "*"
+            else -> ""
+        }
+        selectedExpectedValue = when (selectedSource) {
+            "camera" -> "suspicious"
+            "tuya" -> "true"
+            "chat" -> "high"
+            else -> ""
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Tạo kịch bản tự động mới", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = groupName,
+                    onValueChange = { groupName = it },
+                    label = { Text("Tên gợi nhớ kịch bản") },
+                    placeholder = { Text("Ví dụ: Báo động trộm sân sau") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text("Bước 1: Chọn nguồn kích hoạt kịch bản", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val sources = listOf("camera" to "📷 Camera", "tuya" to "🔌 Thiết bị Tuya", "chat" to "💬 Khách nhắn")
+                    sources.forEach { (key, label) ->
+                        FilterChip(
+                            selected = selectedSource == key,
+                            onClick = { selectedSource = key },
+                            label = { Text(label, fontSize = 11.sp) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                Text("Bước 2: Chọn thiết bị áp dụng", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                when (selectedSource) {
+                    "camera" -> {
+                        if (availableCameras.isEmpty()) {
+                            Text("Chưa lắp camera nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        } else {
+                            DeviceSelectorDropdown(
+                                label = "Chọn camera giám sát",
+                                list = availableCameras.map { it.id to (it.customername.ifBlank { it.id }) },
+                                selectedId = selectedEntityId,
+                                onSelected = { selectedEntityId = it }
+                            )
+                        }
+                    }
+                    "tuya" -> {
+                        if (availableDevices.isEmpty()) {
+                            Text("Chưa đồng bộ thiết bị Tuya nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        } else {
+                            DeviceSelectorDropdown(
+                                label = "Chọn thiết bị Tuya",
+                                list = availableDevices.map { it.id to it.name },
+                                selectedId = selectedEntityId,
+                                onSelected = { selectedEntityId = it }
+                            )
+                        }
+                    }
+                    "chat" -> {
+                        Text("Áp dụng tự động cho mọi kênh nhắn tin (Facebook/Telegram/Web).", fontSize = 12.sp)
+                    }
+                }
+
+                Text("Bước 3: Chọn điều kiện kích hoạt", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val conditions = when (selectedSource) {
+                        "camera" -> listOf("suspicious" to "Phát hiện có trộm/nghi vấn")
+                        "tuya" -> listOf("true" to "Bị BẬT công tắc", "false" to "Bị TẮT công tắc")
+                        "chat" -> listOf("high" to "Khách gửi tin nhắn khẩn cấp")
+                        else -> emptyList()
+                    }
+                    conditions.forEach { (value, label) ->
+                        FilterChip(
+                            selected = selectedExpectedValue == value,
+                            onClick = { selectedExpectedValue = value },
+                            label = { Text(label, fontSize = 11.sp) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (groupName.isNotBlank() && selectedEntityId.isNotBlank()) {
+                        onConfirm(groupName.trim(), selectedSource, selectedEntityId, selectedExpectedValue)
+                    }
+                },
+                enabled = groupName.isNotBlank() && selectedEntityId.isNotBlank()
+            ) {
+                Text("Xác nhận tạo")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Hủy bỏ")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DeviceSelectorDropdown(
+    label: String,
+    list: List<Pair<String, String>>, // id to friendlyName
+    selectedId: String,
+    onSelected: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val displayLabel = list.find { it.first == selectedId }?.second ?: selectedId
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        OutlinedTextField(
+            value = displayLabel,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor(),
+            shape = RoundedCornerShape(8.dp)
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            list.forEach { (id, name) ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = {
+                        onSelected(id)
+                        expanded = false
+                    }
+                )
+            }
+        }
     }
 }
