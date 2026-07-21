@@ -391,12 +391,14 @@ fun CustomPlannerCard(
 }
 
 // 🧠 MỚI: Bảng cấu hình ánh xạ thiết bị răn đe — chủ nhà CHỌN thiết bị Tuya/camera thật của
-// họ bằng picker (dropdown + checkbox), thay vì gõ tay tên thiết bị dễ gõ sai làm gãy kịch bản.
+
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceMappingConfigCard(
-    currentLight: String,
-    currentSiren: String,
+    currentLight: String, // Đang lưu trữ ID thật
+    currentSiren: String, // Đang lưu trữ ID thật
     currentCameraIds: String,
     availableDevices: List<TuyaDeviceEntity>,
     availableCameras: List<CameraConfigEntity>,
@@ -432,7 +434,6 @@ fun DeviceMappingConfigCard(
                 )
                 IconButton(onClick = {
                     if (isEditing) {
-                        // Bấm hủy sửa -> khôi phục lại giá trị đang lưu, không mất dữ liệu gốc
                         lightSelection = currentLight
                         sirenSelection = currentSiren
                         selectedCameraIds = currentCameraIds.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
@@ -449,17 +450,18 @@ fun DeviceMappingConfigCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             if (isEditing) {
+                // Truyền ID đang chọn vào Picker
                 DevicePickerDropdown(
                     label = "Thiết bị đèn dọa trộm",
                     devices = availableDevices,
-                    selectedName = lightSelection,
+                    selectedId = lightSelection,
                     onSelected = { lightSelection = it }
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 DevicePickerDropdown(
                     label = "Thiết bị còi báo động",
                     devices = availableDevices,
-                    selectedName = sirenSelection,
+                    selectedId = sirenSelection,
                     onSelected = { sirenSelection = it }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -513,9 +515,13 @@ fun DeviceMappingConfigCard(
                     Text("Lưu cấu hình", fontWeight = FontWeight.Bold)
                 }
             } else {
+                // ✅ ĐÃ SỬA: Quy đổi ID đang lưu thành tên hiển thị thân thiện khi ở chế độ xem
+                val lightFriendlyName = availableDevices.find { it.id.trim() == currentLight.trim() }?.name ?: currentLight
+                val sirenFriendlyName = availableDevices.find { it.id.trim() == currentSiren.trim() }?.name ?: currentSiren
+
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(text = "💡 Đèn kích hoạt: $currentLight", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(text = "🔊 Còi báo động: $currentSiren", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(text = "💡 Đèn kích hoạt: $lightFriendlyName", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(text = "🔊 Còi báo động: $sirenFriendlyName", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val cameraSummary = if (currentCameraIds.isBlank()) {
                         "Tất cả camera"
                     } else {
@@ -528,26 +534,36 @@ fun DeviceMappingConfigCard(
     }
 }
 
+
+
+
+
+
 // Picker chọn 1 thiết bị Tuya từ danh sách thật của chủ nhà (dropdown), thay vì gõ tay.
-// Nếu chưa có thiết bị nào đồng bộ, cho phép gõ tay tạm thời để không chặn luồng cấu hình lần đầu.
+
+// Picker chọn 1 thiết bị Tuya từ danh sách thật, lưu ID thật (device.id) y hệt các file khác
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DevicePickerDropdown(
     label: String,
     devices: List<TuyaDeviceEntity>,
-    selectedName: String,
+    selectedId: String, // Đổi từ selectedName sang selectedId
     onSelected: (String) -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    
+    // Tìm tên thân thiện để hiển thị lên ô nhập từ ID đang chọn
+    val selectedDevice = devices.find { it.id.trim() == selectedId.trim() }
+    val displayText = selectedDevice?.name ?: selectedId
 
     if (devices.isEmpty()) {
         OutlinedTextField(
-            value = selectedName,
+            value = selectedId,
             onValueChange = onSelected,
             label = { Text(label) },
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(8.dp),
-            supportingText = { Text("Chưa có thiết bị nào đồng bộ — tạm thời gõ tay tên thiết bị", fontSize = 10.sp) }
+            supportingText = { Text("Chưa có thiết bị nào đồng bộ — gõ tay ID thiết bị", fontSize = 10.sp) }
         )
         return
     }
@@ -558,7 +574,7 @@ fun DevicePickerDropdown(
         modifier = Modifier.fillMaxWidth()
     ) {
         OutlinedTextField(
-            value = selectedName,
+            value = displayText, // Hiển thị tên thân thiện
             onValueChange = {},
             readOnly = true,
             label = { Text(label) },
@@ -576,7 +592,7 @@ fun DevicePickerDropdown(
                 DropdownMenuItem(
                     text = { Text(device.name) },
                     onClick = {
-                        onSelected(device.name)
+                        onSelected(device.id) // ✅ SỬA: Lưu ID thật (device.id) thay vì device.name
                         expanded = false
                     }
                 )
@@ -584,6 +600,9 @@ fun DevicePickerDropdown(
         }
     }
 }
+
+
+
 
 @Composable
 fun HabitMiningCard(
