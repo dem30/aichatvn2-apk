@@ -416,91 +416,11 @@ fun HourStepper(
     }
 }
 
-// 🧠 MỚI: Thiết kế Composable CustomPlannerCard quản lý danh sách hành động tự do của Quản gia —
-// hiển thị từng bước theo thứ tự, diễn giải riêng 2 hành động đặc biệt delay/check_precondition
-// thành câu tiếng Việt dễ hiểu, các hành động khác hiển thị dạng plugin.action(params).
-@Composable
-fun CustomPlannerCard(
-    actions: List<AlertActionConfig>,
-    onAddAction: () -> Unit,
-    onRemoveAction: (Int) -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Kịch bản răn đe Tự Do (Custom Planner)",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Text(
-                        text = "Thiết lập các bước tự chọn khi phát hiện trộm",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                }
-                OutlinedButton(
-                    onClick = onAddAction,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Icon(imageVector = Icons.Default.Add, contentDescription = "Thêm", modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Thêm bước", fontSize = 11.sp)
-                }
-            }
-            Spacer(modifier = Modifier.height(10.dp))
-
-            if (actions.isEmpty()) {
-                Text(
-                    text = "ℹ️ Chưa cấu hình kịch bản tự do — Quản gia sẽ tự động chạy kịch bản 5 bước mặc định làm dự phòng.",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                )
-            } else {
-                actions.forEachIndexed { index, cfg ->
-                    val stepDescription = when {
-                        cfg.pluginId == "house_manager" && cfg.action == "delay" ->
-                            "⏳ Trì hoãn ${cfg.params["delayMs"] ?: "0"} ms"
-                        cfg.pluginId == "house_manager" && cfg.action == "check_precondition" ->
-                            "🔒 Kiểm duyệt điều kiện: '${cfg.params["precondition"]}'"
-                        else ->
-                            "⚡ Gọi ${cfg.pluginId}.${cfg.action} (${cfg.params.values.joinToString(", ")})"
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Bước ${index + 1}: $stepDescription",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
-                        )
-                        IconButton(onClick = { onRemoveAction(index) }, modifier = Modifier.size(28.dp)) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Xóa",
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
+// ⚠️ ĐÃ XÓA: CustomPlannerCard (kịch bản răn đe tự do kiểu cũ, thao tác trên 1 danh sách
+// "actions" phẳng) không còn được gọi ở bất kỳ đâu trên màn hình nữa — đã bị thay thế hoàn
+// toàn bởi MultiWorkflowPlannerSection/WorkflowGroupCard (kiến trúc đa Nhóm kịch bản). Đây là
+// code chết (dead code), đồng thời cũng mắc lỗi hiển thị "Không xác định"/"null" y hệt bug đã
+// sửa bên dưới — xóa hẳn thay vì vá lỗi cho code không bao giờ chạy.
 
 // 🧠 MỚI: Bảng cấu hình ánh xạ thiết bị răn đe — chủ nhà CHỌN thiết bị Tuya/camera thật của
 
@@ -1196,7 +1116,7 @@ fun WorkflowGroupCard(
                             step.pluginId == "house_manager" && step.action == "delay" ->
                                 "⏳ Trì hoãn ${step.params["delayMs"] ?: "0"} mili-giây"
                             step.pluginId == "house_manager" && step.action == "check_precondition" ->
-                                "🔒 Kiểm duyệt điều kiện thực tế: ${step.params["precondition"] ?: "Không xác định"}"
+                                "🔒 Kiểm duyệt điều kiện thực tế: ${describeCheckPrecondition(step, availableCameras, availableDevices)}"
                             else ->
                                 "⚡ Gọi hành động ${step.pluginId}.${step.action}"
                         }
@@ -1269,6 +1189,45 @@ fun translateTriggerToFriendlyVietnamese(
     }
 
     return "🔥 Ngòi nổ: Khi $friendlyName $actionText"
+}
+
+// ✅ ĐÃ SỬA: Lệch pha hiển thị (UI) vs. thực thi (nền) cho bước check_precondition. Khi bạn tạo
+// bước này bằng bộ chọn Dropdown trực quan, dữ liệu được lưu dưới dạng tham số RỜI RẠC
+// (source/camera/device/chatSession/attribute/expected) — HouseManagerSkillImpl.kt khi CHẠY vẫn
+// tự ghép đúng các tham số này thành điều kiện và kiểm duyệt chính xác. Nhưng UI cũ chỉ tìm mỗi
+// khóa "precondition" (vốn để trống với bước tạo từ dropdown) nên luôn hiện "Không xác định" dù
+// kịch bản chạy đúng dưới nền. Hàm này ghép lại y hệt cách HouseManagerSkillImpl ghép, rồi tái sử
+// dụng translateTriggerToFriendlyVietnamese để dịch sang câu tiếng Việt — đảm bảo UI hiển thị
+// đúng 100% với những gì thực sự được kiểm duyệt.
+fun describeCheckPrecondition(
+    step: AlertActionConfig,
+    availableCameras: List<CameraConfigEntity>,
+    availableDevices: List<TuyaDeviceEntity>
+): String {
+    val rawPrecondition = step.params["precondition"]
+    val compiled = if (!rawPrecondition.isNullOrBlank()) {
+        rawPrecondition
+    } else {
+        val source = step.params["source"] ?: ""
+        val attr = step.params["attribute"] ?: "state"
+        val expected = step.params["expected"] ?: ""
+        val sourceId = when (source) {
+            "tuya" -> step.params["device"] ?: ""
+            "camera" -> step.params["camera"] ?: ""
+            "chat" -> step.params["chatSession"] ?: ""
+            else -> ""
+        }
+        if (source.isNotEmpty() && sourceId.isNotEmpty()) "$source.$sourceId.$attr=$expected" else null
+    }
+
+    if (compiled.isNullOrBlank()) return "Chưa cấu hình điều kiện"
+
+    // Câu trả về của translateTriggerToFriendlyVietnamese nói theo giọng "ngòi nổ sự kiện"
+    // ("🔥 Ngòi nổ: Khi ... xảy ra"), phù hợp để diễn giải một điều kiện kiểm duyệt trạng thái
+    // hiện tại — chỉ bỏ tiền tố "🔥 Ngòi nổ: " đi cho khớp ngữ cảnh "đang kiểm tra", không phải
+    // "đang chờ xảy ra".
+    return translateTriggerToFriendlyVietnamese(compiled, availableCameras, availableDevices)
+        .removePrefix("🔥 Ngòi nổ: ")
 }
 
 /**

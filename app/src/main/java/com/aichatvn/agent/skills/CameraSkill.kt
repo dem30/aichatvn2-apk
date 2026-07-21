@@ -918,19 +918,27 @@ class CameraSkill @Inject constructor(
     }
 
     private fun parseVisionResult(raw: String): VisionParseResult {
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        
+        // ✅ ĐÃ SỬA: Một số model suy luận sâu trên Groq (dòng Qwen/DeepSeek Preview) đôi khi tự
+        // sinh khối suy luận ngầm <think>...</think> TRƯỚC khối JSON thật, làm hỏng việc cắt
+        // chuỗi theo dấu ngoặc { } bên dưới (vì indexOf('{') bắt trúng dấu ngoặc bên trong khối
+        // suy luận, không phải JSON thật). Dọn sạch khối này trước khi tìm JSON.
+        val cleanedRaw = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "").trim()
+
+        val start = cleanedRaw.indexOf('{')
+        val end = cleanedRaw.lastIndexOf('}')
+
         val cleaned = if (start in 0 until end) {
-            raw.substring(start, end + 1).trim()
+            cleanedRaw.substring(start, end + 1).trim()
         } else {
-            raw.trim()
+            cleanedRaw
         }
 
         return try {
             val json = org.json.JSONObject(cleaned)
             val state = json.optString("state", "").lowercase().trim()
-            val description = json.optString("description", "").ifBlank { raw }
+            // Dùng cleanedRaw (đã bỏ <think>) làm fallback thay vì raw gốc, tránh rò rỉ khối suy
+            // luận nội bộ của AI ra bình luận cảnh báo hiển thị cho chủ nhà.
+            val description = json.optString("description", "").ifBlank { cleanedRaw }
             val structuredSuspicious = when (state) {
                 "suspicious" -> true
                 "normal" -> false
@@ -948,7 +956,8 @@ class CameraSkill @Inject constructor(
             } else emptyList()
             VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, objects = objects, rawJson = json)
         } catch (e: Exception) {
-            VisionParseResult(displayComment = raw, structuredSuspicious = null, objects = emptyList(), rawJson = null)
+            // Fallback trả về văn bản đã dọn sạch <think> nếu AI không xuất ra JSON chuẩn
+            VisionParseResult(displayComment = cleanedRaw, structuredSuspicious = null, objects = emptyList(), rawJson = null)
         }
     }
     
@@ -1691,13 +1700,23 @@ class CameraSkill @Inject constructor(
                         // ✅ MỚI: nối object list vào summary — trước đây chỉ có $aiComment (mô tả tự do),
                         // khiến buildMemoryContext (ChatSkill) không thể lọc/đếm theo loại đối tượng.
                         val objectsSuffix = if (objects.isNotEmpty()) " [objects: ${objects.joinToString(",")}]" else ""
+                        // ✅ ĐÃ SỬA: eventType trước đây hardcode "person_detected" cho MỌI cảnh báo,
+                        // kể cả khi objects chỉ có "cat"/"car" — gây sai lệch dữ liệu lịch sử (nhật ký
+                        // ghi "phát hiện mèo" nhưng eventType lại là person_detected). Nay suy ra động
+                        // theo đúng nhãn đối tượng AI thực sự phát hiện được.
+                        val derivedEventType = when {
+                            objects.any { it in listOf("person", "nguoi", "người", "trộm", "thief", "human") } -> "person_detected"
+                            objects.any { it in listOf("car", "motorbike", "vehicle", "xe", "oto", "truck") } -> "vehicle_detected"
+                            objects.any { it in listOf("dog", "cat", "animal", "chó", "mèo", "con vật") } -> "animal_detected"
+                            else -> "motion_detected" // Mặc định là phát hiện biến động chung
+                        }
                         database.eventLogDao().insertLog(
                             com.aichatvn.agent.data.model.EventLogEntity(
                                 id = java.util.UUID.randomUUID().toString(),
                                 timestamp = now,
                                 source = "camera",
                                 sourceId = tid,
-                                eventType = "person_detected",
+                                eventType = derivedEventType,
                                 value = "Phát hiện bất thường",
                                 summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment$objectsSuffix"
                             )

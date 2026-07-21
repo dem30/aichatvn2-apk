@@ -91,10 +91,9 @@ class HouseManagerViewModel @Inject constructor(
     private val _availableChatSessions = MutableStateFlow<List<String>>(emptyList())
     val availableChatSessions: StateFlow<List<String>> = _availableChatSessions.asStateFlow()
 
-    // ✅ MỚI: Danh sách kịch bản tự do (No-Code Planner) do chủ nhà tự xây từ AlertActionFormSheet
-    // — GIỮ LẠI làm cầu nối tương thích ngược, đồng bộ 1 chiều từ nhóm "wf_security".
-    private val _protectActions = MutableStateFlow<List<AlertActionConfig>>(emptyList())
-    val protectActions: StateFlow<List<AlertActionConfig>> = _protectActions.asStateFlow()
+    // ⚠️ ĐÃ XÓA: _protectActions/protectActions (bản mirror 1 chiều từ nhóm "wf_security") chỉ
+    // được CustomPlannerCard đọc/ghi trên UI — Card đó đã bị xóa (dead code, không còn được gọi ở
+    // đâu). Xóa luôn state này để tránh vòng đồng bộ mồ côi không ai đọc.
 
     // ✅ MỚI: Toàn bộ các Nhóm kịch bản (Workflow Groups) — nguồn sự thật duy nhất cho việc
     // kích hoạt tự động; UI đa nhóm (MultiWorkflowPlannerSection) đọc/ghi trực tiếp qua đây.
@@ -162,12 +161,10 @@ class HouseManagerViewModel @Inject constructor(
                 _protectSirenDevice.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "còi báo động")
                 _protectCameraIds.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01")
 
-                // ✅ ĐỒNG BỘ ĐỘC QUYỀN: đọc 1 lần từ HOUSE_MANAGER_WORKFLOWS, populate cả danh
-                // sách đầy đủ (UI đa nhóm) lẫn cầu nối tương thích ngược "wf_security".
+                // ✅ Đọc 1 lần từ HOUSE_MANAGER_WORKFLOWS để populate danh sách đầy đủ (UI đa nhóm).
                 val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]")
                 val groups = workflowGroupsFromJson(workflowsJson)
                 _workflowGroups.value = groups
-                _protectActions.value = groups.find { it.id == "wf_security" }?.steps ?: emptyList()
 
                 _availableTuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
                 _availableCameras.value = database.cameraDao().getAllCameras()
@@ -246,46 +243,10 @@ class HouseManagerViewModel @Inject constructor(
         }
     }
 
-    // ✅ MỚI: Thêm/xóa 1 bước trong kịch bản tự do — mỗi lần đổi đều ghi lại toàn bộ JSON
-    // xuống AppConfig rồi refresh, để CustomPlannerCard luôn hiển thị đúng thứ tự hiện tại.
-    fun addProtectAction(cfg: AlertActionConfig) {
-        val updated = _protectActions.value + cfg
-        saveProtectActions(updated)
-    }
-
-    fun removeProtectAction(index: Int) {
-        val updated = _protectActions.value.filterIndexed { i, _ -> i != index }
-        saveProtectActions(updated)
-    }
-
-    /**
-     * ✅ SỬA LỖI LOGIC GHI ĐÈ: nhắm đúng nhóm "wf_security" theo id — không còn dùng
-     * groups.first() làm fallback vị trí (tránh ghi đè nhầm nhóm khác đứng đầu mảng).
-     */
-    private fun saveProtectActions(list: List<AlertActionConfig>) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]").trim()
-            val groups = workflowGroupsFromJson(workflowsJson).toMutableList()
-
-            val index = groups.indexOfFirst { it.id == "wf_security" }
-            if (index != -1) {
-                groups[index] = groups[index].copy(steps = list)
-            } else {
-                groups.add(
-                    WorkflowGroup(
-                        id = "wf_security",
-                        label = "Kịch bản Bảo vệ an ninh Sân trước",
-                        triggerSource = "camera.cam_01.state=suspicious",
-                        enabled = true,
-                        steps = list
-                    )
-                )
-            }
-
-            configProvider.set(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, workflowGroupsToJson(groups))
-            performRefresh()
-        }
-    }
+    // ⚠️ ĐÃ XÓA: addProtectAction/removeProtectAction/saveProtectActions — nơi gọi duy nhất là
+    // CustomPlannerCard (đã xóa ở màn hình). Việc thêm/xóa bước cho nhóm "wf_security" giờ đi
+    // hoàn toàn qua addStepToGroup/removeStepFromGroup bên dưới (dùng chung cho MỌI nhóm kịch
+    // bản, được WorkflowGroupCard gọi) — không cần một cặp hàm riêng chỉ để xử lý 1 nhóm.
 
     // ─── CÁC API ĐIỀU HÀNH ĐA NHÓM DÀNH CHO TRÌNH SOẠN THẢO TRỰC QUAN ───
 
