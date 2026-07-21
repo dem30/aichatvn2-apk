@@ -270,7 +270,16 @@ class HouseManagerSkillImpl @Inject constructor(
             }
         }
 
-        if (!shouldMerge && camera.id.trim() == "cam_01") { 
+        // ✅ ĐÃ SỬA: Đọc danh sách ID camera kích hoạt kịch bản liên hoàn được chủ nhà cấu hình
+        // động từ AppConfig thay vì hardcode "cam_01" — mỗi nhà lắp camera và đặt ID khác nhau.
+        val triggerCameraIds = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01").trim()
+        val isTriggerCamera = if (triggerCameraIds.isEmpty()) {
+            true // Để trống = tất cả camera đều có quyền kích hoạt kịch bản liên hoàn
+        } else {
+            triggerCameraIds.split(",").map { it.trim() }.contains(camera.id.trim())
+        }
+
+        if (!shouldMerge && isTriggerCamera) {
             triggerProtectHouseSequence(camera.id.trim())
         }
 
@@ -492,18 +501,24 @@ class HouseManagerSkillImpl @Inject constructor(
     }
 
     override suspend fun triggerProtectHouseSequence(cameraId: String) {
+        // ✅ ĐÃ SỬA: Đọc tên thiết bị thực tế do chủ nhà tùy biến cấu hình từ AppConfig thay vì
+        // hardcode "đèn sân trước" / "còi báo động" — mỗi nhà đặt tên thiết bị Tuya khác nhau,
+        // nếu đổi tên trên app Smart Life kịch bản cũ sẽ bị gãy (Unresolved Reference).
+        val lightDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, "đèn sân trước").trim()
+        val sirenDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "còi báo động").trim()
+
         val steps = listOf(
             ActionStep(
                 pluginId = "smart_switch",
                 action = "set",
-                params = mapOf("device" to "đèn sân trước", "state" to true)
+                params = mapOf("device" to lightDevice, "state" to true)
             ),
             ActionStep(
                 pluginId = "notification",
                 action = "send",
                 params = mapOf(
-                    "title" to "🚨 PHÁT HIỆN NGHI VẤN SÂN TRƯỚC",
-                    "message" to "Quản gia đã tự động bật đèn sân để răn đe. Đang theo dõi sát sao..."
+                    "title" to "🚨 PHÁT HIỆN NGHI VẤN AN NINH",
+                    "message" to "Quản gia đã tự động bật thiết bị '$lightDevice' để răn đe. Đang theo dõi sát sao..."
                 )
             ),
             ActionStep(
@@ -515,20 +530,21 @@ class HouseManagerSkillImpl @Inject constructor(
             ActionStep(
                 pluginId = "smart_switch",
                 action = "set",
-                params = mapOf("device" to "còi báo động", "state" to true),
+                params = mapOf("device" to sirenDevice, "state" to true),
                 delayMs = 5000L,
                 precondition = "camera.$cameraId.state=suspicious" 
             ),
             ActionStep(
                 pluginId = "smart_switch",
                 action = "set",
-                params = mapOf("device" to "còi báo động", "state" to false),
+                params = mapOf("device" to sirenDevice, "state" to false),
                 delayMs = 60000L, 
-                precondition = "tuya.còi báo động.state=true" 
+                precondition = "tuya.$sirenDevice.state=true" 
             )
         )
 
-        executePlan("Kịch bản liên hoàn bảo vệ an ninh sân trước", steps)
+        val cameraName = database.cameraDao().getCameraById(cameraId)?.customername ?: cameraId
+        executePlan("Kịch bản liên hoàn bảo vệ an ninh cho camera $cameraName", steps)
     }
 
     override suspend fun mineUserHabits() = withContext(Dispatchers.IO) {
