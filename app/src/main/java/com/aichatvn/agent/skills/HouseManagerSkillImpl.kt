@@ -1062,7 +1062,7 @@ override suspend fun sendDefaultCameraAlerts(
     // ✅ ĐÃ SỬA: Trước đây khung giờ "ban đêm" bị code cứng (22h-6h), chủ nhà không xem/sửa
     // được từ UI. Nay đọc từ AppConfig (HouseManagerScreen -> SleepScheduleCard cho phép chỉnh
     // trực tiếp). Vẫn giữ nguyên mặc định 22h-6h nếu chủ nhà chưa từng cấu hình.
-    private fun isNightTime(): Boolean {
+    private suspend fun isNightTime(): Boolean {
         val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
         val startHour = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_SLEEP_START_HOUR, "22")
             .toIntOrNull()?.coerceIn(0, 23) ?: 22
