@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.HouseMood
 import com.aichatvn.agent.data.model.HouseSituation
@@ -49,8 +50,36 @@ fun HouseManagerScreen(
     val availableTuyaDevices by viewModel.availableTuyaDevices.collectAsState()
     val availableCameras by viewModel.availableCameras.collectAsState()
 
+    // ✅ MỚI: Trạng thái của bộ Planner Tự Do (No-Code Planner Builder)
+    val protectActions by viewModel.protectActions.collectAsState()
+    val alertActionPlugins = viewModel.alertActionPlugins
+    var showActionSheet by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     val themeColorAndIcon = getThemeForMood(situation?.currentMood ?: HouseMood.NORMAL)
     val animatedHeaderColor by animateColorAsState(targetValue = themeColorAndIcon.headerColor)
+
+    // ⚠️ CẦN KIỂM TRA: AlertActionFormSheet được tái sử dụng từ màn hình Camera hiện có
+    // trong project (chưa nằm trong các file bạn đã upload) — hãy đảm bảo import đúng
+    // package của nó và chữ ký tham số (plugins/tuyaDevices/activeCameras/onSave/onCancel)
+    // khớp với bản gốc trước khi build.
+    if (showActionSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showActionSheet = false },
+            sheetState = sheetState
+        ) {
+            AlertActionFormSheet(
+                plugins = alertActionPlugins,
+                tuyaDevices = availableTuyaDevices,
+                activeCameras = availableCameras,
+                onSave = { cfg ->
+                    viewModel.addProtectAction(cfg)
+                    showActionSheet = false
+                },
+                onCancel = { showActionSheet = false }
+            )
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -107,9 +136,20 @@ fun HouseManagerScreen(
                 )
             }
 
+            // 🧠 MỚI: Bảng cấu hình kịch bản tự do (No-Code Planner Builder) — chủ nhà tự thêm
+            // bất kỳ số bước nào (trì hoãn, kiểm duyệt điều kiện, gọi plugin bất kỳ) qua UI.
+            item {
+                CustomPlannerCard(
+                    actions = protectActions,
+                    onAddAction = { showActionSheet = true },
+                    onRemoveAction = { viewModel.removeProtectAction(it) }
+                )
+            }
+
             // 🧠 MỚI: Bảng cấu hình ánh xạ thiết bị răn đe (loại bỏ hoàn toàn hardcode tên thiết
-            // bị/ID camera). Chủ nhà CHỌN thiết bị Tuya/camera thật của họ bằng picker, không
-            // phải gõ tay — tránh gõ sai tên khiến kịch bản Planner gãy (Unresolved Reference).
+            // bị/ID camera). Chủ nhà CHỌN thiết bị Tuya/camera thật của họ bằng picker (dropdown +
+            // checkbox), thay vì gõ tay tên thiết bị dễ gõ sai làm gãy kịch bản. Đây là cấu hình
+            // dự phòng (fallback) khi kịch bản tự do ở trên chưa được cấu hình.
             item {
                 DeviceMappingConfigCard(
                     currentLight = protectLightDevice,
@@ -259,6 +299,92 @@ fun PolicyControlCard(
                     Text("Chặn bật máy bơm, bình nóng lạnh khi vắng nhà", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
                 Switch(checked = isVacationSafetyEnabled, onCheckedChange = onToggleVacationSafety)
+            }
+        }
+    }
+}
+
+// 🧠 MỚI: Thiết kế Composable CustomPlannerCard quản lý danh sách hành động tự do của Quản gia —
+// hiển thị từng bước theo thứ tự, diễn giải riêng 2 hành động đặc biệt delay/check_precondition
+// thành câu tiếng Việt dễ hiểu, các hành động khác hiển thị dạng plugin.action(params).
+@Composable
+fun CustomPlannerCard(
+    actions: List<AlertActionConfig>,
+    onAddAction: () -> Unit,
+    onRemoveAction: (Int) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Kịch bản răn đe Tự Do (Custom Planner)",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "Thiết lập các bước tự chọn khi phát hiện trộm",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+                OutlinedButton(
+                    onClick = onAddAction,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Add, contentDescription = "Thêm", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Thêm bước", fontSize = 11.sp)
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (actions.isEmpty()) {
+                Text(
+                    text = "ℹ️ Chưa cấu hình kịch bản tự do — Quản gia sẽ tự động chạy kịch bản 5 bước mặc định làm dự phòng.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
+            } else {
+                actions.forEachIndexed { index, cfg ->
+                    val stepDescription = when {
+                        cfg.pluginId == "house_manager" && cfg.action == "delay" ->
+                            "⏳ Trì hoãn ${cfg.params["delayMs"] ?: "0"} ms"
+                        cfg.pluginId == "house_manager" && cfg.action == "check_precondition" ->
+                            "🔒 Kiểm duyệt điều kiện: '${cfg.params["precondition"]}'"
+                        else ->
+                            "⚡ Gọi ${cfg.pluginId}.${cfg.action} (${cfg.params.values.joinToString(", ")})"
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Bước ${index + 1}: $stepDescription",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { onRemoveAction(index) }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Xóa",
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
             }
         }
     }

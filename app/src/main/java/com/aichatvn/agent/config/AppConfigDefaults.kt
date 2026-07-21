@@ -54,6 +54,9 @@ object AppConfigDefaults {
     const val HOUSE_MANAGER_PROTECT_LIGHT     = "house_manager.protect_house_light_device"
     const val HOUSE_MANAGER_PROTECT_SIREN     = "house_manager.protect_house_siren_device"
     const val HOUSE_MANAGER_PROTECT_CAMERAS   = "house_manager.protect_house_camera_ids"
+    // ✅ MỚI: Danh sách hành động tự do (No-Code Planner) do chủ nhà tự xây bằng UI, lưu JSON.
+    // Để trống "[]" = kích hoạt fallback kịch bản 5 bước mặc định an toàn.
+    const val HOUSE_MANAGER_PROTECT_ACTIONS   = "house_manager.protect_house_actions"
 
     // ───────────────────────── GLOBAL ───────────────────────
     const val GLOBAL_FUZZY_THRESHOLD        = "global.fuzzy_threshold"
@@ -302,7 +305,7 @@ object AppConfigDefaults {
         // chưa kịp cấu hình gì thì kịch bản vẫn chạy y như trước).
         AppConfigEntity(
             key = HOUSE_MANAGER_PROTECT_LIGHT,
-            value = "đèn sân trước",
+            value = "",
             type = "string",
             pluginId = "house_manager",
             label = "Đèn răn đe Quản gia",
@@ -310,7 +313,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = HOUSE_MANAGER_PROTECT_SIREN,
-            value = "còi báo động",
+            value = "",
             type = "string",
             pluginId = "house_manager",
             label = "Còi báo động Quản gia",
@@ -318,11 +321,19 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = HOUSE_MANAGER_PROTECT_CAMERAS,
-            value = "cam_01",
+            value = "",
             type = "string",
             pluginId = "house_manager",
             label = "ID các Camera kích hoạt kịch bản",
             description = "Danh sách ID camera (cách nhau bởi dấu phẩy) sẽ kích hoạt kịch bản liên hoàn khi có trộm. Để trống = áp dụng cho tất cả camera."
+        ),
+        AppConfigEntity(
+            key = HOUSE_MANAGER_PROTECT_ACTIONS,
+            value = "[]",
+            type = "string",
+            pluginId = "house_manager",
+            label = "Chuỗi kịch bản răn đe Quản gia",
+            description = "JSON chứa danh sách các bước hành động tự do do người dùng cấu hình khi có trộm. Để trống = dùng kịch bản 5 bước mặc định."
         ),
 
         // ── GLOBAL ──

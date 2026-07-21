@@ -4,10 +4,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
+import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.HouseSituation
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
+import com.aichatvn.agent.data.model.alertActionsFromJson
+import com.aichatvn.agent.data.model.alertActionsToJson
 import com.aichatvn.agent.skills.HouseManagerSkill
 import com.aichatvn.agent.skills.PlanStatus
 import com.aichatvn.agent.utils.WorldStateHelper
@@ -27,7 +32,8 @@ import javax.inject.Inject
 class HouseManagerViewModel @Inject constructor(
     private val houseManagerSkill: HouseManagerSkill,
     private val database: AppDatabase,
-    private val configProvider: AppConfigProvider
+    private val configProvider: AppConfigProvider,
+    private val agentKernel: AgentKernel // Lấy danh sách plugin để hiển thị dropdown chọn plugin trong AlertActionFormSheet
 ) : ViewModel() {
 
     private val _situation = MutableStateFlow<HouseSituation?>(null)
@@ -69,6 +75,13 @@ class HouseManagerViewModel @Inject constructor(
 
     private val _availableCameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
     val availableCameras: StateFlow<List<CameraConfigEntity>> = _availableCameras.asStateFlow()
+
+    // ✅ MỚI: Danh sách kịch bản tự do (No-Code Planner) do chủ nhà tự xây từ AlertActionFormSheet
+    private val _protectActions = MutableStateFlow<List<AlertActionConfig>>(emptyList())
+    val protectActions: StateFlow<List<AlertActionConfig>> = _protectActions.asStateFlow()
+
+    // Danh sách plugin khả dụng để hiển thị trong dropdown chọn plugin/action của AlertActionFormSheet
+    val alertActionPlugins: List<Plugin> = agentKernel.getAvailablePluginsForUI()
 
     init {
         refreshAll()
@@ -119,6 +132,11 @@ class HouseManagerViewModel @Inject constructor(
                 _protectLightDevice.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, "đèn sân trước")
                 _protectSirenDevice.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "còi báo động")
                 _protectCameraIds.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01")
+
+                // ✅ MỚI: Đọc danh sách kịch bản tự do đã lưu (JSON) để hiển thị trên CustomPlannerCard
+                val actionsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_ACTIONS, "[]")
+                _protectActions.value = alertActionsFromJson(actionsJson)
+
                 _availableTuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
                 _availableCameras.value = database.cameraDao().getAllCameras()
             }
@@ -175,6 +193,25 @@ class HouseManagerViewModel @Inject constructor(
                 configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, sirenDevice)
                 configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, cameraIds.joinToString(","))
             }
+            performRefresh()
+        }
+    }
+
+    // ✅ MỚI: Thêm/xóa 1 bước trong kịch bản tự do — mỗi lần đổi đều ghi lại toàn bộ JSON
+    // xuống AppConfig rồi refresh, để CustomPlannerCard luôn hiển thị đúng thứ tự hiện tại.
+    fun addProtectAction(cfg: AlertActionConfig) {
+        val updated = _protectActions.value + cfg
+        saveProtectActions(updated)
+    }
+
+    fun removeProtectAction(index: Int) {
+        val updated = _protectActions.value.filterIndexed { i, _ -> i != index }
+        saveProtectActions(updated)
+    }
+
+    private fun saveProtectActions(list: List<AlertActionConfig>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_ACTIONS, alertActionsToJson(list))
             performRefresh()
         }
     }

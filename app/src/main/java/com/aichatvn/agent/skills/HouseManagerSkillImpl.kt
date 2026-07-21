@@ -76,6 +76,30 @@ class HouseManagerSkillImpl @Inject constructor(
                 name = "mine_habits",
                 description = "Kích hoạt Quản gia phân tích hành vi để đề xuất thói quen mới",
                 parameters = emptyList()
+            ),
+            // ✅ MỚI: Đăng ký hành động dành riêng cho Planner Tự Do (No-Code Planner Builder) —
+            // cho phép chủ nhà tự chèn bước "trì hoãn" / "kiểm duyệt điều kiện" vào giữa kịch bản
+            // bằng UI (AlertActionFormSheet) mà không cần code cứng thứ tự bước như trước.
+            PluginAction(
+                name = "delay",
+                description = "Trì hoãn tiến trình kịch bản (Planner Delay Step)",
+                parameters = listOf(
+                    PluginParameter("delayMs", "number", "Thời gian trì hoãn (milli-giây), ví dụ: 30000", true, "interval")
+                )
+            ),
+            PluginAction(
+                // ✅ ĐÃ SỬA: Thay vì bắt chủ nhà gõ tay chuỗi precondition thô (dễ gõ sai), tách
+                // thành 5 tham số riêng — 2 tham số "device"/"camera" có semanticType riêng để
+                // AlertActionFormSheet tự render Picker chọn thiết bị/camera thật, không cần gõ tay.
+                name = "check_precondition",
+                description = "Kiểm duyệt điều kiện thực tế (Planner Precondition Step)",
+                parameters = listOf(
+                    PluginParameter("source", "string", "Nguồn kiểm tra (camera / tuya / chat)", true, "string"),
+                    PluginParameter("device", "string", "Chọn thiết bị Tuya (nếu nguồn là tuya)", false, "device"),
+                    PluginParameter("camera", "string", "Chọn camera (nếu nguồn là camera)", false, "camera"),
+                    PluginParameter("attribute", "string", "Thuộc tính cần kiểm tra (ví dụ: state)", true, "string"),
+                    PluginParameter("expected", "string", "Trạng thái mong muốn (ví dụ: true / false / suspicious)", true, "string")
+                )
             )
         )
     )
@@ -119,6 +143,57 @@ class HouseManagerSkillImpl @Inject constructor(
             "mine_habits" -> {
                 mineUserHabits()
                 PluginResult.Success(mapOf("message" to "✅ Quản gia đã phân tích và khai thác thói quen xong."))
+            }
+            // ✅ MỚI: Hiện thực hóa 2 hành động riêng của Planner Tự Do — cho phép mỗi bước
+            // "trì hoãn" / "kiểm duyệt điều kiện" mà chủ nhà tự thêm qua UI được gọi như một
+            // plugin action bình thường, thay vì bị bó buộc trong đúng 5 bước hardcode cũ.
+            "delay" -> {
+                val delayMs = (params["delayMs"] as? String)?.toLongOrNull()
+                    ?: (params["delayMs"] as? Number)?.toLong()
+                    ?: 0L
+                delay(delayMs)
+                PluginResult.Success(mapOf("message" to "Đã trì hoãn $delayMs ms"))
+            }
+            "check_precondition" -> {
+                // ✅ ĐỒNG BỘ: Hỗ trợ cả kịch bản gõ tay cũ (params["precondition"]) lẫn bộ chọn
+                // tham số tách rời mới từ UI (source/device/camera/attribute/expected) — nhờ vậy
+                // các kịch bản mặc định cũ và kịch bản người dùng mới tạo qua picker đều chạy được.
+                val precondition = params["precondition"] as? String
+                val condition = if (precondition != null) {
+                    WorldStateHelper.parseCondition(precondition)
+                } else {
+                    val source = params["source"] as? String ?: ""
+                    val attribute = params["attribute"] as? String ?: "state"
+                    val expected = params["expected"] as? String ?: ""
+                    val sourceId = if (source == "tuya") {
+                        params["device"] as? String ?: ""
+                    } else {
+                        params["camera"] as? String ?: ""
+                    }
+                    if (source.isNotEmpty() && sourceId.isNotEmpty()) {
+                        WorldStateHelper.WorldStateCondition(source, sourceId, attribute, expected)
+                    } else null
+                }
+
+                if (condition != null) {
+                    // Cùng logic quy đổi tên thân thiện Tuya -> ID thật đã dùng trong executePlan,
+                    // để hành động check_precondition độc lập vẫn tra cứu đúng world_state.
+                    val resolvedSourceId = if (condition.source == "tuya") {
+                        database.tuyaDeviceDao().getDeviceByName(condition.sourceId)?.id
+                            ?: database.tuyaDeviceDao().getDeviceById(condition.sourceId)?.id
+                            ?: condition.sourceId
+                    } else {
+                        condition.sourceId
+                    }
+                    val actualValue = WorldStateHelper.getAttribute(database.worldStateDao(), condition.source, resolvedSourceId, condition.attrKey)
+                    if (actualValue != condition.expected) {
+                        PluginResult.Failure("Điều kiện không thỏa mãn: Cần ${condition.attrKey}=${condition.expected}, Thực tế: $actualValue")
+                    } else {
+                        PluginResult.Success(mapOf("message" to "Điều kiện thỏa mãn"))
+                    }
+                } else {
+                    PluginResult.Success(mapOf("message" to "Không có điều kiện"))
+                }
             }
             else -> PluginResult.Failure("Hành động không hỗ trợ: $action")
         }
@@ -442,10 +517,22 @@ class HouseManagerSkillImpl @Inject constructor(
                 if (!step.precondition.isNullOrBlank()) {
                     val condition = WorldStateHelper.parseCondition(step.precondition)
                     if (condition != null) {
+                        // ✅ ĐÃ SỬA: SmartSwitchSkill lưu Bản sao số (world_state) dưới ID thật
+                        // trên đám mây Tuya (vd "tuya_siren_01"), trong khi precondition của
+                        // Planner được viết bằng tên thân thiện chủ nhà đặt (vd "còi báo động").
+                        // Nếu không quy đổi, getAttribute() sẽ luôn trả về null -> bước bị bỏ qua oan.
+                        val resolvedSourceId = if (condition.source == "tuya") {
+                            database.tuyaDeviceDao().getDeviceByName(condition.sourceId)?.id
+                                ?: database.tuyaDeviceDao().getDeviceById(condition.sourceId)?.id
+                                ?: condition.sourceId
+                        } else {
+                            condition.sourceId
+                        }
+
                         val actualValue = WorldStateHelper.getAttribute(
                             database.worldStateDao(),
                             condition.source,
-                            condition.sourceId,
+                            resolvedSourceId, // Dùng ID thật đã quy đổi thay vì tên thân thiện gốc
                             condition.attrKey
                         )
                         proceed = actualValue == condition.expected
@@ -500,52 +587,125 @@ class HouseManagerSkillImpl @Inject constructor(
         }
     }
 
+    // 🧠 GIAI ĐOẠN 4 (NÂNG CẤP PLANNER TỰ DO):
+    // Biên dịch danh sách AlertActionConfig tự chọn của chủ nhà (được thêm qua
+    // AlertActionFormSheet trên UI) thành các bước ActionStep chạy trên Planner.
+    // Nếu chủ nhà chưa cấu hình gì (JSON rỗng "[]") thì fallback về đúng kịch bản
+    // 5 bước mặc định cũ để bảo đảm khả năng tương thích ngược.
     override suspend fun triggerProtectHouseSequence(cameraId: String) {
-        // ✅ ĐÃ SỬA: Đọc tên thiết bị thực tế do chủ nhà tùy biến cấu hình từ AppConfig thay vì
-        // hardcode "đèn sân trước" / "còi báo động" — mỗi nhà đặt tên thiết bị Tuya khác nhau,
-        // nếu đổi tên trên app Smart Life kịch bản cũ sẽ bị gãy (Unresolved Reference).
-        val lightDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, "đèn sân trước").trim()
-        val sirenDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "còi báo động").trim()
+        val actionsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_ACTIONS, "[]").trim()
 
-        val steps = listOf(
+        
+      
+      
+      
+      
+      // Đọc tên thiết bị cấu hình dự phòng — đưa giá trị mặc định về rỗng để đồng bộ housekeeping sạch
+        val lightDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, "").trim()
+        val sirenDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "").trim()
+        
+        val alertActions = if (actionsJson == "[]" || actionsJson.isBlank()) {
+            buildDefaultProtectActions(lightDevice, sirenDevice, cameraId)
+        } else {
+            alertActionsFromJson(actionsJson)
+        }
+
+        // Ánh xạ 1-1 danh sách AlertActionConfig tự do thành ActionStep chạy trên Planner —
+        // trích riêng delayMs/precondition từ 2 hành động đặc biệt "delay"/"check_precondition"
+        // của chính Quản gia, còn lại chạy như plugin action bình thường.
+        val steps = alertActions.map { cfg ->
+            var delayVal = 0L
+            var preconditionVal: String? = null
+
+            if (cfg.pluginId == "house_manager" && cfg.action == "delay") {
+                delayVal = cfg.params["delayMs"]?.toLongOrNull() ?: 0L
+            }
+            if (cfg.pluginId == "house_manager" && cfg.action == "check_precondition") {
+                // ✅ ĐÃ SỬA: Ưu tiên chuỗi precondition gõ tay cũ nếu có (tương thích ngược với
+                // kịch bản 5 bước mặc định), nếu không thì tự biên dịch từ 5 tham số người dùng
+                // chọn trên Picker trực quan (source/device|camera/attribute/expected) thành
+                // đúng định dạng "source.sourceId.attr=expected" mà executePlan() hiểu được.
+                val rawPrecondition = cfg.params["precondition"]
+                preconditionVal = rawPrecondition ?: run {
+                    val source = cfg.params["source"] ?: ""
+                    val attr = cfg.params["attribute"] ?: "state"
+                    val expected = cfg.params["expected"] ?: ""
+                    val sourceId = if (source == "tuya") {
+                        cfg.params["device"] ?: ""
+                    } else {
+                        cfg.params["camera"] ?: ""
+                    }
+                    if (source.isNotEmpty() && sourceId.isNotEmpty()) "$source.$sourceId.$attr=$expected" else null
+                }
+            }
+
+            // Quy đổi động placeholder (vd: __CAMERA_ID__ -> mã camera thật của sự kiện hiện tại)
+            // và ép kiểu về Boolean/Long đúng như IntentExecutor mong đợi trong ActionStep.params.
+            val updatedParams: Map<String, Any> = cfg.params.mapValues { (_, value) ->
+                val resolvedValue = if (value == "__CAMERA_ID__") cameraId else value
+                when {
+                    resolvedValue.equals("true", ignoreCase = true) -> true
+                    resolvedValue.equals("false", ignoreCase = true) -> false
+                    resolvedValue.toLongOrNull() != null -> resolvedValue.toLong()
+                    else -> resolvedValue
+                }
+            }
+
             ActionStep(
-                pluginId = "smart_switch",
-                action = "set",
-                params = mapOf("device" to lightDevice, "state" to true)
-            ),
-            ActionStep(
-                pluginId = "notification",
-                action = "send",
-                params = mapOf(
-                    "title" to "🚨 PHÁT HIỆN NGHI VẤN AN NINH",
-                    "message" to "Quản gia đã tự động bật thiết bị '$lightDevice' để răn đe. Đang theo dõi sát sao..."
-                )
-            ),
-            ActionStep(
-                pluginId = "camera",
-                action = "scan",
-                params = mapOf("cameraId" to cameraId, "force" to true),
-                delayMs = 30000L 
-            ),
-            ActionStep(
-                pluginId = "smart_switch",
-                action = "set",
-                params = mapOf("device" to sirenDevice, "state" to true),
-                delayMs = 5000L,
-                precondition = "camera.$cameraId.state=suspicious" 
-            ),
-            ActionStep(
-                pluginId = "smart_switch",
-                action = "set",
-                params = mapOf("device" to sirenDevice, "state" to false),
-                delayMs = 60000L, 
-                precondition = "tuya.$sirenDevice.state=true" 
+                pluginId = cfg.pluginId,
+                action = cfg.action,
+                params = updatedParams,
+                delayMs = delayVal,
+                precondition = preconditionVal
             )
-        )
+        }
 
         val cameraName = database.cameraDao().getCameraById(cameraId)?.customername ?: cameraId
         executePlan("Kịch bản liên hoàn bảo vệ an ninh cho camera $cameraName", steps)
     }
+
+    // Kịch bản 5 bước mặc định cũ, được dựng lại thành AlertActionConfig để dùng làm fallback
+    // an toàn khi chủ nhà chưa tự cấu hình kịch bản tự do nào trên UI.
+    
+  
+  
+  // Bộ sinh kịch bản mặc định tự động lọc bỏ các thiết bị chưa được cấu hình (tránh gửi lệnh rỗng)
+    private fun buildDefaultProtectActions(light: String, siren: String, cameraId: String): List<AlertActionConfig> {
+        val list = mutableListOf<AlertActionConfig>()
+        
+        // 1. Chỉ bật đèn dọa trộm nếu chủ nhà đã cấu hình đèn thật
+        if (light.isNotBlank()) {
+            list.add(AlertActionConfig("smart_switch", "set", mapOf("device" to light, "state" to "true")))
+        }
+        
+        // 2. Thông báo khẩn cấp mặc định của Quản gia
+        list.add(
+            AlertActionConfig(
+                pluginId = "notification", 
+                action = "send", 
+                params = mapOf("title" to "🚨 PHÁT HIỆN NGHI VẤN AN NINH", "message" to "Quản gia đã phát hiện bất thường và đang kích hoạt các kịch bản an toàn.")
+            )
+        )
+        
+        // 3. Tiến trình đếm ngược Planner quét camera lại
+        list.add(AlertActionConfig("house_manager", "delay", mapOf("delayMs" to "30000")))
+        list.add(AlertActionConfig("camera", "scan", mapOf("cameraId" to cameraId, "force" to "true")))
+        list.add(AlertActionConfig("house_manager", "delay", mapOf("delayMs" to "5000")))
+        list.add(AlertActionConfig("house_manager", "check_precondition", mapOf("precondition" to "camera.$cameraId.state=suspicious")))
+        
+        // 4. Chỉ bật/tắt còi báo động nếu chủ nhà đã cấu hình còi thật
+        if (siren.isNotBlank()) {
+            list.add(AlertActionConfig("smart_switch", "set", mapOf("device" to siren, "state" to "true")))
+            list.add(AlertActionConfig("house_manager", "delay", mapOf("delayMs" to "60000")))
+            list.add(AlertActionConfig("smart_switch", "set", mapOf("device" to siren, "state" to "false")))
+        }
+        
+        return list
+    }
+
+
+
+  
 
     override suspend fun mineUserHabits() = withContext(Dispatchers.IO) {
         logger.i("HouseManager", "🔄 Quản gia bắt đầu tiến trình tự học thói quen người dùng từ nhật ký 7 ngày...")
