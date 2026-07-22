@@ -87,7 +87,7 @@ class GroqClientTool @Inject constructor(
         private const val PROMPT_LOG_SIZE = 10
         private const val PROMPT_LOG_MAX_CHARS = 20_000
 
-        // ✅ Cấu trúc prompt Vision thế hệ mới trả về định dạng phẳng chứa mảng objects chi tiết
+        // ✅ Cấu trúc prompt Vision trả về định dạng phẳng chứa mảng objects chi tiết theo danh mục phổ quát
         private const val STRUCTURED_VISION_SUFFIX = """
 
 🚨 BẮT BUỘC TRẢ VỀ JSON THÔ THEO ĐỊNH DẠNG SAU, KHÔNG GIẢI THÍCH THÊM, KHÔNG BỌC TRONG MARKDOWN ```json:
@@ -96,8 +96,9 @@ class GroqClientTool @Inject constructor(
   "confidence": 0.0 đến 1.0,
   "objects": [
     {
-      "type": "CHỈ dùng đúng các nhãn: person, car, motorbike, dog, cat, package, unknown",
-      "details": "mô tả đặc điểm cụ thể như quần áo, màu sắc, dáng dấp",
+      "type": "CHỈ chọn dùng đúng một trong các danh mục phổ quát sau: người, đồ vật, động vật, thực vật",
+      "name": "tên gọi cụ thể của thực thể (ví dụ: xe máy, con mèo, quả mâm xôi, cây hoa hồng, kẻ đột nhập)",
+      "details": "mô tả đặc điểm cụ thể như quần áo, màu sắc, dáng dấp, trạng thái",
       "location": "vị trí xuất hiện trong bức hình",
       "relations": "mối quan hệ không gian với vật thể khác (cạnh bên, đè lên, ở dưới...)"
     }
@@ -109,6 +110,8 @@ class GroqClientTool @Inject constructor(
     "has_animal": true hoặc false
   }
 }"""
+
+      
 
         private fun isReasoningModel(model: String): Boolean =
             model.startsWith("qwen/qwen3", ignoreCase = true)

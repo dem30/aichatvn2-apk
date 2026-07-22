@@ -65,18 +65,11 @@ class HouseManagerViewModel @Inject constructor(
     private val _sleepEndHour = MutableStateFlow(6)
     val sleepEndHour: StateFlow<Int> = _sleepEndHour.asStateFlow()
 
-    // ✅ MỚI: Ánh xạ thiết bị Quản gia (Device Mapping) — đồng bộ hai chiều với
-    // Bảng cấu hình Thiết bị Răn đe trên HouseManagerScreen. Thay cho hardcode
-    // "đèn sân trước" / "còi báo động" / "cam_01" trong kịch bản Planner.
-    private val _protectLightDevice = MutableStateFlow("đèn sân trước")
-    val protectLightDevice: StateFlow<String> = _protectLightDevice.asStateFlow()
-
-    private val _protectSirenDevice = MutableStateFlow("còi báo động")
-    val protectSirenDevice: StateFlow<String> = _protectSirenDevice.asStateFlow()
-
-    // Lưu dạng chuỗi "id1,id2" giống AppConfig; Screen tự split thành List để hiển thị picker chọn nhiều.
-    private val _protectCameraIds = MutableStateFlow("cam_01")
-    val protectCameraIds: StateFlow<String> = _protectCameraIds.asStateFlow()
+    // ⚠️ ĐÃ XÓA: _protectLightDevice/_protectSirenDevice/_protectCameraIds — cấu hình dự phòng
+    // riêng cho nút Panic độc lập cũ (buildDefaultProtectActions). Nút Panic đã được thay bằng
+    // "Chạy thủ công" theo từng Nhóm kịch bản, nơi chủ nhà tự chọn thiết bị camera/công tắc thật
+    // ngay trong bước kịch bản (VisualTriggerBuilderDialog/AlertActionFormSheet) — không còn cần
+    // một lớp "tên thiết bị dự phòng" trung gian nữa.
 
     // Danh sách thiết bị Tuya / camera thật đang có trong nhà — nạp cho picker chọn lựa
     // (thay vì bắt chủ nhà gõ tay tên thiết bị, dễ gõ sai khiến kịch bản gãy).
@@ -154,13 +147,9 @@ class HouseManagerViewModel @Inject constructor(
                     .toIntOrNull()?.coerceIn(0, 23) ?: 6
             }
 
-            // 4. Đọc cấu hình ánh xạ thiết bị Quản gia + nạp danh sách thiết bị/camera thật
-            // của chủ nhà để hiển thị picker chọn lựa trên Bảng cấu hình Thiết bị Răn đe.
+            // 4. Nạp danh sách thiết bị/camera thật của chủ nhà (dùng cho các picker chọn lựa
+            // khi tạo bước kịch bản) + danh sách Nhóm kịch bản.
             withContext(Dispatchers.IO) {
-                _protectLightDevice.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, "đèn sân trước")
-                _protectSirenDevice.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "còi báo động")
-                _protectCameraIds.value = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, "cam_01")
-
                 // ✅ Đọc 1 lần từ HOUSE_MANAGER_WORKFLOWS để populate danh sách đầy đủ (UI đa nhóm).
                 val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]")
                 val groups = workflowGroupsFromJson(workflowsJson)
@@ -220,17 +209,8 @@ class HouseManagerViewModel @Inject constructor(
         }
     }
 
-    // Lưu ánh xạ thiết bị khi chủ nhà chọn lại trên picker của Bảng cấu hình Thiết bị Răn đe.
-    fun saveDeviceMappings(lightDevice: String, sirenDevice: String, cameraIds: List<String>) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, lightDevice)
-                configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, sirenDevice)
-                configProvider.set(AppConfigDefaults.HOUSE_MANAGER_PROTECT_CAMERAS, cameraIds.joinToString(","))
-            }
-            performRefresh()
-        }
-    }
+    // ⚠️ ĐÃ XÓA: saveDeviceMappings(...) — chỉ phục vụ Bảng cấu hình Thiết bị Răn đe cũ, nay
+    // không còn thiết bị dự phòng nào để lưu (xem ghi chú ở khai báo state phía trên).
 
     // ✅ MỚI: Lưu khung giờ ngủ khi chủ nhà chỉnh trên SleepScheduleCard.
     fun saveSleepSchedule(startHour: Int, endHour: Int) {
@@ -298,9 +278,11 @@ class HouseManagerViewModel @Inject constructor(
         })
     }
 
-    fun triggerPanicSequence(cameraId: String) {
+    // ✅ MỚI: Chạy thủ công 1 Nhóm kịch bản cụ thể ngay lập tức — thay cho nút Panic độc lập cũ.
+    // Gọi từ nút "Chạy thủ công" ngay trên từng WorkflowGroupCard.
+    fun triggerWorkflowGroupManually(groupId: String) {
         viewModelScope.launch {
-            houseManagerSkill.triggerProtectHouseSequence(cameraId)
+            houseManagerSkill.triggerWorkflowGroupManually(groupId)
             _activePlans.value = houseManagerSkill.getActivePlans()
         }
     }

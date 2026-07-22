@@ -62,7 +62,10 @@ interface HouseManagerSkill : Plugin {
     ): ChatDecision
 
     suspend fun executePlan(goalName: String, steps: List<ActionStep>)
-    suspend fun triggerProtectHouseSequence(cameraId: String)
+    // ⚠️ ĐÃ THAY: triggerProtectHouseSequence(cameraId) — nút Panic độc lập cũ, dùng cấu hình
+    // rời rạc riêng (đèn/còi/camera dự phòng) tách biệt khỏi các Nhóm kịch bản. Nay MỌI hành
+    // động thủ công đều chạy qua đúng 1 Nhóm kịch bản chủ nhà tự quản lý trên màn hình.
+    suspend fun triggerWorkflowGroupManually(groupId: String)
     fun getActivePlans(): List<PlanStatus>
 
     suspend fun checkPolicy(pluginId: String, action: String, params: Map<String, Any>): PolicyResult

@@ -420,11 +420,10 @@ class HouseManagerSkillImpl @Inject constructor(
         evaluateSituation()
 
         // 2. 🧠 BỘ ĐIỀU PHỐI ĐA NHÓM KỊCH BẢN TỰ DO (Dynamic Group-Based Orchestrator)
-        // ⚠️ THAY ĐỔI KIẾN TRÚC: nhánh camera/tuya hardcode cũ (kèm fix targetCamId Rủi ro 2)
-        // đã được GỠ BỎ hoàn toàn. Từ giờ, việc kích hoạt tự động CHỈ đến từ các Nhóm kịch bản
-        // (HOUSE_MANAGER_WORKFLOWS) — HOUSE_MANAGER_PROTECT_ACTIONS/light/siren/camera_ids cũ
-        // không còn tự kích hoạt được nữa, chỉ còn dùng cho nút Panic thủ công
-        // (triggerProtectHouseSequence gọi trực tiếp từ UI).
+        // ⚠️ THAY ĐỔI KIẾN TRÚC: nhánh camera/tuya hardcode cũ đã được GỠ BỎ hoàn toàn. Từ giờ,
+        // việc kích hoạt tự động CHỈ đến từ các Nhóm kịch bản (HOUSE_MANAGER_WORKFLOWS). Việc
+        // chạy THỦ CÔNG cũng đi qua đúng cùng 1 nhóm kịch bản này (xem triggerWorkflowGroupManually
+        // bên dưới) — không còn nút Panic độc lập dùng cấu hình rời rạc riêng nữa.
         val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]").trim()
         val groups = workflowGroupsFromJson(workflowsJson)
 
@@ -445,55 +444,83 @@ class HouseManagerSkillImpl @Inject constructor(
 
                 if (isTriggerMatched) {
                     logger.i("HouseManager", "🔥 Nhóm kịch bản '${group.label}' được kích hoạt từ ngòi nổ: $source.$sourceId.$key=$value")
-
-                    // Quy đổi động các tham số bước chạy (ví dụ: __CAMERA_ID__ -> ID camera/nguồn báo động thật)
-                    val compiledSteps = group.steps.map { cfg ->
-                        var delayVal = 0L
-                        var preconditionVal: String? = null
-
-                        if (cfg.pluginId == "house_manager" && cfg.action == "delay") {
-                            delayVal = cfg.params["delayMs"]?.toLongOrNull() ?: 0L
-                        }
-                        if (cfg.pluginId == "house_manager" && cfg.action == "check_precondition") {
-                            val rawPrecondition = cfg.params["precondition"]
-                            preconditionVal = rawPrecondition ?: run {
-                                val pSource = cfg.params["source"] ?: ""
-                                val pAttr = cfg.params["attribute"] ?: "state"
-                                val pExpected = cfg.params["expected"] ?: ""
-                                // ✅ Giữ nguyên fix "chat" -> chatSession đã áp dụng trước đó (không để
-                                // rơi về nhánh "camera" rỗng như bản gốc tài liệu đề xuất lần này).
-                                val pSourceId = when (pSource) {
-                                    "tuya" -> cfg.params["device"] ?: ""
-                                    "camera" -> cfg.params["camera"] ?: ""
-                                    "chat" -> cfg.params["chatSession"] ?: ""
-                                    else -> ""
-                                }
-                                if (pSource.isNotEmpty() && pSourceId.isNotEmpty()) "$pSource.$pSourceId.$pAttr=$pExpected" else null
-                            }
-                        }
-
-                        val updatedParams = cfg.params.mapValues { (_, v) ->
-                            val resolvedValue = if (v == "__CAMERA_ID__") sourceId else v
-                            when {
-                                resolvedValue.equals("true", ignoreCase = true) -> true
-                                resolvedValue.equals("false", ignoreCase = true) -> false
-                                resolvedValue.toLongOrNull() != null -> resolvedValue.toLong()
-                                else -> resolvedValue
-                            }
-                        }
-
-                        ActionStep(
-                            pluginId = cfg.pluginId,
-                            action = cfg.action,
-                            params = updatedParams,
-                            delayMs = delayVal,
-                            precondition = preconditionVal
-                        )
-                    }
-
-                    executePlan(group.label, compiledSteps)
+                    executePlan(group.label, compileGroupSteps(group, sourceId))
                 }
             }
+        }
+    }
+
+    // ✅ MỚI: Chạy thủ công MỘT nhóm kịch bản cụ thể ngay lập tức — thay cho nút "Kích Hoạt Bảo
+    // Vệ Liên Hoàn Khẩn Cấp" độc lập cũ (vốn dùng 1 cấu hình rời rạc riêng biệt, tách khỏi các
+    // Nhóm kịch bản mà chủ nhà thực sự thấy và quản lý trên màn hình -> dễ gây hiểu lầm là 2 hệ
+    // thống khác nhau). Nay MỌI hành động — tự động lẫn thủ công — đều chạy qua đúng 1 nhóm kịch
+    // bản chủ nhà đã tự tạo, không phân biệt nguồn kích hoạt.
+    override suspend fun triggerWorkflowGroupManually(groupId: String) {
+        val workflowsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]").trim()
+        val groups = workflowGroupsFromJson(workflowsJson)
+        val group = groups.find { it.id == groupId }
+        if (group == null) {
+            logger.w("HouseManager", "⚠️ Không tìm thấy nhóm kịch bản '$groupId' để chạy thủ công")
+            return
+        }
+
+        // Bấm "Chạy thủ công" là hành động rõ ràng của chủ nhà -> vẫn chạy dù nhóm đang tắt
+        // (enabled=false chỉ chặn kích hoạt TỰ ĐỘNG theo ngòi nổ, không chặn thao tác thủ công).
+        val condition = WorldStateHelper.parseCondition(group.triggerSource)
+        // Không có sự kiện thật để lấy sourceId cho __CAMERA_ID__ -> dùng chính sourceId khai báo
+        // trong ngòi nổ của nhóm (vd camera đã chọn khi tạo nhóm); "*" (áp dụng mọi nguồn) thì để trống.
+        val resolvedSourceId = condition?.sourceId?.takeIf { it != "*" } ?: ""
+
+        logger.i("HouseManager", "🖐️ Chạy thủ công nhóm kịch bản '${group.label}'")
+        executePlan(group.label, compileGroupSteps(group, resolvedSourceId))
+    }
+
+    // Quy đổi động các tham số bước chạy (ví dụ: __CAMERA_ID__ -> ID camera/nguồn báo động thật)
+    // của 1 Nhóm kịch bản thành danh sách ActionStep mà executePlan() hiểu được. Dùng chung cho
+    // cả đường kích hoạt tự động (onWorldStateChanged) lẫn đường chạy thủ công theo nhóm.
+    private fun compileGroupSteps(group: WorkflowGroup, sourceIdForPlaceholder: String): List<ActionStep> {
+        return group.steps.map { cfg ->
+            var delayVal = 0L
+            var preconditionVal: String? = null
+
+            if (cfg.pluginId == "house_manager" && cfg.action == "delay") {
+                delayVal = cfg.params["delayMs"]?.toLongOrNull() ?: 0L
+            }
+            if (cfg.pluginId == "house_manager" && cfg.action == "check_precondition") {
+                val rawPrecondition = cfg.params["precondition"]
+                preconditionVal = rawPrecondition ?: run {
+                    val pSource = cfg.params["source"] ?: ""
+                    val pAttr = cfg.params["attribute"] ?: "state"
+                    val pExpected = cfg.params["expected"] ?: ""
+                    // ✅ Giữ nguyên fix "chat" -> chatSession đã áp dụng trước đó (không để
+                    // rơi về nhánh "camera" rỗng như bản gốc tài liệu đề xuất lần này).
+                    val pSourceId = when (pSource) {
+                        "tuya" -> cfg.params["device"] ?: ""
+                        "camera" -> cfg.params["camera"] ?: ""
+                        "chat" -> cfg.params["chatSession"] ?: ""
+                        else -> ""
+                    }
+                    if (pSource.isNotEmpty() && pSourceId.isNotEmpty()) "$pSource.$pSourceId.$pAttr=$pExpected" else null
+                }
+            }
+
+            val updatedParams = cfg.params.mapValues { (_, v) ->
+                val resolvedValue = if (v == "__CAMERA_ID__") sourceIdForPlaceholder else v
+                when {
+                    resolvedValue.equals("true", ignoreCase = true) -> true
+                    resolvedValue.equals("false", ignoreCase = true) -> false
+                    resolvedValue.toLongOrNull() != null -> resolvedValue.toLong()
+                    else -> resolvedValue
+                }
+            }
+
+            ActionStep(
+                pluginId = cfg.pluginId,
+                action = cfg.action,
+                params = updatedParams,
+                delayMs = delayVal,
+                precondition = preconditionVal
+            )
         }
     }
 
@@ -794,128 +821,12 @@ override suspend fun sendDefaultCameraAlerts(
         }
     }
 
-    // 🧠 GIAI ĐOẠN 4 (NÂNG CẤP PLANNER TỰ DO):
-    // Biên dịch danh sách AlertActionConfig tự chọn của chủ nhà (được thêm qua
-    // AlertActionFormSheet trên UI) thành các bước ActionStep chạy trên Planner.
-    // Nếu chủ nhà chưa cấu hình gì (JSON rỗng "[]") thì fallback về đúng kịch bản
-    // 5 bước mặc định cũ để bảo đảm khả năng tương thích ngược.
-    override suspend fun triggerProtectHouseSequence(cameraId: String) {
-        val actionsJson = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_ACTIONS, "[]").trim()
-
-        
-      
-      
-      
-      
-      // Đọc tên thiết bị cấu hình dự phòng — đưa giá trị mặc định về rỗng để đồng bộ housekeeping sạch
-        val lightDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_LIGHT, "").trim()
-        val sirenDevice = configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_PROTECT_SIREN, "").trim()
-        
-        val alertActions = if (actionsJson == "[]" || actionsJson.isBlank()) {
-            buildDefaultProtectActions(lightDevice, sirenDevice, cameraId)
-        } else {
-            alertActionsFromJson(actionsJson)
-        }
-
-        // Ánh xạ 1-1 danh sách AlertActionConfig tự do thành ActionStep chạy trên Planner —
-        // trích riêng delayMs/precondition từ 2 hành động đặc biệt "delay"/"check_precondition"
-        // của chính Quản gia, còn lại chạy như plugin action bình thường.
-        val steps = alertActions.map { cfg ->
-            var delayVal = 0L
-            var preconditionVal: String? = null
-
-            if (cfg.pluginId == "house_manager" && cfg.action == "delay") {
-                delayVal = cfg.params["delayMs"]?.toLongOrNull() ?: 0L
-            }
-            if (cfg.pluginId == "house_manager" && cfg.action == "check_precondition") {
-                // ✅ ĐÃ SỬA: Ưu tiên chuỗi precondition gõ tay cũ nếu có (tương thích ngược với
-                // kịch bản 5 bước mặc định), nếu không thì tự biên dịch từ 5 tham số người dùng
-                // chọn trên Picker trực quan (source/device|camera/attribute/expected) thành
-                // đúng định dạng "source.sourceId.attr=expected" mà executePlan() hiểu được.
-                val rawPrecondition = cfg.params["precondition"]
-                preconditionVal = rawPrecondition ?: run {
-                    val source = cfg.params["source"] ?: ""
-                    val attr = cfg.params["attribute"] ?: "state"
-                    val expected = cfg.params["expected"] ?: ""
-                    // ✅ ĐÃ SỬA: đọc đúng thớt chat được chọn thay vì luôn rơi vào "camera" (rỗng).
-                    val sourceId = when (source) {
-                        "tuya" -> cfg.params["device"] ?: ""
-                        "camera" -> cfg.params["camera"] ?: ""
-                        "chat" -> cfg.params["chatSession"] ?: ""
-                        else -> ""
-                    }
-                    if (source.isNotEmpty() && sourceId.isNotEmpty()) "$source.$sourceId.$attr=$expected" else null
-                }
-            }
-
-            // Quy đổi động placeholder (vd: __CAMERA_ID__ -> mã camera thật của sự kiện hiện tại)
-            // và ép kiểu về Boolean/Long đúng như IntentExecutor mong đợi trong ActionStep.params.
-            val updatedParams: Map<String, Any> = cfg.params.mapValues { (_, value) ->
-                val resolvedValue = if (value == "__CAMERA_ID__") cameraId else value
-                when {
-                    resolvedValue.equals("true", ignoreCase = true) -> true
-                    resolvedValue.equals("false", ignoreCase = true) -> false
-                    resolvedValue.toLongOrNull() != null -> resolvedValue.toLong()
-                    else -> resolvedValue
-                }
-            }
-
-            ActionStep(
-                pluginId = cfg.pluginId,
-                action = cfg.action,
-                params = updatedParams,
-                delayMs = delayVal,
-                precondition = preconditionVal
-            )
-        }
-
-        val cameraName = database.cameraDao().getCameraById(cameraId)?.customername ?: cameraId
-        executePlan("Kịch bản liên hoàn bảo vệ an ninh cho camera $cameraName", steps)
-    }
-
-    // Kịch bản 5 bước mặc định cũ, được dựng lại thành AlertActionConfig để dùng làm fallback
-    // an toàn khi chủ nhà chưa tự cấu hình kịch bản tự do nào trên UI.
-    
-  
-  
-  // Bộ sinh kịch bản mặc định tự động lọc bỏ các thiết bị chưa được cấu hình (tránh gửi lệnh rỗng)
-    private fun buildDefaultProtectActions(light: String, siren: String, cameraId: String): List<AlertActionConfig> {
-        val list = mutableListOf<AlertActionConfig>()
-        
-        // 1. Chỉ bật đèn dọa trộm nếu chủ nhà đã cấu hình đèn thật
-        if (light.isNotBlank()) {
-            list.add(AlertActionConfig("smart_switch", "set", mapOf("device" to light, "state" to "true")))
-        }
-        
-        // 2. Thông báo khẩn cấp mặc định của Quản gia
-        list.add(
-            AlertActionConfig(
-                pluginId = "notification", 
-                action = "send", 
-                params = mapOf("title" to "🚨 PHÁT HIỆN NGHI VẤN AN NINH", "message" to "Quản gia đã phát hiện bất thường và đang kích hoạt các kịch bản an toàn.")
-            )
-        )
-        
-        // 3. Tiến trình đếm ngược Planner quét camera lại
-        list.add(AlertActionConfig("house_manager", "delay", mapOf("delayMs" to "30000")))
-        list.add(AlertActionConfig("camera", "scan", mapOf("cameraId" to cameraId, "force" to "true")))
-        list.add(AlertActionConfig("house_manager", "delay", mapOf("delayMs" to "5000")))
-        list.add(AlertActionConfig("house_manager", "check_precondition", mapOf("precondition" to "camera.$cameraId.state=suspicious")))
-        
-        // 4. Chỉ bật/tắt còi báo động nếu chủ nhà đã cấu hình còi thật
-        if (siren.isNotBlank()) {
-            list.add(AlertActionConfig("smart_switch", "set", mapOf("device" to siren, "state" to "true")))
-            list.add(AlertActionConfig("house_manager", "delay", mapOf("delayMs" to "60000")))
-            list.add(AlertActionConfig("smart_switch", "set", mapOf("device" to siren, "state" to "false")))
-        }
-        
-        return list
-    }
-
-
-
-  
-
+    // ⚠️ ĐÃ XÓA: triggerProtectHouseSequence(cameraId)/buildDefaultProtectActions() — đây là cơ
+    // chế cho nút "Kích Hoạt Bảo Vệ Liên Hoàn Khẩn Cấp" độc lập cũ, dùng 1 cấu hình rời rạc riêng
+    // (HOUSE_MANAGER_PROTECT_ACTIONS + đèn/còi/camera dự phòng) hoàn toàn tách biệt khỏi các Nhóm
+    // kịch bản mà chủ nhà thực sự thấy và quản lý trên màn hình — dễ gây hiểu lầm là 2 hệ thống
+    // khác nhau. Đã thay bằng triggerWorkflowGroupManually(groupId) ở trên: nút "Chạy thủ công"
+    // giờ nằm ngay trên từng Nhóm kịch bản, chạy đúng nhóm đó — không còn nút độc lập nào nữa.
     override suspend fun mineUserHabits() = withContext(Dispatchers.IO) {
         logger.i("HouseManager", "🔄 Quản gia bắt đầu tiến trình tự học thói quen người dùng từ nhật ký 7 ngày...")
         

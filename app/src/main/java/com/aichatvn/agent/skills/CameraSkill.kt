@@ -947,13 +947,28 @@ class CameraSkill @Inject constructor(
             // ✅ MỚI: đọc mảng "objects" — dữ liệu AI đã trả sẵn trong MỌI lần gọi analyzeImage()
             // (xem STRUCTURED_VISION_SUFFIX trong GroqClientTool) nhưng trước đây bị bỏ qua.
             // Chuẩn hóa lowercase + trim vì so khớp sau này (buildMemoryContext) làm trên chữ thường.
-            val objectsRaw = json.optJSONArray("objects")
-            val objects = if (objectsRaw != null) {
-                (0 until objectsRaw.length())
-                    .mapNotNull { i -> objectsRaw.optString(i)?.trim()?.lowercase() }
-                    .filter { it.isNotBlank() }
-                    .distinct()
-            } else emptyList()
+
+
+            
+            // Thay thế đoạn bóc tách objectsRaw trong hàm parseVisionResult thuộc CameraSkill.kt:
+
+val objectsRaw = json.optJSONArray("objects")
+val objects = if (objectsRaw != null) {
+    (0 until objectsRaw.length()).flatMap { i ->
+        val obj = objectsRaw.optJSONObject(i)
+        if (obj != null) {
+            val type = obj.optString("type", "").trim().lowercase()
+            val name = obj.optString("name", "").trim().lowercase()
+            // Thu thập cả danh mục phổ quát và tên gọi cụ thể để làm giàu từ khóa tìm kiếm [14]
+            listOf(type, name).filter { it.isNotEmpty() }
+        } else {
+            emptyList()
+        }
+    }.distinct()
+} else emptyList()
+
+
+            
             VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, objects = objects, rawJson = json)
         } catch (e: Exception) {
             // Fallback trả về văn bản đã dọn sạch <think> nếu AI không xuất ra JSON chuẩn
@@ -1034,120 +1049,109 @@ class CameraSkill @Inject constructor(
                         "Không thể phân tích (AI timeout)"
                     }
 
-                    val visionParsed = parseVisionResult(aiResult)
-                    aiComment = visionParsed.displayComment
+
                     
-                    val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
-                        camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
-                    } else {
-                        defaultPositiveKw()
-                    }
-                    val negativeKeywords = if (camera.aiNegativeKeywords.isNotEmpty()) {
-                        camera.aiNegativeKeywords.split(",").map { it.trim().lowercase() }
-                    } else {
-                        defaultNegativeKw()
-                    }
 
-                    val textClean = aiComment.lowercase()
-                    val hasPositive = positiveKeywords.any { textClean.contains(it) }
-                    val hasNegative = negativeKeywords.any { textClean.contains(it) }
-                    val keywordMatch = hasPositive && !hasNegative
 
-                    // ✅ ĐÃ SỬA: Trước đây hễ AI trả JSON có cấu trúc (structuredSuspicious != null,
-                    // xảy ra ở HẦU HẾT mọi lần gọi vì GroqClientTool luôn thêm STRUCTURED_VISION_SUFFIX)
-                    // thì từ khoá cảnh báo (aiPositiveKeywords/aiNegativeKeywords) do chủ nhà tự cấu
-                    // hình BỊ BỎ QUA HOÀN TOÀN — khiến chuỗi hành động liên hoàn không bao giờ khớp
-                    // với những gì chủ nhà đã cấu hình. Nay: nếu chủ nhà đã tự đặt từ khoá riêng
-                    // (khác mặc định hệ thống), tôn trọng kết quả khớp từ khoá — kết hợp OR với
-                    // structuredSuspicious để không bỏ sót khi AI tự tin xác nhận "suspicious".
-                    val hasCustomKeywords = camera.aiPositiveKeywords.isNotEmpty() || camera.aiNegativeKeywords.isNotEmpty()
-                    isSuspicious = when {
-                        hasCustomKeywords -> keywordMatch || visionParsed.structuredSuspicious == true
-                        visionParsed.structuredSuspicious != null -> {
-                            logger.d("CameraSkill", "🧩 [Structured Vision] camera=$tid state=${visionParsed.structuredSuspicious}")
-                            visionParsed.structuredSuspicious
-                        }
-                        else -> keywordMatch
-                    }
+
                     
-                    if (isSuspicious) {
-                        state.realEvents++
-                        state.cooldownUntil = now + cooldownDurationMs()
-                        
-                        val cameraDailyEvents = dailyEvents.getOrPut(tid) { mutableListOf() }
-                        cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
-                        if (cameraDailyEvents.size > maxDailyEvents()) {
-                            cameraDailyEvents.removeAt(0)
-                        }
+                                                                        // 1. Phân tích kết quả JSON thô cơ bản từ mô hình thị giác (đã dọn <think>) [2]
+val visionParsed = parseVisionResult(aiResult)
+aiComment = visionParsed.displayComment
 
-                        // ✅ SỬA LỖI #2 & #4: Lấy thông tin cảnh báo cuối cùng từ DB TRƯỚC để kiểm tra xem có gộp biến cố liên tiếp không
-                        val latestAlert = withContext(Dispatchers.IO) {
-                            database.alertDao().getLatestAlertForCamera(tid)
-                        }
-                        val mergeWindowMs = alertMergeWindowMs()
-                        val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
-                        // ✅ SỬA: trước đây chỉ so sánh mốc thời gian, nên nếu giữa 2 lần suspicious
-                        // có 1 lần AI quét thấy "bình thường" (vd kẻ lạ #1 rời đi rồi kẻ lạ #2 xuất
-                        // hiện, cùng nằm trong mergeWindowMs tính từ alert #1), 2 sự kiện ĐỘC LẬP này
-                        // vẫn bị gộp làm 1 -> không gửi email/push mới, có nguy cơ bỏ lỡ sự kiện thật
-                        // thứ hai. Thêm điều kiện: không được có lần xác nhận "bình thường" nào xảy
-                        // ra SAU mốc alert gần nhất thì mới coi là cùng 1 chuỗi sự kiện để gộp.
-                        val hasNormalScanSinceLastAlert = latestEffectiveTime != null && state.lastNormalScanAt > latestEffectiveTime
-                        val shouldMerge = latestAlert != null &&
-                            latestAlert.isSuspicious == 1 &&
-                            latestEffectiveTime != null &&
-                            (now - latestEffectiveTime) <= mergeWindowMs &&
-                            !hasNormalScanSinceLastAlert
+// Lấy danh sách từ khóa cấu hình của camera
+val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
+    camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
+} else {
+    defaultPositiveKw()
+}
+val negativeKeywords = if (camera.aiNegativeKeywords.isNotEmpty()) {
+    camera.aiNegativeKeywords.split(",").map { it.trim().lowercase() }
+} else {
+    defaultNegativeKw()
+}
 
-                        // ✅ SỬA LỖI #3: ID cảnh báo và thông báo đồng bộ thống nhất
-                        val activeAlertId = if (shouldMerge && latestAlert != null) {
-                            latestAlert.id // Tái sử dụng ID cũ khi gộp
-                        } else {
-                            UUID.randomUUID().toString() // Tạo mới hoàn toàn nếu là biến cố độc lập
-                        }
+// 2. Kiểm tra từ khóa trực tiếp trên TOÀN BỘ nội dung thô Groq trả về (đã dọn <think>) để không bỏ sót từ nào [14]
+val rawTextClean = aiResult.replace(Regex("<think>[\\s\\S]*?</think>"), "").lowercase().trim()
+val hasPositive = positiveKeywords.any { rawTextClean.contains(it) }
+val hasNegative = negativeKeywords.any { rawTextClean.contains(it) }
+val keywordMatch = hasPositive && !hasNegative
 
-                       
+// 3. Đánh giá trạng thái chung cực kỳ đơn giản: có từ khóa HOẶC AI tự đánh giá là suspicious [14]
+isSuspicious = keywordMatch || visionParsed.structuredSuspicious == true
+
+// 🌟 LIÊN KẾT NGƯỢC (SYNC BACK): Ghi đè lại thuộc tính "state" trong JSON thô khớp theo quyết định cuối cùng [12]
+val finalStateJson = visionParsed.rawJson?.apply {
+    put("state", if (isSuspicious) "suspicious" else "normal")
+}?.toString()
+
+if (isSuspicious) {
+    state.realEvents++
+    state.cooldownUntil = now + cooldownDurationMs()
+    
+    val cameraDailyEvents = dailyEvents.getOrPut(tid) { mutableListOf() }
+    cameraDailyEvents.add(DailyEvent(now, aiComment, optimizedBytes))
+    if (cameraDailyEvents.size > maxDailyEvents()) {
+        cameraDailyEvents.removeAt(0)
+    }
+
+    val latestAlert = withContext(Dispatchers.IO) {
+        database.alertDao().getLatestAlertForCamera(tid)
+    }
+    val mergeWindowMs = alertMergeWindowMs()
+    val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
+    val hasNormalScanSinceLastAlert = latestEffectiveTime != null && state.lastNormalScanAt > latestEffectiveTime
+    val shouldMerge = latestAlert != null &&
+        latestAlert.isSuspicious == 1 &&
+        latestEffectiveTime != null &&
+        (now - latestEffectiveTime) <= mergeWindowMs &&
+        !hasNormalScanSinceLastAlert
+
+    val activeAlertId = if (shouldMerge && latestAlert != null) {
+        latestAlert.id
+    } else {
+        UUID.randomUUID().toString()
+    }
+
+    val emailSent = houseManagerProvider.get().sendDefaultCameraAlerts(
+        camera = camera,
+        aiComment = aiComment,
+        imageBytes = optimizedBytes,
+        activeAlertId = activeAlertId,
+        shouldMerge = shouldMerge
+    )
+
+    // Truyền trực tiếp chuỗi JSON đã được ghi đè đồng bộ vào lịch sử cảnh báo [12]
+    saveAlertToHistory(
+        alertId = activeAlertId,
+        camera = camera,
+        aiComment = aiComment,
+        imageBytes = optimizedBytes,
+        diff = currentDiff,
+        deltaTrigger = deltaTrigger,
+        absDiffTrigger = absDiffTrigger,
+        emailSent = emailSent,
+        scheduleId = scheduleId,
+        aiStateJson = finalStateJson, // <-- Chuỗi JSON đồng bộ trạng thái thật
+        objects = visionParsed.objects,
+        shouldMerge = shouldMerge,
+        existingAlert = latestAlert
+    )
+    
+    if (!shouldMerge) {
+        executeAlertActions(camera, aiComment, overrideAlertActions) 
+    }
+    logger.i("CameraSkill", "🚨 ALERT handled for camera $tid (merged=$shouldMerge, id=$activeAlertId): $aiComment")
+    
+} else {
+    // Nhánh xử lý trạng thái bình thường giữ nguyên...
+
+
+
+
+
+
                       
-                      
-                // 🧠 ỦY QUYỀN GỬI THÔNG BÁO VÀ EMAIL MẶC ĐỊNH SANG CHO QUẢN GIA
-                        val emailSent = houseManagerProvider.get().sendDefaultCameraAlerts(
-                            camera = camera,
-                            aiComment = aiComment,
-                            imageBytes = optimizedBytes,
-                            activeAlertId = activeAlertId,
-                            shouldMerge = shouldMerge
-                        )
-
-                        
-                        
-                        // Lưu cơ sở dữ liệu lịch sử cảnh báo
-                        saveAlertToHistory(
-                            alertId = activeAlertId,
-                            camera = camera,
-                            aiComment = aiComment,
-                            imageBytes = optimizedBytes,
-                            diff = currentDiff,
-                            deltaTrigger = deltaTrigger,
-                            absDiffTrigger = absDiffTrigger,
-                            emailSent = emailSent,
-                            scheduleId = scheduleId,
-                            aiStateJson = visionParsed.rawJson?.toString(),
-                            objects = visionParsed.objects,
-                            shouldMerge = shouldMerge, // Truyền cờ xác định trạng thái gộp
-                            existingAlert = latestAlert
-                        )
-                        
-                        // Chỉ kích hoạt alertActions chạy kịch bản vật lý khi KHÔNG gộp sự kiện (Chống lặp lại rơ-le)
-                        if (!shouldMerge) {
-                            executeAlertActions(camera, aiComment, overrideAlertActions) 
-                        }
-                        logger.i("CameraSkill", "🚨 ALERT handled for camera $tid (merged=$shouldMerge, id=$activeAlertId): $aiComment")
-                        
-                    } else {
-                        // ✅ MỚI: đánh dấu thời điểm AI vừa xác nhận "bình thường" — dùng để cắt
-                        // chuỗi gộp cảnh báo ở nhánh isSuspicious phía trên (xem shouldMerge).
-
-
                       
                         // Đánh dấu thời điểm quét bình thường
                     state.lastNormalScanAt = now
@@ -1704,12 +1708,24 @@ class CameraSkill @Inject constructor(
                         // kể cả khi objects chỉ có "cat"/"car" — gây sai lệch dữ liệu lịch sử (nhật ký
                         // ghi "phát hiện mèo" nhưng eventType lại là person_detected). Nay suy ra động
                         // theo đúng nhãn đối tượng AI thực sự phát hiện được.
-                        val derivedEventType = when {
-                            objects.any { it in listOf("person", "nguoi", "người", "trộm", "thief", "human") } -> "person_detected"
-                            objects.any { it in listOf("car", "motorbike", "vehicle", "xe", "oto", "truck") } -> "vehicle_detected"
-                            objects.any { it in listOf("dog", "cat", "animal", "chó", "mèo", "con vật") } -> "animal_detected"
-                            else -> "motion_detected" // Mặc định là phát hiện biến động chung
-                        }
+                        
+                      
+                      
+                      
+                      // Cập nhật đoạn xác định derivedEventType trong hàm saveAlertToHistory thuộc CameraSkill.kt:
+
+val derivedEventType = when {
+    objects.any { it in listOf("người", "nguoi", "person", "human", "kẻ đột nhập") } -> "person_detected"
+    objects.any { it in listOf("động vật", "dong vat", "animal", "chó", "mèo", "con vật", "dog", "cat") } -> "animal_detected"
+    // Xe cộ lúc này thuộc nhóm đồ vật cụ thể, chúng ta vẫn bắt chính xác dựa trên tên gọi [14]
+    objects.any { it in listOf("xe máy", "ô tô", "xe đạp", "xe", "car", "motorbike", "vehicle") } -> "vehicle_detected"
+    else -> "motion_detected"
+}
+
+
+
+
+                      
                         database.eventLogDao().insertLog(
                             com.aichatvn.agent.data.model.EventLogEntity(
                                 id = java.util.UUID.randomUUID().toString(),

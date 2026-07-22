@@ -49,22 +49,10 @@ object AppConfigDefaults {
     const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
 
     // ───────────────────────── HOUSE MANAGER ─────────────────
-    // ✅ MỚI: Loại bỏ hardcode tên thiết bị/ID camera trong kịch bản Quản gia — chủ nhà tự
-    // ánh xạ thiết bị Tuya/camera thật của họ trực tiếp trên HouseManagerScreen (chọn bằng picker).
-    const val HOUSE_MANAGER_PROTECT_LIGHT     = "house_manager.protect_house_light_device"
-    const val HOUSE_MANAGER_PROTECT_SIREN     = "house_manager.protect_house_siren_device"
-    const val HOUSE_MANAGER_PROTECT_CAMERAS   = "house_manager.protect_house_camera_ids"
-    // ✅ MỚI: Danh sách hành động tự do (No-Code Planner) do chủ nhà tự xây bằng UI, lưu JSON.
-    // Để trống "[]" = kích hoạt fallback kịch bản 5 bước mặc định an toàn.
-    const val HOUSE_MANAGER_PROTECT_ACTIONS   = "house_manager.protect_house_actions"
-    // ✅ MỚI: Danh sách Nhóm kịch bản (Workflow Groups) — mỗi nhóm tự khai báo triggerSource
-    // riêng (vd: "camera.cam_01.state=suspicious", "chat.*.urgency=high"), cho phép Quản gia
-    // phản ứng công bằng với MỌI nguồn sự kiện (camera/tuya/chat/email/notification/...),
-    // không chỉ riêng camera như HOUSE_MANAGER_PROTECT_ACTIONS cũ.
-    // ⚠️ Cơ chế này chạy SONG SONG, không thay thế HOUSE_MANAGER_PROTECT_ACTIONS: UI No-Code
-    // Planner hiện tại (AlertActionFormSheet/CustomPlannerCard) vẫn ghi vào PROTECT_ACTIONS
-    // (chỉ chạy qua nút Panic thủ công + fallback camera cũ) — WORKFLOWS hiện chưa có UI riêng,
-    // phải sửa JSON tay cho tới khi có màn hình quản lý Nhóm kịch bản.
+    // ⚠️ ĐÃ XÓA: HOUSE_MANAGER_PROTECT_LIGHT/SIREN/CAMERAS/ACTIONS — cấu hình rời rạc riêng cho
+    // nút Panic độc lập cũ (đèn/còi/camera dự phòng + kịch bản 5-bước fallback). Nút Panic đã
+    // được thay bằng "Chạy thủ công" ngay trên từng Nhóm kịch bản — MỌI kích hoạt (tự động lẫn
+    // thủ công) giờ đọc chung 1 nguồn duy nhất: HOUSE_MANAGER_WORKFLOWS bên dưới.
     const val HOUSE_MANAGER_WORKFLOWS         = "house_manager.workflows"
     // ✅ MỚI: Khung giờ "Đang ngủ / Ban đêm" do chủ nhà tự chỉnh trên HouseManagerScreen —
     // thay cho hardcode cứng "hour >= 22 || hour < 6" trong isNightTime() trước đây.
@@ -315,40 +303,9 @@ object AppConfigDefaults {
         ),
 
         // ── HOUSE MANAGER ──
-        // Giá trị mặc định trùng với hành vi cứng cũ (an toàn khi nâng cấp lần đầu, chủ nhà
-        // chưa kịp cấu hình gì thì kịch bản vẫn chạy y như trước).
-        AppConfigEntity(
-            key = HOUSE_MANAGER_PROTECT_LIGHT,
-            value = "",
-            type = "string",
-            pluginId = "house_manager",
-            label = "Đèn răn đe Quản gia",
-            description = "Tên thiết bị đèn (Tuya) sẽ tự động bật khi Quản gia kích hoạt kịch bản bảo vệ liên hoàn."
-        ),
-        AppConfigEntity(
-            key = HOUSE_MANAGER_PROTECT_SIREN,
-            value = "",
-            type = "string",
-            pluginId = "house_manager",
-            label = "Còi báo động Quản gia",
-            description = "Tên thiết bị còi hú (Tuya) sẽ tự động bật khi trộm cố tình ở lại sau 30 giây răn đe."
-        ),
-        AppConfigEntity(
-            key = HOUSE_MANAGER_PROTECT_CAMERAS,
-            value = "",
-            type = "string",
-            pluginId = "house_manager",
-            label = "ID các Camera kích hoạt kịch bản",
-            description = "Danh sách ID camera (cách nhau bởi dấu phẩy) sẽ kích hoạt kịch bản liên hoàn khi có trộm. Để trống = áp dụng cho tất cả camera."
-        ),
-        AppConfigEntity(
-            key = HOUSE_MANAGER_PROTECT_ACTIONS,
-            value = "[]",
-            type = "string",
-            pluginId = "house_manager",
-            label = "Chuỗi kịch bản răn đe Quản gia",
-            description = "JSON chứa danh sách các bước hành động tự do do người dùng cấu hình khi có trộm. Để trống = dùng kịch bản 5 bước mặc định."
-        ),
+        // ⚠️ ĐÃ XÓA seed của HOUSE_MANAGER_PROTECT_LIGHT/SIREN/CAMERAS/ACTIONS — cùng lý do đã
+        // xóa khai báo const ở trên. Nhóm "wf_security" seed sẵn bên dưới đóng vai trò kịch bản
+        // bảo vệ mặc định (tương đương 5-bước cũ), luôn có sẵn nút "Chạy thủ công" trên UI.
         AppConfigEntity(
             key = HOUSE_MANAGER_WORKFLOWS,
             value = """

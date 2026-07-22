@@ -49,9 +49,8 @@ fun HouseManagerScreen(
     val sleepEndHour by viewModel.sleepEndHour.collectAsState()
 
     // ✅ MỚI: Ánh xạ thiết bị Quản gia + danh sách thiết bị/camera thật để hiển thị picker
-    val protectLightDevice by viewModel.protectLightDevice.collectAsState()
-    val protectSirenDevice by viewModel.protectSirenDevice.collectAsState()
-    val protectCameraIds by viewModel.protectCameraIds.collectAsState()
+    // ⚠️ ĐÃ XÓA: protectLightDevice/protectSirenDevice/protectCameraIds — chỉ phục vụ Bảng cấu
+    // hình Thiết bị Răn đe + nút Panic độc lập cũ, cả hai đã bị gỡ (xem ghi chú bên dưới).
     val availableTuyaDevices by viewModel.availableTuyaDevices.collectAsState()
     val availableCameras by viewModel.availableCameras.collectAsState()
     // ✅ MỚI: Danh sách thớt chat khách hàng thật để nạp cho picker chatSession
@@ -162,22 +161,8 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 🧠 MỚI: Bảng cấu hình ánh xạ thiết bị răn đe (loại bỏ hoàn toàn hardcode tên thiết
-            // bị/ID camera). Chủ nhà CHỌN thiết bị Tuya/camera thật của họ bằng picker (dropdown +
-            // checkbox), thay vì gõ tay tên thiết bị dễ gõ sai làm gãy kịch bản. Đây là cấu hình
-            // dự phòng (fallback) khi kịch bản tự do ở trên chưa được cấu hình.
-            item {
-                DeviceMappingConfigCard(
-                    currentLight = protectLightDevice,
-                    currentSiren = protectSirenDevice,
-                    currentCameraIds = protectCameraIds,
-                    availableDevices = availableTuyaDevices,
-                    availableCameras = availableCameras,
-                    onSave = { light, siren, cameraIds ->
-                        viewModel.saveDeviceMappings(light, siren, cameraIds)
-                    }
-                )
-            }
+            // ⚠️ ĐÃ XÓA: Bảng cấu hình ánh xạ thiết bị răn đe (DeviceMappingConfigCard) — cấu hình
+            // dự phòng này chỉ phục vụ nút Panic độc lập cũ, nay không còn ai đọc tới nữa.
 
             // 4. Kích hoạt Học máy thủ công (Manual Habit Mining)
             item {
@@ -192,12 +177,10 @@ fun HouseManagerScreen(
                 SituationOverviewGrid(situation = situation)
             }
 
-            // 6. Thẻ kích hoạt Báo động khẩn cấp (Panic Action Button)
-            // ✅ ĐÃ SỬA: Dùng camera đầu tiên trong danh sách đã cấu hình thay vì hardcode "cam_01".
-            item {
-                val panicCameraId = protectCameraIds.split(",").map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: "cam_01"
-                PanicTriggerCard(onPanic = { viewModel.triggerPanicSequence(panicCameraId) })
-            }
+            // ⚠️ ĐÃ XÓA: Thẻ "Kích Hoạt Bảo Vệ Liên Hoàn Khẩn Cấp" (PanicTriggerCard) độc lập —
+            // đứng tách biệt khỏi các Nhóm kịch bản chủ nhà thực sự quản lý bên dưới, dễ gây hiểu
+            // lầm là 2 hệ thống khác nhau. Nút "Chạy thủ công" giờ nằm ngay trên từng
+            // WorkflowGroupCard, chạy đúng nhóm đó — xem MultiWorkflowPlannerSection bên dưới.
 
             // Tiêu đề phân khu Kịch bản nền (Planner Timeline)
             item {
@@ -422,219 +405,9 @@ fun HourStepper(
 // code chết (dead code), đồng thời cũng mắc lỗi hiển thị "Không xác định"/"null" y hệt bug đã
 // sửa bên dưới — xóa hẳn thay vì vá lỗi cho code không bao giờ chạy.
 
-// 🧠 MỚI: Bảng cấu hình ánh xạ thiết bị răn đe — chủ nhà CHỌN thiết bị Tuya/camera thật của
-
-
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DeviceMappingConfigCard(
-    currentLight: String, // Đang lưu trữ ID thật
-    currentSiren: String, // Đang lưu trữ ID thật
-    currentCameraIds: String,
-    availableDevices: List<TuyaDeviceEntity>,
-    availableCameras: List<CameraConfigEntity>,
-    onSave: (light: String, siren: String, cameraIds: List<String>) -> Unit
-) {
-    var isEditing by remember { mutableStateOf(false) }
-    var lightSelection by remember(currentLight, isEditing) { mutableStateOf(currentLight) }
-    var sirenSelection by remember(currentSiren, isEditing) { mutableStateOf(currentSiren) }
-    var selectedCameraIds by remember(currentCameraIds, isEditing) {
-        mutableStateOf(currentCameraIds.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet())
-    }
-
-    fun cameraLabel(cameraId: String): String {
-        val cam = availableCameras.firstOrNull { it.id.trim() == cameraId }
-        return cam?.customername?.takeIf { it.isNotBlank() } ?: cameraId
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Ánh xạ Thiết bị Răn đe (Planner Settings)",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleSmall,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = {
-                    if (isEditing) {
-                        lightSelection = currentLight
-                        sirenSelection = currentSiren
-                        selectedCameraIds = currentCameraIds.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-                    }
-                    isEditing = !isEditing
-                }) {
-                    Icon(
-                        imageVector = if (isEditing) Icons.Default.Close else Icons.Default.Edit,
-                        contentDescription = if (isEditing) "Hủy" else "Sửa",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-
-            if (isEditing) {
-                // Truyền ID đang chọn vào Picker
-                DevicePickerDropdown(
-                    label = "Thiết bị đèn dọa trộm",
-                    devices = availableDevices,
-                    selectedId = lightSelection,
-                    onSelected = { lightSelection = it }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                DevicePickerDropdown(
-                    label = "Thiết bị còi báo động",
-                    devices = availableDevices,
-                    selectedId = sirenSelection,
-                    onSelected = { sirenSelection = it }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Camera kích hoạt kịch bản (chọn nhiều — để trống = áp dụng tất cả)",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                if (availableCameras.isEmpty()) {
-                    Text(
-                        text = "Chưa có camera nào được đồng bộ vào hệ thống.",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                    )
-                } else {
-                    Column {
-                        availableCameras.forEach { camera ->
-                            val camId = camera.id.trim()
-                            val checked = selectedCameraIds.contains(camId)
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        selectedCameraIds = if (checked) selectedCameraIds - camId else selectedCameraIds + camId
-                                    },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = checked,
-                                    onCheckedChange = { isChecked ->
-                                        selectedCameraIds = if (isChecked) selectedCameraIds + camId else selectedCameraIds - camId
-                                    }
-                                )
-                                Text(
-                                    text = "${camera.customername.ifBlank { camId }} ($camId)",
-                                    fontSize = 13.sp
-                                )
-                            }
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        onSave(lightSelection.trim(), sirenSelection.trim(), selectedCameraIds.toList())
-                        isEditing = false
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Lưu cấu hình", fontWeight = FontWeight.Bold)
-                }
-            } else {
-                // ✅ ĐÃ SỬA: Quy đổi ID đang lưu thành tên hiển thị thân thiện khi ở chế độ xem
-                val lightFriendlyName = availableDevices.find { it.id.trim() == currentLight.trim() }?.name ?: currentLight
-                val sirenFriendlyName = availableDevices.find { it.id.trim() == currentSiren.trim() }?.name ?: currentSiren
-
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(text = "💡 Đèn kích hoạt: $lightFriendlyName", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(text = "🔊 Còi báo động: $sirenFriendlyName", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    val cameraSummary = if (currentCameraIds.isBlank()) {
-                        "Tất cả camera"
-                    } else {
-                        currentCameraIds.split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(", ") { cameraLabel(it) }
-                    }
-                    Text(text = "📷 Camera áp dụng: $cameraSummary", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-    }
-}
-
-
-
-
-
-
-// Picker chọn 1 thiết bị Tuya từ danh sách thật của chủ nhà (dropdown), thay vì gõ tay.
-
-// Picker chọn 1 thiết bị Tuya từ danh sách thật, lưu ID thật (device.id) y hệt các file khác
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DevicePickerDropdown(
-    label: String,
-    devices: List<TuyaDeviceEntity>,
-    selectedId: String, // Đổi từ selectedName sang selectedId
-    onSelected: (String) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    
-    // Tìm tên thân thiện để hiển thị lên ô nhập từ ID đang chọn
-    val selectedDevice = devices.find { it.id.trim() == selectedId.trim() }
-    val displayText = selectedDevice?.name ?: selectedId
-
-    if (devices.isEmpty()) {
-        OutlinedTextField(
-            value = selectedId,
-            onValueChange = onSelected,
-            label = { Text(label) },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(8.dp),
-            supportingText = { Text("Chưa có thiết bị nào đồng bộ — gõ tay ID thiết bị", fontSize = 10.sp) }
-        )
-        return
-    }
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        OutlinedTextField(
-            value = displayText, // Hiển thị tên thân thiện
-            onValueChange = {},
-            readOnly = true,
-            label = { Text(label) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(),
-            shape = RoundedCornerShape(8.dp)
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            devices.forEach { device ->
-                DropdownMenuItem(
-                    text = { Text(device.name) },
-                    onClick = {
-                        onSelected(device.id) // ✅ SỬA: Lưu ID thật (device.id) thay vì device.name
-                        expanded = false
-                    }
-                )
-            }
-        }
-    }
-}
-
-
-
+// ⚠️ ĐÃ XÓA: DeviceMappingConfigCard + DevicePickerDropdown — cấu hình thiết bị dự phòng
+// (đèn/còi/camera) chỉ phục vụ nút Panic độc lập cũ; nút đó đã bị gỡ, chọn thiết bị thật giờ
+// làm trực tiếp trong bước kịch bản qua VisualTriggerBuilderDialog/DeviceSelectorDropdown.
 
 @Composable
 fun HabitMiningCard(
@@ -782,25 +555,8 @@ fun InfoIndicator(
     }
 }
 
-@Composable
-fun PanicTriggerCard(onPanic: () -> Unit) {
-    Button(
-        onClick = onPanic,
-        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(vertical = 4.dp)
-        ) {
-            Icon(imageVector = Icons.Default.Warning, contentDescription = "Báo động")
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Kích Hoạt Bảo Vệ Liên Hoàn Khẩn Cấp", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-        }
-    }
-}
+// ⚠️ ĐÃ XÓA: PanicTriggerCard — nút Panic độc lập cũ. Xem WorkflowGroupCard bên dưới cho nút
+// "Chạy thủ công" mới, gắn liền với từng Nhóm kịch bản thay vì đứng tách biệt.
 
 @Composable
 fun PlanStatusCard(plan: PlanStatus) {
@@ -1012,7 +768,8 @@ fun MultiWorkflowPlannerSection(
                     onToggle = { enabled -> viewModel.toggleWorkflowGroup(group.id, enabled) },
                     onDelete = { viewModel.deleteWorkflowGroup(group.id) },
                     onAddStep = { onAddStepClick(group.id) },
-                    onRemoveStep = { index -> viewModel.removeStepFromGroup(group.id, index) }
+                    onRemoveStep = { index -> viewModel.removeStepFromGroup(group.id, index) },
+                    onRunNow = { viewModel.triggerWorkflowGroupManually(group.id) }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
             }
@@ -1028,7 +785,8 @@ fun WorkflowGroupCard(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit,
     onAddStep: () -> Unit,
-    onRemoveStep: (Int) -> Unit
+    onRemoveStep: (Int) -> Unit,
+    onRunNow: () -> Unit
 ) {
     var isExpanded by remember { mutableStateOf(false) }
 
@@ -1077,6 +835,22 @@ fun WorkflowGroupCard(
                             modifier = Modifier.size(20.dp)
                         )
                     }
+                }
+            }
+
+            // ✅ MỚI: Nút "Chạy thủ công" thay cho nút Panic độc lập cũ — chạy đúng nhóm kịch
+            // bản này ngay lập tức, bất kể ngòi nổ tự động đã xảy ra hay chưa. Chỉ hiện khi nhóm
+            // có ít nhất 1 bước, tránh chạy một kế hoạch rỗng.
+            if (group.steps.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = onRunNow,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Icon(imageVector = Icons.Default.Warning, contentDescription = "Chạy thủ công", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Chạy thủ công ngay", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
 
