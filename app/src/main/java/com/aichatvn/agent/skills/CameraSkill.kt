@@ -922,11 +922,6 @@ class CameraSkill @Inject constructor(
         // sinh khối suy luận ngầm <think>...</think> TRƯỚC khối JSON thật, làm hỏng việc cắt
         // chuỗi theo dấu ngoặc { } bên dưới (vì indexOf('{') bắt trúng dấu ngoặc bên trong khối
         // suy luận, không phải JSON thật). Dọn sạch khối này trước khi tìm JSON.
-       
-      
-      
-      
-      private fun parseVisionResult(raw: String): VisionParseResult {
         // 1. Loại bỏ khối suy luận <think>...</think> nếu có của các mô hình DeepSeek/Qwen [2]
         val cleanedRaw = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "").trim()
 
@@ -1856,4 +1851,4 @@ val derivedEventType = when {
     }
     
     override suspend fun shutdown() {}
-}}
+}
