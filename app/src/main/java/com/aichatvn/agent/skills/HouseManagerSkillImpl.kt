@@ -719,6 +719,13 @@ override suspend fun sendDefaultCameraAlerts(
         return activePlansMap.values.toList()
     }
 
+
+
+
+
+    
+
+
     override suspend fun executePlan(goalName: String, steps: List<ActionStep>) {
         val planId = "PLAN-${UUID.randomUUID().toString().take(8).uppercase()}"
         val logsList = Collections.synchronizedList(mutableListOf<String>())
@@ -740,6 +747,7 @@ override suspend fun sendDefaultCameraAlerts(
             for ((index, step) in steps.withIndex()) {
                 activePlansMap[planId] = activePlansMap[planId]!!.copy(currentStepIndex = index)
 
+                // 1. Xử lý trì hoãn (Delay) nếu có
                 if (step.delayMs > 0) {
                     val delaySec = step.delayMs / 1000
                     logger.d("HousePlanner", "[$planId] Chờ trì hoãn $delaySec giây...")
@@ -747,14 +755,11 @@ override suspend fun sendDefaultCameraAlerts(
                     delay(step.delayMs)
                 }
 
+                // 2. Kiểm duyệt điều kiện đính kèm trực tiếp trên bước (Precondition)
                 var proceed = true
                 if (!step.precondition.isNullOrBlank()) {
                     val condition = WorldStateHelper.parseCondition(step.precondition)
                     if (condition != null) {
-                        // ✅ ĐÃ SỬA: SmartSwitchSkill lưu Bản sao số (world_state) dưới ID thật
-                        // trên đám mây Tuya (vd "tuya_siren_01"), trong khi precondition của
-                        // Planner được viết bằng tên thân thiện chủ nhà đặt (vd "còi báo động").
-                        // Nếu không quy đổi, getAttribute() sẽ luôn trả về null -> bước bị bỏ qua oan.
                         val resolvedSourceId = if (condition.source == "tuya") {
                             database.tuyaDeviceDao().getDeviceByName(condition.sourceId)?.id
                                 ?: database.tuyaDeviceDao().getDeviceById(condition.sourceId)?.id
@@ -766,18 +771,25 @@ override suspend fun sendDefaultCameraAlerts(
                         val actualValue = WorldStateHelper.getAttribute(
                             database.worldStateDao(),
                             condition.source,
-                            resolvedSourceId, // Dùng ID thật đã quy đổi thay vì tên thân thiện gốc
+                            resolvedSourceId,
                             condition.attrKey
                         )
-                        proceed = actualValue == condition.expected
+                        proceed = (actualValue == condition.expected)
+                        
                         if (!proceed) {
-                            logger.w("HousePlanner", "[$planId] ⚠️ Bước ${index + 1} bị BỎ QUA do sai điều kiện thực tế (Yêu cầu: ${condition.attrKey}=${condition.expected}, Thực tế: $actualValue)")
-                            logsList.add("Bước ${index + 1}: ⚠️ Bỏ qua — Ràng buộc thế giới thực không khớp (${condition.attrKey}=${condition.expected})")
+                            logger.w("HousePlanner", "[$planId] ⛔ Kịch bản BỊ DỪNG tại bước ${index + 1} do không thỏa mãn điều kiện thực tế (Yêu cầu: ${condition.attrKey}=${condition.expected}, Thực tế: $actualValue)")
+                            logsList.add("Bước ${index + 1}: ⛔ DỪNG KỊCH BẢN — Ràng buộc thế giới thực không khớp (${condition.attrKey}=${condition.expected}, Thực tế: $actualValue)")
                         }
                     }
                 }
 
-                if (!proceed) continue
+                // 🔴 NẾU ĐIỀU KIỆN SAI -> DỪNG KHẨN CẤP TOÀN BỘ KỊCH BẢN (BREAK)
+                if (!proceed) {
+                    activePlansMap[planId] = activePlansMap[planId]!!.copy(
+                        status = "CANCELLED"
+                    )
+                    break // <--- Thoát hẳn vòng lặp, KHÔNG chạy bất kỳ bước nào phía sau nữa!
+                }
 
                 logger.i("HousePlanner", "[$planId] ⚡ Bước ${index + 1}/${steps.size}: Kích hoạt ${step.pluginId}.${step.action}")
                 logsList.add("Bước ${index + 1}: Kích hoạt thực thi ${step.pluginId}.${step.action}")
@@ -796,7 +808,17 @@ override suspend fun sendDefaultCameraAlerts(
                         }
                         is PluginResult.Failure -> {
                             logger.e("HousePlanner", "[$planId] ❌ Bước ${index + 1} thất bại: ${outcome.error}")
-                            logsList.add("Bước ${index + 1}: ❌ Thất bại: ${outcome.error}")
+                            
+                            // 🔴 NẾU BƯỚC ĐIỀU KIỆN (check_precondition) THẤT BẠI -> DỪNG KHẨN CẤP KỊCH BẢN
+                            if (step.pluginId == "house_manager" && step.action == "check_precondition") {
+                                logsList.add("Bước ${index + 1}: ⛔ DỪNG KỊCH BẢN do điều kiện không thỏa mãn: ${outcome.error}")
+                                activePlansMap[planId] = activePlansMap[planId]!!.copy(
+                                    status = "CANCELLED"
+                                )
+                                break // <--- Dừng ngay kịch bản!
+                            } else {
+                                logsList.add("Bước ${index + 1}: ❌ Thất bại: ${outcome.error}")
+                            }
                         }
                         else -> {
                             logsList.add("Bước ${index + 1}: Chờ bổ sung thông tin.")
@@ -808,18 +830,29 @@ override suspend fun sendDefaultCameraAlerts(
                 }
             }
 
-            logger.i("HousePlanner", "🏁 Kế hoạch [$planId] đã hoàn thành chu kỳ chạy.")
-            logsList.add("Kế hoạch hoàn tất lúc ${DATETIME_FORMATTER.format(Instant.now())}")
-            activePlansMap[planId] = activePlansMap[planId]!!.copy(
-                currentStepIndex = steps.size,
-                status = "COMPLETED"
-            )
+            val finalStatus = activePlansMap[planId]?.status ?: "COMPLETED"
+            if (finalStatus != "CANCELLED") {
+                logger.i("HousePlanner", "🏁 Kế hoạch [$planId] đã hoàn thành chu kỳ chạy.")
+                logsList.add("Kế hoạch hoàn tất lúc ${DATETIME_FORMATTER.format(Instant.now())}")
+                activePlansMap[planId] = activePlansMap[planId]!!.copy(
+                    currentStepIndex = steps.size,
+                    status = "COMPLETED"
+                )
+            } else {
+                logger.w("HousePlanner", "🛑 Kế hoạch [$planId] đã BỊ HỦY BỎ do không thỏa mãn điều kiện.")
+                logsList.add("Kế hoạch BỊ HỦY lúc ${DATETIME_FORMATTER.format(Instant.now())}")
+            }
 
             delay(10 * 60 * 1000L)
             activePlansMap.remove(planId)
             planLogsMap.remove(planId)
         }
     }
+
+
+
+
+    
 
     // ⚠️ ĐÃ XÓA: triggerProtectHouseSequence(cameraId)/buildDefaultProtectActions() — đây là cơ
     // chế cho nút "Kích Hoạt Bảo Vệ Liên Hoàn Khẩn Cấp" độc lập cũ, dùng 1 cấu hình rời rạc riêng
