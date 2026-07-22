@@ -936,9 +936,6 @@ class CameraSkill @Inject constructor(
         return try {
             val json = org.json.JSONObject(cleaned)
             val state = json.optString("state", "").lowercase().trim()
-            // Dùng cleanedRaw (đã bỏ <think>) làm fallback thay vì raw gốc, tránh rò rỉ khối suy
-            // luận nội bộ của AI ra bình luận cảnh báo hiển thị cho chủ nhà.
-            val description = json.optString("description", "").ifBlank { cleanedRaw }
             val structuredSuspicious = when (state) {
                 "suspicious" -> true
                 "normal" -> false
@@ -947,31 +944,58 @@ class CameraSkill @Inject constructor(
             // ✅ MỚI: đọc mảng "objects" — dữ liệu AI đã trả sẵn trong MỌI lần gọi analyzeImage()
             // (xem STRUCTURED_VISION_SUFFIX trong GroqClientTool) nhưng trước đây bị bỏ qua.
             // Chuẩn hóa lowercase + trim vì so khớp sau này (buildMemoryContext) làm trên chữ thường.
+            val objectsRaw = json.optJSONArray("objects")
+            val objectNames = mutableListOf<String>() // Tên cụ thể (vd "cây cối") — dùng dựng câu dự phòng bên dưới
+            val objects = if (objectsRaw != null) {
+                (0 until objectsRaw.length()).flatMap { i ->
+                    val obj = objectsRaw.optJSONObject(i)
+                    if (obj != null) {
+                        val type = obj.optString("type", "").trim().lowercase()
+                        val name = obj.optString("name", "").trim().lowercase()
+                        if (name.isNotEmpty()) objectNames.add(name)
+                        // Thu thập cả danh mục phổ quát và tên gọi cụ thể để làm giàu từ khóa tìm kiếm [14]
+                        listOf(type, name).filter { it.isNotEmpty() }
+                    } else {
+                        // ✅ MỚI: Phòng hờ model không tuân đúng schema mới (trả phần tử là chuỗi phẳng thay vì
+                        // JSONObject lồng nhau) — trước đây bị lặng lẽ bỏ qua hoàn toàn (mất sạch dữ liệu
+                        // objects mà không có dấu vết gì). Giờ vẫn cố đọc như chuỗi cũ để không mất thông tin.
+                        objectsRaw.optString(i, "").trim().lowercase().let {
+                            if (it.isNotEmpty()) {
+                                objectNames.add(it)
+                                listOf(it)
+                            } else emptyList()
+                        }
+                    }
+                }.distinct()
+            } else emptyList()
 
-
-            
-            // Thay thế đoạn bóc tách objectsRaw trong hàm parseVisionResult thuộc CameraSkill.kt:
-
-val objectsRaw = json.optJSONArray("objects")
-val objects = if (objectsRaw != null) {
-    (0 until objectsRaw.length()).flatMap { i ->
-        val obj = objectsRaw.optJSONObject(i)
-        if (obj != null) {
-            val type = obj.optString("type", "").trim().lowercase()
-            val name = obj.optString("name", "").trim().lowercase()
-            // Thu thập cả danh mục phổ quát và tên gọi cụ thể để làm giàu từ khóa tìm kiếm [14]
-            listOf(type, name).filter { it.isNotEmpty() }
-        } else {
-            emptyList()
-        }
-    }.distinct()
-} else emptyList()
-
-
+            // ✅ ĐÃ SỬA: LỖI THẬT gây ra thông báo hiện nguyên JSON thô cho chủ nhà. Trước đây khi
+            // trường "description" rỗng (rất dễ xảy ra khi model dùng gần hết max_tokens để liệt
+            // kê nhiều "objects" chi tiết trước khi tới lượt viết "description" — trường này nằm
+            // CUỐI schema), code fallback thẳng về `cleanedRaw` = TOÀN BỘ chuỗi JSON, hiện y nguyên
+            // trong thông báo đẩy. Giờ dựng câu tiếng Việt tự nhiên từ chính danh sách "objects" đã
+            // bóc tách được — CHỈ khi cả 2 đều rỗng mới dùng câu chung chung, KHÔNG BAO GIỜ lộ JSON
+            // thô ra giao diện người dùng nữa (JSON thô chỉ còn xuất hiện trong log chẩn đoán).
+            val rawDescription = json.optString("description", "").trim()
+            val description = rawDescription.ifBlank {
+                if (objectNames.isNotEmpty()) {
+                    "Phát hiện: ${objectNames.distinct().joinToString(", ")}"
+                } else {
+                    "Đã phân tích ảnh nhưng AI không cung cấp mô tả chi tiết."
+                }
+            }
             
             VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, objects = objects, rawJson = json)
         } catch (e: Exception) {
-            // Fallback trả về văn bản đã dọn sạch <think> nếu AI không xuất ra JSON chuẩn
+            // ✅ ĐÃ SỬA: catch này trước đây HOÀN TOÀN im lặng — không có log nào cả. Đây chính là
+            // lý do không thể biết được khi nào/tại sao model trả JSON sai schema (structuredSuspicious
+            // sẽ luôn rơi về null trong các lần này, khiến isSuspicious phải dựa 100% vào keyword
+            // fallback). Giờ log rõ lỗi + một đoạn rút gọn của raw response để xem trong Logcat
+            // (tag "CameraSkill") mỗi khi model không tuân thủ đúng schema đã yêu cầu.
+            logger.w("CameraSkill", "⚠️ Vision JSON parse thất bại (${e.message}) — model không trả đúng schema JSON yêu cầu. Raw (rút gọn 300 ký tự): ${cleanedRaw.take(300)}")
+            // Đây là nhánh DUY NHẤT còn hợp lý để hiển thị cleanedRaw — vì lúc này AI thực sự không
+            // trả JSON (vd lỗi API, timeout) nên cleanedRaw chính là câu thông báo lỗi dạng văn xuôi
+            // (xem GroqClientTool: "Không thể phân tích ảnh lúc này." / "Không thể đọc phản hồi từ AI...").
             VisionParseResult(displayComment = cleanedRaw, structuredSuspicious = null, objects = emptyList(), rawJson = null)
         }
     }
@@ -1079,6 +1103,11 @@ val keywordMatch = hasPositive && !hasNegative
 
 // 3. Đánh giá trạng thái chung cực kỳ đơn giản: có từ khóa HOẶC AI tự đánh giá là suspicious [14]
 isSuspicious = keywordMatch || visionParsed.structuredSuspicious == true
+
+// ✅ MỚI: Log rõ từng tín hiệu quyết định cho MỌI lượt quét AI — trước đây hoàn toàn không có
+// dòng nào để biết vì sao 1 lượt quét không được coi là suspicious. Xem tag "CameraSkill" khi
+// cần chẩn đoán tại sao kịch bản Quản gia không được kích hoạt.
+logger.d("CameraSkill", "🔍 [Vision Decision] camera=$tid structuredSuspicious=${visionParsed.structuredSuspicious} keywordMatch=$keywordMatch (hasPositive=$hasPositive, hasNegative=$hasNegative) => isSuspicious=$isSuspicious")
 
 // 🌟 LIÊN KẾT NGƯỢC (SYNC BACK): Ghi đè lại thuộc tính "state" trong JSON thô khớp theo quyết định cuối cùng [12]
 val finalStateJson = visionParsed.rawJson?.apply {

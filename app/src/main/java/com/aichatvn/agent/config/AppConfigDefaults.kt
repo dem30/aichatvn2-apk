@@ -180,14 +180,17 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_VISION,
-            // ✅ SỬA: không còn cần đoán số lớn để "chừa chỗ cho suy luận" — GroqClientTool giờ
-            // gửi kèm reasoning_effort="none" cho model họ Qwen3, model bỏ qua hẳn <think> nên
-            // 350 token là đủ rộng rãi cho riêng phần JSON kết quả (objects/state/confidence/description).
-            value = "350",
+            // ✅ ĐÃ SỬA: 350 được tính cho schema "objects" CŨ (chuỗi phẳng, 1 nhãn/vật thể).
+            // Schema mới có 5 trường (type/name/details/location/relations) cho MỖI vật thể + các
+            // trường khác — với ảnh có 2-3 vật thể trở lên, model dễ dùng hết 350 token trước khi
+            // viết tới trường "description" (nằm cuối JSON) -> description rỗng -> hệ thống phải
+            // fallback hiển thị nguyên JSON thô cho người dùng (đã thấy đúng hiện tượng này qua
+            // thông báo đẩy). Tăng lên 800 để đủ chỗ cho vài vật thể + description đầy đủ.
+            value = "800",
             type = "int",
             pluginId = "groq",
             label = "Max tokens – vision",
-            description = "Số token tối đa model vision trả về khi phân tích ảnh camera."
+            description = "Số token tối đa model vision trả về khi phân tích ảnh camera. Schema objects càng nhiều vật thể/trường càng cần token lớn hơn để không bị cắt cụt trước khi tới phần mô tả."
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_ROUTER,
