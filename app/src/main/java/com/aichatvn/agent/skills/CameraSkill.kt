@@ -1,48 +1,50 @@
 package com.aichatvn.agent.skills
 
-import com.aichatvn.agent.utils.toMap
-import javax.inject.Provider
-import com.aichatvn.agent.core.execution.IntentExecutor
-
 import android.content.Context
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
-import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
+import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertActionConfig
-import com.aichatvn.agent.data.model.alertActionsFromJson
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
+import com.aichatvn.agent.data.model.EventLogEntity
+import com.aichatvn.agent.data.model.alertActionsFromJson
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.camera.ImageHashTool
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
-import com.aichatvn.agent.utils.Logger
-import com.aichatvn.agent.config.AppConfigDefaults
-import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction as DashboardDeviceAction
-import com.aichatvn.agent.ui.dashboard.DeviceRegistry
+import com.aichatvn.agent.utils.Logger
+import com.aichatvn.agent.utils.WorldStateHelper
+import com.aichatvn.agent.utils.toMap
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.time.Instant
@@ -51,7 +53,9 @@ import java.time.format.DateTimeFormatter
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
+
 
 @Singleton
 class CameraSkill @Inject constructor(
