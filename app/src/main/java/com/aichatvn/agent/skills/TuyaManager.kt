@@ -331,7 +331,7 @@ class TuyaManager @Inject constructor(
             
             val result = json.optJSONObject("result")
             accessToken = result?.optString("access_token")
-            val expireSeconds = result?.optInt("expires_in") ?: 7200
+            val expireSeconds = result?.optInt("expire_time")?.takeIf { it > 0 } ?: 7200
             tokenExpiry = System.currentTimeMillis() + (expireSeconds - 60) * 1000L
             
             logger.i("TuyaManager", "🔑 Đã lấy token mới")
