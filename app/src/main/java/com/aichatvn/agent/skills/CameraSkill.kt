@@ -922,6 +922,12 @@ class CameraSkill @Inject constructor(
         // sinh khối suy luận ngầm <think>...</think> TRƯỚC khối JSON thật, làm hỏng việc cắt
         // chuỗi theo dấu ngoặc { } bên dưới (vì indexOf('{') bắt trúng dấu ngoặc bên trong khối
         // suy luận, không phải JSON thật). Dọn sạch khối này trước khi tìm JSON.
+       
+      
+      
+      
+      private fun parseVisionResult(raw: String): VisionParseResult {
+        // 1. Loại bỏ khối suy luận <think>...</think> nếu có của các mô hình DeepSeek/Qwen [2]
         val cleanedRaw = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "").trim()
 
         val start = cleanedRaw.indexOf('{')
@@ -941,41 +947,26 @@ class CameraSkill @Inject constructor(
                 "normal" -> false
                 else -> null 
             }
-            // ✅ MỚI: đọc mảng "objects" — dữ liệu AI đã trả sẵn trong MỌI lần gọi analyzeImage()
-            // (xem STRUCTURED_VISION_SUFFIX trong GroqClientTool) nhưng trước đây bị bỏ qua.
-            // Chuẩn hóa lowercase + trim vì so khớp sau này (buildMemoryContext) làm trên chữ thường.
+            
+            // 2. ĐỒNG BỘ PHẲNG: Đọc mảng chuỗi phẳng cực kỳ tinh gọn [14]
             val objectsRaw = json.optJSONArray("objects")
-            val objectNames = mutableListOf<String>() // Tên cụ thể (vd "cây cối") — dùng dựng câu dự phòng bên dưới
-            val objects = if (objectsRaw != null) {
-                (0 until objectsRaw.length()).flatMap { i ->
-                    val obj = objectsRaw.optJSONObject(i)
-                    if (obj != null) {
-                        val type = obj.optString("type", "").trim().lowercase()
-                        val name = obj.optString("name", "").trim().lowercase()
-                        if (name.isNotEmpty()) objectNames.add(name)
-                        // Thu thập cả danh mục phổ quát và tên gọi cụ thể để làm giàu từ khóa tìm kiếm [14]
-                        listOf(type, name).filter { it.isNotEmpty() }
-                    } else {
-                        // ✅ MỚI: Phòng hờ model không tuân đúng schema mới (trả phần tử là chuỗi phẳng thay vì
-                        // JSONObject lồng nhau) — trước đây bị lặng lẽ bỏ qua hoàn toàn (mất sạch dữ liệu
-                        // objects mà không có dấu vết gì). Giờ vẫn cố đọc như chuỗi cũ để không mất thông tin.
-                        objectsRaw.optString(i, "").trim().lowercase().let {
-                            if (it.isNotEmpty()) {
-                                objectNames.add(it)
-                                listOf(it)
-                            } else emptyList()
+            val objects = mutableListOf<String>()
+            val objectNames = mutableListOf<String>()
+            
+            if (objectsRaw != null) {
+                for (i in 0 until objectsRaw.length()) {
+                    val item = objectsRaw.optString(i, "").trim().lowercase()
+                    if (item.isNotEmpty()) {
+                        objects.add(item)
+                        // Lọc các nhóm phổ quát ra để dùng làm câu mô tả dự phòng sinh động hơn
+                        if (item !in listOf("người", "nguoi", "đồ vật", "do vat", "động vật", "dong vat", "thực vật", "thuc vat")) {
+                            objectNames.add(item)
                         }
                     }
-                }.distinct()
-            } else emptyList()
+                }
+            }
 
-            // ✅ ĐÃ SỬA: LỖI THẬT gây ra thông báo hiện nguyên JSON thô cho chủ nhà. Trước đây khi
-            // trường "description" rỗng (rất dễ xảy ra khi model dùng gần hết max_tokens để liệt
-            // kê nhiều "objects" chi tiết trước khi tới lượt viết "description" — trường này nằm
-            // CUỐI schema), code fallback thẳng về `cleanedRaw` = TOÀN BỘ chuỗi JSON, hiện y nguyên
-            // trong thông báo đẩy. Giờ dựng câu tiếng Việt tự nhiên từ chính danh sách "objects" đã
-            // bóc tách được — CHỈ khi cả 2 đều rỗng mới dùng câu chung chung, KHÔNG BAO GIỜ lộ JSON
-            // thô ra giao diện người dùng nữa (JSON thô chỉ còn xuất hiện trong log chẩn đoán).
+            // 3. Dựng mô tả an toàn: không bao giờ để lộ chuỗi JSON thô ra thông báo đẩy [2]
             val rawDescription = json.optString("description", "").trim()
             val description = rawDescription.ifBlank {
                 if (objectNames.isNotEmpty()) {
@@ -985,20 +976,23 @@ class CameraSkill @Inject constructor(
                 }
             }
             
-            VisionParseResult(displayComment = description, structuredSuspicious = structuredSuspicious, objects = objects, rawJson = json)
+            VisionParseResult(
+                displayComment = description, 
+                structuredSuspicious = structuredSuspicious, 
+                objects = objects.distinct(), 
+                rawJson = json
+            )
         } catch (e: Exception) {
-            // ✅ ĐÃ SỬA: catch này trước đây HOÀN TOÀN im lặng — không có log nào cả. Đây chính là
-            // lý do không thể biết được khi nào/tại sao model trả JSON sai schema (structuredSuspicious
-            // sẽ luôn rơi về null trong các lần này, khiến isSuspicious phải dựa 100% vào keyword
-            // fallback). Giờ log rõ lỗi + một đoạn rút gọn của raw response để xem trong Logcat
-            // (tag "CameraSkill") mỗi khi model không tuân thủ đúng schema đã yêu cầu.
             logger.w("CameraSkill", "⚠️ Vision JSON parse thất bại (${e.message}) — model không trả đúng schema JSON yêu cầu. Raw (rút gọn 300 ký tự): ${cleanedRaw.take(300)}")
-            // Đây là nhánh DUY NHẤT còn hợp lý để hiển thị cleanedRaw — vì lúc này AI thực sự không
-            // trả JSON (vd lỗi API, timeout) nên cleanedRaw chính là câu thông báo lỗi dạng văn xuôi
-            // (xem GroqClientTool: "Không thể phân tích ảnh lúc này." / "Không thể đọc phản hồi từ AI...").
+            // Trả về cleanedRaw dạng văn xuôi thông báo lỗi (không lộ chuỗi JSON thô) [2]
             VisionParseResult(displayComment = cleanedRaw, structuredSuspicious = null, objects = emptyList(), rawJson = null)
         }
     }
+
+
+
+
+    
     
     private suspend fun processImageWithLearning(
         camera: CameraConfigEntity,
