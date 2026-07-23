@@ -247,6 +247,10 @@ class CameraSkill @Inject constructor(
         // độc lập với deltaTrigger/absDiffTrigger. Đặt thành hằng số dùng chung để tránh lệch giá trị
         // giữa nơi tính toán (scanCamera) và nơi báo cáo chẩn đoán (updateDiagnostics).
         const val DRIFT_TRIGGER = 12
+        // Sàn tối thiểu cho ngưỡng học — tránh nhánh "hạ ngưỡng trực tiếp" kéo ngưỡng xuống quá thấp
+        // (quá nhạy vì nén ảnh/nhiễu cảm biến bình thường).
+        const val MIN_ABS_DIFF_TRIGGER = 8
+        const val MIN_DELTA_TRIGGER = 5
     }
 
     private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
@@ -670,6 +674,9 @@ class CameraSkill @Inject constructor(
                 put("realEvents", state.realEvents)
                 put("falseDeltas", JSONArray(state.falseDeltas))
                 put("falseDiffs", JSONArray(state.falseDiffs))
+                put("baselineWindow", JSONArray(state.baselineWindow))
+                put("lastPhash", state.lastPhash)
+                put("lastDiff", state.lastDiff)
             }.toString()
 
             WorldStateHelper.setAttribute(
@@ -710,12 +717,21 @@ class CameraSkill @Inject constructor(
                 for (i in 0 until diffsArr.length()) falseDiffs.add(diffsArr.getInt(i))
             }
 
+            val baselineWindow = mutableListOf<Int>()
+            val baselineArr = json.optJSONArray("baselineWindow")
+            if (baselineArr != null) {
+                for (i in 0 until baselineArr.length()) baselineWindow.add(baselineArr.getInt(i))
+            }
+
             CameraLearningState(
+                lastPhash = json.optString("lastPhash", ""),
+                lastDiff = json.optInt("lastDiff", 0),
                 deltaTrigger = json.optInt("deltaTrigger", 10),
                 absDiffTrigger = json.optInt("absDiffTrigger", 18),
                 realEvents = json.optInt("realEvents", 0),
                 falseDeltas = falseDeltas,
-                falseDiffs = falseDiffs
+                falseDiffs = falseDiffs,
+                baselineWindow = baselineWindow
             )
         } catch (e: Exception) {
             CameraLearningState()
@@ -744,27 +760,40 @@ class CameraSkill @Inject constructor(
             val oldDelta = state.deltaTrigger
             val oldDiff = state.absDiffTrigger
 
-            // Tự động điều chỉnh nâng ngưỡng
+            // Percentile: CHỈ được phép NÂNG ngưỡng khi noise thật sự lớn & lặp lại nhiều lần —
+            // không được ghi đè giá trị vừa hạ ở nhánh "hạ ngưỡng trực tiếp" bên dưới trong cùng lần gọi.
             val recentDeltas = state.falseDeltas.takeLast(30).sorted()
             val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-            state.deltaTrigger = (recentDeltas[idx] + 2).coerceAtMost(25)
+            val percentileDelta = (recentDeltas[idx] + 2).coerceAtMost(25)
+            if (percentileDelta > state.deltaTrigger) state.deltaTrigger = percentileDelta
 
             val recentDiffs = state.falseDiffs.takeLast(30).sorted()
             val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-            state.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+            val percentileDiff = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+            if (percentileDiff > state.absDiffTrigger) state.absDiffTrigger = percentileDiff
 
-            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả
-            if (state.absDiffTrigger <= diff) {
-                state.absDiffTrigger = (diff + 2).coerceAtMost(35)
+            // 🟢 HẠ NGƯỠNG TRỰC TIẾP: mẫu báo giả vừa nhận có diff/delta THẤP hơn ngưỡng đang hoạt
+            // động (báo động đến từ nhánh drift chứ không phải bản thân diff/delta vượt ngưỡng
+            // tuyệt đối) → kéo ngay ngưỡng về sát giá trị quan sát, không chờ percentile pool (vốn
+            // bị mẫu noise cũ giữ ở mức cao nên không bao giờ hạ được).
+            if (diff < state.absDiffTrigger) {
+                state.absDiffTrigger = (diff + 3).coerceAtLeast(MIN_ABS_DIFF_TRIGGER)
             }
+            if (delta < state.deltaTrigger) {
+                state.deltaTrigger = (delta + 2).coerceAtLeast(MIN_DELTA_TRIGGER)
+            }
+
+            // Kéo baseline nền về sát thực tế để nhánh drift không kẹt cao mãi
+            state.baselineWindow.add(diff)
+            if (state.baselineWindow.size > 20) state.baselineWindow.removeAt(0)
 
             // Lưu ngay vào SQLite
             saveLearningStateToDb(tid, state)
             updateDiagnostics()
 
             "✅ Đã ghi nhận báo động giả cho Camera \"${cam.customername}\". " +
-            "Ngưỡng diff nâng từ $oldDiff ➔ ${state.absDiffTrigger}, " +
-            "ngưỡng delta nâng từ $oldDelta ➔ ${state.deltaTrigger} (Số mẫu học: ${state.falseDeltas.size})."
+            "Ngưỡng diff: $oldDiff ➔ ${state.absDiffTrigger}, ngưỡng delta: $oldDelta ➔ ${state.deltaTrigger} " +
+            "(Số mẫu học: ${state.falseDeltas.size})."
         }
     }
     
@@ -1384,27 +1413,44 @@ class CameraSkill @Inject constructor(
                     }
                     
                     if (isSuddenChange && !isSuspicious) {
+                        val oldDelta = state.deltaTrigger
+                        val oldDiff = state.absDiffTrigger
+
                         state.falseDeltas.add(delta)
                         state.falseDiffs.add(currentDiff)
                         if (state.falseDeltas.size > 100) {
                             state.falseDeltas.removeAt(0)
                             state.falseDiffs.removeAt(0)
                         }
-                    }
-                    
-                    if (state.falseDeltas.size >= 3) {
-                        val oldDelta = state.deltaTrigger
-                        val oldDiff = state.absDiffTrigger
 
-                        val recentDeltas = state.falseDeltas.takeLast(30).sorted()
-                        val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-                        state.deltaTrigger = (recentDeltas[idx] + 2).coerceAtMost(25)
-                        
-                        val recentDiffs = state.falseDiffs.takeLast(30).sorted()
-                        val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-                        state.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+                        // 🟢 HẠ NGƯỠNG TRỰC TIẾP: báo động này đến từ nhánh delta/drift (bản thân
+                        // currentDiff/delta CHƯA vượt ngưỡng tuyệt đối) và đã xác nhận bình thường
+                        // → kéo ngay ngưỡng sát xuống giá trị quan sát hiện tại, không chờ percentile
+                        // pool (vốn bị mẫu noise cũ giữ ở mức cao nên không bao giờ hạ được — đây
+                        // chính là bug "chỉ lên không xuống").
+                        if (currentDiff < state.absDiffTrigger) {
+                            state.absDiffTrigger = (currentDiff + 3).coerceAtLeast(MIN_ABS_DIFF_TRIGGER)
+                        }
+                        if (delta < state.deltaTrigger) {
+                            state.deltaTrigger = (delta + 2).coerceAtLeast(MIN_DELTA_TRIGGER)
+                        }
 
-                        // TỐI ƯU I/O: Chỉ ghi SQLite khi ngưỡng thực sự thay đổi!
+                        // Percentile: CHỈ dùng để nâng ngưỡng khi noise thật sự lớn & lặp lại nhiều
+                        // lần — không được phép ghi đè giá trị vừa hạ ở trên.
+                        if (state.falseDeltas.size >= 3) {
+                            val recentDeltas = state.falseDeltas.takeLast(30).sorted()
+                            val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
+                            val percentileDelta = (recentDeltas[idx] + 2).coerceAtMost(25)
+                            if (percentileDelta > state.deltaTrigger) state.deltaTrigger = percentileDelta
+
+                            val recentDiffs = state.falseDiffs.takeLast(30).sorted()
+                            val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
+                            val percentileDiff = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+                            if (percentileDiff > state.absDiffTrigger) state.absDiffTrigger = percentileDiff
+                        }
+
+                        // TỐI ƯU I/O: chỉ ghi SQLite khi ngưỡng thực sự đổi — bắt được cả trường hợp
+                        // nâng (percentile) lẫn hạ (trực tiếp) vì đều sửa cùng 2 biến này.
                         if (state.deltaTrigger != oldDelta || state.absDiffTrigger != oldDiff) {
                             saveLearningStateToDb(tid, state)
                         }
