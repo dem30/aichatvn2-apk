@@ -227,6 +227,10 @@ class CameraSkill @Inject constructor(
     private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS).toLong())
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR).toInt())
     private suspend fun alertMergeWindowMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS).toLong())
+    // ✅ MỚI: retention tách riêng cho alerts (ảnh) và event_logs (text) — admin chỉnh được thay
+    // vì hardcode cứng 30 ngày như trước, để máy nhiều bộ nhớ có thể giữ lịch sử lâu hơn.
+    private suspend fun alertRetentionDays()     = configProvider.getInt(AppConfigDefaults.CAMERA_ALERT_RETENTION_DAYS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_ALERT_RETENTION_DAYS).toInt())
+    private suspend fun eventLogRetentionDays()  = configProvider.getInt(AppConfigDefaults.CAMERA_EVENT_LOG_RETENTION_DAYS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_EVENT_LOG_RETENTION_DAYS).toInt())
     
     companion object {
         private val TIME_FORMATTER: DateTimeFormatter =
@@ -759,7 +763,10 @@ class CameraSkill @Inject constructor(
     private fun cleanupOldAlerts() {
         scope.launch {
             try {
-                val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+                // ✅ SỬA: dùng retention có thể cấu hình thay vì hardcode 30 ngày cứng — máy nhiều
+                // bộ nhớ (TB) có thể tăng lên qua Settings.
+                val retentionDays = alertRetentionDays()
+                val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
                 val dir = File(context.filesDir, "alert_images")
                 if (dir.exists()) {
                     dir.listFiles()?.forEach { file ->
@@ -778,7 +785,11 @@ class CameraSkill @Inject constructor(
     private fun cleanupOldEventLogs() {
         scope.launch {
             try {
-                val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+                // ✅ SỬA: event_logs chỉ là text (rất nhẹ so với ảnh alerts) và là nguồn dữ liệu
+                // duy nhất ChatSkill.buildMemoryContext() dùng để trả lời câu hỏi quá khứ — retention
+                // riêng, có thể để dài hơn alertRetentionDays() mà không tốn nhiều dung lượng.
+                val retentionDays = eventLogRetentionDays()
+                val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
                 withContext(Dispatchers.IO) {
                     database.eventLogDao().pruneLogsOlderThan(cutoff)
                 }

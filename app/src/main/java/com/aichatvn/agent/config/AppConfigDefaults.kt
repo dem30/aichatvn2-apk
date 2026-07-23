@@ -37,6 +37,12 @@ object AppConfigDefaults {
     const val CAMERA_CIRCUIT_BREAKER_THRESHOLD = "camera.circuit_breaker_threshold"
     const val CAMERA_CIRCUIT_BREAKER_RESET_MS  = "camera.circuit_breaker_reset_ms"
     const val CAMERA_DAILY_REPORT_HOUR       = "camera.daily_report_hour"
+
+    // ✅ MỚI: Tách riêng retention cho alerts (ảnh JPEG, tốn ổ đĩa) và event_logs (chỉ text, rất
+    // nhẹ) — trước đây cả 2 dùng chung 1 hằng số cứng 30 ngày trong CameraSkill, khiến máy có
+    // nhiều bộ nhớ (TB) không tận dụng được để giữ lịch sử lâu hơn cho Chat trả lời chính xác.
+    const val CAMERA_ALERT_RETENTION_DAYS     = "camera.alert_retention_days"
+    const val CAMERA_EVENT_LOG_RETENTION_DAYS = "camera.event_log_retention_days"
     
     // ✅ MỚI (Tuần 2 & 3 - Phase 3): Ngưỡng thời gian gộp/nén các sự kiện liên tiếp
     const val CAMERA_ALERT_MERGE_WINDOW_MS    = "camera.alert_merge_window_ms"
@@ -265,6 +271,22 @@ object AppConfigDefaults {
             pluginId = "camera",
             label = "Giờ gửi báo cáo ngày",
             description = "Giờ trong ngày (0–23) để gửi báo cáo tổng hợp. Mặc định 20 giờ (8 PM)."
+        ),
+        AppConfigEntity(
+            key = CAMERA_ALERT_RETENTION_DAYS,
+            value = "30",
+            type = "int",
+            pluginId = "camera",
+            label = "Lưu lịch sử cảnh báo (ngày)",
+            description = "Số ngày giữ lại bản ghi cảnh báo + ảnh đính kèm trước khi tự xóa. Tăng lên nếu máy còn nhiều bộ nhớ."
+        ),
+        AppConfigEntity(
+            key = CAMERA_EVENT_LOG_RETENTION_DAYS,
+            value = "30",
+            type = "int",
+            pluginId = "camera",
+            label = "Lưu nhật ký sự kiện (ngày)",
+            description = "Số ngày giữ lại nhật ký sự kiện (event_logs) dùng cho Chat trả lời câu hỏi quá khứ. Chỉ là text nên có thể để dài hơn retention ảnh mà không tốn nhiều dung lượng."
         ),
         
         // ✅ ĐÃ THÊM: Seed cấu hình khoảng thời gian gộp/nén sự kiện (Tuần 2 & 3)
