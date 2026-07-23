@@ -1837,6 +1837,12 @@ class CameraSkill @Inject constructor(
                         endTime = now,
                         aiComment = aiComment,
                         diff = diff,
+                        delta = delta,
+                        deltaTrigger = deltaTrigger,
+                        absDiffTrigger = absDiffTrigger,
+                        drift = drift,
+                        baselineDiff = baselineDiff,
+                        driftTrigger = driftTrigger,
                         imagePath = refreshedImagePath,
                         aiStateJson = aiStateJson
                     )

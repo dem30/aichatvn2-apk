@@ -269,11 +269,23 @@ interface AlertDao {
     // giữ nội dung/ảnh của lần alert ĐẦU TIÊN trong chuỗi gộp, gây lệch thông tin khi người
     // dùng bấm vào thông báo để xem chi tiết. imagePath dùng COALESCE để không xóa ảnh cũ nếu
     // lần merge này không kèm ảnh mới.
+    // ✅ SỬA: trước đây chỉ cập nhật diff, còn delta/deltaTrigger/absDiffTrigger/drift/
+    // baselineDiff/driftTrigger vẫn giữ nguyên của lần quét ĐẦU TIÊN tạo nhóm — khiến diff
+    // hiển thị (mới) và delta/drift hiển thị (cũ) thuộc 2 lần quét khác nhau, không nhất
+    // quán. Đặc biệt gây sai lệch khi người dùng bấm "Báo giả" trên 1 alert đã gộp: giá trị
+    // gửi vào markFalsePositiveAndLearn() là cặp diff/delta không cùng lần quét thật. Giờ cập
+    // nhật toàn bộ theo lần quét mới nhất để 1 alert luôn phản ánh đúng 1 lần quét duy nhất.
     @Query("""
         UPDATE alerts
         SET endTime = :endTime,
             aiComment = :aiComment,
             diff = :diff,
+            delta = :delta,
+            deltaTrigger = :deltaTrigger,
+            absDiffTrigger = :absDiffTrigger,
+            drift = :drift,
+            baselineDiff = :baselineDiff,
+            driftTrigger = :driftTrigger,
             imagePath = COALESCE(:imagePath, imagePath),
             aiStateJson = COALESCE(:aiStateJson, aiStateJson)
         WHERE id = :alertId
@@ -283,6 +295,12 @@ interface AlertDao {
         endTime: Long,
         aiComment: String,
         diff: Int,
+        delta: Int,
+        deltaTrigger: Int,
+        absDiffTrigger: Int,
+        drift: Int,
+        baselineDiff: Int,
+        driftTrigger: Int,
         imagePath: String?,
         aiStateJson: String?
     )
