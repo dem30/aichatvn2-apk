@@ -121,6 +121,13 @@ data class AlertEntity(
     val delta: Int = 0,
     val deltaTrigger: Int,
     val absDiffTrigger: Int,
+    // ✅ MỚI: giá trị drift THẬT (|currentDiff - baselineDiff|) và baselineDiff (trung bình
+    // baselineWindow) tại thời điểm báo động, cùng ngưỡng driftTrigger đã áp dụng. Cần để
+    // UI (AlertHistoryScreen, CameraDetailScreen) hiển thị chính xác nguyên nhân kích hoạt
+    // thay vì suy luận loại trừ khi cả diff và delta đều chưa vượt ngưỡng.
+    val drift: Int = 0,
+    val baselineDiff: Int = 0,
+    val driftTrigger: Int = 12,
     val imagePath: String? = null,
     val emailSent: Int = 0,
     val isSuspicious: Int = 1,

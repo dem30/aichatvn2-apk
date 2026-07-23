@@ -401,6 +401,17 @@ fun CameraDetailScreen(
                             CamStatRow("Ngưỡng delta", "${stats["deltaTrigger"] ?: 10}")
                             CamStatRow("Ngưỡng diff", "${stats["absDiffTrigger"] ?: 18}")
                             CamStatRow("Baseline size", "${stats["baselineSize"] ?: 0}")
+                            // ✅ MỚI: baseline nền (TB các lần quét bình thường trước đó) và
+                            // drift hiện tại (|diff mới nhất - baseline|) so với ngưỡng drift,
+                            // để người dùng hiểu vì sao cảnh báo có thể xảy ra dù diff/delta
+                            // vẫn dưới ngưỡng riêng của chúng.
+                            CamStatRow("Baseline nền (TB)", "${stats["baselineDiff"] ?: 0}")
+                            val driftVal = (stats["drift"] as? Int) ?: 0
+                            val driftLimit = (stats["driftTrigger"] as? Int) ?: 12
+                            CamStatRow(
+                                "Drift hiện tại",
+                                "$driftVal/$driftLimit" + if (driftVal >= driftLimit) " ⚠️" else ""
+                            )
 
                             val inCooldown = stats["inCooldown"] as? Boolean ?: false
                             val circuitOpen = stats["circuitBreakerOpen"] as? Boolean ?: false

@@ -171,7 +171,11 @@ class CameraSkill @Inject constructor(
         var deltaTrigger: Int = 10,
         var absDiffTrigger: Int = 18,
         var cooldownUntil: Long = 0L,
-        var lastNormalScanAt: Long = 0L
+        var lastNormalScanAt: Long = 0L,
+        // ✅ MỚI: giá trị baselineDiff/drift của lần quét gần nhất, chỉ để hiển thị chẩn đoán
+        // (CameraDetailScreen) — không ảnh hưởng logic isSuddenChange.
+        var lastBaselineDiff: Int = 0,
+        var lastDrift: Int = 0
     )
     
     private data class CircuitBreakerState(
@@ -239,6 +243,10 @@ class CameraSkill @Inject constructor(
             DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
         private val DATETIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        // Ngưỡng "trôi nền" (|currentDiff - baselineDiff|) — điều kiện thứ 3 kích hoạt isSuddenChange,
+        // độc lập với deltaTrigger/absDiffTrigger. Đặt thành hằng số dùng chung để tránh lệch giá trị
+        // giữa nơi tính toán (scanCamera) và nơi báo cáo chẩn đoán (updateDiagnostics).
+        const val DRIFT_TRIGGER = 12
     }
 
     private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
@@ -1163,7 +1171,7 @@ class CameraSkill @Inject constructor(
                 val delta = kotlin.math.abs(currentDiff - state.lastDiff)
                 val deltaTrigger = state.deltaTrigger
                 val absDiffTrigger = state.absDiffTrigger
-                val driftTrigger = 12
+                val driftTrigger = DRIFT_TRIGGER
                 
                 val baselineDiff = if (state.baselineWindow.isNotEmpty()) {
                     state.baselineWindow.average().toInt()
@@ -1171,6 +1179,8 @@ class CameraSkill @Inject constructor(
                     currentDiff
                 }
                 val drift = kotlin.math.abs(currentDiff - baselineDiff)
+                state.lastBaselineDiff = baselineDiff
+                state.lastDrift = drift
                 
                 val isSuddenChange = delta >= deltaTrigger || 
                                      currentDiff >= absDiffTrigger || 
@@ -1314,6 +1324,9 @@ class CameraSkill @Inject constructor(
                         delta = delta,
                         deltaTrigger = deltaTrigger,
                         absDiffTrigger = absDiffTrigger,
+                        drift = drift,
+                        baselineDiff = baselineDiff,
+                        driftTrigger = driftTrigger,
                         emailSent = emailSent,
                         scheduleId = scheduleId,
                         aiStateJson = finalStateJson,
@@ -1781,6 +1794,9 @@ class CameraSkill @Inject constructor(
                 "deltaTrigger" to state.deltaTrigger,
                 "absDiffTrigger" to state.absDiffTrigger,
                 "baselineSize" to state.baselineWindow.size,
+                "baselineDiff" to state.lastBaselineDiff,
+                "drift" to state.lastDrift,
+                "driftTrigger" to DRIFT_TRIGGER,
                 "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
                 "circuitBreakerOpen" to (cb?.isOpen ?: false),
                 "offlineCount" to (cb?.offlineCount ?: 0),
@@ -1799,6 +1815,9 @@ class CameraSkill @Inject constructor(
         delta: Int,
         deltaTrigger: Int,
         absDiffTrigger: Int,
+        drift: Int = 0,
+        baselineDiff: Int = 0,
+        driftTrigger: Int = DRIFT_TRIGGER,
         emailSent: Boolean,
         scheduleId: String? = null,
         aiStateJson: String? = null,
@@ -1854,6 +1873,12 @@ class CameraSkill @Inject constructor(
                     delta = delta,
                     deltaTrigger = deltaTrigger,
                     absDiffTrigger = absDiffTrigger,
+                    // ✅ MỚI: lưu drift THẬT + baselineDiff + driftTrigger tại thời điểm báo động,
+                    // để UI biết chính xác baseline nền là bao nhiêu và độ trôi thực đo được
+                    // (thay vì suy luận loại trừ khi diff/delta đều chưa vượt ngưỡng).
+                    drift = drift,
+                    baselineDiff = baselineDiff,
+                    driftTrigger = driftTrigger,
                     imagePath = imagePath,
                     emailSent = if (emailSent) 1 else 0,
                     isSuspicious = 1,

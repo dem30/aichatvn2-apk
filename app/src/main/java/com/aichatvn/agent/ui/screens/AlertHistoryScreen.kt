@@ -288,8 +288,11 @@ private fun AlertCard(
                 Spacer(Modifier.height(6.dp))
 
                 // ✅ DÒNG THÔNG TIN CHI TIẾT LÝ DO KÍCH HOẠT CẢNH BÁO
+                // ✅ MỚI: dùng alert.drift/alert.baselineDiff/alert.driftTrigger đã lưu THẬT
+                // từ CameraSkill (không còn suy luận loại trừ như trước).
                 val isDiffTriggered = alert.diff >= alert.absDiffTrigger
                 val isDeltaTriggered = alert.delta >= alert.deltaTrigger
+                val isDriftTriggered = alert.drift >= alert.driftTrigger
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -327,17 +330,41 @@ private fun AlertCard(
                         )
                     }
 
-                    // Nhãn cảnh báo nguyên nhân
-                    if (isDeltaTriggered && !isDiffTriggered) {
+                    // Tag drift (baseline nền)
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = if (isDriftTriggered) MaterialTheme.colorScheme.errorContainer
+                                else MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "drift: ${alert.drift}/${alert.driftTrigger} (nền: ${alert.baselineDiff})",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (isDriftTriggered) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            color = if (isDriftTriggered) MaterialTheme.colorScheme.onErrorContainer
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Nhãn cảnh báo nguyên nhân — ưu tiên hiển thị đúng lý do THẬT đã kích hoạt,
+                    // dựa trên giá trị drift/diff/delta đã lưu (không còn suy luận loại trừ).
+                    if (isDeltaTriggered && !isDiffTriggered && !isDriftTriggered) {
                         Text(
                             text = "⚡ Đột biến",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Medium
                         )
-                    } else if (isDiffTriggered && !isDeltaTriggered) {
+                    } else if (isDiffTriggered && !isDeltaTriggered && !isDriftTriggered) {
                         Text(
                             text = "🚨 Lệch khung cảnh",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium
+                        )
+                    } else if (isDriftTriggered && !isDiffTriggered && !isDeltaTriggered) {
+                        Text(
+                            text = "🌐 Trôi đường nền",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Medium
