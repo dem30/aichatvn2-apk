@@ -1762,16 +1762,32 @@ class CameraSkill @Inject constructor(
         }
     }
 
+    // ✅ SỬA: trước đây hàm này gộp CHUNG việc reset circuit breaker (theo dõi lỗi kết nối)
+    // với việc xoá sạch toàn bộ học tập thích nghi (deltaTrigger/absDiffTrigger/falseDeltas/
+    // falseDiffs/baselineWindow/realEvents về 0) VÀ ghi đè xuống DB. Vì "Test ngay" gọi hàm
+    // này ở MỖI lần bấm test (để bỏ qua breaker, không liên quan gì đến học tập), nên mỗi lần
+    // người dùng test camera sau khi bị lỗi kết nối là toàn bộ ngưỡng học được từ trước bị xoá
+    // sạch một cách âm thầm. Giờ hàm này CHỈ reset breaker; muốn xoá học tập phải gọi
+    // resetLearningState() riêng, một hành động rõ ràng do người dùng chủ động chọn.
     fun resetCircuitBreaker(cameraId: String) {
         val tid = cameraId.trim()
         circuitBreakers[tid] = CircuitBreakerState()
+        logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $tid")
+    }
+
+    // ✅ MỚI: reset RIÊNG học tập thích nghi — tách khỏi resetCircuitBreaker() để không còn bị
+    // xoá ngầm mỗi lần bấm "Test ngay". Dùng cho nút "Reset học tập" trong CameraDetailScreen.
+    fun resetLearningState(cameraId: String) {
+        val tid = cameraId.trim()
         val freshState = CameraLearningState()
         learningStates[tid] = freshState
-        // ✅ ĐÃ SỬA: lưu luôn việc reset xuống SQLite. Trước đây chỉ reset trong RAM — nếu app bị
-        // kill ngay sau khi admin bấm reset thủ công, initialize() sẽ nạp lại NGƯỠNG CŨ (chưa
-        // reset) từ DB, coi như thao tác reset bị "hồi sinh ngược" một cách âm thầm.
-        scope.launch { saveLearningStateToDb(tid, freshState) }
-        logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $tid")
+        // Lưu ngay xuống SQLite — nếu không, app bị kill sau reset sẽ nạp lại NGƯỠNG CŨ từ DB,
+        // coi như thao tác reset bị "hồi sinh ngược" một cách âm thầm.
+        scope.launch {
+            saveLearningStateToDb(tid, freshState)
+            updateDiagnostics()
+        }
+        logger.i("CameraSkill", "🧠 Learning state reset manually for camera $tid")
     }
 
     fun resetAllCircuitBreakers() {

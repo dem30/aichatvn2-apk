@@ -613,6 +613,18 @@ class CameraDetailViewModel @Inject constructor(
         _testResult.value = null
     }
 
+    // ✅ MỚI: Reset RIÊNG học tập thích nghi cho camera này — tách hẳn khỏi "Test ngay"
+    // (trước đây "Test ngay" âm thầm xoá học tập mỗi lần bấm do gọi chung resetCircuitBreaker()).
+    // Đây là hành động phá huỷ dữ liệu (xoá deltaTrigger/absDiffTrigger/mẫu học/baseline về mặc
+    // định), nên UI nên xác nhận với người dùng trước khi gọi hàm này.
+    fun resetLearning() {
+        viewModelScope.launch {
+            cameraSkill.resetLearningState(cameraId)
+            _testResult.value = "🧠 Đã reset học tập thích nghi về mặc định cho camera này."
+            logger.i("CameraDetailViewModel", "resetLearning: đã reset học tập cho id=$cameraId")
+        }
+    }
+
 
 
     // ✅ MỚI: Hàm nạp danh sách thiết bị/camera từ cơ sở dữ liệu

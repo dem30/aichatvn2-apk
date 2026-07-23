@@ -66,6 +66,7 @@ fun CameraDetailScreen(
     var showScheduleAlertActionSheet by remember { mutableStateOf(false) }
 
     var showTestDialog by remember { mutableStateOf(false) }
+    var showResetLearningDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(testResult) {
@@ -150,6 +151,31 @@ fun CameraDetailScreen(
                     showTestDialog = false
                     viewModel.clearTestResult()
                 }) { Text("Đóng") }
+            }
+        )
+    }
+
+    // ✅ MỚI: dialog xác nhận trước khi xoá học tập thích nghi — hành động không thể hoàn tác
+    // (đưa deltaTrigger/absDiffTrigger/mẫu học/baseline về mặc định).
+    if (showResetLearningDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetLearningDialog = false },
+            title = { Text("🔄 Reset học tập thích nghi?") },
+            text = {
+                Text(
+                    "Toàn bộ ngưỡng delta/diff đã học, mẫu báo giả và baseline nền của camera này " +
+                        "sẽ bị xoá và đưa về mặc định. Hành động này không thể hoàn tác.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetLearningDialog = false
+                    viewModel.resetLearning()
+                }) { Text("Reset", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetLearningDialog = false }) { Text("Huỷ") }
             }
         )
     }
@@ -426,6 +452,18 @@ fun CameraDetailScreen(
                                 Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.errorContainer) {
                                     Text("⚠️ Circuit Breaker OPEN", modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
                                 }
+                            }
+
+                            // ✅ MỚI: nút reset RIÊNG cho học tập thích nghi — trước đây không có,
+                            // chỉ có thể vô tình xoá học tập qua nút "Test ngay" (đã sửa để không
+                            // còn làm vậy nữa). Có dialog xác nhận vì đây là hành động xoá dữ liệu.
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                onClick = { showResetLearningDialog = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("🔄 Reset học tập")
                             }
                         } else {
                             Text(
