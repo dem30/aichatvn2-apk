@@ -115,6 +115,10 @@ data class AlertEntity(
     val timestamp: Long,
     val aiComment: String,
     val diff: Int,
+    // ✅ MỚI: giá trị delta THẬT đã đo (kotlin.math.abs(currentDiff - lastDiff)) tại thời điểm
+    // báo động — khác với deltaTrigger (ngưỡng cấu hình). Cần để markFalsePositiveAndLearn học
+    // đúng trên nhiễu quan sát được thay vì học nhầm trên ngưỡng cũ.
+    val delta: Int = 0,
     val deltaTrigger: Int,
     val absDiffTrigger: Int,
     val imagePath: String? = null,

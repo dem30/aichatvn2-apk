@@ -56,7 +56,6 @@ import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
 
-
 @Singleton
 class CameraSkill @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -68,7 +67,7 @@ class CameraSkill @Inject constructor(
     private val configProvider: AppConfigProvider,
     private val deviceRegistry: DeviceRegistry,
     private val intentExecutorProvider: Provider<IntentExecutor>, 
-    private val houseManagerProvider: Provider<HouseManagerSkill>, // ✅ Kết nối với Quản gia (cùng package nên không cần import riêng)
+    private val houseManagerProvider: Provider<HouseManagerSkill>,
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
@@ -124,6 +123,15 @@ class CameraSkill @Inject constructor(
                 )
             ),
             PluginAction(
+                name = "mark_false_positive",
+                description = "Báo cáo báo động giả cho camera để hệ thống tự học và nâng ngưỡng lọc nhiễu",
+                examples = listOf("báo động giả camera", "không có trộm camera", "báo giả"),
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
+                    PluginParameter("alertId", "string", "Mã cảnh báo (tùy chọn)", false, "string")
+                )
+            ),
+            PluginAction(
                 name = "configure",
                 description = "Cập nhật cấu hình kỹ thuật cho thiết bị camera",
                 examples = listOf("cấu hình camera", "cập nhật camera"),
@@ -163,10 +171,6 @@ class CameraSkill @Inject constructor(
         var deltaTrigger: Int = 10,
         var absDiffTrigger: Int = 18,
         var cooldownUntil: Long = 0L,
-        // ✅ MỚI: thời điểm AI xác nhận gần nhất là "bình thường" (state=normal, không phải chỉ
-        // là không gọi AI). Dùng để cắt chuỗi gộp cảnh báo — nếu có 1 lần xác nhận bình thường
-        // xảy ra SAU alert gần nhất, thì lần suspicious tiếp theo phải là sự kiện MỚI, không được
-        // gộp chung dù còn trong mergeWindowMs.
         var lastNormalScanAt: Long = 0L
     )
     
@@ -202,10 +206,8 @@ class CameraSkill @Inject constructor(
     private data class VisionParseResult(
         val displayComment: String,         
         val structuredSuspicious: Boolean?, 
-        val objects: List<String>,           // ✅ MỚI: nhãn đối tượng AI phát hiện — GroqClientTool.STRUCTURED_VISION_SUFFIX
-                                              // đã ép AI trả field này ở MỌI lần gọi analyzeImage(), nhưng trước đây
-                                              // parseVisionResult() bỏ qua hoàn toàn, không đọc.
-        val rawJson: org.json.JSONObject?    
+        val objects: List<String>,           
+        val rawJson: JSONObject?    
     )
     
     private val learningStates = ConcurrentHashMap<String, CameraLearningState>()
@@ -295,9 +297,42 @@ class CameraSkill @Inject constructor(
             "status" -> handleStatus(params)
             "set_active" -> handleSetActive(params)
             "set_smart_mode" -> handleSetSmartMode(params)
+            "mark_false_positive" -> handleMarkFalsePositive(params)
             "configure" -> handleConfigure(params)
             else -> PluginResult.Failure("Action không xác định: $action")
         }
+    }
+
+    private suspend fun handleMarkFalsePositive(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
+        val cameraId = (params["cameraId"] as? String)?.trim()
+            ?: return@withContext PluginResult.Failure("Thiếu cameraId. Dùng action list_cameras để xem danh sách.")
+        val alertId = (params["alertId"] as? String)?.trim()
+
+        val alert = if (!alertId.isNullOrBlank()) {
+            database.alertDao().getAlertById(alertId)
+        } else {
+            database.alertDao().getLatestAlertForCamera(cameraId)
+        }
+
+        val diffToLearn = alert?.diff ?: 20
+        // ✅ ĐÃ SỬA: dùng alert.delta (giá trị NHIỄU THẬT đã đo lúc báo động), thay vì
+        // alert.deltaTrigger (chỉ là ngưỡng cấu hình đang active tại thời điểm đó, không phải
+        // giá trị quan sát được). Dùng nhầm deltaTrigger khiến thuật toán học tính percentile
+        // trên chính các ngưỡng cũ thay vì trên nhiễu thực tế quan sát được.
+        val deltaToLearn = alert?.delta ?: 12
+
+        val message = markFalsePositiveAndLearn(cameraId, diffToLearn, deltaToLearn)
+
+        if (alert != null) {
+            database.alertDao().insertAlert(
+                alert.copy(
+                    isSuspicious = 0,
+                    aiComment = "[Đã xác nhận Báo giả] ${alert.aiComment}"
+                )
+            )
+        }
+
+        PluginResult.Success(mapOf("message" to message))
     }
     
     private suspend fun handleConfigure(params: Map<String, Any>): PluginResult = withContext(Dispatchers.IO) {
@@ -560,7 +595,9 @@ class CameraSkill @Inject constructor(
         }
         cameras.forEach { camera ->
             val tid = camera.id.trim()
-            learningStates[tid] = CameraLearningState()
+            // 🧠 NẠP LẠI MẪU HỌC TỪ SQLITE (Bảo vệ dữ liệu khi RAM bị xóa / Reboot App)
+            val restoredState = loadLearningStateFromDb(tid)
+            learningStates[tid] = restoredState
             circuitBreakers[tid] = CircuitBreakerState()
         }
         updateDiagnostics()
@@ -598,6 +635,7 @@ class CameraSkill @Inject constructor(
                     
                     scope.launch(Dispatchers.IO) {
                         database.worldStateDao().deleteStateBySourceAndId("camera", tid)
+                        database.worldStateDao().deleteStateBySourceAndId("system", "cam_learning_$tid")
                     }
                 }
                 if (orphans.isNotEmpty()) {
@@ -606,6 +644,115 @@ class CameraSkill @Inject constructor(
             }
         } catch (e: Exception) {
             logger.e("CameraSkill", "pruneOrphanedCameraState error: ${e.message}", e)
+        }
+    }
+
+    /**
+     * 💾 Lưu trạng thái tự học (Mẫu học + Ngưỡng nhạy cảm) vào SQLite
+     */
+    private suspend fun saveLearningStateToDb(cameraId: String, state: CameraLearningState) {
+        try {
+            val json = JSONObject().apply {
+                put("deltaTrigger", state.deltaTrigger)
+                put("absDiffTrigger", state.absDiffTrigger)
+                put("realEvents", state.realEvents)
+                put("falseDeltas", JSONArray(state.falseDeltas))
+                put("falseDiffs", JSONArray(state.falseDiffs))
+            }.toString()
+
+            WorldStateHelper.setAttribute(
+                database.worldStateDao(),
+                source = "system",
+                sourceId = "cam_learning_$cameraId",
+                key = "state",
+                value = json
+            )
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "Không thể lưu LearningState vào DB: ${e.message}")
+        }
+    }
+
+    /**
+     * 🔄 Đọc lại trạng thái tự học từ SQLite khi ứng dụng khởi động lại
+     */
+    private suspend fun loadLearningStateFromDb(cameraId: String): CameraLearningState {
+        return try {
+            val rawJson = WorldStateHelper.getAttribute(
+                database.worldStateDao(),
+                source = "system",
+                sourceId = "cam_learning_$cameraId",
+                key = "state"
+            ) ?: return CameraLearningState()
+
+            val json = JSONObject(rawJson)
+            val falseDeltas = mutableListOf<Int>()
+            val falseDiffs = mutableListOf<Int>()
+
+            val deltasArr = json.optJSONArray("falseDeltas")
+            if (deltasArr != null) {
+                for (i in 0 until deltasArr.length()) falseDeltas.add(deltasArr.getInt(i))
+            }
+
+            val diffsArr = json.optJSONArray("falseDiffs")
+            if (diffsArr != null) {
+                for (i in 0 until diffsArr.length()) falseDiffs.add(diffsArr.getInt(i))
+            }
+
+            CameraLearningState(
+                deltaTrigger = json.optInt("deltaTrigger", 10),
+                absDiffTrigger = json.optInt("absDiffTrigger", 18),
+                realEvents = json.optInt("realEvents", 0),
+                falseDeltas = falseDeltas,
+                falseDiffs = falseDiffs
+            )
+        } catch (e: Exception) {
+            CameraLearningState()
+        }
+    }
+
+    /**
+     * 🧠 HÀM PHẢN HỒI BÁO ĐỘNG GIẢ (Feedback-Based Learning)
+     * Dùng cho cả Chế độ AI & Không-AI khi người dùng bấm nút "Báo động giả" trên UI hoặc Chat.
+     */
+    suspend fun markFalsePositiveAndLearn(cameraId: String, diff: Int, delta: Int): String {
+        val tid = cameraId.trim()
+        val cam = database.cameraDao().getCameraById(tid) ?: return "Không tìm thấy camera $tid"
+        
+        return getMutexForCamera(tid).withLock {
+            val state = learningStates.getOrPut(tid) { loadLearningStateFromDb(tid) }
+            
+            // Nạp mẫu học phản hồi từ người dùng
+            state.falseDeltas.add(delta)
+            state.falseDiffs.add(diff)
+            if (state.falseDeltas.size > 100) {
+                state.falseDeltas.removeAt(0)
+                state.falseDiffs.removeAt(0)
+            }
+
+            val oldDelta = state.deltaTrigger
+            val oldDiff = state.absDiffTrigger
+
+            // Tự động điều chỉnh nâng ngưỡng
+            val recentDeltas = state.falseDeltas.takeLast(30).sorted()
+            val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
+            state.deltaTrigger = (recentDeltas[idx] + 2).coerceAtMost(25)
+
+            val recentDiffs = state.falseDiffs.takeLast(30).sorted()
+            val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
+            state.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+
+            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả
+            if (state.absDiffTrigger <= diff) {
+                state.absDiffTrigger = (diff + 2).coerceAtMost(35)
+            }
+
+            // Lưu ngay vào SQLite
+            saveLearningStateToDb(tid, state)
+            updateDiagnostics()
+
+            "✅ Đã ghi nhận báo động giả cho Camera \"${cam.customername}\". " +
+            "Ngưỡng diff nâng từ $oldDiff ➔ ${state.absDiffTrigger}, " +
+            "ngưỡng delta nâng từ $oldDelta ➔ ${state.deltaTrigger} (Số mẫu học: ${state.falseDeltas.size})."
         }
     }
     
@@ -788,8 +935,7 @@ class CameraSkill @Inject constructor(
     
     private fun checkPendingReset(cameraId: String, currentDiff: Int, absDiffTrigger: Int): Boolean {
         val tid = cameraId.trim()
-        val pending = pendingResets[tid]
-        if (pending == null) return false
+        val pending = pendingResets[tid] ?: return false
         
         val diffChange = kotlin.math.abs(currentDiff - pending.diff)
         val timeSince = System.currentTimeMillis() - pending.timestamp
@@ -922,11 +1068,6 @@ class CameraSkill @Inject constructor(
     }
 
     private fun parseVisionResult(raw: String): VisionParseResult {
-        // ✅ ĐÃ SỬA: Một số model suy luận sâu trên Groq (dòng Qwen/DeepSeek Preview) đôi khi tự
-        // sinh khối suy luận ngầm <think>...</think> TRƯỚC khối JSON thật, làm hỏng việc cắt
-        // chuỗi theo dấu ngoặc { } bên dưới (vì indexOf('{') bắt trúng dấu ngoặc bên trong khối
-        // suy luận, không phải JSON thật). Dọn sạch khối này trước khi tìm JSON.
-        // 1. Loại bỏ khối suy luận <think>...</think> nếu có của các mô hình DeepSeek/Qwen [2]
         val cleanedRaw = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "").trim()
 
         val start = cleanedRaw.indexOf('{')
@@ -939,7 +1080,7 @@ class CameraSkill @Inject constructor(
         }
 
         return try {
-            val json = org.json.JSONObject(cleaned)
+            val json = JSONObject(cleaned)
             val state = json.optString("state", "").lowercase().trim()
             val structuredSuspicious = when (state) {
                 "suspicious" -> true
@@ -947,7 +1088,6 @@ class CameraSkill @Inject constructor(
                 else -> null 
             }
             
-            // 2. ĐỒNG BỘ PHẲNG: Đọc mảng chuỗi phẳng cực kỳ tinh gọn [14]
             val objectsRaw = json.optJSONArray("objects")
             val objects = mutableListOf<String>()
             val objectNames = mutableListOf<String>()
@@ -957,7 +1097,6 @@ class CameraSkill @Inject constructor(
                     val item = objectsRaw.optString(i, "").trim().lowercase()
                     if (item.isNotEmpty()) {
                         objects.add(item)
-                        // Lọc các nhóm phổ quát ra để dùng làm câu mô tả dự phòng sinh động hơn
                         if (item !in listOf("người", "nguoi", "đồ vật", "do vat", "động vật", "dong vat", "thực vật", "thuc vat")) {
                             objectNames.add(item)
                         }
@@ -965,7 +1104,6 @@ class CameraSkill @Inject constructor(
                 }
             }
 
-            // 3. Dựng mô tả an toàn: không bao giờ để lộ chuỗi JSON thô ra thông báo đẩy [2]
             val rawDescription = json.optString("description", "").trim()
             val description = rawDescription.ifBlank {
                 if (objectNames.isNotEmpty()) {
@@ -982,13 +1120,11 @@ class CameraSkill @Inject constructor(
                 rawJson = json
             )
         } catch (e: Exception) {
-            logger.w("CameraSkill", "⚠️ Vision JSON parse thất bại (${e.message}) — model không trả đúng schema JSON yêu cầu. Raw (rút gọn 300 ký tự): ${cleanedRaw.take(300)}")
-            // Trả về cleanedRaw dạng văn xuôi thông báo lỗi (không lộ chuỗi JSON thô) [2]
+            logger.w("CameraSkill", "⚠️ Vision JSON parse thất bại (${e.message}) — model không trả đúng schema JSON yêu cầu.")
             VisionParseResult(displayComment = cleanedRaw, structuredSuspicious = null, objects = emptyList(), rawJson = null)
         }
     }
 
-                                         
     private suspend fun processImageWithLearning(
         camera: CameraConfigEntity,
         imageBytes: ByteArray,
@@ -999,7 +1135,7 @@ class CameraSkill @Inject constructor(
     ): Map<String, Any> {
         val tid = camera.id.trim()
         return getMutexForCamera(tid).withLock {
-            val state = learningStates.getOrPut(tid) { CameraLearningState() }
+            val state = learningStates.getOrPut(tid) { loadLearningStateFromDb(tid) }
             val now = System.currentTimeMillis()
             
             try {
@@ -1033,10 +1169,12 @@ class CameraSkill @Inject constructor(
                 
                 val shouldReset = checkPendingReset(tid, currentDiff, absDiffTrigger)
                 if (shouldReset) {
-                    learningStates[tid] = CameraLearningState(
+                    val resetState = CameraLearningState(
                         lastPhash = currentPhash,
                         lastDiff = currentDiff
                     )
+                    learningStates[tid] = resetState
+                    saveLearningStateToDb(tid, resetState)
                     return@withLock mapOf(
                         "cameraId" to tid,
                         "success" to true,
@@ -1045,7 +1183,6 @@ class CameraSkill @Inject constructor(
                     )
                 }
                 
-                // Quyết định gọi API AI (Chỉ gọi khi BẬT AI và có biến động hoặc ép buộc)
                 val shouldCallAi = (isSuddenChange || forceAi) && isSmartMode &&
                     (forceAi || camera.enableCooldown == 0 || now >= state.cooldownUntil)
                 
@@ -1055,47 +1192,61 @@ class CameraSkill @Inject constructor(
                 var finalStateJson: String? = null
                 
                 if (shouldCallAi) {
-                    // 🔴 TRƯỜNG HỢP 1: AI BẬT -> Gọi Groq AI phân tích prompt & từ khóa
                     val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
                     val aiResult: String = try {
                         withTimeout(20_000L) {
                             groqClient.analyzeImage(optimizedBytes, prompt)
                         }
                     } catch (e: TimeoutCancellationException) {
-                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid, bỏ qua phân tích AI lần này")
-                        "Không thể phân tích (AI timeout)"
+                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid")
+                        // ✅ ĐÃ SỬA: gắn sentinel GroqClientTool.AI_ERROR_PREFIX vào chuỗi lỗi TỰ SINH
+                        // ngay tại CameraSkill (không phải do GroqClientTool trả về) — nếu không, chuỗi
+                        // này sẽ lọt qua isApiError bên dưới y hệt bug gốc đã phát hiện.
+                        "${GroqClientTool.AI_ERROR_PREFIX}Không thể phân tích (AI timeout)"
                     }
 
-                    val visionParsed = parseVisionResult(aiResult)
-                    aiComment = visionParsed.displayComment
-                    visionObjects = visionParsed.objects
+                    // 🔴 CHẶN TRONG TRƯỜNG HỢP LỖI API / HẾT TOKEN QUOTA
+                    // ✅ ĐÃ SỬA: không còn đoán từng chuỗi lỗi bằng contains()/startsWith() thủ công
+                    // (cách cũ đã xác nhận LỌT ít nhất 2 case: lỗi 401 sai key, và lỗi parse response
+                    // rỗng/hỏng — vì các chuỗi đó không chứa "lỗi api", "rate limit", "timeout" hay
+                    // "không thể phân tích"). Giờ dựa vào 1 sentinel cố định duy nhất mà GroqClientTool
+                    // gắn vào MỌI nhánh lỗi, không cần đoán câu chữ tiếng Việt nữa.
+                    val isApiError = aiResult.startsWith(GroqClientTool.AI_ERROR_PREFIX)
 
-                    val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
-                        camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
+                    if (isApiError) {
+                        logger.w("CameraSkill", "⚠️ AI gặp sự cố ($aiResult) -> Bỏ qua lọc từ khóa, tránh báo động giả")
+                        isSuspicious = false
+                        aiComment = "Không thể phân tích AI (Lỗi kết nối/Hết Quota)"
                     } else {
-                        defaultPositiveKw()
+                        val visionParsed = parseVisionResult(aiResult)
+                        aiComment = visionParsed.displayComment
+                        visionObjects = visionParsed.objects
+
+                        val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
+                            camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }
+                        } else {
+                            defaultPositiveKw()
+                        }
+                        val negativeKeywords = if (camera.aiNegativeKeywords.isNotEmpty()) {
+                            camera.aiNegativeKeywords.split(",").map { it.trim().lowercase() }
+                        } else {
+                            defaultNegativeKw()
+                        }
+
+                        val rawTextClean = aiResult.replace(Regex("<think>[\\s\\S]*?</think>"), "").lowercase().trim()
+                        val hasPositive = positiveKeywords.any { rawTextClean.contains(it) }
+                        val hasNegative = negativeKeywords.any { rawTextClean.contains(it) }
+                        val keywordMatch = hasPositive && !hasNegative
+
+                        isSuspicious = keywordMatch || visionParsed.structuredSuspicious == true
+
+                        finalStateJson = visionParsed.rawJson?.apply {
+                            put("state", if (isSuspicious) "suspicious" else "normal")
+                        }?.toString()
                     }
-                    val negativeKeywords = if (camera.aiNegativeKeywords.isNotEmpty()) {
-                        camera.aiNegativeKeywords.split(",").map { it.trim().lowercase() }
-                    } else {
-                        defaultNegativeKw()
-                    }
-
-                    val rawTextClean = aiResult.replace(Regex("<think>[\\s\\S]*?</think>"), "").lowercase().trim()
-                    val hasPositive = positiveKeywords.any { rawTextClean.contains(it) }
-                    val hasNegative = negativeKeywords.any { rawTextClean.contains(it) }
-                    val keywordMatch = hasPositive && !hasNegative
-
-                    isSuspicious = keywordMatch || visionParsed.structuredSuspicious == true
-
-                    logger.d("CameraSkill", "🔍 [Vision Decision] camera=$tid structuredSuspicious=${visionParsed.structuredSuspicious} keywordMatch=$keywordMatch => isSuspicious=$isSuspicious")
-
-                    finalStateJson = visionParsed.rawJson?.apply {
-                        put("state", if (isSuspicious) "suspicious" else "normal")
-                    }?.toString()
 
                 } else if (!isSmartMode && (isSuddenChange || forceAi)) {
-                    // 🟢 TRƯỜNG HỢP 2: AI TẮT -> Không gọi AI, dùng trạng thái mặc định theo biến động pHash
+                    // AI TẮT: Tự gán suspicious khi pHash biến động
                     isSuspicious = true
                     aiComment = "Phát hiện biến động chuyển động (Chế độ AI tắt)"
                     visionObjects = listOf("chuyển động")
@@ -1104,12 +1255,9 @@ class CameraSkill @Inject constructor(
                         put("description", aiComment)
                         put("objects", JSONArray(visionObjects))
                     }.toString()
-                    logger.d("CameraSkill", "📷 [AI TẮT] Camera $tid phát hiện biến động pHash -> Mặc định gán state = suspicious để World State ghi nhận")
                 }
 
-                // -------------------------------------------------------------------------
-                // XỬ LÝ GHI BẢN SAO SỐ (WORLD STATE) & CẢNH BÁO
-                // -------------------------------------------------------------------------
+                // XỬ LÝ LƯU THÔNG TIN BẢN SAO SỐ & CẢNH BÁO
                 if (isSuspicious) {
                     state.realEvents++
                     state.cooldownUntil = now + cooldownDurationMs()
@@ -1152,6 +1300,7 @@ class CameraSkill @Inject constructor(
                         aiComment = aiComment ?: "Phát hiện bất thường",
                         imageBytes = optimizedBytes,
                         diff = currentDiff,
+                        delta = delta,
                         deltaTrigger = deltaTrigger,
                         absDiffTrigger = absDiffTrigger,
                         emailSent = emailSent,
@@ -1168,12 +1317,10 @@ class CameraSkill @Inject constructor(
                     logger.i("CameraSkill", "🚨 ALERT handled for camera $tid (merged=$shouldMerge, id=$activeAlertId): $aiComment")
                     
                 } else {
-                    // Đánh dấu thời điểm quét bình thường
                     state.lastNormalScanAt = now
 
                     if (isMature && isSuddenChange) {
                         pendingResets[tid] = PendingResetState(currentDiff, now)
-                        logger.i("CameraSkill", "⚠️ Pending reset for camera $tid - monitoring next cycle")
                     }
 
                     withContext(Dispatchers.IO) {
@@ -1191,7 +1338,6 @@ class CameraSkill @Inject constructor(
                                 summary = "Camera ${camera.customername} ($tid): $normalComment$objectsSuffix"
                             )
                         )
-                        // Ghi nhận trạng thái normal vào World State
                         WorldStateHelper.setAttribute(
                             database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "normal"
                         )
@@ -1223,6 +1369,9 @@ class CameraSkill @Inject constructor(
                     }
                     
                     if (state.falseDeltas.size >= 3) {
+                        val oldDelta = state.deltaTrigger
+                        val oldDiff = state.absDiffTrigger
+
                         val recentDeltas = state.falseDeltas.takeLast(30).sorted()
                         val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
                         state.deltaTrigger = (recentDeltas[idx] + 2).coerceAtMost(25)
@@ -1230,6 +1379,11 @@ class CameraSkill @Inject constructor(
                         val recentDiffs = state.falseDiffs.takeLast(30).sorted()
                         val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
                         state.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
+
+                        // TỐI ƯU I/O: Chỉ ghi SQLite khi ngưỡng thực sự thay đổi!
+                        if (state.deltaTrigger != oldDelta || state.absDiffTrigger != oldDiff) {
+                            saveLearningStateToDb(tid, state)
+                        }
                     }
                 }
                 
@@ -1242,7 +1396,6 @@ class CameraSkill @Inject constructor(
                     }
                 }
                 
-                logger.d("CameraSkill", "📷 Camera $tid scanned, hasChange=$isSuddenChange, isSuspicious=$isSuspicious")
                 updateDiagnostics()
                 
                 return@withLock mapOf(
@@ -1268,9 +1421,7 @@ class CameraSkill @Inject constructor(
                 )
             }
         }
-    }              
-
-
+    }
     
     private suspend fun scanWithLearning(
         camera: CameraConfigEntity,
@@ -1443,7 +1594,7 @@ class CameraSkill @Inject constructor(
             
             val tid = camera.id.trim()
             if (!learningStates.containsKey(tid)) {
-                learningStates[tid] = CameraLearningState()
+                learningStates[tid] = loadLearningStateFromDb(tid)
                 circuitBreakers[tid] = CircuitBreakerState()
             }
             
@@ -1462,6 +1613,7 @@ class CameraSkill @Inject constructor(
             withContext(Dispatchers.IO) {
                 database.cameraDao().deleteCamera(tid)
                 database.worldStateDao().deleteStateBySourceAndId("camera", tid)
+                database.worldStateDao().deleteStateBySourceAndId("system", "cam_learning_$tid")
             }
             learningStates.remove(tid)
             circuitBreakers.remove(tid)
@@ -1488,6 +1640,7 @@ class CameraSkill @Inject constructor(
                 database.cameraDao().deleteCustomerSetting(trimmedCustomerId)
                 cameras.forEach { camera ->
                     database.worldStateDao().deleteStateBySourceAndId("camera", camera.id.trim())
+                    database.worldStateDao().deleteStateBySourceAndId("system", "cam_learning_${camera.id.trim()}")
                 }
             }
             
@@ -1588,7 +1741,12 @@ class CameraSkill @Inject constructor(
     fun resetCircuitBreaker(cameraId: String) {
         val tid = cameraId.trim()
         circuitBreakers[tid] = CircuitBreakerState()
-        learningStates[tid] = CameraLearningState()
+        val freshState = CameraLearningState()
+        learningStates[tid] = freshState
+        // ✅ ĐÃ SỬA: lưu luôn việc reset xuống SQLite. Trước đây chỉ reset trong RAM — nếu app bị
+        // kill ngay sau khi admin bấm reset thủ công, initialize() sẽ nạp lại NGƯỠNG CŨ (chưa
+        // reset) từ DB, coi như thao tác reset bị "hồi sinh ngược" một cách âm thầm.
+        scope.launch { saveLearningStateToDb(tid, freshState) }
         logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $tid")
     }
 
@@ -1621,33 +1779,27 @@ class CameraSkill @Inject constructor(
         _diagnostics.value = stats
     }
 
-    // ✅ SỬA LỖI #2 & #3: Đổi cấu trúc hàm saveAlertToHistory() để nhận trực tiếp kết quả kiểm duyệt gộp ở trên
     private suspend fun saveAlertToHistory(
         alertId: String,
         camera: CameraConfigEntity,
         aiComment: String,
         imageBytes: ByteArray?,
         diff: Int,
+        delta: Int,
         deltaTrigger: Int,
         absDiffTrigger: Int,
         emailSent: Boolean,
         scheduleId: String? = null,
         aiStateJson: String? = null,
-        objects: List<String> = emptyList(),       // ✅ MỚI: nhãn đối tượng AI phát hiện, để ghi vào
-                                                     // event log summary + world_state (xem parseVisionResult)
-        shouldMerge: Boolean = false,              // Thêm cờ gộp đã phân tích trước
-        existingAlert: AlertEntity? = null         // Nhận bản ghi cuối cùng đang hoạt động
+        objects: List<String> = emptyList(),
+        shouldMerge: Boolean = false,
+        existingAlert: AlertEntity? = null
     ) {
         val tid = camera.id.trim()
         try {
             val now = System.currentTimeMillis()
 
             if (shouldMerge && existingAlert != null) {
-                // ✅ SỬA: trước đây chỉ updateAlertEndTime() — bản ghi lịch sử vẫn giữ nguyên
-                // aiComment/diff/ảnh của lần alert ĐẦU TIÊN trong chuỗi gộp, trong khi push
-                // notification lại hiện aiComment MỚI nhất -> người dùng bấm vào noti thấy thông
-                // tin không khớp với alert_history. Giờ lưu đè ảnh mới lên đúng file cũ (tái sử
-                // dụng alertId làm tên file, không phát sinh rác) và cập nhật toàn bộ nội dung.
                 val refreshedImagePath = imageBytes?.let { saveAlertImage(existingAlert.id, it) }
                 withContext(Dispatchers.IO) {
                     database.alertDao().mergeAlertUpdate(
@@ -1686,6 +1838,9 @@ class CameraSkill @Inject constructor(
                     timestamp = now,
                     aiComment = aiComment,
                     diff = diff,
+                    // ✅ MỚI: lưu giá trị delta THẬT đã đo (không phải ngưỡng deltaTrigger) để
+                    // markFalsePositiveAndLearn có thể học đúng trên nhiễu quan sát được.
+                    delta = delta,
                     deltaTrigger = deltaTrigger,
                     absDiffTrigger = absDiffTrigger,
                     imagePath = imagePath,
@@ -1702,65 +1857,40 @@ class CameraSkill @Inject constructor(
                 }
             }
 
+            withContext(Dispatchers.IO) {
+                val objectsSuffix = if (objects.isNotEmpty()) " [objects: ${objects.joinToString(",")}]" else ""
+                val derivedEventType = when {
+                    objects.any { it in listOf("người", "nguoi", "person", "human", "kẻ đột nhập") } -> "person_detected"
+                    objects.any { it in listOf("động vật", "dong vat", "animal", "chó", "mèo", "con vật", "dog", "cat") } -> "animal_detected"
+                    objects.any { it in listOf("xe máy", "ô tô", "xe đạp", "xe", "car", "motorbike", "vehicle") } -> "vehicle_detected"
+                    else -> "motion_detected"
+                }
 
-
-            
-
-            // Cập nhật lưu World State kèm theo ID lịch trình nếu có
-                    withContext(Dispatchers.IO) {
-                        // ✅ MỚI: nối object list vào summary — trước đây chỉ có $aiComment (mô tả tự do),
-                        // khiến buildMemoryContext (ChatSkill) không thể lọc/đếm theo loại đối tượng.
-                        val objectsSuffix = if (objects.isNotEmpty()) " [objects: ${objects.joinToString(",")}]" else ""
-                        // ✅ ĐÃ SỬA: eventType trước đây hardcode "person_detected" cho MỌI cảnh báo,
-                        // kể cả khi objects chỉ có "cat"/"car" — gây sai lệch dữ liệu lịch sử (nhật ký
-                        // ghi "phát hiện mèo" nhưng eventType lại là person_detected). Nay suy ra động
-                        // theo đúng nhãn đối tượng AI thực sự phát hiện được.
-                        
-                      
-                      
-                      
-                      // Cập nhật đoạn xác định derivedEventType trong hàm saveAlertToHistory thuộc CameraSkill.kt:
-
-val derivedEventType = when {
-    objects.any { it in listOf("người", "nguoi", "person", "human", "kẻ đột nhập") } -> "person_detected"
-    objects.any { it in listOf("động vật", "dong vat", "animal", "chó", "mèo", "con vật", "dog", "cat") } -> "animal_detected"
-    // Xe cộ lúc này thuộc nhóm đồ vật cụ thể, chúng ta vẫn bắt chính xác dựa trên tên gọi [14]
-    objects.any { it in listOf("xe máy", "ô tô", "xe đạp", "xe", "car", "motorbike", "vehicle") } -> "vehicle_detected"
-    else -> "motion_detected"
-}
-
-
-
-
-                      
-                        database.eventLogDao().insertLog(
-                            com.aichatvn.agent.data.model.EventLogEntity(
-                                id = java.util.UUID.randomUUID().toString(),
-                                timestamp = now,
-                                source = "camera",
-                                sourceId = tid,
-                                eventType = derivedEventType,
-                                value = "Phát hiện bất thường",
-                                summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment$objectsSuffix"
-                            )
-                        )
-                        // Ghi nhận trạng thái chung
-                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                            database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
-                        )
-                        // ✅ MỚI: Ghi riêng "objects" vào world_state (merge theo key, không đổi schema DB)
-                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                            database.worldStateDao(), source = "camera", sourceId = tid, key = "objects",
-                            value = org.json.JSONArray(objects).toString()
-                        )
-                        // ✅ MỚI: Nếu có scheduleId, ghi nhận riêng trạng thái phân tách cho lịch trình này
-                        if (!scheduleId.isNullOrBlank()) {
-                            com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                                database.worldStateDao(), source = "camera", sourceId = tid, key = "state_$scheduleId", value = "suspicious"
-                            )
-                        }
-                    }
-                    } catch (e: Exception) {
+                database.eventLogDao().insertLog(
+                    EventLogEntity(
+                        id = UUID.randomUUID().toString(),
+                        timestamp = now,
+                        source = "camera",
+                        sourceId = tid,
+                        eventType = derivedEventType,
+                        value = "Phát hiện bất thường",
+                        summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment$objectsSuffix"
+                    )
+                )
+                WorldStateHelper.setAttribute(
+                    database.worldStateDao(), source = "camera", sourceId = tid, key = "state", value = "suspicious"
+                )
+                WorldStateHelper.setAttribute(
+                    database.worldStateDao(), source = "camera", sourceId = tid, key = "objects",
+                    value = JSONArray(objects).toString()
+                )
+                if (!scheduleId.isNullOrBlank()) {
+                    WorldStateHelper.setAttribute(
+                        database.worldStateDao(), source = "camera", sourceId = tid, key = "state_$scheduleId", value = "suspicious"
+                    )
+                }
+            }
+        } catch (e: Exception) {
             logger.e("CameraSkill", "saveAlertToHistory error: ${e.message}", e)
         }
     }

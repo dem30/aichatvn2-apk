@@ -104,7 +104,8 @@ fun AlertHistoryScreen(
                             if (alert.isRead == 0) viewModel.markAsRead(alert.id)
                             if (alert.imagePath != null) fullImagePath = alert.imagePath
                         },
-                        onDelete = { viewModel.deleteAlert(alert.id) }
+                        onDelete = { viewModel.deleteAlert(alert.id) },
+                        onMarkFalsePositive = { viewModel.markAsFalsePositive(alert) }
                     )
                 }
             }
@@ -163,7 +164,8 @@ fun AlertHistoryScreen(
 private fun AlertCard(
     alert: AlertEntity,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onMarkFalsePositive: () -> Unit
 ) {
     val isUnread = alert.isRead == 0
 
@@ -254,8 +256,21 @@ private fun AlertCard(
                             fontWeight = if (isUnread) FontWeight.Bold else FontWeight.Normal
                         )
                     }
-                    IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Xóa", modifier = Modifier.size(18.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // ✅ MỚI: nút "Báo động giả" — chỉ hiện khi alert còn đang isSuspicious=1,
+                        // ẩn đi sau khi đã xác nhận (tránh học lại nhiều lần trên cùng 1 alert).
+                        if (alert.isSuspicious == 1) {
+                            IconButton(onClick = onMarkFalsePositive, modifier = Modifier.size(28.dp)) {
+                                Icon(
+                                    Icons.Default.ThumbDown,
+                                    contentDescription = "Báo động giả",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                        IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Xóa", modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
 

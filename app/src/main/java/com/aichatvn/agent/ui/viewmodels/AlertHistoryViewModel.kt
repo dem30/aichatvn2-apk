@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
+import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.NotificationSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,13 +18,10 @@ import javax.inject.Inject
 class AlertHistoryViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val database: AppDatabase,
-    // ✅ MỚI: Cần để huỷ notification hệ thống tương ứng ngay khi Admin xử lý xong alert trong
-    // app (đánh dấu đã đọc / xoá) — trước đây 2 thứ này không liên quan gì nhau, notification cứ
-    // nằm ì trên thanh trạng thái dù alert đã được xử lý xong trong danh sách.
-    private val notificationSkill: NotificationSkill
+    private val notificationSkill: NotificationSkill,
+    private val cameraSkill: CameraSkill // ✅ MỚI: Inject CameraSkill để nạp mẫu học phản hồi
 ) : ViewModel() {
 
-    // Nếu có cameraId (đến từ CameraDetailScreen) -> chỉ xem cảnh báo của camera đó
     val cameraId: String = savedStateHandle.get<String>("cameraId")?.takeIf { it.isNotBlank() } ?: ""
     val isFiltered: Boolean get() = cameraId.isNotEmpty()
 
@@ -47,17 +45,41 @@ class AlertHistoryViewModel @Inject constructor(
     fun markAsRead(alertId: String) {
         viewModelScope.launch {
             database.alertDao().markAsRead(alertId)
-            // ✅ MỚI: Huỷ notification hệ thống ứng với đúng alert này — dùng lại cùng công thức
-            // ID (notificationIdForAlert) mà CameraSkill đã dùng lúc gửi, nên chắc chắn khớp.
             notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alertId))
+        }
+    }
+
+    /**
+     * 🧠 MỚI: Người dùng bấm nút "Báo động giả" trên giao diện danh sách Cảnh báo
+     * Hệ thống tự động trích xuất thông số diff, delta của cảnh báo này, đẩy vào CameraSkill
+     * để nâng ngưỡng lọc nhiễu ngay lập tức.
+     */
+    fun markAsFalsePositive(alert: AlertEntity) {
+        viewModelScope.launch {
+            // Kích hoạt tiến trình học từ phản hồi
+            cameraSkill.markFalsePositiveAndLearn(
+                cameraId = alert.cameraId,
+                diff = alert.diff,
+                // ✅ SỬA: dùng alert.delta (giá trị nhiễu THẬT đã đo), không phải alert.deltaTrigger
+                // (ngưỡng cấu hình) — đúng bug đã sửa ở CameraSkill.handleMarkFalsePositive (đường
+                // chat), nhưng nút bấm này gọi thẳng markFalsePositiveAndLearn qua một đường vào
+                // thứ hai nên bị lệch lại y hệt.
+                delta = alert.delta
+            )
+            // Đánh dấu cảnh báo này thành không nghi vấn (isSuspicious = 0)
+            database.alertDao().insertAlert(
+                alert.copy(
+                    isSuspicious = 0,
+                    aiComment = "[Đã xác nhận Báo giả] ${alert.aiComment}"
+                )
+            )
+            // Hủy thông báo đẩy tương ứng
+            notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alert.id))
         }
     }
 
     fun markAllAsRead() {
         viewModelScope.launch {
-            // ✅ MỚI: Huỷ notification của TỪNG alert đang hiện trong danh sách trước khi cập
-            // nhật DB — lấy danh sách hiện tại (alerts.value) vì sau khi markAllAsRead() DB đã
-            // đổi isRead nhưng ta chỉ cần đúng tập alertId để tính lại notification ID.
             alerts.value.forEach { alert ->
                 notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alert.id))
             }
@@ -68,14 +90,11 @@ class AlertHistoryViewModel @Inject constructor(
 
     fun deleteAlert(alertId: String) {
         viewModelScope.launch {
-            // Xóa file ảnh đính kèm (nếu có) trước khi xóa record
             val alert = database.alertDao().getAlertById(alertId)
             alert?.imagePath?.let { path ->
                 runCatching { java.io.File(path).delete() }
             }
             database.alertDao().deleteAlert(alertId)
-            // ✅ MỚI: Alert đã bị xoá khỏi lịch sử — notification tương ứng (nếu còn hiện) cũng
-            // không còn ý nghĩa gì để giữ lại trên thanh trạng thái nữa.
             notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alertId))
         }
     }

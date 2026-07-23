@@ -54,7 +54,11 @@ private data class GroqUsage(
 
 private data class GroqParsedResponse(
     val text: String,
-    val usage: GroqUsage?
+    val usage: GroqUsage?,
+    // ✅ MỚI: cờ có cấu trúc đánh dấu đây là nhánh lỗi (HTTP lỗi, parse lỗi, response rỗng...)
+    // thay vì để caller phải đoán qua startsWith()/contains() trên câu chữ tiếng Việt — cách cũ
+    // đã xác nhận lọt ít nhất 2 case (401 sai key, parse response rỗng/hỏng).
+    val isError: Boolean = false
 )
 
 class GroqRoutingException(message: String) : Exception(message)
@@ -67,6 +71,12 @@ class GroqClientTool @Inject constructor(
     private val configProvider: AppConfigProvider
 ) {
     companion object {
+        // ✅ MỚI: sentinel cố định duy nhất cho MỌI đường lỗi mà analyzeImage() có thể trả ra.
+        // Ký tự \u0000 đầu để không bao giờ trùng với văn bản AI thật (kể cả tiếng Anh/tiếng Việt
+        // đổi sau này). CameraSkill.isApiError chỉ cần startsWith(AI_ERROR_PREFIX), không cần
+        // đoán từng chuỗi lỗi cụ thể nữa.
+        const val AI_ERROR_PREFIX = "\u0000AI_ERR:"
+
         private const val BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
         private val DEFAULT_MODEL_TEXT    get() = AppConfigDefaults.defaultOf(AppConfigDefaults.GROQ_MODEL_TEXT)
@@ -474,8 +484,11 @@ class GroqClientTool @Inject constructor(
                 
                 // ✅ SỬA: routeIntent chính thức sử dụng hàm parseResponse chung của hệ thống.
                 // Loại bỏ thẻ suy luận <think> nếu model router tự sinh ra, chống trả về chuỗi rỗng trước khi router parse JSON.
+                // ✅ MỚI: dùng parsed.isError thay vì đoán prefix "❌"/"⚠️"/"Lỗi API:" — cách cũ bị
+                // lọt đúng case parse-response-rỗng/hỏng (dòng trả "Không thể đọc phản hồi từ AI...")
+                // vì chuỗi đó không khớp bất kỳ điều kiện startsWith nào, y hệt bug đã tìm thấy ở CameraSkill.
                 val parsed = parseResponse(response, "routeIntent")
-                if (parsed.text.startsWith("❌") || parsed.text.startsWith("⚠️") || parsed.text.startsWith("Lỗi API:")) {
+                if (parsed.isError) {
                     throw GroqRoutingException("Router error: ${parsed.text}")
                 }
                 Pair(parsed.text, parsed.usage)
@@ -504,7 +517,7 @@ class GroqClientTool @Inject constructor(
 
     suspend fun analyzeImage(imageBytes: ByteArray, prompt: String): String = withContext(Dispatchers.IO) {
         val apiKey = apiKeyProvider.getKey()
-            ?: return@withContext "⚠️ Chưa cấu hình Groq API key."
+            ?: return@withContext "$AI_ERROR_PREFIX⚠️ Chưa cấu hình Groq API key."
 
         try {
             val model     = modelVision()
@@ -557,11 +570,14 @@ class GroqClientTool @Inject constructor(
             }
 
             updatePromptLogResult(logId, parsed.text, parsed.usage)
-            parsed.text
+            // ✅ MỚI: chỉ analyzeImage() gắn sentinel — chat()/routeIntent() vẫn nhận parsed.text
+            // sạch (không prefix) vì chat() hiển thị trực tiếp cho người dùng, routeIntent() đã
+            // chuyển sang dùng parsed.isError thay vì đoán chuỗi.
+            if (parsed.isError) "$AI_ERROR_PREFIX${parsed.text}" else parsed.text
 
         } catch (e: Exception) {
             logger.e("GroqClientTool", "analyzeImage error: ${e.message}", e)
-            "Không thể phân tích ảnh lúc này."
+            "${AI_ERROR_PREFIX}Không thể phân tích ảnh lúc này."
         }
     }
 
@@ -577,8 +593,9 @@ class GroqClientTool @Inject constructor(
                 429  -> "⚠️ Groq rate limit — thử lại sau ít phút."
                 else -> "Lỗi API: ${response.code}"
             }
-            return GroqParsedResponse(errText, usage)
+            return GroqParsedResponse(errText, usage, isError = true)
         }
+        var parseFailed = false
         val text = try {
             val raw = JSONObject(bodyStr)
                 .getJSONArray("choices")
@@ -607,8 +624,9 @@ class GroqClientTool @Inject constructor(
             stripped
         } catch (e: Exception) {
             logger.e("GroqClientTool", "$caller parse error: ${e.message}, body=$bodyStr")
+            parseFailed = true
             "Không thể đọc phản hồi từ AI. Vui lòng thử lại."
         }
-        return GroqParsedResponse(text, usage)
+        return GroqParsedResponse(text, usage, isError = parseFailed)
     }
 }
