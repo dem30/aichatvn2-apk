@@ -169,7 +169,6 @@ private fun AlertCard(
 ) {
     val isUnread = alert.isRead == 0
 
-    // ✅ MỚI (Tuần 3 - Phase 3): Tính toán hiển thị thời gian động khi có sự kiện nén dạng khoảng [bắt đầu] - [kết thúc]
     val timeText = remember(alert.timestamp, alert.endTime) {
         val startText = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(alert.timestamp))
         val dateText = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(alert.timestamp))
@@ -257,8 +256,6 @@ private fun AlertCard(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // ✅ MỚI: nút "Báo động giả" — chỉ hiện khi alert còn đang isSuspicious=1,
-                        // ẩn đi sau khi đã xác nhận (tránh học lại nhiều lần trên cùng 1 alert).
                         if (alert.isSuspicious == 1) {
                             IconButton(onClick = onMarkFalsePositive, modifier = Modifier.size(28.dp)) {
                                 Icon(
@@ -288,17 +285,67 @@ private fun AlertCard(
                     maxLines = 3
                 )
 
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "diff=${alert.diff} (ngưỡng ${alert.absDiffTrigger})",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    
+                // ✅ DÒNG THÔNG TIN CHI TIẾT LÝ DO KÍCH HOẠT CẢNH BÁO
+                val isDiffTriggered = alert.diff >= alert.absDiffTrigger
+                val isDeltaTriggered = alert.delta >= alert.deltaTrigger
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Tag diff
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = if (isDiffTriggered) MaterialTheme.colorScheme.errorContainer 
+                                else MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "diff: ${alert.diff}/${alert.absDiffTrigger}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (isDiffTriggered) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            color = if (isDiffTriggered) MaterialTheme.colorScheme.onErrorContainer 
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Tag delta
+                    Surface(
+                        shape = MaterialTheme.shapes.extraSmall,
+                        color = if (isDeltaTriggered) MaterialTheme.colorScheme.errorContainer 
+                                else MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "delta: ${alert.delta}/${alert.deltaTrigger}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (isDeltaTriggered) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            color = if (isDeltaTriggered) MaterialTheme.colorScheme.onErrorContainer 
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Nhãn cảnh báo nguyên nhân
+                    if (isDeltaTriggered && !isDiffTriggered) {
+                        Text(
+                            text = "⚡ Đột biến",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium
+                        )
+                    } else if (isDiffTriggered && !isDeltaTriggered) {
+                        Text(
+                            text = "🚨 Lệch khung cảnh",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+
                     if (!alert.scheduleLabel.isNullOrBlank()) {
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(4.dp))
                         Surface(
                             shape = MaterialTheme.shapes.extraSmall,
                             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
@@ -313,7 +360,7 @@ private fun AlertCard(
                     }
 
                     if (alert.emailSent == 1) {
-                        Spacer(Modifier.width(8.dp))
+                        Spacer(Modifier.width(4.dp))
                         Icon(
                             Icons.Default.Email,
                             contentDescription = "Đã gửi email",
