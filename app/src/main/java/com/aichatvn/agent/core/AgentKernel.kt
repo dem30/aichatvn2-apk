@@ -1026,27 +1026,24 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    // ✅ SỬA: Gộp guard tối giản + quy tắc catalog_search (khi cần) thành MỘT khối quy tắc đánh số
-    // liền mạch, ngắn gọn — thay vì 2 đoạn văn xuôi dài + 1 khối JSON rời rạc trước đây. Dùng cho
-    // khách đa kênh khi admin CHƯA mở điều khiển ngoài (GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = true).
-    // includeCatalogSearch chỉ = true khi được gọi từ nhánh COMBINED lúc bị khoá; nhánh "groq" (chat
-    // cho vui) luôn gọi với includeCatalogSearch = false, không có khả năng search này.
-    private fun buildMinimalGuard(maxSentences: Int, includeCatalogSearch: Boolean): String {
-        val rules = mutableListOf(
-            "Chỉ trả lời dựa trên Hỏi-Đáp được cung cấp.",
-            "Nếu có Hỏi-Đáp liên quan, hãy dùng ngay để trả lời.",
-            "Nếu Hỏi-Đáp chỉ mang tính tổng quát, vẫn dùng và có thể khuyên khách liên hệ nhân viên để biết thêm chi tiết."
+    // ✅ VIẾT LẠI: Trước đây hardcode cứng "Bạn là trợ lý tư vấn... Quy tắc 1-7..." — admin không sửa
+    // được persona/giọng điệu/quy tắc trả lời, và mỗi rule thêm vào là thêm 1 khả năng mâu thuẫn với
+    // rule khác (như vụ rule 4 vs rule 5 đã sửa ở trên). Giờ để ADMIN TỰ CẤU HÌNH toàn bộ phần đó qua
+    // GLOBAL_CHAT_SYSTEM_PROMPT; code chỉ còn tự thêm ĐÚNG 1 phần kỹ thuật bắt buộc — chỉ thị gọi tool
+    // catalog_search (JSON schema cố định mà interceptAndExecuteToolCall()/parseToolCall() phải parse
+    // đúng, nên KHÔNG thể để admin tự viết tự do phần này). Lịch sử chat không cần chèn vào system
+    // prompt vì đã được gửi riêng dưới dạng các message role user/assistant trong mảng messages.
+    private suspend fun buildMinimalGuard(includeCatalogSearch: Boolean): String {
+        val customPrompt = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CHAT_SYSTEM_PROMPT,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_SYSTEM_PROMPT)
         )
-        if (includeCatalogSearch) {
-            rules += "Chỉ khi không có Hỏi-Đáp liên quan mới trả về DUY NHẤT JSON thô: {\"tool\":\"catalog_search\",\"query\":\"...\"} (chỉ tìm trong catalogue/FAQ/thông tin chung, TUYỆT ĐỐI không phải camera/thiết bị/nhật ký)."
-            rules += "Sau khi đã có kết quả tìm kiếm thì không gọi tool lần nữa."
-        }
-        rules += "Không bịa thông tin."
-        rules += "Trả lời tối đa $maxSentences câu."
-
         return buildString {
-            append("Bạn là trợ lý tư vấn.\n\nQuy tắc:\n")
-            rules.forEachIndexed { i, rule -> append("${i + 1}. $rule\n") }
+            append(customPrompt)
+            if (includeCatalogSearch) {
+                append("\n\n")
+                append(CATALOG_SEARCH_TOOL_INSTRUCTION)
+            }
         }
     }
 

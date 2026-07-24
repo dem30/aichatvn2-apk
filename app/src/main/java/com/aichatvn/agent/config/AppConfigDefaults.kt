@@ -89,6 +89,12 @@ object AppConfigDefaults {
     // — mọi kênh trò chuyện với AI (nội bộ, Facebook, Telegram, Website) đều dùng chung 1 giá trị này.
     const val GLOBAL_CHAT_MAX_SENTENCES     = "global.chat_max_sentences"
 
+    // ✅ MỚI: Prompt hệ thống do ADMIN TỰ CẤU HÌNH (persona, giọng điệu, quy tắc trả lời...) — thay
+    // thế hoàn toàn phần văn bản hardcode cứng trước đây ("Bạn là trợ lý tư vấn... Quy tắc 1-7...").
+    // Code chỉ còn tự động thêm PHẦN KỸ THUẬT bắt buộc (chỉ thị gọi tool catalog_search đúng JSON
+    // schema mà interceptAndExecuteToolCall() parse được) — không tự ý thêm persona/quy tắc nào khác.
+    const val GLOBAL_CHAT_SYSTEM_PROMPT     = "global.chat_system_prompt"
+
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
@@ -458,6 +464,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Số câu tối đa mỗi câu trả lời AI",
             description = "Hướng dẫn AI trả lời tối đa bao nhiêu câu mỗi lượt chat (chỉ là gợi ý trong prompt, không cắt cứng như max_tokens). Áp dụng CHUNG cho mọi kênh trò chuyện với AI: nội bộ, Facebook, Telegram, Website. Mặc định 4 câu."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CHAT_SYSTEM_PROMPT,
+            value = "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.",
+            type = "string",
+            pluginId = "global",
+            label = "Prompt hệ thống cho AI chat (khi khách bị khoá điều khiển thiết bị)",
+            description = "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này."
         )
     )
 }
