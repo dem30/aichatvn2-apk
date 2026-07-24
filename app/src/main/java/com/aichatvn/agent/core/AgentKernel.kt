@@ -317,7 +317,7 @@ class AgentKernel @Inject constructor(
                         )
                     }
 
-                    interceptAndExecuteToolCall(message, responsePass1, username, cleanContext, historySnapshot)
+                    interceptAndExecuteToolCall(message, responsePass1, username, cleanContext, historySnapshot, request.allowDeviceControl)
                 }
 
                 else -> {
@@ -330,9 +330,17 @@ class AgentKernel @Inject constructor(
                         val historySnapshot = buildHistorySnapshot(username)
                         
                         val qaContext = buildQAContextForAgent(message, username)
+                        // ✅ MỚI: Chỉ nhánh COMBINED mới có khả năng search kết hợp AI+DB thật sự.
+                        // Khi khách ngoại kênh đang bị khoá điều khiển (!allowDeviceControl), cấp thêm
+                        // khả năng gọi tool catalog_search (giới hạn catalogue/FAQ/generic) để bù cho
+                        // trường hợp buildQAContextForAgent() không khớp đủ ngưỡng similarity tĩnh.
+                        // Khi đã mở khoá điều khiển, guard đã là buildFullGuard() đầy đủ như default_user
+                        // (không cần thêm catalog_search ở đây).
+                        val catalogToolGuard = if (!request.allowDeviceControl) buildCatalogSearchToolGuard() else ""
                         val fullContext = buildString {
                             append(guard)
                             if (qaContext.isNotEmpty()) append("\n\n$qaContext")
+                            append(catalogToolGuard)
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                         }
 
@@ -345,7 +353,15 @@ class AgentKernel @Inject constructor(
                             )
                         }
 
-                        interceptAndExecuteToolCall(message, responsePass1, username, fullContext, historySnapshot)
+                        interceptAndExecuteToolCall(
+                            originalMessage = message,
+                            responseRaw = responsePass1,
+                            username = username,
+                            baseContext = fullContext,
+                            historySnapshot = historySnapshot,
+                            allowDeviceControl = request.allowDeviceControl,
+                            allowCatalogSearch = !request.allowDeviceControl
+                        )
                     }
                 }
             }
@@ -487,6 +503,8 @@ class AgentKernel @Inject constructor(
         username: String,
         baseContext: String,
         historySnapshot: List<Map<String, String>>,
+        allowDeviceControl: Boolean,
+        allowCatalogSearch: Boolean = false,
         toolDepth: Int = 0
     ): String {
         val toolCall = parseToolCall(responseRaw) ?: return responseRaw
@@ -496,9 +514,26 @@ class AgentKernel @Inject constructor(
             return "Hệ thống phát hiện yêu cầu tìm kiếm lặp lại quá nhiều lần, xin lỗi vì chưa thể hoàn thành chi tiết này."
         }
 
-        if (username != "default_user") {
-            logger.w("AgentKernel", "⚠️ Chặn gọi Tool truy cập lịch sử từ tài khoản khách ngoại tuyến: $username")
-            return "Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị chỉ có thể được truy cập bởi tài khoản Quản trị viên (Chủ nhà) trên ứng dụng nội bộ thôi ạ."
+        // ✅ MỚI: Tool tìm kiếm mở rộng CHỈ trong catalogue/FAQ/generic — dành riêng cho nhánh COMBINED
+        // khi khách ngoại kênh đang bị khoá điều khiển thiết bị (xem buildCatalogSearchToolGuard()).
+        // Hoàn toàn tách biệt với db_search (nhật ký sự kiện/thiết bị) bên dưới.
+        if (toolCall.tool == "catalog_search") {
+            if (!allowCatalogSearch) {
+                logger.w("AgentKernel", "⚠️ Chặn catalog_search: chế độ/nhánh hiện tại không được phép dùng tool này.")
+                return "Xin lỗi, hiện chưa có thông tin chính xác cho câu hỏi này. Vui lòng liên hệ nhân viên hỗ trợ để được hỗ trợ thêm."
+            }
+            return handleCatalogSearchToolCall(originalMessage, toolCall, username, baseContext, historySnapshot, allowDeviceControl, toolDepth)
+        }
+
+        // ✅ SỬA: Trước đây chặn cứng theo `username != "default_user"`, khiến khách ngoại kênh dù đã
+        // được admin MỞ KHOÁ điều khiển (allowDeviceControl = true — tức chính admin đang nhắn tin từ
+        // kênh đó để điều khiển/truy cập từ xa) vẫn luôn bị từ chối truy vấn nhật ký sự kiện thật.
+        // Nay đồng bộ quyền db_search với đúng cờ allowDeviceControl mà ChatSkill đã tính từ
+        // GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL: khoá thì chặn (kể cả nếu AI lỡ tự bịa JSON tool),
+        // mở thì cho phép truy vấn thật giống hệt default_user (admin dùng app nội bộ).
+        if (!allowDeviceControl) {
+            logger.w("AgentKernel", "⚠️ Chặn gọi Tool db_search: điều khiển/truy cập đang bị khoá cho username=$username")
+            return "Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị hiện đang được khoá truy cập. Vui lòng liên hệ Quản trị viên để được mở quyền."
         }
 
         logger.i("AgentKernel", "📥 [Two-Pass Intercepted] Phát hiện AI yêu cầu gọi Tool: '${toolCall.tool}' (tham số: ${toolCall.params})")
@@ -604,6 +639,8 @@ class AgentKernel @Inject constructor(
                     username = username,
                     baseContext = enrichedContext,
                     historySnapshot = historySnapshot,
+                    allowDeviceControl = allowDeviceControl,
+                    allowCatalogSearch = allowCatalogSearch,
                     toolDepth = toolDepth + 1
                 )
             }
@@ -612,6 +649,79 @@ class AgentKernel @Inject constructor(
         } catch (e: Exception) {
             logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý dữ liệu Two-Pass Loop, quay về Fallback lượt 1: ${e.message}", e)
             responseRaw
+        }
+    }
+
+    // ✅ MỚI: Xử lý Two-Pass cho tool catalog_search — CHỈ tìm trong catalogue Hỏi-Đáp
+    // (fuzzyMatchChatCatalog qua search(), category in {faq, chat, general}), KHÔNG đụng tới
+    // camera/thiết bị/nhật ký sự kiện. An toàn để dùng cho khách ngoại kênh đang bị khoá điều khiển.
+    private suspend fun handleCatalogSearchToolCall(
+        originalMessage: String,
+        toolCall: ToolCall,
+        username: String,
+        baseContext: String,
+        historySnapshot: List<Map<String, String>>,
+        allowDeviceControl: Boolean,
+        toolDepth: Int
+    ): String {
+        val query = toolCall.params["query"]?.takeIf { it.isNotBlank() } ?: originalMessage
+        logger.i("AgentKernel", "📥 [Catalog Search Intercepted] AI yêu cầu tìm thêm trong catalogue: '$query'")
+
+        return try {
+            // Ngưỡng thấp hơn buildQAContextForAgent() (0.7f) vì đây là lượt tìm mở rộng lần 2,
+            // ưu tiên độ phủ hơn để tránh bỏ sót câu trả lời phù hợp trong catalogue.
+            val matches = search(query, username, 0.5f)
+                .sortedByDescending { it.similarity }
+                .take(MAX_QA_MATCHES_IN_CONTEXT)
+
+            val resultText = if (matches.isEmpty()) {
+                "Không tìm thấy nội dung phù hợp nào trong catalogue/FAQ cho từ khoá này."
+            } else {
+                matches.joinToString("\n") { match ->
+                    val answer = match.qa.answer.let {
+                        if (it.length > MAX_QA_ANSWER_CHARS) it.take(MAX_QA_ANSWER_CHARS) + "…" else it
+                    }
+                    "📚 Q: ${match.qa.question}\n   A: $answer (độ tương tự: ${String.format("%.2f", match.similarity)})"
+                }
+            }
+
+            val enrichedContext = buildString {
+                append(baseContext)
+                append("\n\n<SYSTEM_MEMORY>\n")
+                append(resultText)
+                append("\n\n👉 CHỈ THỊ LÂM THỜI (HỆ THỐNG ĐÃ TÌM XONG TRONG CATALOGUE):\n")
+                append("- Đây là kết quả tìm kiếm catalogue/FAQ thực tế cuối cùng.\n")
+                append("- Nếu không có nội dung phù hợp, hãy trả lời khách là chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm.\n")
+                append("- TUYỆT ĐỐI KHÔNG ĐƯỢC TRẢ VỀ JSON GỌI TOOL NỮA. Hãy trả lời bằng văn bản tự nhiên Tiếng Việt ngay lập tức.\n")
+                append("</SYSTEM_MEMORY>")
+            }
+
+            logger.i("AgentKernel", "🚀 [Catalog Search Second Call] Đang gửi lại kết quả catalogue lên Groq lượt 2 (Timeout: 15 giây)...")
+
+            withTimeout(15_000L) {
+                val responsePass2 = groqClient.chat(
+                    message = originalMessage,
+                    extraContext = enrichedContext,
+                    history = historySnapshot,
+                    imageUrl = null
+                )
+
+                interceptAndExecuteToolCall(
+                    originalMessage = originalMessage,
+                    responseRaw = responsePass2,
+                    username = username,
+                    baseContext = enrichedContext,
+                    historySnapshot = historySnapshot,
+                    allowDeviceControl = allowDeviceControl,
+                    allowCatalogSearch = true,
+                    toolDepth = toolDepth + 1
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý catalog_search Two-Pass: ${e.message}", e)
+            "Xin lỗi, hệ thống đang gặp sự cố khi tìm kiếm thông tin. Vui lòng thử lại sau."
         }
     }
 
@@ -630,17 +740,24 @@ class AgentKernel @Inject constructor(
             val json = org.json.JSONObject(potentialJson)
             val tool = json.optString("tool", "")
             
-            if (tool == "db_search") {
-                val timeframe = json.optString("timeframe", "today")
-                val objectLabel = json.optString("object", "all")
-                val source = json.optString("source", "").trim()
-                ToolCall(tool, buildMap {
-                    put("timeframe", timeframe)
-                    put("object", objectLabel)
-                    if (source.isNotBlank()) put("source", source)
-                })
-            } else {
-                null
+            when (tool) {
+                "db_search" -> {
+                    val timeframe = json.optString("timeframe", "today")
+                    val objectLabel = json.optString("object", "all")
+                    val source = json.optString("source", "").trim()
+                    ToolCall(tool, buildMap {
+                        put("timeframe", timeframe)
+                        put("object", objectLabel)
+                        if (source.isNotBlank()) put("source", source)
+                    })
+                }
+                "catalog_search" -> {
+                    val query = json.optString("query", "").trim()
+                    ToolCall(tool, buildMap {
+                        put("query", query)
+                    })
+                }
+                else -> null
             }
         } catch (e: Exception) {
             null
@@ -850,6 +967,22 @@ class AgentKernel @Inject constructor(
         "Nếu không có thông tin phù hợp, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm, " +
         "TUYỆT ĐỐI không tự bịa đặt. Không đề cập đến thiết bị, camera, điều khiển hay bất kỳ hệ thống nội bộ nào.\n" +
         "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu."
+
+    // ✅ MỚI: Guard bổ sung CHỈ dùng ở nhánh COMBINED khi khách ngoại kênh đang bị khoá điều khiển
+    // (request.allowDeviceControl == false). Cho phép Groq gọi tool tìm kiếm mở rộng nhưng giới hạn
+    // TUYỆT ĐỐI trong phạm vi catalogue/FAQ/generic (category faq/chat/general — xem
+    // TrainingSkill.fuzzyMatchChatCatalog/CHAT_CATALOG_TYPES), không phải db_search (nhật ký sự
+    // kiện/thiết bị). KHÔNG được gắn vào buildMinimalGuard() dùng chung vì guard đó cũng được nhánh
+    // "groq" (chat cho vui) tái sử dụng — chế độ Groq không được cấp khả năng search này.
+    private fun buildCatalogSearchToolGuard(): String =
+        "\n\n🔎 QUY TẮC TÌM KIẾM MỞ RỘNG (chỉ trong phạm vi Catalogue/FAQ/thông tin chung):\n" +
+        "1. Nếu nội dung Hỏi-Đáp ở trên KHÔNG đủ để trả lời câu hỏi hiện tại của khách, và bạn cần tìm thêm trong catalogue sản phẩm/FAQ/thông tin chung đã huấn luyện, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích gì thêm) theo cấu trúc sau:\n" +
+        "{\n" +
+        "  \"tool\": \"catalog_search\",\n" +
+        "  \"query\": \"từ khoá hoặc câu hỏi ngắn gọn cần tìm thêm trong catalogue\"\n" +
+        "}\n" +
+        "2. Phạm vi tìm kiếm CHỈ giới hạn trong catalogue Hỏi-Đáp/FAQ/thông tin chung đã huấn luyện. TUYỆT ĐỐI KHÔNG được dùng tool này để hỏi về camera, thiết bị, nhật ký sự kiện hay bất kỳ dữ liệu/hệ thống nội bộ nào khác.\n" +
+        "3. Nếu hệ thống đã trả lại kết quả tìm kiếm, hãy trả lời tự nhiên bằng văn bản ngay, TUYỆT ĐỐI không được gọi lại tool catalog_search lần nữa."
 
     // ✅ Prompt đầy đủ (giữ nguyên logic cũ) dành cho chat nội bộ, hoặc khách đa kênh khi admin đã
     // mở điều khiển: có ngữ cảnh nhà thông minh (HouseManagerSkill) + khả năng gọi tool db_search để
