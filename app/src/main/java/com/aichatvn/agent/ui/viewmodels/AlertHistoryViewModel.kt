@@ -64,7 +64,10 @@ class AlertHistoryViewModel @Inject constructor(
                 // (ngưỡng cấu hình) — đúng bug đã sửa ở CameraSkill.handleMarkFalsePositive (đường
                 // chat), nhưng nút bấm này gọi thẳng markFalsePositiveAndLearn qua một đường vào
                 // thứ hai nên bị lệch lại y hệt.
-                delta = alert.delta
+                delta = alert.delta,
+                // ✅ MỚI (day/night split): truyền đúng thời điểm alert THẬT xảy ra để CameraSkill
+                // học vào đúng bộ ngưỡng ngày/đêm — không phải giờ hiện tại lúc bấm nút này.
+                alertTimestamp = alert.timestamp
             )
             // Đánh dấu cảnh báo này thành không nghi vấn (isSuspicious = 0)
             database.alertDao().insertAlert(

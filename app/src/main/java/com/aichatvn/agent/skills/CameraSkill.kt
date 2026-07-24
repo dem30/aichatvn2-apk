@@ -373,12 +373,13 @@ class CameraSkill @Inject constructor(
         val diffToLearn = alert?.diff ?: 20
         val deltaToLearn = alert?.delta ?: 12
 
-        // ✅ MỚI (day/night split): học vào ĐÚNG khung giờ mà báo động THẬT sự xảy ra
-        // (alert.timestamp), không phải giờ hiện tại lúc người dùng bấm "báo giả" — nếu không,
-        // báo giả cho 1 alert ban đêm nhưng người dùng xác nhận vào sáng hôm sau sẽ bị học nhầm
-        // vào ngưỡng ban ngày.
-        val isNight = isNightTime(alert?.timestamp ?: System.currentTimeMillis())
-        val message = markFalsePositiveAndLearn(cameraId, diffToLearn, deltaToLearn, isNight)
+        // ✅ MỚI (day/night split): truyền THẲNG alert.timestamp (thời điểm báo động THẬT xảy ra)
+        // vào markFalsePositiveAndLearn — hàm tự quyết định ngày/đêm bên trong, không bắt call
+        // site tự tính isNight nữa. Trước đó tách riêng "tính isNight ở caller rồi truyền vào"
+        // đã gây lỗi build thật: AlertHistoryViewModel gọi thẳng markFalsePositiveAndLearn qua
+        // 1 đường vào khác (nút bấm trên danh sách Cảnh báo) và bị thiếu tham số — dồn logic
+        // ngày/đêm vào 1 chỗ duy nhất trong CameraSkill để không lặp lại lỗi này ở call site mới.
+        val message = markFalsePositiveAndLearn(cameraId, diffToLearn, deltaToLearn, alert?.timestamp ?: System.currentTimeMillis())
 
         if (alert != null) {
             database.alertDao().insertAlert(
@@ -862,16 +863,27 @@ class CameraSkill @Inject constructor(
 
     /**
      * 🧠 HÀM PHẢN HỒI BÁO ĐỘNG GIẢ (Feedback-Based Learning)
-     * Dùng cho cả Chế độ AI & Không-AI khi người dùng bấm nút "Báo động giả" trên UI hoặc Chat.
-     * ✅ MỚI (day/night split): [isNight] xác định học vào bộ ngưỡng nào — do caller truyền vào
-     * dựa trên thời điểm alert THẬT xảy ra, không phải giờ hiện tại lúc gọi hàm này.
+     * Dùng cho cả Chế độ AI & Không-AI khi người dùng bấm nút "Báo động giả" trên UI hoặc Chat —
+     * MỌI call site (Chat action, nút bấm trên AlertHistoryScreen, v.v.) đều gọi qua chữ ký DUY
+     * NHẤT này.
+     * ✅ MỚI (day/night split): [alertTimestamp] là thời điểm báo động THẬT sự xảy ra (mặc định
+     * = hiện tại nếu không có, ví dụ báo giả không gắn với alert cụ thể nào). Hàm tự suy ra
+     * ngày/đêm bên trong bằng isNightTime() — cố tình KHÔNG bắt caller tự tính rồi truyền
+     * Boolean vào, vì đã có 1 call site (AlertHistoryViewModel.markAsFalsePositive) bị bỏ sót và
+     * làm vỡ build khi tham số đó được thêm vào signature không có giá trị mặc định.
      */
-    suspend fun markFalsePositiveAndLearn(cameraId: String, diff: Int, delta: Int, isNight: Boolean): String {
+    suspend fun markFalsePositiveAndLearn(
+        cameraId: String,
+        diff: Int,
+        delta: Int,
+        alertTimestamp: Long = System.currentTimeMillis()
+    ): String {
         val tid = cameraId.trim()
         val cam = database.cameraDao().getCameraById(tid) ?: return "Không tìm thấy camera $tid"
         
         return getMutexForCamera(tid).withLock {
             val state = learningStates.getOrPut(tid) { loadLearningStateFromDb(tid) }
+            val isNight = isNightTime(alertTimestamp)
             val period = periodOf(state, isNight)
             val now = System.currentTimeMillis()
 
