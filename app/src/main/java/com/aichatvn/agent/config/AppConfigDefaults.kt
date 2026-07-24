@@ -38,6 +38,14 @@ object AppConfigDefaults {
     const val CAMERA_CIRCUIT_BREAKER_RESET_MS  = "camera.circuit_breaker_reset_ms"
     const val CAMERA_DAILY_REPORT_HOUR       = "camera.daily_report_hour"
 
+    // ✅ MỚI: Tách ngưỡng học báo giả (deltaTrigger/absDiffTrigger/baselineWindow) thành 2 bộ
+    // ĐỘC LẬP theo "ban ngày"/"ban đêm" — trước đây dùng chung 1 cặp ngưỡng nên cú sốc chuyển
+    // sáng/tối (IR bật/tắt) bị học chung với nhiễu ban ngày, kéo ngưỡng lên cao và làm mất khả
+    // năng bắt người thật ban ngày (ngưỡng ban ngày bị "mượn" độ cao từ ban đêm). Nếu
+    // dayStartHour >= nightStartHour thì coi cấu hình là không hợp lệ và fallback về mặc định 6/18.
+    const val CAMERA_DAY_START_HOUR          = "camera.day_start_hour"
+    const val CAMERA_NIGHT_START_HOUR        = "camera.night_start_hour"
+
     // ✅ MỚI: Tách riêng retention cho alerts (ảnh JPEG, tốn ổ đĩa) và event_logs (chỉ text, rất
     // nhẹ) — trước đây cả 2 dùng chung 1 hằng số cứng 30 ngày trong CameraSkill, khiến máy có
     // nhiều bộ nhớ (TB) không tận dụng được để giữ lịch sử lâu hơn cho Chat trả lời chính xác.
@@ -271,6 +279,22 @@ object AppConfigDefaults {
             pluginId = "camera",
             label = "Giờ gửi báo cáo ngày",
             description = "Giờ trong ngày (0–23) để gửi báo cáo tổng hợp. Mặc định 20 giờ (8 PM)."
+        ),
+        AppConfigEntity(
+            key = CAMERA_DAY_START_HOUR,
+            value = "6",
+            type = "int",
+            pluginId = "camera",
+            label = "Giờ bắt đầu ban ngày (camera)",
+            description = "Giờ trong ngày (0–23) camera bắt đầu tính là 'ban ngày' — dùng để tách riêng ngưỡng học báo giả (deltaTrigger/absDiffTrigger/baseline) giữa ban ngày và ban đêm, tránh cú sốc IR ban đêm làm ngưỡng ban ngày bị kẹt cao. Mặc định 6h sáng."
+        ),
+        AppConfigEntity(
+            key = CAMERA_NIGHT_START_HOUR,
+            value = "18",
+            type = "int",
+            pluginId = "camera",
+            label = "Giờ bắt đầu ban đêm (camera)",
+            description = "Giờ trong ngày (0–23) camera bắt đầu tính là 'ban đêm'. Từ giờ này đến trước giờ bắt đầu ban ngày, hệ thống dùng riêng bộ ngưỡng học báo giả cho ban đêm. Mặc định 18h (6 giờ tối)."
         ),
         AppConfigEntity(
             key = CAMERA_ALERT_RETENTION_DAYS,

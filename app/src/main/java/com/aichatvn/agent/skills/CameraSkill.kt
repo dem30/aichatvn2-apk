@@ -160,24 +160,38 @@ class CameraSkill @Inject constructor(
     private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()
     private fun getMutexForCamera(cameraId: String): Mutex =
         cameraMutexMap.getOrPut(cameraId.trim()) { Mutex() }
-    
-    private data class CameraLearningState(
-        var lastPhash: String = "",
-        var lastDiff: Int = 0,
+
+    // ✅ MỚI (day/night split): trước đây các mẫu học báo giả (falseDeltas/falseDiffs), baseline
+    // trung bình (baselineWindow) và ngưỡng suy ra (deltaTrigger/absDiffTrigger) dùng CHUNG 1 bộ
+    // cho toàn bộ 24h. Hệ quả: cú sốc pHash khi trời chuyển sáng/tối (camera bật/tắt IR) bị học
+    // lẫn với nhiễu ban ngày, kéo ngưỡng lên cao và làm ngưỡng ban ngày "mượn" độ cao đó — khiến
+    // người thật đi qua ban ngày (diff/delta thấp hơn cú sốc IR) không còn vượt ngưỡng để báo
+    // động nữa. Giờ tách thành 2 bộ độc lập: PeriodLearningState cho "ngày" và "đêm", mỗi bộ tự
+    // học/tự decay riêng theo khung giờ cấu hình được (CAMERA_DAY_START_HOUR/NIGHT_START_HOUR).
+    private data class PeriodLearningState(
         val falseDeltas: MutableList<Int> = mutableListOf(),
         val falseDiffs: MutableList<Int> = mutableListOf(),
+        // timestamp tương ứng 1-1 với falseDeltas/falseDiffs theo index, để "hết hạn" các mẫu
+        // nhiễu cũ sau một thời gian ổn định, thay vì ngưỡng chỉ tăng mãi mãi.
+        val falseSampleTimestamps: MutableList<Long> = mutableListOf(),
         val baselineWindow: MutableList<Int> = mutableListOf(),
-        var realEvents: Int = 0,
-        var deltaTrigger: Int = 10,
-        var absDiffTrigger: Int = 18,
-        var cooldownUntil: Long = 0L,
-        var lastNormalScanAt: Long = 0L,
-        // ✅ MỚI: giá trị baselineDiff/drift của lần quét gần nhất, chỉ để hiển thị chẩn đoán
-        // (CameraDetailScreen) — không ảnh hưởng logic isSuddenChange.
+        var deltaTrigger: Int = DEFAULT_DELTA_TRIGGER,
+        var absDiffTrigger: Int = DEFAULT_ABS_DIFF_TRIGGER,
+        // chỉ để hiển thị chẩn đoán (CameraDetailScreen) — không ảnh hưởng logic isSuddenChange.
         var lastBaselineDiff: Int = 0,
         var lastDrift: Int = 0
     )
-    
+
+    private data class CameraLearningState(
+        var lastPhash: String = "",
+        var lastDiff: Int = 0,
+        var realEvents: Int = 0,
+        var cooldownUntil: Long = 0L,
+        var lastNormalScanAt: Long = 0L,
+        val day: PeriodLearningState = PeriodLearningState(),
+        val night: PeriodLearningState = PeriodLearningState()
+    )
+
     private data class CircuitBreakerState(
         var offlineCount: Int = 0,
         var offlineSince: Long = 0L,
@@ -231,10 +245,31 @@ class CameraSkill @Inject constructor(
     private suspend fun circuitBreakerResetMs() = configProvider.getLong(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_CIRCUIT_BREAKER_RESET_MS).toLong())
     private suspend fun dailyReportHour()       = configProvider.getInt(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DAILY_REPORT_HOUR).toInt())
     private suspend fun alertMergeWindowMs()    = configProvider.getLong(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_ALERT_MERGE_WINDOW_MS).toLong())
-    // ✅ MỚI: retention tách riêng cho alerts (ảnh) và event_logs (text) — admin chỉnh được thay
-    // vì hardcode cứng 30 ngày như trước, để máy nhiều bộ nhớ có thể giữ lịch sử lâu hơn.
     private suspend fun alertRetentionDays()     = configProvider.getInt(AppConfigDefaults.CAMERA_ALERT_RETENTION_DAYS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_ALERT_RETENTION_DAYS).toInt())
     private suspend fun eventLogRetentionDays()  = configProvider.getInt(AppConfigDefaults.CAMERA_EVENT_LOG_RETENTION_DAYS, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_EVENT_LOG_RETENTION_DAYS).toInt())
+
+    // ✅ MỚI (day/night split): khung giờ do người dùng tự chỉnh trong Settings, mặc định 6h/18h.
+    private suspend fun dayStartHour()   = configProvider.getInt(AppConfigDefaults.CAMERA_DAY_START_HOUR, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_DAY_START_HOUR).toInt())
+    private suspend fun nightStartHour() = configProvider.getInt(AppConfigDefaults.CAMERA_NIGHT_START_HOUR, AppConfigDefaults.defaultOf(AppConfigDefaults.CAMERA_NIGHT_START_HOUR).toInt())
+
+    /**
+     * ✅ MỚI (day/night split): true nếu thời điểm [now] rơi vào khung giờ "ban đêm" đã cấu hình.
+     * Ban ngày = [dayStart, nightStart). Ban đêm = phần còn lại. Nếu cấu hình vô lý
+     * (dayStart >= nightStart) thì fallback về mặc định 6/18 để không làm hỏng logic.
+     */
+    private suspend fun isNightTime(now: Long = System.currentTimeMillis()): Boolean {
+        var dayStart = dayStartHour()
+        var nightStart = nightStartHour()
+        if (dayStart !in 0..23 || nightStart !in 0..23 || dayStart >= nightStart) {
+            dayStart = 6
+            nightStart = 18
+        }
+        val hour = Calendar.getInstance().apply { timeInMillis = now }.get(Calendar.HOUR_OF_DAY)
+        return hour < dayStart || hour >= nightStart
+    }
+
+    private fun periodOf(state: CameraLearningState, isNight: Boolean): PeriodLearningState =
+        if (isNight) state.night else state.day
     
     companion object {
         private val TIME_FORMATTER: DateTimeFormatter =
@@ -247,10 +282,15 @@ class CameraSkill @Inject constructor(
         // độc lập với deltaTrigger/absDiffTrigger. Đặt thành hằng số dùng chung để tránh lệch giá trị
         // giữa nơi tính toán (scanCamera) và nơi báo cáo chẩn đoán (updateDiagnostics).
         const val DRIFT_TRIGGER = 12
-        // Sàn tối thiểu cho ngưỡng học — tránh nhánh "hạ ngưỡng trực tiếp" kéo ngưỡng xuống quá thấp
-        // (quá nhạy vì nén ảnh/nhiễu cảm biến bình thường).
-        const val MIN_ABS_DIFF_TRIGGER = 8
-        const val MIN_DELTA_TRIGGER = 5
+
+        // ✅ MỚI (decay): giá trị mặc định để ngưỡng hạ về khi không còn mẫu nhiễu nào "còn hạn".
+        const val DEFAULT_DELTA_TRIGGER = 10
+        const val DEFAULT_ABS_DIFF_TRIGGER = 18
+
+        // ✅ MỚI (decay): một mẫu nhiễu (false positive) chỉ có giá trị tham chiếu trong khoảng thời
+        // gian này. Quá hạn mà không có mẫu mới nào bổ sung/xác nhận lại thì bị loại khỏi tập học,
+        // giúp ngưỡng tự hạ dần khi camera đã ổn định trở lại (ví dụ sau đợt chuyển sáng/tối).
+        const val FALSE_SAMPLE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
     }
 
     private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
@@ -331,13 +371,14 @@ class CameraSkill @Inject constructor(
         }
 
         val diffToLearn = alert?.diff ?: 20
-        // ✅ ĐÃ SỬA: dùng alert.delta (giá trị NHIỄU THẬT đã đo lúc báo động), thay vì
-        // alert.deltaTrigger (chỉ là ngưỡng cấu hình đang active tại thời điểm đó, không phải
-        // giá trị quan sát được). Dùng nhầm deltaTrigger khiến thuật toán học tính percentile
-        // trên chính các ngưỡng cũ thay vì trên nhiễu thực tế quan sát được.
         val deltaToLearn = alert?.delta ?: 12
 
-        val message = markFalsePositiveAndLearn(cameraId, diffToLearn, deltaToLearn)
+        // ✅ MỚI (day/night split): học vào ĐÚNG khung giờ mà báo động THẬT sự xảy ra
+        // (alert.timestamp), không phải giờ hiện tại lúc người dùng bấm "báo giả" — nếu không,
+        // báo giả cho 1 alert ban đêm nhưng người dùng xác nhận vào sáng hôm sau sẽ bị học nhầm
+        // vào ngưỡng ban ngày.
+        val isNight = isNightTime(alert?.timestamp ?: System.currentTimeMillis())
+        val message = markFalsePositiveAndLearn(cameraId, diffToLearn, deltaToLearn, isNight)
 
         if (alert != null) {
             database.alertDao().insertAlert(
@@ -494,8 +535,11 @@ class CameraSkill @Inject constructor(
             append("• Nhận cảnh báo: ${if (cam.enableNotification == 1) "Bật" else "Tắt"}\n")
             if (cam.landinfo != null) append("• Vị trí: ${cam.landinfo}\n")
             if (diag != null) {
-                append("• Ngưỡng học (delta/diff): ${diag.deltaTrigger}/${diag.absDiffTrigger}\n")
-                append("• Sự kiện thật: ${diag.realEvents} | Mẫu học: ${diag.falseDeltas.size}\n")
+                // ✅ MỚI (day/night split): hiển thị riêng ngưỡng ngày/đêm thay vì 1 cặp chung,
+                // để admin thấy được vì sao độ nhạy ban ngày/ban đêm khác nhau.
+                append("• Ngưỡng học BAN NGÀY (delta/diff): ${diag.day.deltaTrigger}/${diag.day.absDiffTrigger} (mẫu: ${diag.day.falseDeltas.size})\n")
+                append("• Ngưỡng học BAN ĐÊM (delta/diff): ${diag.night.deltaTrigger}/${diag.night.absDiffTrigger} (mẫu: ${diag.night.falseDeltas.size})\n")
+                append("• Sự kiện thật: ${diag.realEvents}\n")
                 val inCooldown = diag.cooldownUntil > System.currentTimeMillis()
                 if (inCooldown) {
                     val remaining = (diag.cooldownUntil - System.currentTimeMillis()) / 60000
@@ -664,19 +708,65 @@ class CameraSkill @Inject constructor(
     }
 
     /**
-     * 💾 Lưu trạng thái tự học (Mẫu học + Ngưỡng nhạy cảm) vào SQLite
+     * ✅ MỚI (decay, day/night split): Loại bỏ các mẫu nhiễu (false positive) đã quá hạn
+     * (FALSE_SAMPLE_MAX_AGE_MS) khỏi 3 list song song của MỘT khung giờ (ngày HOẶC đêm), giữ
+     * nguyên thứ tự index. Trả về true nếu có ít nhất 1 mẫu bị loại (để caller biết cần lưu DB).
+     */
+    private fun pruneExpiredFalseSamples(period: PeriodLearningState, now: Long): Boolean {
+        if (period.falseSampleTimestamps.isEmpty()) return false
+        val cutoff = now - FALSE_SAMPLE_MAX_AGE_MS
+        var removedAny = false
+        var i = 0
+        while (i < period.falseSampleTimestamps.size) {
+            if (period.falseSampleTimestamps[i] < cutoff) {
+                period.falseSampleTimestamps.removeAt(i)
+                if (i < period.falseDeltas.size) period.falseDeltas.removeAt(i)
+                if (i < period.falseDiffs.size) period.falseDiffs.removeAt(i)
+                removedAny = true
+            } else {
+                i++
+            }
+        }
+        return removedAny
+    }
+
+    /**
+     * ✅ MỚI (decay, day/night split): Tính lại deltaTrigger/absDiffTrigger của MỘT khung giờ từ
+     * các mẫu nhiễu HIỆN CÒN HẠN của khung giờ đó.
+     * - Nếu không còn mẫu nào (đã hết hạn hết) -> hạ thẳng về mặc định (DEFAULT_*).
+     * - Nếu còn mẫu -> áp dụng lại đúng công thức percentile-90% + margin như cũ.
+     * Trả về true nếu deltaTrigger hoặc absDiffTrigger thay đổi.
+     */
+    private fun recomputeThresholdsFromSamples(period: PeriodLearningState): Boolean {
+        val oldDelta = period.deltaTrigger
+        val oldDiff = period.absDiffTrigger
+
+        if (period.falseDeltas.isEmpty()) {
+            period.deltaTrigger = DEFAULT_DELTA_TRIGGER
+            period.absDiffTrigger = DEFAULT_ABS_DIFF_TRIGGER
+        } else {
+            val recentDeltas = period.falseDeltas.takeLast(30).sorted()
+            val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
+            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, 25)
+
+            val recentDiffs = period.falseDiffs.takeLast(30).sorted()
+            val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
+            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, 35)
+        }
+
+        return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
+    }
+
+    /**
+     * 💾 Lưu trạng thái tự học (Mẫu học + Ngưỡng nhạy cảm) vào SQLite.
+     * ✅ MỚI (day/night split): lưu 2 khối "day"/"night" độc lập trong cùng 1 JSON.
      */
     private suspend fun saveLearningStateToDb(cameraId: String, state: CameraLearningState) {
         try {
             val json = JSONObject().apply {
-                put("deltaTrigger", state.deltaTrigger)
-                put("absDiffTrigger", state.absDiffTrigger)
                 put("realEvents", state.realEvents)
-                put("falseDeltas", JSONArray(state.falseDeltas))
-                put("falseDiffs", JSONArray(state.falseDiffs))
-                put("baselineWindow", JSONArray(state.baselineWindow))
-                put("lastPhash", state.lastPhash)
-                put("lastDiff", state.lastDiff)
+                put("day", periodToJson(state.day))
+                put("night", periodToJson(state.night))
             }.toString()
 
             WorldStateHelper.setAttribute(
@@ -691,8 +781,52 @@ class CameraSkill @Inject constructor(
         }
     }
 
+    private fun periodToJson(period: PeriodLearningState): JSONObject = JSONObject().apply {
+        put("deltaTrigger", period.deltaTrigger)
+        put("absDiffTrigger", period.absDiffTrigger)
+        put("falseDeltas", JSONArray(period.falseDeltas))
+        put("falseDiffs", JSONArray(period.falseDiffs))
+        put("falseSampleTimestamps", JSONArray(period.falseSampleTimestamps))
+    }
+
+    private fun periodFromJson(json: JSONObject?): PeriodLearningState {
+        if (json == null) return PeriodLearningState()
+        val falseDeltas = mutableListOf<Int>()
+        val falseDiffs = mutableListOf<Int>()
+
+        json.optJSONArray("falseDeltas")?.let { arr ->
+            for (i in 0 until arr.length()) falseDeltas.add(arr.getInt(i))
+        }
+        json.optJSONArray("falseDiffs")?.let { arr ->
+            for (i in 0 until arr.length()) falseDiffs.add(arr.getInt(i))
+        }
+
+        val now = System.currentTimeMillis()
+        val timestamps = mutableListOf<Long>()
+        val timestampsArr = json.optJSONArray("falseSampleTimestamps")
+        if (timestampsArr != null && timestampsArr.length() == falseDeltas.size) {
+            for (i in 0 until timestampsArr.length()) timestamps.add(timestampsArr.getLong(i))
+        } else {
+            repeat(falseDeltas.size) { timestamps.add(now) }
+        }
+
+        return PeriodLearningState(
+            falseDeltas = falseDeltas,
+            falseDiffs = falseDiffs,
+            falseSampleTimestamps = timestamps,
+            deltaTrigger = json.optInt("deltaTrigger", DEFAULT_DELTA_TRIGGER),
+            absDiffTrigger = json.optInt("absDiffTrigger", DEFAULT_ABS_DIFF_TRIGGER)
+        )
+    }
+
     /**
-     * 🔄 Đọc lại trạng thái tự học từ SQLite khi ứng dụng khởi động lại
+     * 🔄 Đọc lại trạng thái tự học từ SQLite khi ứng dụng khởi động lại.
+     * ✅ MỚI (day/night split): nếu dữ liệu cũ (trước bản vá) chỉ có 1 bộ mẫu phẳng (không có
+     * "day"/"night"), coi toàn bộ mẫu cũ đó thuộc về khung giờ ĐANG DIỄN RA tại thời điểm load
+     * (không rải đều cho cả 2 khung giờ) — vì không biết chính xác mẫu cũ thuộc ngày hay đêm, gán
+     * hết vào khung giờ hiện tại là lựa chọn an toàn nhất: khung giờ còn lại bắt đầu "sạch" ở mức
+     * mặc định, và khung giờ nhận dữ liệu cũ sẽ tự phân kỳ dần theo dữ liệu mới từ đây, thay vì để
+     * cả 2 khung giờ cùng bị kẹt lại đúng vấn đề cũ đang muốn sửa.
      */
     private suspend fun loadLearningStateFromDb(cameraId: String): CameraLearningState {
         return try {
@@ -704,35 +838,23 @@ class CameraSkill @Inject constructor(
             ) ?: return CameraLearningState()
 
             val json = JSONObject(rawJson)
-            val falseDeltas = mutableListOf<Int>()
-            val falseDiffs = mutableListOf<Int>()
 
-            val deltasArr = json.optJSONArray("falseDeltas")
-            if (deltasArr != null) {
-                for (i in 0 until deltasArr.length()) falseDeltas.add(deltasArr.getInt(i))
+            if (json.has("day") || json.has("night")) {
+                CameraLearningState(
+                    realEvents = json.optInt("realEvents", 0),
+                    day = periodFromJson(json.optJSONObject("day")),
+                    night = periodFromJson(json.optJSONObject("night"))
+                )
+            } else {
+                // Định dạng cũ (phẳng, trước khi tách ngày/đêm) — migrate 1 lần.
+                val legacyPeriod = periodFromJson(json)
+                val isNight = isNightTime()
+                CameraLearningState(
+                    realEvents = json.optInt("realEvents", 0),
+                    day = if (isNight) PeriodLearningState() else legacyPeriod,
+                    night = if (isNight) legacyPeriod else PeriodLearningState()
+                )
             }
-
-            val diffsArr = json.optJSONArray("falseDiffs")
-            if (diffsArr != null) {
-                for (i in 0 until diffsArr.length()) falseDiffs.add(diffsArr.getInt(i))
-            }
-
-            val baselineWindow = mutableListOf<Int>()
-            val baselineArr = json.optJSONArray("baselineWindow")
-            if (baselineArr != null) {
-                for (i in 0 until baselineArr.length()) baselineWindow.add(baselineArr.getInt(i))
-            }
-
-            CameraLearningState(
-                lastPhash = json.optString("lastPhash", ""),
-                lastDiff = json.optInt("lastDiff", 0),
-                deltaTrigger = json.optInt("deltaTrigger", 10),
-                absDiffTrigger = json.optInt("absDiffTrigger", 18),
-                realEvents = json.optInt("realEvents", 0),
-                falseDeltas = falseDeltas,
-                falseDiffs = falseDiffs,
-                baselineWindow = baselineWindow
-            )
         } catch (e: Exception) {
             CameraLearningState()
         }
@@ -741,67 +863,57 @@ class CameraSkill @Inject constructor(
     /**
      * 🧠 HÀM PHẢN HỒI BÁO ĐỘNG GIẢ (Feedback-Based Learning)
      * Dùng cho cả Chế độ AI & Không-AI khi người dùng bấm nút "Báo động giả" trên UI hoặc Chat.
+     * ✅ MỚI (day/night split): [isNight] xác định học vào bộ ngưỡng nào — do caller truyền vào
+     * dựa trên thời điểm alert THẬT xảy ra, không phải giờ hiện tại lúc gọi hàm này.
      */
-    suspend fun markFalsePositiveAndLearn(cameraId: String, diff: Int, delta: Int): String {
+    suspend fun markFalsePositiveAndLearn(cameraId: String, diff: Int, delta: Int, isNight: Boolean): String {
         val tid = cameraId.trim()
         val cam = database.cameraDao().getCameraById(tid) ?: return "Không tìm thấy camera $tid"
         
         return getMutexForCamera(tid).withLock {
             val state = learningStates.getOrPut(tid) { loadLearningStateFromDb(tid) }
-            
+            val period = periodOf(state, isNight)
+            val now = System.currentTimeMillis()
+
+            // ✅ MỚI (decay): loại mẫu cũ đã hết hạn trước khi nạp mẫu mới, để tập học không bị
+            // "cõng" mãi những cú sốc sáng/tối từ nhiều ngày trước.
+            pruneExpiredFalseSamples(period, now)
+
             // Nạp mẫu học phản hồi từ người dùng
-            state.falseDeltas.add(delta)
-            state.falseDiffs.add(diff)
-            if (state.falseDeltas.size > 100) {
-                state.falseDeltas.removeAt(0)
-                state.falseDiffs.removeAt(0)
+            period.falseDeltas.add(delta)
+            period.falseDiffs.add(diff)
+            period.falseSampleTimestamps.add(now)
+            if (period.falseDeltas.size > 100) {
+                period.falseDeltas.removeAt(0)
+                period.falseDiffs.removeAt(0)
+                period.falseSampleTimestamps.removeAt(0)
             }
 
-            val oldDelta = state.deltaTrigger
-            val oldDiff = state.absDiffTrigger
+            val oldDelta = period.deltaTrigger
+            val oldDiff = period.absDiffTrigger
 
-            // Percentile: CHỈ được phép NÂNG ngưỡng khi noise thật sự lớn & lặp lại nhiều lần —
-            // không được ghi đè giá trị vừa hạ ở nhánh "hạ ngưỡng trực tiếp" bên dưới trong cùng lần gọi.
-            val recentDeltas = state.falseDeltas.takeLast(30).sorted()
-            val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-            val percentileDelta = (recentDeltas[idx] + 2).coerceAtMost(25)
-            if (percentileDelta > state.deltaTrigger) state.deltaTrigger = percentileDelta
+            // Tự động điều chỉnh nâng ngưỡng (dùng chung công thức percentile với decay)
+            recomputeThresholdsFromSamples(period)
 
-            val recentDiffs = state.falseDiffs.takeLast(30).sorted()
-            val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-            val percentileDiff = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
-            if (percentileDiff > state.absDiffTrigger) state.absDiffTrigger = percentileDiff
-
-            // 🟢 HẠ NGƯỠNG TRỰC TIẾP: mẫu báo giả vừa nhận có diff/delta THẤP hơn ngưỡng đang hoạt
-            // động (báo động đến từ nhánh drift chứ không phải bản thân diff/delta vượt ngưỡng
-            // tuyệt đối) → kéo ngay ngưỡng về sát giá trị quan sát, không chờ percentile pool (vốn
-            // bị mẫu noise cũ giữ ở mức cao nên không bao giờ hạ được).
-            if (diff < state.absDiffTrigger) {
-                state.absDiffTrigger = (diff + 3).coerceAtLeast(MIN_ABS_DIFF_TRIGGER)
+            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả
+            if (period.absDiffTrigger <= diff) {
+                period.absDiffTrigger = (diff + 2).coerceAtMost(35)
             }
-            if (delta < state.deltaTrigger) {
-                state.deltaTrigger = (delta + 2).coerceAtLeast(MIN_DELTA_TRIGGER)
-            }
-
-            // Kéo baseline nền về sát thực tế để nhánh drift không kẹt cao mãi
-            state.baselineWindow.add(diff)
-            if (state.baselineWindow.size > 20) state.baselineWindow.removeAt(0)
 
             // Lưu ngay vào SQLite
             saveLearningStateToDb(tid, state)
             updateDiagnostics()
 
-            "✅ Đã ghi nhận báo động giả cho Camera \"${cam.customername}\". " +
-            "Ngưỡng diff: $oldDiff ➔ ${state.absDiffTrigger}, ngưỡng delta: $oldDelta ➔ ${state.deltaTrigger} " +
-            "(Số mẫu học: ${state.falseDeltas.size})."
+            val periodLabel = if (isNight) "BAN ĐÊM" else "BAN NGÀY"
+            "✅ Đã ghi nhận báo động giả ($periodLabel) cho Camera \"${cam.customername}\". " +
+            "Ngưỡng diff nâng từ $oldDiff ➔ ${period.absDiffTrigger}, " +
+            "ngưỡng delta nâng từ $oldDelta ➔ ${period.deltaTrigger} (Số mẫu học: ${period.falseDeltas.size})."
         }
     }
     
     private fun cleanupOldAlerts() {
         scope.launch {
             try {
-                // ✅ SỬA: dùng retention có thể cấu hình thay vì hardcode 30 ngày cứng — máy nhiều
-                // bộ nhớ (TB) có thể tăng lên qua Settings.
                 val retentionDays = alertRetentionDays()
                 val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
                 val dir = File(context.filesDir, "alert_images")
@@ -822,9 +934,6 @@ class CameraSkill @Inject constructor(
     private fun cleanupOldEventLogs() {
         scope.launch {
             try {
-                // ✅ SỬA: event_logs chỉ là text (rất nhẹ so với ảnh alerts) và là nguồn dữ liệu
-                // duy nhất ChatSkill.buildMemoryContext() dùng để trả lời câu hỏi quá khứ — retention
-                // riêng, có thể để dài hơn alertRetentionDays() mà không tốn nhiều dung lượng.
                 val retentionDays = eventLogRetentionDays()
                 val cutoff = System.currentTimeMillis() - retentionDays * 24L * 60 * 60 * 1000
                 withContext(Dispatchers.IO) {
@@ -1185,6 +1294,12 @@ class CameraSkill @Inject constructor(
         return getMutexForCamera(tid).withLock {
             val state = learningStates.getOrPut(tid) { loadLearningStateFromDb(tid) }
             val now = System.currentTimeMillis()
+            // ✅ MỚI (day/night split): xác định khung giờ CỦA LẦN QUÉT NÀY và luôn thao tác trên
+            // đúng bộ ngưỡng/mẫu học của khung giờ đó (period). state.lastPhash/lastDiff vẫn dùng
+            // CHUNG (không tách) vì đó là chuỗi liên tục giữa 2 khung hình kề nhau bất kể ngày/đêm —
+            // chỉ có ngưỡng suy ra từ lịch sử báo giả và baseline trung bình mới cần tách riêng.
+            val isNight = isNightTime(now)
+            val period = periodOf(state, isNight)
             
             try {
                 recordOnline(tid)
@@ -1198,24 +1313,24 @@ class CameraSkill @Inject constructor(
                 }
                 
                 val delta = kotlin.math.abs(currentDiff - state.lastDiff)
-                val deltaTrigger = state.deltaTrigger
-                val absDiffTrigger = state.absDiffTrigger
+                val deltaTrigger = period.deltaTrigger
+                val absDiffTrigger = period.absDiffTrigger
                 val driftTrigger = DRIFT_TRIGGER
                 
-                val baselineDiff = if (state.baselineWindow.isNotEmpty()) {
-                    state.baselineWindow.average().toInt()
+                val baselineDiff = if (period.baselineWindow.isNotEmpty()) {
+                    period.baselineWindow.average().toInt()
                 } else {
                     currentDiff
                 }
                 val drift = kotlin.math.abs(currentDiff - baselineDiff)
-                state.lastBaselineDiff = baselineDiff
-                state.lastDrift = drift
+                period.lastBaselineDiff = baselineDiff
+                period.lastDrift = drift
                 
                 val isSuddenChange = delta >= deltaTrigger || 
                                      currentDiff >= absDiffTrigger || 
                                      drift >= driftTrigger
                 
-                val isMature = state.baselineWindow.size >= 3
+                val isMature = period.baselineWindow.size >= 3
                 
                 val shouldReset = checkPendingReset(tid, currentDiff, absDiffTrigger)
                 if (shouldReset) {
@@ -1249,18 +1364,9 @@ class CameraSkill @Inject constructor(
                         }
                     } catch (e: TimeoutCancellationException) {
                         logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid")
-                        // ✅ ĐÃ SỬA: gắn sentinel GroqClientTool.AI_ERROR_PREFIX vào chuỗi lỗi TỰ SINH
-                        // ngay tại CameraSkill (không phải do GroqClientTool trả về) — nếu không, chuỗi
-                        // này sẽ lọt qua isApiError bên dưới y hệt bug gốc đã phát hiện.
                         "${GroqClientTool.AI_ERROR_PREFIX}Không thể phân tích (AI timeout)"
                     }
 
-                    // 🔴 CHẶN TRONG TRƯỜNG HỢP LỖI API / HẾT TOKEN QUOTA
-                    // ✅ ĐÃ SỬA: không còn đoán từng chuỗi lỗi bằng contains()/startsWith() thủ công
-                    // (cách cũ đã xác nhận LỌT ít nhất 2 case: lỗi 401 sai key, và lỗi parse response
-                    // rỗng/hỏng — vì các chuỗi đó không chứa "lỗi api", "rate limit", "timeout" hay
-                    // "không thể phân tích"). Giờ dựa vào 1 sentinel cố định duy nhất mà GroqClientTool
-                    // gắn vào MỌI nhánh lỗi, không cần đoán câu chữ tiếng Việt nữa.
                     val isApiError = aiResult.startsWith(GroqClientTool.AI_ERROR_PREFIX)
 
                     if (isApiError) {
@@ -1296,7 +1402,6 @@ class CameraSkill @Inject constructor(
                     }
 
                 } else if (!isSmartMode && (isSuddenChange || forceAi)) {
-                    // AI TẮT: Tự gán suspicious khi pHash biến động
                     isSuspicious = true
                     aiComment = "Phát hiện biến động chuyển động (Chế độ AI tắt)"
                     visionObjects = listOf("chuyển động")
@@ -1307,7 +1412,6 @@ class CameraSkill @Inject constructor(
                     }.toString()
                 }
 
-                // XỬ LÝ LƯU THÔNG TIN BẢN SAO SỐ & CẢNH BÁO
                 if (isSuspicious) {
                     state.realEvents++
                     state.cooldownUntil = now + cooldownDurationMs()
@@ -1407,53 +1511,28 @@ class CameraSkill @Inject constructor(
                 }
                 
                 if (!shouldCallAi || !isSuspicious) {
-                    state.baselineWindow.add(currentDiff)
-                    if (state.baselineWindow.size > 20) {
-                        state.baselineWindow.removeAt(0)
+                    period.baselineWindow.add(currentDiff)
+                    if (period.baselineWindow.size > 20) {
+                        period.baselineWindow.removeAt(0)
                     }
                     
                     if (isSuddenChange && !isSuspicious) {
-                        val oldDelta = state.deltaTrigger
-                        val oldDiff = state.absDiffTrigger
-
-                        state.falseDeltas.add(delta)
-                        state.falseDiffs.add(currentDiff)
-                        if (state.falseDeltas.size > 100) {
-                            state.falseDeltas.removeAt(0)
-                            state.falseDiffs.removeAt(0)
+                        period.falseDeltas.add(delta)
+                        period.falseDiffs.add(currentDiff)
+                        period.falseSampleTimestamps.add(now)
+                        if (period.falseDeltas.size > 100) {
+                            period.falseDeltas.removeAt(0)
+                            period.falseDiffs.removeAt(0)
+                            period.falseSampleTimestamps.removeAt(0)
                         }
+                    }
 
-                        // 🟢 HẠ NGƯỠNG TRỰC TIẾP: báo động này đến từ nhánh delta/drift (bản thân
-                        // currentDiff/delta CHƯA vượt ngưỡng tuyệt đối) và đã xác nhận bình thường
-                        // → kéo ngay ngưỡng sát xuống giá trị quan sát hiện tại, không chờ percentile
-                        // pool (vốn bị mẫu noise cũ giữ ở mức cao nên không bao giờ hạ được — đây
-                        // chính là bug "chỉ lên không xuống").
-                        if (currentDiff < state.absDiffTrigger) {
-                            state.absDiffTrigger = (currentDiff + 3).coerceAtLeast(MIN_ABS_DIFF_TRIGGER)
-                        }
-                        if (delta < state.deltaTrigger) {
-                            state.deltaTrigger = (delta + 2).coerceAtLeast(MIN_DELTA_TRIGGER)
-                        }
+                    val expired = pruneExpiredFalseSamples(period, now)
+                    val changed = recomputeThresholdsFromSamples(period)
 
-                        // Percentile: CHỈ dùng để nâng ngưỡng khi noise thật sự lớn & lặp lại nhiều
-                        // lần — không được phép ghi đè giá trị vừa hạ ở trên.
-                        if (state.falseDeltas.size >= 3) {
-                            val recentDeltas = state.falseDeltas.takeLast(30).sorted()
-                            val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-                            val percentileDelta = (recentDeltas[idx] + 2).coerceAtMost(25)
-                            if (percentileDelta > state.deltaTrigger) state.deltaTrigger = percentileDelta
-
-                            val recentDiffs = state.falseDiffs.takeLast(30).sorted()
-                            val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-                            val percentileDiff = (recentDiffs[idxDiff] + 3).coerceAtMost(35)
-                            if (percentileDiff > state.absDiffTrigger) state.absDiffTrigger = percentileDiff
-                        }
-
-                        // TỐI ƯU I/O: chỉ ghi SQLite khi ngưỡng thực sự đổi — bắt được cả trường hợp
-                        // nâng (percentile) lẫn hạ (trực tiếp) vì đều sửa cùng 2 biến này.
-                        if (state.deltaTrigger != oldDelta || state.absDiffTrigger != oldDiff) {
-                            saveLearningStateToDb(tid, state)
-                        }
+                    // TỐI ƯU I/O: Chỉ ghi SQLite khi ngưỡng thực sự thay đổi (bao gồm cả do decay)!
+                    if (changed || expired) {
+                        saveLearningStateToDb(tid, state)
                     }
                 }
                 
@@ -1479,6 +1558,7 @@ class CameraSkill @Inject constructor(
                     "drift" to drift,
                     "deltaTrigger" to deltaTrigger,
                     "absDiffTrigger" to absDiffTrigger,
+                    "isNight" to isNight,
                     "imageBytes" to optimizedBytes   
                 )
                 
@@ -1808,32 +1888,22 @@ class CameraSkill @Inject constructor(
         }
     }
 
-    // ✅ SỬA: trước đây hàm này gộp CHUNG việc reset circuit breaker (theo dõi lỗi kết nối)
-    // với việc xoá sạch toàn bộ học tập thích nghi (deltaTrigger/absDiffTrigger/falseDeltas/
-    // falseDiffs/baselineWindow/realEvents về 0) VÀ ghi đè xuống DB. Vì "Test ngay" gọi hàm
-    // này ở MỖI lần bấm test (để bỏ qua breaker, không liên quan gì đến học tập), nên mỗi lần
-    // người dùng test camera sau khi bị lỗi kết nối là toàn bộ ngưỡng học được từ trước bị xoá
-    // sạch một cách âm thầm. Giờ hàm này CHỈ reset breaker; muốn xoá học tập phải gọi
-    // resetLearningState() riêng, một hành động rõ ràng do người dùng chủ động chọn.
     fun resetCircuitBreaker(cameraId: String) {
         val tid = cameraId.trim()
         circuitBreakers[tid] = CircuitBreakerState()
         logger.i("CameraSkill", "🔄 Circuit Breaker reset manually for camera $tid")
     }
 
-    // ✅ MỚI: reset RIÊNG học tập thích nghi — tách khỏi resetCircuitBreaker() để không còn bị
-    // xoá ngầm mỗi lần bấm "Test ngay". Dùng cho nút "Reset học tập" trong CameraDetailScreen.
+    // ✅ MỚI (day/night split): reset toàn bộ (cả day + night) — dùng cho nút "Reset học tập".
     fun resetLearningState(cameraId: String) {
         val tid = cameraId.trim()
         val freshState = CameraLearningState()
         learningStates[tid] = freshState
-        // Lưu ngay xuống SQLite — nếu không, app bị kill sau reset sẽ nạp lại NGƯỠNG CŨ từ DB,
-        // coi như thao tác reset bị "hồi sinh ngược" một cách âm thầm.
         scope.launch {
             saveLearningStateToDb(tid, freshState)
             updateDiagnostics()
         }
-        logger.i("CameraSkill", "🧠 Learning state reset manually for camera $tid")
+        logger.i("CameraSkill", "🧠 Learning state reset manually for camera $tid (day+night)")
     }
 
     fun resetAllCircuitBreakers() {
@@ -1847,18 +1917,23 @@ class CameraSkill @Inject constructor(
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
     
     private suspend fun updateDiagnostics() {
+        // ✅ MỚI (day/night split): mỗi camera giờ báo cáo 2 bộ chỉ số (day/night) thay vì 1.
         val stats = learningStates.mapValues { (cameraId, state) ->
             val tid = cameraId.trim()
             val cb = circuitBreakers[tid]
+            fun periodStats(p: PeriodLearningState) = mapOf(
+                "samples" to p.falseDeltas.size,
+                "deltaTrigger" to p.deltaTrigger,
+                "absDiffTrigger" to p.absDiffTrigger,
+                "baselineSize" to p.baselineWindow.size,
+                "baselineDiff" to p.lastBaselineDiff,
+                "drift" to p.lastDrift,
+                "driftTrigger" to DRIFT_TRIGGER
+            )
             mapOf(
-                "samples" to state.falseDeltas.size,
+                "day" to periodStats(state.day),
+                "night" to periodStats(state.night),
                 "realEvents" to state.realEvents,
-                "deltaTrigger" to state.deltaTrigger,
-                "absDiffTrigger" to state.absDiffTrigger,
-                "baselineSize" to state.baselineWindow.size,
-                "baselineDiff" to state.lastBaselineDiff,
-                "drift" to state.lastDrift,
-                "driftTrigger" to DRIFT_TRIGGER,
                 "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
                 "circuitBreakerOpen" to (cb?.isOpen ?: false),
                 "offlineCount" to (cb?.offlineCount ?: 0),
@@ -1936,14 +2011,9 @@ class CameraSkill @Inject constructor(
                     timestamp = now,
                     aiComment = aiComment,
                     diff = diff,
-                    // ✅ MỚI: lưu giá trị delta THẬT đã đo (không phải ngưỡng deltaTrigger) để
-                    // markFalsePositiveAndLearn có thể học đúng trên nhiễu quan sát được.
                     delta = delta,
                     deltaTrigger = deltaTrigger,
                     absDiffTrigger = absDiffTrigger,
-                    // ✅ MỚI: lưu drift THẬT + baselineDiff + driftTrigger tại thời điểm báo động,
-                    // để UI biết chính xác baseline nền là bao nhiêu và độ trôi thực đo được
-                    // (thay vì suy luận loại trừ khi diff/delta đều chưa vượt ngưỡng).
                     drift = drift,
                     baselineDiff = baselineDiff,
                     driftTrigger = driftTrigger,
