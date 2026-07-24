@@ -621,7 +621,7 @@ class AgentKernel @Inject constructor(
             // Điều này ép AI Pass 2 bắt buộc phải nhìn nhận kết quả trống "không ghi nhận sự kiện phù hợp"
             // là câu trả lời thực tế cuối cùng, cấm tuyệt đối AI tự ý gọi lại tool db_search vô ích.
             val enrichedContext = buildString {
-                append(baseContext)
+                append(stripDbSearchInvite(baseContext))
                 append("\n\n")
                 append("<SYSTEM_MEMORY>\n")
                 append(searchResult.summaryText)
@@ -696,7 +696,7 @@ class AgentKernel @Inject constructor(
             }
 
             val enrichedContext = buildString {
-                append(baseContext)
+                append(stripCatalogSearchInvite(baseContext))
                 append("\n\n")
                 append(wrapCatalogSearchResult(resultText))
             }
@@ -844,6 +844,32 @@ class AgentKernel @Inject constructor(
     // kèm câu "kết quả cuối cùng, không gọi lại tool". Trước đây 2 nơi build 2 format khác nhau
     // (1 nơi bọc SYSTEM_MEMORY, 1 nơi để trần) khiến model không nhận diện được là đã có kết quả
     // search rồi, dẫn tới tự ý gọi lại tool catalog_search nhiều lần trong cùng 1 lượt.
+    // ✅ MỚI: Tương tự stripCatalogSearchInvite ở trên — bóc bỏ khối mời gọi tool db_search
+    // (dynamicToolGuard, luôn nằm ở CUỐI chuỗi trả về của buildFullGuard()) ra khỏi guard khi build
+    // context cho lượt 2, tránh cùng kiểu mâu thuẫn: rule "trả JSON nếu chưa có dữ liệu thô" vẫn còn
+    // hiệu lực trong khi SYSTEM_MEMORY ở cuối đã nói "đừng gọi lại".
+    private fun stripDbSearchInvite(guardText: String): String {
+        val marker = "🚨 QUY TẮC TRUY VẤN DỮ LIỆU THỰC TẾ:"
+        val idx = guardText.indexOf(marker)
+        return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
+    }
+
+    // ✅ MỚI: Bóc bỏ rule mời gọi tool catalog_search (rule 4) và rule "không gọi lại tool" (rule 5,
+    // lúc này đã thừa vì SYSTEM_MEMORY tự nó nói rõ) ra khỏi guard khi build context cho lượt 2 trở đi.
+    // Lý do: nếu để nguyên baseContext cũ rồi chỉ NỐI THÊM SYSTEM_MEMORY vào cuối, rule 4 ("nếu không
+    // có Hỏi-Đáp liên quan thì trả JSON tool") vẫn còn nguyên ở đầu prompt và VẪN đúng điều kiện kích
+    // hoạt khi search ra rỗng — tạo ra 2 chỉ thị mâu thuẫn trong cùng 1 system message. Model không hề
+    // "lờ" SYSTEM_MEMORY, nó đang tuân thủ đúng rule 4 vẫn còn hiệu lực. Phải xoá hẳn lời mời gọi tool
+    // đó đi, không chỉ thêm lời khuyên "đừng gọi lại" vào cuối.
+    private fun stripCatalogSearchInvite(guardText: String): String {
+        return guardText.lineSequence()
+            .filterNot {
+                it.contains("\"tool\":\"catalog_search\"") ||
+                it.contains("Sau khi đã có kết quả tìm kiếm thì không gọi tool lần nữa")
+            }
+            .joinToString("\n")
+    }
+
     private fun wrapCatalogSearchResult(resultText: String): String {
         return buildString {
             append("<SYSTEM_MEMORY>\n")
