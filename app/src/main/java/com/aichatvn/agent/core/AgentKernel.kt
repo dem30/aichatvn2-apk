@@ -871,13 +871,15 @@ class AgentKernel @Inject constructor(
     // hoạt khi search ra rỗng — tạo ra 2 chỉ thị mâu thuẫn trong cùng 1 system message. Model không hề
     // "lờ" SYSTEM_MEMORY, nó đang tuân thủ đúng rule 4 vẫn còn hiệu lực. Phải xoá hẳn lời mời gọi tool
     // đó đi, không chỉ thêm lời khuyên "đừng gọi lại" vào cuối.
+    // ✅ SỬA: Đổi sang kiểu cắt-theo-marker giống stripDbSearchInvite — vì CATALOG_SEARCH_TOOL_INSTRUCTION
+    // giờ là khối JSON nhiều dòng, lọc filterNot theo từng dòng riêng lẻ (bản cũ) không khớp được với
+    // text mới ("tool": "catalog_search" có dấu cách, tách dòng) và dù có khớp cũng để sót rác {, }
+    // trơ trọi. CATALOG_SEARCH_TOOL_INSTRUCTION luôn là phần được append CUỐI CÙNG trong
+    // buildMinimalGuard() nên cắt từ marker "🚨 QUY TẮC TÌM KIẾM THÔNG TIN:" trở đi là an toàn.
     private fun stripCatalogSearchInvite(guardText: String): String {
-        return guardText.lineSequence()
-            .filterNot {
-                it.contains("\"tool\":\"catalog_search\"") ||
-                it.contains("Sau khi đã có kết quả tìm kiếm thì không gọi tool lần nữa")
-            }
-            .joinToString("\n")
+        val marker = "🚨 QUY TẮC TÌM KIẾM THÔNG TIN:"
+        val idx = guardText.indexOf(marker)
+        return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
 
     private fun wrapCatalogSearchResult(resultText: String): String {
