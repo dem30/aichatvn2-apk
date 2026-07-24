@@ -690,10 +690,8 @@ class AgentKernel @Inject constructor(
 
             val enrichedContext = buildString {
                 append(baseContext)
-                append("\n\n<SYSTEM_MEMORY>\n")
-                append(resultText)
-                append("\n\nKết quả tìm kiếm catalogue trên là cuối cùng. Nếu có nội dung liên quan, dùng ngay để trả lời (được phép là thông tin tổng quát). Nếu không, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ. Không gọi lại tool. Trả lời bằng văn bản tự nhiên.\n")
-                append("</SYSTEM_MEMORY>")
+                append("\n\n")
+                append(wrapCatalogSearchResult(resultText))
             }
 
             logger.i("AgentKernel", "🚀 [Catalog Search Second Call] Đang gửi lại kết quả catalogue lên Groq lượt 2 (Timeout: 15 giây)...")
@@ -812,17 +810,32 @@ class AgentKernel @Inject constructor(
         private const val MAX_QA_ANSWER_CHARS = 200
     }
 
+    // ✅ MỚI: Hàm dùng chung để bọc mọi kết quả tra catalogue (dù là prefetch trước lượt 1, hay
+    // kết quả sau khi model chủ động gọi tool catalog_search) vào CÙNG 1 format <SYSTEM_MEMORY>
+    // kèm câu "kết quả cuối cùng, không gọi lại tool". Trước đây 2 nơi build 2 format khác nhau
+    // (1 nơi bọc SYSTEM_MEMORY, 1 nơi để trần) khiến model không nhận diện được là đã có kết quả
+    // search rồi, dẫn tới tự ý gọi lại tool catalog_search nhiều lần trong cùng 1 lượt.
+    private fun wrapCatalogSearchResult(resultText: String): String {
+        return buildString {
+            append("<SYSTEM_MEMORY>\n")
+            append(resultText)
+            append("\n\nKết quả tìm kiếm catalogue trên là cuối cùng. Nếu có nội dung liên quan, dùng ngay để trả lời (được phép là thông tin tổng quát). Nếu không, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ. Không gọi lại tool. Trả lời bằng văn bản tự nhiên.\n")
+            append("</SYSTEM_MEMORY>")
+        }
+    }
+
     private suspend fun buildQAContextForAgent(message: String, username: String): String {
         val matches = search(message, username, 0.7f)
             .sortedByDescending { it.similarity }
             .take(MAX_QA_MATCHES_IN_CONTEXT)
         if (matches.isEmpty()) return ""
-        return matches.joinToString("\n") { match ->
+        val resultText = matches.joinToString("\n") { match ->
             val answer = match.qa.answer.let {
                 if (it.length > MAX_QA_ANSWER_CHARS) it.take(MAX_QA_ANSWER_CHARS) + "…" else it
             }
             "📚 Q: ${match.qa.question}\n   A: $answer (độ tương tự: ${String.format("%.2f", match.similarity)})"
         }
+        return wrapCatalogSearchResult(resultText)
     }
 
     private fun extractLocalMemoryAnswer(extraContext: String): String? {
@@ -974,7 +987,6 @@ class AgentKernel @Inject constructor(
             rules += "Sau khi đã có kết quả tìm kiếm thì không gọi tool lần nữa."
         }
         rules += "Không bịa thông tin."
-        rules += "Không nhắc đến thiết bị, camera, điều khiển hay hệ thống nội bộ."
         rules += "Trả lời tối đa $maxSentences câu."
 
         return buildString {

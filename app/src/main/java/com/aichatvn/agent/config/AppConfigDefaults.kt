@@ -437,11 +437,11 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL,
-            value = "false",
+            value = "true",
             type = "boolean",
             pluginId = "global",
             label = "Chặn điều khiển thiết bị từ kênh ngoài",
-            description = "Khi BẬT: khách chat từ Facebook/Telegram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào (kể cả khóa điều khiển riêng). Không ảnh hưởng đến chat nội bộ (default_user)."
+            description = "Mặc định BẬT (an toàn): khách chat từ Facebook/Telegram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào. TẮT switch này để cấp cho khách ngoại kênh quyền điều khiển ngang với chat nội bộ. Không ảnh hưởng đến chat nội bộ (default_user), luôn có đầy đủ quyền."
         ),
         AppConfigEntity(
             key = GLOBAL_MAX_MEMORY_LOGS,
