@@ -422,23 +422,27 @@ fun CameraDetailScreen(
                         Spacer(Modifier.height(8.dp))
                         val stats = diagnostics
                         if (stats != null) {
-                            CamStatRow("Mẫu học", "${stats["samples"] ?: 0}")
-                            CamStatRow("Sự kiện thật", "${stats["realEvents"] ?: 0}")
-                            CamStatRow("Ngưỡng delta", "${stats["deltaTrigger"] ?: 10}")
-                            CamStatRow("Ngưỡng diff", "${stats["absDiffTrigger"] ?: 18}")
-                            CamStatRow("Baseline size", "${stats["baselineSize"] ?: 0}")
-                            // ✅ MỚI: baseline nền (TB các lần quét bình thường trước đó) và
-                            // drift hiện tại (|diff mới nhất - baseline|) so với ngưỡng drift,
-                            // để người dùng hiểu vì sao cảnh báo có thể xảy ra dù diff/delta
-                            // vẫn dưới ngưỡng riêng của chúng.
-                            CamStatRow("Baseline nền (TB)", "${stats["baselineDiff"] ?: 0}")
-                            val driftVal = (stats["drift"] as? Int) ?: 0
-                            val driftLimit = (stats["driftTrigger"] as? Int) ?: 12
-                            CamStatRow(
-                                "Drift hiện tại",
-                                "$driftVal/$driftLimit" + if (driftVal >= driftLimit) " ⚠️" else ""
-                            )
+                            // ✅ SỬA (đồng bộ day/night split): CameraSkill.updateDiagnostics()
+                            // giờ trả về 2 bộ số lồng nhau "day"/"night" thay vì phẳng như trước.
+                            // Đọc thẳng stats["deltaTrigger"] v.v. ở cấp gốc luôn null → màn hình
+                            // im lặng rơi về giá trị mặc định (10/18/0 mẫu), không phản ánh đúng
+                            // ngưỡng đã học. Tách ra đọc từng bộ "day"/"night" và hiển thị riêng.
+                            @Suppress("UNCHECKED_CAST")
+                            val dayStats = stats["day"] as? Map<String, Any> ?: emptyMap()
+                            @Suppress("UNCHECKED_CAST")
+                            val nightStats = stats["night"] as? Map<String, Any> ?: emptyMap()
 
+                            CamStatRow("Sự kiện thật", "${stats["realEvents"] ?: 0}")
+
+                            Spacer(Modifier.height(6.dp))
+                            Text("☀️ Ban ngày", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
+                            PeriodLearningStats(dayStats)
+
+                            Spacer(Modifier.height(6.dp))
+                            Text("🌙 Ban đêm", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
+                            PeriodLearningStats(nightStats)
+
+                            Spacer(Modifier.height(4.dp))
                             val inCooldown = stats["inCooldown"] as? Boolean ?: false
                             val circuitOpen = stats["circuitBreakerOpen"] as? Boolean ?: false
                             if (inCooldown || circuitOpen) Spacer(Modifier.height(4.dp))
@@ -775,6 +779,24 @@ private fun CamStatRow(label: String, value: String) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.bodySmall)
     }
+}
+
+// ✅ MỚI (đồng bộ day/night split): hiển thị 1 bộ số học tập (ngày hoặc đêm) — khớp với
+// hàm periodStats() bên CameraSkill.updateDiagnostics() (samples/deltaTrigger/absDiffTrigger/
+// baselineSize/baselineDiff/drift/driftTrigger).
+@Composable
+private fun PeriodLearningStats(p: Map<String, Any>) {
+    CamStatRow("Mẫu học", "${p["samples"] ?: 0}")
+    CamStatRow("Ngưỡng delta", "${p["deltaTrigger"] ?: 10}")
+    CamStatRow("Ngưỡng diff", "${p["absDiffTrigger"] ?: 18}")
+    CamStatRow("Baseline size", "${p["baselineSize"] ?: 0}")
+    CamStatRow("Baseline nền (TB)", "${p["baselineDiff"] ?: 0}")
+    val driftVal = (p["drift"] as? Int) ?: 0
+    val driftLimit = (p["driftTrigger"] as? Int) ?: 12
+    CamStatRow(
+        "Drift hiện tại",
+        "$driftVal/$driftLimit" + if (driftVal >= driftLimit) " ⚠️" else ""
+    )
 }
 
 @Composable
