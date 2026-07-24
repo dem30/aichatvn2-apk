@@ -266,33 +266,17 @@ class AgentKernel @Inject constructor(
             AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES).toInt()
         )
 
-        val ANTI_HALLUCINATION_GUARD =
-            "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
-            "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
-            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
-            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
-
-        val dynamicToolGuard = if (mentionsAppDomain(message)) buildToolCallingGuard() else ""
-
-        // ✅ THÊM: Đọc ngữ cảnh trực quan được quy nạp từ não bộ Quản gia (HouseManagerSkill)
-        val houseManagerContext = try {
-            houseManagerProvider.get().buildSystemContext()
-        } catch (e: Exception) {
-            logger.e("AgentKernel", "Không thể lấy ngữ cảnh từ HouseManager: ${e.message}")
-            ""
-        }
-
-        val guard = buildString {
-            append(ANTI_HALLUCINATION_GUARD)
-            if (routerFailed) {
-                append("\n⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${(outcome as RouterOutcome.RouterFailed).reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm.")
-            }
-            // ✅ CHÈN VÀO ĐÂY: Nạp ngữ cảnh sống giúp AI hiểu tình hình căn nhà mà không cần đọc nhật ký rác
-            if (houseManagerContext.isNotEmpty()) {
-                append("\n\n")
-                append(houseManagerContext)
-            }
-            append(dynamicToolGuard)
+        // ✅ MỚI: Tách prompt theo 2 nhánh dựa trên request.allowDeviceControl (ChatSkill tính từ
+        // GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL — chỉ áp dụng cho khách đa kênh, chat nội bộ luôn = true):
+        // - false (admin CHƯA mở điều khiển cho khách ngoài kênh): prompt TỐI GIẢN — không nhắc thiết
+        //   bị/camera/nhật ký, không mở khả năng gọi tool db_search — chỉ hướng Groq bám sát QA đã
+        //   huấn luyện (catalogue Chat) để trả lời đúng trọng tâm câu hỏi sản phẩm, tránh hiểu sai.
+        // - true (nội bộ, hoặc khách ngoài khi admin đã mở điều khiển): prompt ĐẦY ĐỦ như cũ (ngữ cảnh
+        //   nhà thông minh + khả năng tra nhật ký sự kiện qua tool), nhưng vẫn viết súc tích.
+        val guard = if (request.allowDeviceControl) {
+            buildFullGuard(routerFailed, outcome, maxSentences, message)
+        } else {
+            buildMinimalGuard(maxSentences)
         }
 
         
@@ -677,7 +661,19 @@ class AgentKernel @Inject constructor(
             // ta lấy 500 tin nhắn và chỉ trích xuất 6 tin nhắn gần đây nhất, GIỮ NGUYÊN thứ tự thời gian tăng dần (ASC).
             // Điều này giúp Groq hiểu đúng trình tự đối thoại thực tế, không bị mất mạch ngữ cảnh.
             val allMessages = database.chatMessageDao().getMessages(username, 500)
-            val raw = allMessages.takeLast(6)
+
+            // ✅ MỚI: ChatSkill luôn lưu tin nhắn hiện tại của user vào DB TRƯỚC KHI gọi
+            // AgentKernel.chat(), nên bản ghi mới nhất ở đây chính là tin nhắn hiện tại — nó đã được
+            // gửi riêng làm lượt "user" cuối cùng trong GroqClientTool.chat(). Nếu không loại trừ, nó
+            // sẽ bị gửi trùng 2 lần trong cùng 1 request (1 lần trong history, 1 lần ở cuối), vừa tốn
+            // token vừa dễ khiến Groq hiểu sai/lặp lại ý.
+            val withoutCurrentMessage = if (allMessages.isNotEmpty() && allMessages.last().role == "user") {
+                allMessages.dropLast(1)
+            } else {
+                allMessages
+            }
+
+            val raw = withoutCurrentMessage.takeLast(6)
             val recentCutoffIndex = raw.size - 2 // 2 lượt cuối cùng coi là "gần đây"
             raw.mapIndexed { index, msg ->
                 val isRecent = index >= recentCutoffIndex
@@ -842,6 +838,54 @@ class AgentKernel @Inject constructor(
             is RouterOutcome.Matched -> outcome.result.result
             is RouterOutcome.RouterFailed -> PluginResult.Failure(outcome.reason)
             is RouterOutcome.NotACommand -> PluginResult.Failure("Không phải lệnh thiết bị")
+        }
+    }
+
+    // ✅ MỚI: Prompt tối giản dành cho khách đa kênh khi admin CHƯA mở điều khiển ngoài
+    // (GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = true). Không nhắc thiết bị/camera/nhật ký/hệ thống nội
+    // bộ, không mở khả năng gọi tool db_search — chỉ hướng Groq bám sát nội dung QA đã huấn luyện
+    // (catalogue Chat, xem buildQAContextForAgent()) để trả lời đúng trọng tâm câu hỏi sản phẩm.
+    private fun buildMinimalGuard(maxSentences: Int): String =
+        "Bạn là trợ lý tư vấn, chỉ trả lời dựa trên nội dung Hỏi-Đáp đã huấn luyện được cung cấp bên dưới (nếu có). " +
+        "Nếu không có thông tin phù hợp, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm, " +
+        "TUYỆT ĐỐI không tự bịa đặt. Không đề cập đến thiết bị, camera, điều khiển hay bất kỳ hệ thống nội bộ nào.\n" +
+        "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu."
+
+    // ✅ Prompt đầy đủ (giữ nguyên logic cũ) dành cho chat nội bộ, hoặc khách đa kênh khi admin đã
+    // mở điều khiển: có ngữ cảnh nhà thông minh (HouseManagerSkill) + khả năng gọi tool db_search để
+    // tra nhật ký sự kiện thật.
+    private suspend fun buildFullGuard(
+        routerFailed: Boolean,
+        outcome: RouterOutcome?,
+        maxSentences: Int,
+        message: String
+    ): String {
+        val antiHallucinationGuard =
+            "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
+            "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
+            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
+            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
+
+        val dynamicToolGuard = if (mentionsAppDomain(message)) buildToolCallingGuard() else ""
+
+        // Đọc ngữ cảnh trực quan được quy nạp từ não bộ Quản gia (HouseManagerSkill)
+        val houseManagerContext = try {
+            houseManagerProvider.get().buildSystemContext()
+        } catch (e: Exception) {
+            logger.e("AgentKernel", "Không thể lấy ngữ cảnh từ HouseManager: ${e.message}")
+            ""
+        }
+
+        return buildString {
+            append(antiHallucinationGuard)
+            if (routerFailed && outcome is RouterOutcome.RouterFailed) {
+                append("\n⚠️ Hệ thống vừa thử nhận diện đây là 1 lệnh điều khiển thiết bị nhưng KHÔNG xác định được chính xác (lý do nội bộ: ${outcome.reason}). Hãy báo cho user là lệnh CHƯA thực hiện được và hỏi họ nói rõ hơn, ĐỪNG khẳng định đã làm.")
+            }
+            if (houseManagerContext.isNotEmpty()) {
+                append("\n\n")
+                append(houseManagerContext)
+            }
+            append(dynamicToolGuard)
         }
     }
 
