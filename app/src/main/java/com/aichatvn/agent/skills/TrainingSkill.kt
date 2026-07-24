@@ -42,7 +42,7 @@ class TrainingSkill @Inject constructor(
   companion object {
         private val SPACE_REGEX = Regex("\\s+")
         private const val MAX_QUERY_CACHE_SIZE = 500
-    private val CHAT_CATALOG_TYPES = setOf("qa", "chat", "general")
+    private val CHAT_CATALOG_TYPES = setOf("faq", "chat", "general")
     }
 
     override val manifest = PluginManifest(
@@ -560,7 +560,18 @@ suspend fun fuzzyMatchChatCatalog(
 
         cachedQAList
             .asSequence()
-            .filter { (it.createdBy == username || it.createdBy == "default_user") && it.type in CHAT_CATALOG_TYPES }
+            // ✅ SỬA BUG: trước đây lọc `it.type in CHAT_CATALOG_TYPES` — nhưng `type` chỉ nhận
+            // "intent"/"alias" (dùng cho router điều khiển thiết bị, xem fuzzyMatchCategorized()),
+            // KHÔNG BAO GIỜ trùng với {"qa","chat","general"}. Hậu quả: catalogue Chat không bao giờ
+            // khớp được bất kỳ Q&A nào, dù đã huấn luyện đúng "Danh mục (semanticType)" = chat/general.
+            // Field đúng cần lọc là `category` (chính là "Danh mục (semanticType)" trên UI Huấn luyện
+            // Q&A). Đồng thời vẫn loại type == "intent" (Q&A dành riêng cho lệnh điều khiển thiết bị)
+            // để không lộ câu trả lời nội bộ vào chat khách hàng.
+            .filter {
+                (it.createdBy == username || it.createdBy == "default_user") &&
+                    it.type != "intent" &&
+                    it.category in CHAT_CATALOG_TYPES
+            }
             .map { qa -> SearchMatch(qa, calculateSimilarity(normalizedQuery, qa.question)) }
             .filter { it.similarity >= activeThreshold }
             .sortedByDescending { it.similarity }
