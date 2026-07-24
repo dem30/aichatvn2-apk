@@ -508,13 +508,19 @@ class AgentKernel @Inject constructor(
         historySnapshot: List<Map<String, String>>,
         allowDeviceControl: Boolean,
         allowCatalogSearch: Boolean = false,
-        toolDepth: Int = 0
+        toolDepth: Int = 0,
+        lastSearchResultText: String? = null
     ): String {
         val toolCall = parseToolCall(responseRaw) ?: return responseRaw
 
+        // ✅ SỬA: Trước đây khi model (vd gpt-oss-120b qua Groq) bỏ qua chỉ thị "không gọi lại tool"
+        // và vẫn phát JSON lần 2, hệ thống chỉ trả về câu báo lỗi kỹ thuật chung chung, khiến khách
+        // nhận 1 câu vô nghĩa dù dữ liệu tra được (có/không có QA phù hợp) đã nằm sẵn trong tay. Giờ
+        // tự tổng hợp câu trả lời tự nhiên trực tiếp từ lastSearchResultText — không tốn thêm lượt gọi
+        // Groq, không phụ thuộc việc model có "nghe lời" hay không.
         if (toolDepth >= 1) {
-            logger.w("AgentKernel", "⚠️ [Tool Loop Guard] Đã đạt giới hạn lặp tool (depth=$toolDepth). Ngắt lặp!")
-            return "Hệ thống phát hiện yêu cầu tìm kiếm lặp lại quá nhiều lần, xin lỗi vì chưa thể hoàn thành chi tiết này."
+            logger.w("AgentKernel", "⚠️ [Tool Loop Guard] Model bỏ qua chỉ thị, vẫn gọi tool lần nữa (depth=$toolDepth). Tự trả lời từ dữ liệu đã tra được thay vì lặp lại.")
+            return buildFallbackFromSearchResult(lastSearchResultText)
         }
 
         // ✅ MỚI: Tool tìm kiếm mở rộng CHỈ trong catalogue/FAQ/generic — dành riêng cho nhánh COMBINED
@@ -644,7 +650,8 @@ class AgentKernel @Inject constructor(
                     historySnapshot = historySnapshot,
                     allowDeviceControl = allowDeviceControl,
                     allowCatalogSearch = allowCatalogSearch,
-                    toolDepth = toolDepth + 1
+                    toolDepth = toolDepth + 1,
+                    lastSearchResultText = searchResult.summaryText
                 )
             }
         } catch (e: CancellationException) {
@@ -712,7 +719,8 @@ class AgentKernel @Inject constructor(
                     historySnapshot = historySnapshot,
                     allowDeviceControl = allowDeviceControl,
                     allowCatalogSearch = true,
-                    toolDepth = toolDepth + 1
+                    toolDepth = toolDepth + 1,
+                    lastSearchResultText = resultText
                 )
             }
         } catch (e: CancellationException) {
@@ -721,6 +729,27 @@ class AgentKernel @Inject constructor(
             logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý catalog_search Two-Pass: ${e.message}", e)
             "Xin lỗi, hệ thống đang gặp sự cố khi tìm kiếm thông tin. Vui lòng thử lại sau."
         }
+    }
+
+    // ✅ MỚI: Tự tổng hợp câu trả lời tự nhiên từ dữ liệu ĐÃ tra được (catalog QA hoặc db_search
+    // summaryText), dùng khi model bỏ qua chỉ thị "không gọi lại tool" — tránh phải trả lời khách
+    // bằng câu báo lỗi kỹ thuật vô nghĩa trong khi dữ liệu thật đã nằm sẵn trong tay.
+    private fun buildFallbackFromSearchResult(resultText: String?): String {
+        val noInfoReply = "Xin lỗi, hiện chưa có thông tin chính xác cho câu hỏi này. Vui lòng liên hệ nhân viên hỗ trợ để được hỗ trợ thêm."
+        if (resultText.isNullOrBlank() || resultText.contains("Không tìm thấy nội dung phù hợp")) {
+            return noInfoReply
+        }
+        if (resultText.contains("📚 Q:")) {
+            // Định dạng catalog QA — chỉ trích phần "A:" (câu trả lời thật), bỏ câu hỏi mẫu và
+            // ghi chú độ tương tự nội bộ, vì đây là câu sẽ hiển thị trực tiếp cho khách.
+            val answers = Regex("A:\\s*(.+?)\\s*\\(độ tương tự").findAll(resultText)
+                .map { it.groupValues[1].trim() }
+                .filter { it.isNotBlank() }
+                .toList()
+            return if (answers.isNotEmpty()) answers.joinToString(" ") else noInfoReply
+        }
+        // db_search summaryText đã là câu văn tự nhiên sẵn — dùng thẳng.
+        return resultText
     }
 
     private fun parseToolCall(response: String): ToolCall? {
