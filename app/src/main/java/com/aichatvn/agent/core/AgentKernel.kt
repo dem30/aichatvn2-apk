@@ -691,7 +691,8 @@ class AgentKernel @Inject constructor(
                 append(resultText)
                 append("\n\n👉 CHỈ THỊ LÂM THỜI (HỆ THỐNG ĐÃ TÌM XONG TRONG CATALOGUE):\n")
                 append("- Đây là kết quả tìm kiếm catalogue/FAQ thực tế cuối cùng.\n")
-                append("- Nếu không có nội dung phù hợp, hãy trả lời khách là chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm.\n")
+                append("- Nếu kết quả trên có nội dung LIÊN QUAN đến chủ đề khách hỏi (dù chỉ là thông tin chung, chưa đủ chi tiết cụ thể), hãy DÙNG NGAY nội dung đó để trả lời khách, có thể nói thêm rằng thông tin chi tiết hơn cần liên hệ nhân viên hỗ trợ. TUYỆT ĐỐI không nói 'chưa có thông tin' khi đã có nội dung liên quan ở trên.\n")
+                append("- CHỈ khi kết quả HOÀN TOÀN không có nội dung liên quan (hoặc báo không tìm thấy), mới trả lời khách là chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm.\n")
                 append("- TUYỆT ĐỐI KHÔNG ĐƯỢC TRẢ VỀ JSON GỌI TOOL NỮA. Hãy trả lời bằng văn bản tự nhiên Tiếng Việt ngay lập tức.\n")
                 append("</SYSTEM_MEMORY>")
             }
@@ -964,8 +965,12 @@ class AgentKernel @Inject constructor(
     // (catalogue Chat, xem buildQAContextForAgent()) để trả lời đúng trọng tâm câu hỏi sản phẩm.
     private fun buildMinimalGuard(maxSentences: Int): String =
         "Bạn là trợ lý tư vấn, chỉ trả lời dựa trên nội dung Hỏi-Đáp đã huấn luyện được cung cấp bên dưới (nếu có). " +
-        "Nếu không có thông tin phù hợp, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm, " +
-        "TUYỆT ĐỐI không tự bịa đặt. Không đề cập đến thiết bị, camera, điều khiển hay bất kỳ hệ thống nội bộ nào.\n" +
+        "Nếu có mục Hỏi-Đáp LIÊN QUAN đến chủ đề khách đang hỏi — kể cả khi câu trả lời đó chỉ mang tính chất chung chung, " +
+        "chưa đủ chi tiết cụ thể (giá, thông số, ngày ra mắt...) — hãy DÙNG NGAY nội dung đó để trả lời, và có thể nói thêm " +
+        "rằng để biết thông tin chi tiết hơn, khách vui lòng liên hệ nhân viên hỗ trợ. " +
+        "CHỈ khi HOÀN TOÀN không có mục Hỏi-Đáp nào liên quan tới chủ đề khách hỏi, mới được nói chưa có thông tin chính xác " +
+        "và đề nghị liên hệ nhân viên hỗ trợ thêm. " +
+        "TUYỆT ĐỐI không tự bịa đặt thông tin ngoài phạm vi đã huấn luyện. Không đề cập đến thiết bị, camera, điều khiển hay bất kỳ hệ thống nội bộ nào.\n" +
         "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu."
 
     // ✅ MỚI: Guard bổ sung CHỈ dùng ở nhánh COMBINED khi khách ngoại kênh đang bị khoá điều khiển
@@ -976,13 +981,16 @@ class AgentKernel @Inject constructor(
     // "groq" (chat cho vui) tái sử dụng — chế độ Groq không được cấp khả năng search này.
     private fun buildCatalogSearchToolGuard(): String =
         "\n\n🔎 QUY TẮC TÌM KIẾM MỞ RỘNG (chỉ trong phạm vi Catalogue/FAQ/thông tin chung):\n" +
-        "1. Nếu nội dung Hỏi-Đáp ở trên KHÔNG đủ để trả lời câu hỏi hiện tại của khách, và bạn cần tìm thêm trong catalogue sản phẩm/FAQ/thông tin chung đã huấn luyện, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích gì thêm) theo cấu trúc sau:\n" +
+        "1. CHỈ gọi tool tìm kiếm khi nội dung Hỏi-Đáp ở trên HOÀN TOÀN KHÔNG đề cập tới chủ đề khách đang hỏi. " +
+        "Nếu đã có mục Hỏi-Đáp liên quan (dù chỉ là thông tin chung, chưa đủ chi tiết cụ thể), hãy dùng ngay nội dung đó để trả lời, " +
+        "TUYỆT ĐỐI KHÔNG gọi tool chỉ vì muốn tìm thêm chi tiết cụ thể hơn (giá, thông số...) cho một chủ đề đã có câu trả lời chung. " +
+        "Khi thực sự cần tìm thêm, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích gì thêm) theo cấu trúc sau:\n" +
         "{\n" +
         "  \"tool\": \"catalog_search\",\n" +
         "  \"query\": \"từ khoá hoặc câu hỏi ngắn gọn cần tìm thêm trong catalogue\"\n" +
         "}\n" +
         "2. Phạm vi tìm kiếm CHỈ giới hạn trong catalogue Hỏi-Đáp/FAQ/thông tin chung đã huấn luyện. TUYỆT ĐỐI KHÔNG được dùng tool này để hỏi về camera, thiết bị, nhật ký sự kiện hay bất kỳ dữ liệu/hệ thống nội bộ nào khác.\n" +
-        "3. Nếu hệ thống đã trả lại kết quả tìm kiếm, hãy trả lời tự nhiên bằng văn bản ngay, TUYỆT ĐỐI không được gọi lại tool catalog_search lần nữa."
+        "3. Nếu hệ thống đã trả lại kết quả tìm kiếm (dù có nội dung liên quan hay không), hãy trả lời tự nhiên bằng văn bản ngay, TUYỆT ĐỐI không được gọi lại tool catalog_search lần nữa."
 
     // ✅ Prompt đầy đủ (giữ nguyên logic cũ) dành cho chat nội bộ, hoặc khách đa kênh khi admin đã
     // mở điều khiển: có ngữ cảnh nhà thông minh (HouseManagerSkill) + khả năng gọi tool db_search để
