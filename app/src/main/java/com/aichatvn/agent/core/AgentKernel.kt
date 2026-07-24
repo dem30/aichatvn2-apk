@@ -276,7 +276,7 @@ class AgentKernel @Inject constructor(
         val guard = if (request.allowDeviceControl) {
             buildFullGuard(routerFailed, outcome, maxSentences, message)
         } else {
-            buildMinimalGuard(maxSentences)
+            buildMinimalGuard(maxSentences, includeCatalogSearch = false)
         }
 
         
@@ -331,16 +331,19 @@ class AgentKernel @Inject constructor(
                         
                         val qaContext = buildQAContextForAgent(message, username)
                         // ✅ MỚI: Chỉ nhánh COMBINED mới có khả năng search kết hợp AI+DB thật sự.
-                        // Khi khách ngoại kênh đang bị khoá điều khiển (!allowDeviceControl), cấp thêm
-                        // khả năng gọi tool catalog_search (giới hạn catalogue/FAQ/generic) để bù cho
-                        // trường hợp buildQAContextForAgent() không khớp đủ ngưỡng similarity tĩnh.
-                        // Khi đã mở khoá điều khiển, guard đã là buildFullGuard() đầy đủ như default_user
-                        // (không cần thêm catalog_search ở đây).
-                        val catalogToolGuard = if (!request.allowDeviceControl) buildCatalogSearchToolGuard() else ""
+                        // Khi khách ngoại kênh đang bị khoá điều khiển (!allowDeviceControl), dùng bản
+                        // guard gộp sẵn quy tắc catalog_search (1 khối quy tắc gọn, đánh số liền mạch)
+                        // thay vì `guard` gốc + nối thêm khối riêng — tránh prompt dài dòng, rời rạc.
+                        // Khi đã mở khoá điều khiển, giữ nguyên `guard` = buildFullGuard() đầy đủ như
+                        // default_user (không cần catalog_search ở đây).
+                        val effectiveGuard = if (!request.allowDeviceControl) {
+                            buildMinimalGuard(maxSentences, includeCatalogSearch = true)
+                        } else {
+                            guard
+                        }
                         val fullContext = buildString {
-                            append(guard)
+                            append(effectiveGuard)
                             if (qaContext.isNotEmpty()) append("\n\n$qaContext")
-                            append(catalogToolGuard)
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                         }
 
@@ -515,7 +518,7 @@ class AgentKernel @Inject constructor(
         }
 
         // ✅ MỚI: Tool tìm kiếm mở rộng CHỈ trong catalogue/FAQ/generic — dành riêng cho nhánh COMBINED
-        // khi khách ngoại kênh đang bị khoá điều khiển thiết bị (xem buildCatalogSearchToolGuard()).
+        // khi khách ngoại kênh đang bị khoá điều khiển thiết bị (xem buildMinimalGuard(includeCatalogSearch=true)).
         // Hoàn toàn tách biệt với db_search (nhật ký sự kiện/thiết bị) bên dưới.
         if (toolCall.tool == "catalog_search") {
             if (!allowCatalogSearch) {
@@ -689,11 +692,7 @@ class AgentKernel @Inject constructor(
                 append(baseContext)
                 append("\n\n<SYSTEM_MEMORY>\n")
                 append(resultText)
-                append("\n\n👉 CHỈ THỊ LÂM THỜI (HỆ THỐNG ĐÃ TÌM XONG TRONG CATALOGUE):\n")
-                append("- Đây là kết quả tìm kiếm catalogue/FAQ thực tế cuối cùng.\n")
-                append("- Nếu kết quả trên có nội dung LIÊN QUAN đến chủ đề khách hỏi (dù chỉ là thông tin chung, chưa đủ chi tiết cụ thể), hãy DÙNG NGAY nội dung đó để trả lời khách, có thể nói thêm rằng thông tin chi tiết hơn cần liên hệ nhân viên hỗ trợ. TUYỆT ĐỐI không nói 'chưa có thông tin' khi đã có nội dung liên quan ở trên.\n")
-                append("- CHỈ khi kết quả HOÀN TOÀN không có nội dung liên quan (hoặc báo không tìm thấy), mới trả lời khách là chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ thêm.\n")
-                append("- TUYỆT ĐỐI KHÔNG ĐƯỢC TRẢ VỀ JSON GỌI TOOL NỮA. Hãy trả lời bằng văn bản tự nhiên Tiếng Việt ngay lập tức.\n")
+                append("\n\nKết quả tìm kiếm catalogue trên là cuối cùng. Nếu có nội dung liên quan, dùng ngay để trả lời (được phép là thông tin tổng quát). Nếu không, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ. Không gọi lại tool. Trả lời bằng văn bản tự nhiên.\n")
                 append("</SYSTEM_MEMORY>")
             }
 
@@ -959,38 +958,30 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    // ✅ MỚI: Prompt tối giản dành cho khách đa kênh khi admin CHƯA mở điều khiển ngoài
-    // (GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = true). Không nhắc thiết bị/camera/nhật ký/hệ thống nội
-    // bộ, không mở khả năng gọi tool db_search — chỉ hướng Groq bám sát nội dung QA đã huấn luyện
-    // (catalogue Chat, xem buildQAContextForAgent()) để trả lời đúng trọng tâm câu hỏi sản phẩm.
-    private fun buildMinimalGuard(maxSentences: Int): String =
-        "Bạn là trợ lý tư vấn, chỉ trả lời dựa trên nội dung Hỏi-Đáp đã huấn luyện được cung cấp bên dưới (nếu có). " +
-        "Nếu có mục Hỏi-Đáp LIÊN QUAN đến chủ đề khách đang hỏi — kể cả khi câu trả lời đó chỉ mang tính chất chung chung, " +
-        "chưa đủ chi tiết cụ thể (giá, thông số, ngày ra mắt...) — hãy DÙNG NGAY nội dung đó để trả lời, và có thể nói thêm " +
-        "rằng để biết thông tin chi tiết hơn, khách vui lòng liên hệ nhân viên hỗ trợ. " +
-        "CHỈ khi HOÀN TOÀN không có mục Hỏi-Đáp nào liên quan tới chủ đề khách hỏi, mới được nói chưa có thông tin chính xác " +
-        "và đề nghị liên hệ nhân viên hỗ trợ thêm. " +
-        "TUYỆT ĐỐI không tự bịa đặt thông tin ngoài phạm vi đã huấn luyện. Không đề cập đến thiết bị, camera, điều khiển hay bất kỳ hệ thống nội bộ nào.\n" +
-        "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu."
+    // ✅ SỬA: Gộp guard tối giản + quy tắc catalog_search (khi cần) thành MỘT khối quy tắc đánh số
+    // liền mạch, ngắn gọn — thay vì 2 đoạn văn xuôi dài + 1 khối JSON rời rạc trước đây. Dùng cho
+    // khách đa kênh khi admin CHƯA mở điều khiển ngoài (GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL = true).
+    // includeCatalogSearch chỉ = true khi được gọi từ nhánh COMBINED lúc bị khoá; nhánh "groq" (chat
+    // cho vui) luôn gọi với includeCatalogSearch = false, không có khả năng search này.
+    private fun buildMinimalGuard(maxSentences: Int, includeCatalogSearch: Boolean): String {
+        val rules = mutableListOf(
+            "Chỉ trả lời dựa trên Hỏi-Đáp được cung cấp.",
+            "Nếu có Hỏi-Đáp liên quan, hãy dùng ngay để trả lời.",
+            "Nếu Hỏi-Đáp chỉ mang tính tổng quát, vẫn dùng và có thể khuyên khách liên hệ nhân viên để biết thêm chi tiết."
+        )
+        if (includeCatalogSearch) {
+            rules += "Chỉ khi không có Hỏi-Đáp liên quan mới trả về DUY NHẤT JSON thô: {\"tool\":\"catalog_search\",\"query\":\"...\"} (chỉ tìm trong catalogue/FAQ/thông tin chung, TUYỆT ĐỐI không phải camera/thiết bị/nhật ký)."
+            rules += "Sau khi đã có kết quả tìm kiếm thì không gọi tool lần nữa."
+        }
+        rules += "Không bịa thông tin."
+        rules += "Không nhắc đến thiết bị, camera, điều khiển hay hệ thống nội bộ."
+        rules += "Trả lời tối đa $maxSentences câu."
 
-    // ✅ MỚI: Guard bổ sung CHỈ dùng ở nhánh COMBINED khi khách ngoại kênh đang bị khoá điều khiển
-    // (request.allowDeviceControl == false). Cho phép Groq gọi tool tìm kiếm mở rộng nhưng giới hạn
-    // TUYỆT ĐỐI trong phạm vi catalogue/FAQ/generic (category faq/chat/general — xem
-    // TrainingSkill.fuzzyMatchChatCatalog/CHAT_CATALOG_TYPES), không phải db_search (nhật ký sự
-    // kiện/thiết bị). KHÔNG được gắn vào buildMinimalGuard() dùng chung vì guard đó cũng được nhánh
-    // "groq" (chat cho vui) tái sử dụng — chế độ Groq không được cấp khả năng search này.
-    private fun buildCatalogSearchToolGuard(): String =
-        "\n\n🔎 QUY TẮC TÌM KIẾM MỞ RỘNG (chỉ trong phạm vi Catalogue/FAQ/thông tin chung):\n" +
-        "1. CHỈ gọi tool tìm kiếm khi nội dung Hỏi-Đáp ở trên HOÀN TOÀN KHÔNG đề cập tới chủ đề khách đang hỏi. " +
-        "Nếu đã có mục Hỏi-Đáp liên quan (dù chỉ là thông tin chung, chưa đủ chi tiết cụ thể), hãy dùng ngay nội dung đó để trả lời, " +
-        "TUYỆT ĐỐI KHÔNG gọi tool chỉ vì muốn tìm thêm chi tiết cụ thể hơn (giá, thông số...) cho một chủ đề đã có câu trả lời chung. " +
-        "Khi thực sự cần tìm thêm, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích gì thêm) theo cấu trúc sau:\n" +
-        "{\n" +
-        "  \"tool\": \"catalog_search\",\n" +
-        "  \"query\": \"từ khoá hoặc câu hỏi ngắn gọn cần tìm thêm trong catalogue\"\n" +
-        "}\n" +
-        "2. Phạm vi tìm kiếm CHỈ giới hạn trong catalogue Hỏi-Đáp/FAQ/thông tin chung đã huấn luyện. TUYỆT ĐỐI KHÔNG được dùng tool này để hỏi về camera, thiết bị, nhật ký sự kiện hay bất kỳ dữ liệu/hệ thống nội bộ nào khác.\n" +
-        "3. Nếu hệ thống đã trả lại kết quả tìm kiếm (dù có nội dung liên quan hay không), hãy trả lời tự nhiên bằng văn bản ngay, TUYỆT ĐỐI không được gọi lại tool catalog_search lần nữa."
+        return buildString {
+            append("Bạn là trợ lý tư vấn.\n\nQuy tắc:\n")
+            rules.forEachIndexed { i, rule -> append("${i + 1}. $rule\n") }
+        }
+    }
 
     // ✅ Prompt đầy đủ (giữ nguyên logic cũ) dành cho chat nội bộ, hoặc khách đa kênh khi admin đã
     // mở điều khiển: có ngữ cảnh nhà thông minh (HouseManagerSkill) + khả năng gọi tool db_search để
