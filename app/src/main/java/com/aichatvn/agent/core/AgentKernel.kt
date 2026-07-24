@@ -273,10 +273,11 @@ class AgentKernel @Inject constructor(
         //   huấn luyện (catalogue Chat) để trả lời đúng trọng tâm câu hỏi sản phẩm, tránh hiểu sai.
         // - true (nội bộ, hoặc khách ngoài khi admin đã mở điều khiển): prompt ĐẦY ĐỦ như cũ (ngữ cảnh
         //   nhà thông minh + khả năng tra nhật ký sự kiện qua tool), nhưng vẫn viết súc tích.
+        // Bỏ maxSentences ra khỏi buildMinimalGuard
         val guard = if (request.allowDeviceControl) {
             buildFullGuard(routerFailed, outcome, maxSentences, message)
         } else {
-            buildMinimalGuard(maxSentences, includeCatalogSearch = false)
+            buildMinimalGuard(includeCatalogSearch = false)
         }
 
         
@@ -336,8 +337,9 @@ class AgentKernel @Inject constructor(
                         // thay vì `guard` gốc + nối thêm khối riêng — tránh prompt dài dòng, rời rạc.
                         // Khi đã mở khoá điều khiển, giữ nguyên `guard` = buildFullGuard() đầy đủ như
                         // default_user (không cần catalog_search ở đây).
+                        // Bỏ maxSentences ra khỏi buildMinimalGuard
                         val effectiveGuard = if (!request.allowDeviceControl) {
-                            buildMinimalGuard(maxSentences, includeCatalogSearch = true)
+                            buildMinimalGuard(includeCatalogSearch = true)
                         } else {
                             guard
                         }
@@ -837,6 +839,14 @@ class AgentKernel @Inject constructor(
     companion object {
         private const val MAX_QA_MATCHES_IN_CONTEXT = 3
         private const val MAX_QA_ANSWER_CHARS = 200
+
+        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = """🚨 QUY TẮC TÌM KIẾM THÔNG TIN:
+- Nếu chưa có đủ thông tin trong <SYSTEM_MEMORY> để trả lời câu hỏi của người dùng, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích):
+{
+  "tool": "catalog_search",
+  "query": "từ khóa tìm kiếm"
+}
+- Nếu đã có thông tin từ <SYSTEM_MEMORY>, hãy trả lời tự nhiên bằng Tiếng Việt và KHÔNG được gọi lại tool."""
     }
 
     // ✅ MỚI: Hàm dùng chung để bọc mọi kết quả tra catalogue (dù là prefetch trước lượt 1, hay
