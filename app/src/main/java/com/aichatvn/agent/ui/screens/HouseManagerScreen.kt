@@ -55,6 +55,12 @@ fun HouseManagerScreen(
     val sleepStartHour by viewModel.sleepStartHour.collectAsState()
     val sleepEndHour by viewModel.sleepEndHour.collectAsState()
 
+    // ✅ MỚI (Sửa lỗi chặn theo alias): danh sách thiết bị thật + 2 tập ID đã gắn thẻ, để
+    // chủ nhà tự chọn thiết bị nào là "phụ tải lớn" / "gây ồn" — độc lập với tên/alias.
+    val tuyaDevicesForTagging by viewModel.availableTuyaDevices.collectAsState()
+    val heavyLoadDeviceIds by viewModel.heavyLoadDeviceIds.collectAsState()
+    val noiseDeviceIds by viewModel.noiseDeviceIds.collectAsState()
+
     val alertActionPlugins = viewModel.alertActionPlugins
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -113,6 +119,18 @@ fun HouseManagerScreen(
                     isVacationSafetyEnabled = isVacationSafetyEnabled,
                     onToggleSilentNight = { viewModel.togglePolicy("silent_night", it) },
                     onToggleVacationSafety = { viewModel.togglePolicy("vacation_safety", it) }
+                )
+            }
+
+            // 3b. ✅ MỚI: Gắn thẻ thiết bị nào là "phụ tải lớn" / "gây ồn" theo ID thật —
+            // 2 chính sách ở trên chặn dựa vào đây, KHÔNG còn đoán chữ trong tên/alias nữa.
+            item {
+                DeviceLoadTagCard(
+                    devices = tuyaDevicesForTagging,
+                    heavyLoadDeviceIds = heavyLoadDeviceIds,
+                    noiseDeviceIds = noiseDeviceIds,
+                    onToggleHeavyLoad = { deviceId, tagged -> viewModel.toggleHeavyLoadTag(deviceId, tagged) },
+                    onToggleNoise = { deviceId, tagged -> viewModel.toggleNoiseTag(deviceId, tagged) }
                 )
             }
 
@@ -229,6 +247,95 @@ fun VacationModeCard(
                 checked = isAway,
                 onCheckedChange = onToggle
             )
+        }
+    }
+}
+
+@Composable
+fun DeviceLoadTagCard(
+    devices: List<TuyaDeviceEntity>,
+    heavyLoadDeviceIds: Set<String>,
+    noiseDeviceIds: Set<String>,
+    onToggleHeavyLoad: (deviceId: String, tagged: Boolean) -> Unit,
+    onToggleNoise: (deviceId: String, tagged: Boolean) -> Unit
+) {
+    var isExpanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Gắn thẻ thiết bị cho Chính sách",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "Chọn theo thiết bị thật — không phụ thuộc tên gọi/alias đã huấn luyện, vì tên có thể đổi bất cứ lúc nào.",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Xem danh sách thiết bị"
+                )
+            }
+
+            if (isExpanded) {
+                Spacer(modifier = Modifier.height(8.dp))
+                if (devices.isEmpty()) {
+                    Text(
+                        text = "ℹ️ Chưa có thiết bị Tuya nào. Vào quét thiết bị trước.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+                } else {
+                    devices.forEach { dev ->
+                        val isHeavyLoad = dev.id in heavyLoadDeviceIds
+                        val isNoise = dev.id in noiseDeviceIds
+                        Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                            Text(
+                                text = dev.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = isHeavyLoad,
+                                    onCheckedChange = { checked -> onToggleHeavyLoad(dev.id, checked) },
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "⚡ Phụ tải lớn",
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 4.dp, end = 16.dp)
+                                )
+                                Checkbox(
+                                    checked = isNoise,
+                                    onCheckedChange = { checked -> onToggleNoise(dev.id, checked) },
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "🔊 Gây ồn",
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(start = 4.dp)
+                                )
+                            }
+                        }
+                        Divider(modifier = Modifier.padding(vertical = 2.dp))
+                    }
+                }
+            }
         }
     }
 }

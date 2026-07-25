@@ -34,6 +34,13 @@ import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
 
+// ✅ MỚI (Sửa lỗi chặn theo alias): Danh sách ID thiết bị (không phải tên/alias) được chủ nhà
+// tự gắn thẻ "phụ tải lớn" / "gây ồn" — dùng cho checkPolicy() thay vì đoán chữ trong tên thiết
+// bị, vì tên hiển thị/alias có thể bị người dùng huấn luyện đổi khác đi bất cứ lúc nào.
+// Lưu dạng chuỗi các ID cách nhau bởi dấu phẩy, giống HOUSE_MANAGER_WORKFLOWS.
+private const val HOUSE_MANAGER_HEAVY_LOAD_DEVICE_IDS = "house_manager_heavy_load_device_ids"
+private const val HOUSE_MANAGER_NOISE_DEVICE_IDS = "house_manager_noise_device_ids"
+
 // ✅ MỚI (Kiến trúc Nhóm Kịch bản): Định nghĩa cấu trúc nhóm kịch bản tự chọn của gia chủ —
 // mỗi nhóm có 1 ngòi nổ (triggerSource) riêng và danh sách bước thi hành liên hoàn, cho phép
 // Quản gia phản ứng công bằng với MỌI nguồn sự kiện, không chỉ hardcode camera/tuya.
@@ -729,18 +736,29 @@ override suspend fun sendDefaultCameraAlerts(
         params: Map<String, Any>
     ): PolicyResult = withContext(Dispatchers.IO) {
         val currentSituation = cachedSituation ?: evaluateSituation()
-        
+
+        // ✅ SỬA (Bug: chính sách vắng nhà/im lặng đêm bị vô hiệu khi user huấn luyện alias):
+        // params["device"] tới đây có thể ĐÃ là ID thiết bị (do bảng alias Q&A resolve ra),
+        // không còn chứa chữ "bơm"/"bình nóng"/"tivi"/"loa" như tên gốc nữa — match theo text
+        // như trước đây sẽ luôn thất bại một khi user đổi/gán alias khác cho thiết bị.
+        // Resolve về entity thật (thử theo id trước, rồi theo tên) rồi đối chiếu ID — vốn KHÔNG
+        // đổi dù alias/tên hiển thị đổi bao nhiêu lần — với danh sách ID được gắn thẻ thủ công.
+        val deviceEntity = if (pluginId == "smart_switch" && action == "set") {
+            val deviceKey = params["device"]?.toString() ?: ""
+            database.tuyaDeviceDao().getDeviceById(deviceKey)
+                ?: database.tuyaDeviceDao().getDeviceByName(deviceKey)
+        } else null
+
         val isSilentNightEnabled = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "silent_night") ?: "true"
         if (isSilentNightEnabled == "true" && currentSituation.currentMood == HouseMood.SLEEPING && pluginId == "smart_switch" && action == "set") {
             val state = params["state"] as? Boolean ?: false
-            val deviceKey = params["device"]?.toString() ?: ""
-            val isRestricted = deviceKey.contains("tivi", ignoreCase = true) || 
-                               deviceKey.contains("loa", ignoreCase = true) || 
-                               deviceKey.contains("còi", ignoreCase = true)
-                               
+            val noiseDeviceIds = configProvider.getString(HOUSE_MANAGER_NOISE_DEVICE_IDS, "")
+                .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+            val isRestricted = deviceEntity != null && deviceEntity.id in noiseDeviceIds
+
             if (state && isRestricted) {
                 return@withContext PolicyResult.Blocked(
-                    "❌ Bị chặn bởi Chính sách Quản gia: Cả nhà đang ngủ, chặn kích hoạt các thiết bị gây tiếng ồn '$deviceKey'."
+                    "❌ Bị chặn bởi Chính sách Quản gia: Cả nhà đang ngủ, chặn kích hoạt thiết bị gây tiếng ồn '${deviceEntity?.name}'."
                 )
             }
         }
@@ -748,13 +766,13 @@ override suspend fun sendDefaultCameraAlerts(
         val isVacationSafetyEnabled = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "policy", "vacation_safety") ?: "true"
         if (isVacationSafetyEnabled == "true" && currentSituation.currentMood == HouseMood.VACATION && pluginId == "smart_switch" && action == "set") {
             val state = params["state"] as? Boolean ?: false
-            val deviceKey = params["device"]?.toString() ?: ""
-            val isHeavyLoad = deviceKey.contains("bơm", ignoreCase = true) || 
-                               deviceKey.contains("bình nóng", ignoreCase = true)
-                               
+            val heavyLoadDeviceIds = configProvider.getString(HOUSE_MANAGER_HEAVY_LOAD_DEVICE_IDS, "")
+                .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+            val isHeavyLoad = deviceEntity != null && deviceEntity.id in heavyLoadDeviceIds
+
             if (state && isHeavyLoad) {
                 return@withContext PolicyResult.Blocked(
-                    "❌ Bị chặn bởi Chính sách Quản gia: Đang ở chế độ vắng nhà, chặn bật thiết bị phụ tải lớn '$deviceKey' để phòng chống cháy nổ."
+                    "❌ Bị chặn bởi Chính sách Quản gia: Đang ở chế độ vắng nhà, chặn bật thiết bị phụ tải lớn '${deviceEntity?.name}' để phòng chống cháy nổ."
                 )
             }
         }

@@ -152,7 +152,9 @@ class IntentExecutor @Inject constructor(
                     put("last_action", normalizedIntent.action)
                     put("status", "success")
                     put("timestamp", now)
-                    normalizedIntent.params.forEach { (k, v) -> put(k, v.toString()) }
+                    normalizedIntent.params.forEach { (k, v) ->
+                        put(k, com.aichatvn.agent.utils.WorldStateHelper.sanitizeAttributeValue(k, v.toString()))
+                    }
                 }.toString()
 
                 database.worldStateDao().upsertState(
@@ -323,7 +325,9 @@ class IntentExecutor @Inject constructor(
                     put("last_action", action)
                     put("status", "success")
                     put("timestamp", now)
-                    normalizedParams.forEach { (k, v) -> put(k, v.toString()) }
+                    normalizedParams.forEach { (k, v) ->
+                        put(k, com.aichatvn.agent.utils.WorldStateHelper.sanitizeAttributeValue(k, v.toString()))
+                    }
                 }.toString()
 
                 database.worldStateDao().upsertState(

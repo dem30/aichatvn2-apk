@@ -81,6 +81,15 @@ class HouseManagerViewModel @Inject constructor(
     private val _availableCameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
     val availableCameras: StateFlow<List<CameraConfigEntity>> = _availableCameras.asStateFlow()
 
+    // ✅ MỚI (Sửa lỗi chặn theo alias): Danh sách ID thiết bị (KHÔNG phải tên/alias) được chủ nhà
+    // tự gắn thẻ "phụ tải lớn" / "gây ồn" — dùng để HouseManagerSkillImpl.checkPolicy() chặn đúng
+    // dù NLU đã resolve tên gọi/alias thành ID trước khi tới đây.
+    private val _heavyLoadDeviceIds = MutableStateFlow<Set<String>>(emptySet())
+    val heavyLoadDeviceIds: StateFlow<Set<String>> = _heavyLoadDeviceIds.asStateFlow()
+
+    private val _noiseDeviceIds = MutableStateFlow<Set<String>>(emptySet())
+    val noiseDeviceIds: StateFlow<Set<String>> = _noiseDeviceIds.asStateFlow()
+
     // ✅ MỚI: Danh sách thớt chat khách hàng thật đang có trong Bản sao số (world_state,
     // source = "chat") — nạp cho picker chatSession trong AlertActionFormSheet.
     private val _availableChatSessions = MutableStateFlow<List<String>>(emptyList())
@@ -160,6 +169,12 @@ class HouseManagerViewModel @Inject constructor(
                 _availableTuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
                 _availableCameras.value = database.cameraDao().getAllCameras()
 
+                // ✅ MỚI: Nạp danh sách ID thiết bị đã được gắn thẻ phụ tải lớn / gây ồn
+                _heavyLoadDeviceIds.value = configProvider.getString("house_manager_heavy_load_device_ids", "")
+                    .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+                _noiseDeviceIds.value = configProvider.getString("house_manager_noise_device_ids", "")
+                    .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+
                 // ✅ MỚI (Đọc thớt chat): Lọc tất cả trạng thái trong Bản sao số có source = "chat"
                 // để lấy danh sách username động (vd: facebook_1234, telegram_5678) cho picker.
                 _availableChatSessions.value = database.worldStateDao().getAllStatesFlow().first()
@@ -213,6 +228,26 @@ class HouseManagerViewModel @Inject constructor(
 
     // ⚠️ ĐÃ XÓA: saveDeviceMappings(...) — chỉ phục vụ Bảng cấu hình Thiết bị Răn đe cũ, nay
     // không còn thiết bị dự phòng nào để lưu (xem ghi chú ở khai báo state phía trên).
+
+    // ✅ MỚI (Sửa lỗi chặn theo alias): Gắn/gỡ thẻ "phụ tải lớn" hoặc "gây ồn" cho 1 thiết bị theo
+    // ID thật — độc lập với tên hiển thị/alias mà user có thể huấn luyện đổi khác sau này.
+    fun toggleHeavyLoadTag(deviceId: String, tagged: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = _heavyLoadDeviceIds.value
+            val updated = if (tagged) current + deviceId else current - deviceId
+            configProvider.set("house_manager_heavy_load_device_ids", updated.joinToString(","))
+            _heavyLoadDeviceIds.value = updated
+        }
+    }
+
+    fun toggleNoiseTag(deviceId: String, tagged: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = _noiseDeviceIds.value
+            val updated = if (tagged) current + deviceId else current - deviceId
+            configProvider.set("house_manager_noise_device_ids", updated.joinToString(","))
+            _noiseDeviceIds.value = updated
+        }
+    }
 
     // ✅ MỚI: Lưu khung giờ ngủ khi chủ nhà chỉnh trên SleepScheduleCard.
     fun saveSleepSchedule(startHour: Int, endHour: Int) {
