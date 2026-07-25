@@ -177,7 +177,9 @@ fun AppNavigator(
             // ✅ MỚI (Giai đoạn 4): Đăng ký composable cho màn hình Quản gia AI, sử dụng Hilt để tự tiêm ViewModel
             composable(Screen.HouseManager.route) {
                 val houseViewModel: HouseManagerViewModel = hiltViewModel()
-                HouseManagerScreen(viewModel = houseViewModel)
+                // 🌟 MỚI: Truyền navController xuống để các ô chỉ số (Tin chưa đọc / Bất
+                // thường) trong SituationOverviewGrid có thể điều hướng khi bấm vào.
+                HouseManagerScreen(viewModel = houseViewModel, navController = navController)
             }
 
             // ✅ ĐÃ SỬA: route KHÔNG tham số — vừa là màn hình mở đầu app (default_user, xem

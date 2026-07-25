@@ -324,11 +324,44 @@ PluginAction(
                 val tuyaStates = states.filter { it.source == "tuya" }
                 val activeDevicesCount = tuyaStates.count { getAttr(it, "state") == "true" }
 
+                // 🌟 SỬA: Đếm tin chưa đọc từ bảng tin nhắn thật (chat_messages) thay vì tin
+                // tưởng mù quáng vào world_state — tránh "Chỉ số Ma" (Ghost Indicator) khi 2 nơi
+                // lệch pha, ví dụ do import dữ liệu chỉ ghi world_state mà quên ghi chat_messages.
+                // Dùng lại getUnreadCountsFlow() — query GROUP BY đã có sẵn trong ChatMessageDao
+                // (đang dùng chung cho badge Inbox) — KHÔNG quét 2000 dòng rồi lọc tay bằng Kotlin
+                // như cách cũ, để tránh tốn hiệu năng mỗi lần world_state đổi (kể cả khi chỉ có
+                // camera/tuya đổi, chẳng liên quan gì đến chat).
+                val realUnreadByUser = database.chatMessageDao().getUnreadCountsFlow().first()
+                    .filter { it.username != "default_user" } // default_user là chat cá nhân của chủ nhà, không tính là "khách chưa được trả lời"
+                    .associate { it.username to it.unreadCount }
+
+                val totalUnreadChats = realUnreadByUser.values.sum()
+
+                // 🌟 MỚI: Tự động dọn "Chỉ số Ma" — nếu world_state báo lệch so với số tin nhắn
+                // thật (thường do import lỗi), tự sửa lại world_state cho khớp 100% với Inbox.
+                // Việc ghi này sẽ khiến onWorldStateChanged() chạy lại evaluateSituation() thêm
+                // 1 lần cho state "chat" vừa sửa — nhưng lần đó actualUnread đã khớp worldStateUnread
+                // nên không ghi tiếp, tự hội tụ sau đúng 1 vòng, không lặp vô hạn.
                 val chatStates = states.filter { it.source == "chat" }
-                var totalUnreadChats = 0
                 chatStates.forEach { state ->
-                    val unread = try { JSONObject(state.attributesJson).optInt("unread_count", 0) } catch (_: Exception) { 0 }
-                    totalUnreadChats += unread
+                    val username = state.sourceId
+                    val actualUnread = realUnreadByUser[username] ?: 0
+                    val worldStateUnread = try { JSONObject(state.attributesJson).optInt("unread_count", 0) } catch (_: Exception) { 0 }
+                    if (worldStateUnread != actualUnread) {
+                        try {
+                            val json = JSONObject(state.attributesJson)
+                            json.put("unread_count", actualUnread)
+                            database.worldStateDao().upsertState(
+                                WorldStateEntity(
+                                    id = state.id,
+                                    source = state.source,
+                                    sourceId = state.sourceId,
+                                    attributesJson = json.toString(),
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                        } catch (_: Exception) {}
+                    }
                 }
 
                 val isAway = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "house", "away_mode") == "true"

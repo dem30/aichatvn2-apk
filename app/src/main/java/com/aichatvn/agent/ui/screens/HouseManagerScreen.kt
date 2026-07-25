@@ -31,11 +31,17 @@ import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.skills.PlanStatus
 import com.aichatvn.agent.ui.components.SmartActionFormSheet // 🌟 MỚI: Dùng SmartActionFormSheet chuẩn
 import com.aichatvn.agent.ui.viewmodels.HouseManagerViewModel
+import androidx.navigation.NavController // 🌟 MỚI: cho điều hướng khi bấm ô chỉ số
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType // 🌟 MỚI
+import androidx.compose.ui.platform.LocalHapticFeedback // 🌟 MỚI
+import androidx.compose.ui.semantics.Role // 🌟 MỚI
+import com.aichatvn.agent.ui.navigation.Screen // 🌟 MỚI: dùng Screen.INBOX_ROUTE thay vì gõ tay chuỗi "inbox"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HouseManagerScreen(
     viewModel: HouseManagerViewModel,
+    navController: NavController, // 🌟 MỚI: để SituationOverviewGrid điều hướng khi bấm chỉ số
     modifier: Modifier = Modifier
 ) {
     val situation by viewModel.situation.collectAsState()
@@ -157,7 +163,7 @@ fun HouseManagerScreen(
 
             // 7. Thẻ Chỉ số Bản sao số (World State Index Overview)
             item {
-                SituationOverviewGrid(situation = situation)
+                SituationOverviewGrid(situation = situation, navController = navController)
             }
 
             // Tiêu đề phân khu Kịch bản nền
@@ -451,7 +457,7 @@ fun MoodHeaderCard(
 }
 
 @Composable
-fun SituationOverviewGrid(situation: HouseSituation?) {
+fun SituationOverviewGrid(situation: HouseSituation?, navController: NavController) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp)
@@ -467,23 +473,37 @@ fun SituationOverviewGrid(situation: HouseSituation?) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // ⚠️ CỐ Ý KHÔNG gắn onClick cho ô này: "dashboard" là 1 tab chính của Bottom
+                // Nav, được điều hướng qua cơ chế popUpTo(startDestination){saveState=true} +
+                // restoreState=true (xem AppNavigator). Nếu bấm ô này gọi navController.navigate
+                // ("dashboard") trực tiếp sẽ tạo 1 bản sao Dashboard mới đè lên back stack thay
+                // vì phục hồi tab đã lưu -> nút Back sẽ không quay lại đúng chỗ user đang đứng.
                 InfoIndicator(
                     label = "Thiết bị bật",
                     value = "${situation?.activeDevicesCount ?: 0}",
                     icon = Icons.Default.CheckCircle,
                     modifier = Modifier.weight(1f)
                 )
+                // 🌟 MỚI: Bấm để mở ngay Hộp thư đa kênh (Inbox) — đây là màn con, không phải
+                // tab chính, nên navigate() thẳng an toàn, không đụng tới back stack của tab nào.
                 InfoIndicator(
                     label = "Tin chưa đọc",
                     value = "${situation?.pendingChatsCount ?: 0}",
                     icon = Icons.Default.Email,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
+                    }
                 )
+                // 🌟 MỚI: Bấm để mở Lịch sử cảnh báo camera — cũng là màn con, an toàn tương tự.
                 InfoIndicator(
                     label = "Bất thường",
                     value = "${situation?.suspiciousObjectsCount ?: 0}",
                     icon = Icons.Default.Warning,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        navController.navigate("alert_history") { launchSingleTop = true }
+                    }
                 )
             }
         }
@@ -495,16 +515,28 @@ fun InfoIndicator(
     label: String,
     value: String,
     icon: ImageVector,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null // 🌟 MỚI: null = ô tĩnh (không bấm được), như "Thiết bị bật"
 ) {
+    val haptic = LocalHapticFeedback.current
     Box(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+            .then(
+                if (onClick != null) {
+                    // Modifier.clickable của Material3 đã tự có ripple mặc định, không cần
+                    // code thêm gì cho hiệu ứng bấm.
+                    Modifier.clickable(onClickLabel = label, role = Role.Button) {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onClick()
+                    }
+                } else Modifier
+            )
             .padding(12.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(imageVector = icon, contentDescription = label, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
             Text(text = value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
