@@ -35,6 +35,34 @@ class DynamicOptionRegistry @Inject constructor(
                     OptionItem(cam.id.trim(), "${cam.customername} (${cam.id.trim()})")
                 }
             }
+            // 🌟 MỚI: Nạp danh sách Khách hàng từ Database
+            "customer" -> {
+                database.customerDao().getAllCustomersFlow().first().map { cust ->
+                    OptionItem(cust.id.trim(), "${cust.name} (${cust.id.trim()})")
+                }
+            }
+            // 🌟 MỚI: Nạp danh sách Email của các Khách hàng
+            "customer_email", "email" -> {
+                database.customerDao().getAllCustomersFlow().first()
+                    .filter { it.email.isNotBlank() }
+                    .map { cust ->
+                        OptionItem(cust.email.trim(), "${cust.name} <${cust.email.trim()}>")
+                    }
+            }
+            // 🌟 MỚI: Nạp danh sách Chính sách an ninh Quản gia
+            "house_policy" -> {
+                listOf(
+                    OptionItem("silent_night", "🌙 Ban đêm yên tĩnh (silent_night)"),
+                    OptionItem("vacation_safety", "🏖️ An toàn vắng nhà (vacation_safety)")
+                )
+            }
+            // 🌟 MỚI: Nạp danh sách Lịch trình tự động đang có
+            "schedule", "schedule_ref" -> {
+                database.scheduleDao().getAllSchedules().map { sch ->
+                    val timing = if (sch.cron.isNotBlank()) "⏰ ${sch.cron}" else "🔁 ${sch.intervalMinutes}m"
+                    OptionItem(sch.id.trim(), "${sch.label.ifBlank { "${sch.pluginId}.${sch.action}" }} ($timing)")
+                }
+            }
             "chatSession" -> {
                 database.worldStateDao().getAllStatesFlow().first()
                     .filter { it.source == "chat" }
@@ -89,7 +117,7 @@ class DynamicOptionRegistry @Inject constructor(
                         OptionItem("2", "2 tin nhắn"),
                         OptionItem("3", "3 tin nhắn")
                     )
-                    else -> emptyList() // Nếu rỗng, UI sẽ tự động hiện ô gõ chữ
+                    else -> emptyList()
                 }
             }
             else -> emptyList()

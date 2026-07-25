@@ -108,20 +108,38 @@ class CameraSkill @Inject constructor(
                     PluginParameter("active", "boolean", "Trạng thái bật/tắt", true, "boolean")
                 )
             ),
-            PluginAction(
-                name = "set_smart_mode",
-                description = "Bật hoặc tắt chế độ phân tích AI cho camera",
-                examples = listOf("bật ai camera", "tắt ai camera"),
-                exampleOverrides = mapOf(
-                    "bật ai camera" to mapOf("enabled" to true),
-                    "tắt ai camera" to mapOf("enabled" to false)
-                ),
-                parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
-                    PluginParameter("customerId", "string", "Mã khách hàng", false, "string"),
-                    PluginParameter("enabled", "boolean", "Trạng thái bật/tắt AI", true, "boolean")
-                )
-            ),
+            // Trong CameraSkill.kt - đoạn manifest actions
+
+// Trong CameraSkill.kt - đoạn manifest actions
+
+PluginAction(
+    name = "set_smart_mode",
+    description = "Bật hoặc tắt chế độ phân tích AI cho camera",
+    parameters = listOf(
+        PluginParameter("cameraId", "string", "Mã camera", false, "camera"),
+        // 🌟 SỬA: Dùng semanticType = "customer" thay cho "string"
+        PluginParameter("customerId", "string", "Chọn khách hàng", false, "customer"),
+        PluginParameter("enabled", "boolean", "Trạng thái bật/tắt AI", true, "boolean")
+    )
+),
+
+PluginAction(
+    name = "configure",
+    description = "Cập nhật cấu hình kỹ thuật cho thiết bị camera",
+    parameters = listOf(
+        PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
+        PluginParameter("aiPrompt", "string", "Prompt AI mới", false, "string"),
+        PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo", false, "string"),
+        PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường", false, "string"),
+        PluginParameter("snapshotUrl", "string", "URL ảnh chụp", false, "string"),
+        PluginParameter("landInfo", "string", "Thông tin vị trí", false, "string"),
+        // 🌟 SỬA: Đổi kiểu từ "number" sang "boolean" để UI vẽ công tắc Switch thay vì ô nhập số
+        PluginParameter("enableCooldown", "boolean", "Bật/Tắt cooldown hoãn quét", false, "boolean"),
+        PluginParameter("enableNotification", "boolean", "Bật/Tắt gửi thông báo", false, "boolean")
+    )
+)
+
+
             PluginAction(
                 name = "mark_false_positive",
                 description = "Báo cáo báo động giả cho camera để hệ thống tự học và nâng ngưỡng lọc nhiễu",
@@ -131,21 +149,7 @@ class CameraSkill @Inject constructor(
                     PluginParameter("alertId", "string", "Mã cảnh báo (tùy chọn)", false, "string")
                 )
             ),
-            PluginAction(
-                name = "configure",
-                description = "Cập nhật cấu hình kỹ thuật cho thiết bị camera",
-                examples = listOf("cấu hình camera", "cập nhật camera"),
-                parameters = listOf(
-                    PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
-                    PluginParameter("aiPrompt", "string", "Prompt AI mới", false, "string"),
-                    PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo", false, "string"),
-                    PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường", false, "string"),
-                    PluginParameter("snapshotUrl", "string", "URL ảnh chụp", false, "string"),
-                    PluginParameter("landInfo", "string", "Thông tin vị trí", false, "string"),
-                    PluginParameter("enableCooldown", "number", "Bật/Tắt cooldown hoãn quét", false, "number"),
-                    PluginParameter("enableNotification", "number", "Bật/Tắt gửi thông báo", false, "number")
-                )
-            ),
+            
             PluginAction(
                 name = "list_cameras",
                 description = "Liệt kê danh sách tất cả các camera hiện có trong hệ thống",

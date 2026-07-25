@@ -140,14 +140,17 @@ class HouseManagerSkillImpl @Inject constructor(
                     PluginParameter("enabled", "boolean", "true để bật, false để tắt vắng nhà", true, "boolean")
                 )
             ),
-            PluginAction(
-                name = "set_policy",
-                description = "Bật hoặc tắt một chính sách an toàn của căn nhà",
-                parameters = listOf(
-                    PluginParameter("policyId", "string", "Mã chính sách (silent_night / vacation_safety)", true, "string"),
-                    PluginParameter("enabled", "boolean", "true để kích hoạt chính sách", true, "boolean")
-                )
-            ),
+            // Trong HouseManagerSkillImpl.kt - đoạn manifest actions
+
+PluginAction(
+    name = "set_policy",
+    description = "Bật hoặc tắt một chính sách an toàn của căn nhà",
+    parameters = listOf(
+        // 🌟 SỬA: Dùng semanticType = "house_policy" thay cho "string"
+        PluginParameter("policyId", "string", "Chọn chính sách an toàn", true, "house_policy"),
+        PluginParameter("enabled", "boolean", "true để kích hoạt chính sách", true, "boolean")
+    )
+),
             PluginAction(
                 name = "mine_habits",
                 description = "Kích hoạt Quản gia phân tích hành vi để đề xuất thói quen mới",
