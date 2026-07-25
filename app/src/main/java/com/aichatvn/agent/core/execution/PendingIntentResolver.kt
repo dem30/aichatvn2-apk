@@ -328,8 +328,14 @@ class PendingIntentResolver @Inject constructor(
         }
 
         chatHistoryManager.removePendingIntent(pending.username, pending.pluginId, pending.action)
+        // ✅ SỬA (Bug nghiêm trọng: bỏ qua checkPolicy khi resolve pending intent — vd chọn số
+        // "1" để chỉ định thiết bị): trước đây gọi thẳng targetPlugin.execute(...), bỏ qua HOÀN
+        // TOÀN checkWorldStateGuard/checkDeviceWorldStateGuard/checkPolicy (nên Chính sách an
+        // toàn vắng nhà không chặn được) VÀ cả bước tự ghi world_state khi thành công. Dùng lại
+        // intentExecutor.executePluginAction() — đúng 1 con đường thực thi duy nhất đã có đủ các
+        // bước bảo vệ, thay vì lặp lại (và làm thiếu) logic ở đây.
         val executionResult = try {
-            targetPlugin.execute(pending.action, normalizedMergedParams)
+            intentExecutor.executePluginAction(targetPlugin.manifest.id, pending.action, normalizedMergedParams)
         } catch (e: Exception) {
             PluginResult.Failure("Lỗi: ${e.message}")
         }
