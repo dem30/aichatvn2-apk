@@ -386,6 +386,10 @@ PluginAction(
                 val securityLevel = if (isSuspicious) 2 else 0
                 val summary = if (isAway) {
                     "Gia đình đang đi vắng. Quản gia đã siết chặt chính sách an ninh phòng chống quá tải điện."
+                } else if (computedMood == HouseMood.BUSY) {
+                    // ✅ SỬA (UX): trước đây chỉ ghi "Nhà đang ở chế độ BẬN" — người dùng không
+                    // biết vì sao bận, phải tự đoán. Giờ nêu thẳng nguyên nhân + số liệu cụ thể.
+                    "Bận vì có $totalUnreadChats tin nhắn khách hàng chưa được trả lời. An toàn mức $securityLevel."
                 } else {
                     "Nhà đang ở chế độ ${computedMood.displayName()}. An toàn mức $securityLevel."
                 }

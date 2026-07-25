@@ -13,6 +13,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalLifecycleOwner // ✅ MỚI (UX): refresh khi quay lại màn hình
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -66,6 +69,22 @@ fun HouseManagerScreen(
 
     val themeColorAndIcon = getThemeForMood(situation?.currentMood ?: HouseMood.NORMAL)
     val animatedHeaderColor by animateColorAsState(targetValue = themeColorAndIcon.headerColor)
+
+    // ✅ MỚI (UX): trước đây chỉ refreshAll() 1 lần lúc ViewModel khởi tạo — quay lại màn hình
+    // này sau khi đọc tin ở Inbox không tự cập nhật lại "Tin chưa đọc"/Mood, khiến chỉ số đứng
+    // yên dù thực tế đã đọc hết (chỉ hết khi bấm nút Reload thủ công trên TopAppBar). Giờ tự
+    // refresh mỗi khi màn hình quay lại foreground (ON_RESUME) — đúng lúc người dùng vừa đọc
+    // xong tin nhắn/kịch bản ở màn con rồi bấm Back trở về đây.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshAll()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Scaffold(
         topBar = {
@@ -600,6 +619,7 @@ fun SituationOverviewGrid(situation: HouseSituation?, navController: NavControll
                     value = "${situation?.pendingChatsCount ?: 0}",
                     icon = Icons.Default.Email,
                     modifier = Modifier.weight(1f),
+                    isHighlighted = (situation?.pendingChatsCount ?: 0) > 0,
                     onClick = {
                         navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
                     }
@@ -625,12 +645,23 @@ fun InfoIndicator(
     value: String,
     icon: ImageVector,
     modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null // 🌟 MỚI: null = ô tĩnh (không bấm được), như "Thiết bị bật"
+    onClick: (() -> Unit)? = null, // 🌟 MỚI: null = ô tĩnh (không bấm được), như "Thiết bị bật"
+    isHighlighted: Boolean = false // ✅ MỚI (UX): tô màu cảnh báo khi ô này đang là lý do gây chú ý (vd tin chưa đọc > 0)
 ) {
     val haptic = LocalHapticFeedback.current
+    val backgroundColor = if (isHighlighted) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val contentColor = if (isHighlighted) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Box(
         modifier = modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+            .background(backgroundColor, RoundedCornerShape(8.dp))
             .then(
                 if (onClick != null) {
                     // Modifier.clickable của Material3 đã tự có ripple mặc định, không cần
@@ -645,10 +676,10 @@ fun InfoIndicator(
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(imageVector = icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(imageVector = icon, contentDescription = null, tint = contentColor)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(text = label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
-            Text(text = value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(text = label, fontSize = 10.sp, color = contentColor.copy(alpha = 0.7f))
+            Text(text = value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = contentColor)
         }
     }
 }
