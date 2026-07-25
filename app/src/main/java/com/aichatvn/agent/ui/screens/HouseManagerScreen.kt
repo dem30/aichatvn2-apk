@@ -201,7 +201,7 @@ fun HouseManagerScreen(
                 }
             } else {
                 items(activePlans, key = { it.planId }) { plan ->
-                    PlanStatusCard(plan = plan)
+                    PlanStatusCard(plan = plan, onDelete = { viewModel.removePlan(plan.planId) })
                 }
             }
         }
@@ -580,16 +580,18 @@ fun SituationOverviewGrid(situation: HouseSituation?, navController: NavControll
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ⚠️ CỐ Ý KHÔNG gắn onClick cho ô này: "dashboard" là 1 tab chính của Bottom
-                // Nav, được điều hướng qua cơ chế popUpTo(startDestination){saveState=true} +
-                // restoreState=true (xem AppNavigator). Nếu bấm ô này gọi navController.navigate
-                // ("dashboard") trực tiếp sẽ tạo 1 bản sao Dashboard mới đè lên back stack thay
-                // vì phục hồi tab đã lưu -> nút Back sẽ không quay lại đúng chỗ user đang đứng.
+                // 🌟 SỬA: "Thiết bị bật" giờ dẫn thẳng tới màn Thiết bị Tuya — Screen.Tuya
+                // là màn con (không nằm trong danh sách tab Bottom Nav ở AppNavigator), nên
+                // navigate() thẳng an toàn, không đụng chạm cơ chế saveState/restoreState
+                // của các tab chính như "dashboard".
                 InfoIndicator(
                     label = "Thiết bị bật",
                     value = "${situation?.activeDevicesCount ?: 0}",
                     icon = Icons.Default.CheckCircle,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        navController.navigate(Screen.Tuya.route) { launchSingleTop = true }
+                    }
                 )
                 // 🌟 MỚI: Bấm để mở ngay Hộp thư đa kênh (Inbox) — đây là màn con, không phải
                 // tab chính, nên navigate() thẳng an toàn, không đụng tới back stack của tab nào.
@@ -652,7 +654,7 @@ fun InfoIndicator(
 }
 
 @Composable
-fun PlanStatusCard(plan: PlanStatus) {
+fun PlanStatusCard(plan: PlanStatus, onDelete: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -667,7 +669,8 @@ fun PlanStatusCard(plan: PlanStatus) {
                 Text(
                     text = plan.goalName,
                     style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
                 Text(
                     text = plan.status,
@@ -679,6 +682,19 @@ fun PlanStatusCard(plan: PlanStatus) {
                         else -> MaterialTheme.colorScheme.error
                     }
                 )
+                // ✅ MỚI: Dọn thủ công kịch bản đã chạy xong (COMPLETED/CANCELLED) thay vì
+                // phải chờ tự dọn sau 10 phút. Không cho xoá khi đang RUNNING để tránh chủ nhà
+                // lỡ tay xoá mất theo dõi 1 kịch bản đang thi hành dở.
+                if (plan.status != "RUNNING") {
+                    IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Dọn kịch bản",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(8.dp))
 

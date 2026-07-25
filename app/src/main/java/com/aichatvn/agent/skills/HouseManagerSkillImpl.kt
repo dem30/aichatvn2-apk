@@ -784,6 +784,13 @@ override suspend fun sendDefaultCameraAlerts(
         return activePlansMap.values.toList()
     }
 
+    // ✅ MỚI: Dọn thủ công 1 kịch bản khỏi danh sách hiển thị (COMPLETED/CANCELLED thường tự
+    // dọn sau 10 phút — hàm này cho chủ nhà xoá ngay lập tức thay vì phải chờ).
+    override fun removePlan(planId: String) {
+        activePlansMap.remove(planId)
+        planLogsMap.remove(planId)
+    }
+
 
 
 

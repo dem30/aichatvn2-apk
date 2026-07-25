@@ -324,6 +324,12 @@ class HouseManagerViewModel @Inject constructor(
         }
     }
 
+    // ✅ MỚI: Dọn thủ công 1 kịch bản đã chạy xong khỏi danh sách hiển thị.
+    fun removePlan(planId: String) {
+        houseManagerSkill.removePlan(planId)
+        _activePlans.value = houseManagerSkill.getActivePlans()
+    }
+
     private fun startPlanMonitoringLoop() {
         viewModelScope.launch {
             while (true) {

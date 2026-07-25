@@ -67,6 +67,8 @@ interface HouseManagerSkill : Plugin {
     // động thủ công đều chạy qua đúng 1 Nhóm kịch bản chủ nhà tự quản lý trên màn hình.
     suspend fun triggerWorkflowGroupManually(groupId: String)
     fun getActivePlans(): List<PlanStatus>
+    // ✅ MỚI: Dọn thủ công 1 kịch bản khỏi danh sách hiển thị (không cần chờ tự dọn sau 10 phút)
+    fun removePlan(planId: String)
 
     suspend fun checkPolicy(pluginId: String, action: String, params: Map<String, Any>): PolicyResult
     suspend fun mineUserHabits()
