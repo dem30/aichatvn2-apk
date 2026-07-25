@@ -1375,11 +1375,15 @@ PluginAction(
                 if (shouldCallAi) {
                     val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
                     val aiResult: String = try {
-                        withTimeout(20_000L) {
+                        // ✅ SỬA: 20s cũ quá ngắn — log server cho thấy model vision cần hơn
+                        // 30s để trả JSON đầy đủ. Giờ GroqClientTool đã hủy request đúng cách
+                        // (không còn lãng phí kết nối tới tận readTimeout), nên tăng lên 55s để
+                        // model có đủ thời gian trả lời thay vì bị cắt giữa chừng.
+                        withTimeout(55_000L) {
                             groqClient.analyzeImage(optimizedBytes, prompt)
                         }
                     } catch (e: TimeoutCancellationException) {
-                        logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid")
+                        logger.w("CameraSkill", "⏱️ Groq timeout (55s) camera=$tid")
                         "${GroqClientTool.AI_ERROR_PREFIX}Không thể phân tích (AI timeout)"
                     }
 
@@ -1643,11 +1647,13 @@ PluginAction(
             val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
             val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
             val aiComment = try {
-                withTimeout(20_000L) {
+                // ✅ SỬA: đồng bộ với chỗ phân tích camera trực tiếp — 20s không đủ cho model
+                // vision, tăng lên 55s vì GroqClientTool giờ đã hủy request đúng cách.
+                withTimeout(55_000L) {
                     groqClient.analyzeImage(optimizedBytes, prompt)
                 }
             } catch (e: TimeoutCancellationException) {
-                logger.w("CameraSkill", "⏱️ Groq timeout (20s) camera=$tid (daily report)")
+                logger.w("CameraSkill", "⏱️ Groq timeout (55s) camera=$tid (daily report)")
                 "Không thể phân tích (AI timeout)"
             }
             

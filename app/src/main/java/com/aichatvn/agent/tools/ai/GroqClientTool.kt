@@ -7,6 +7,9 @@ import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -127,10 +130,36 @@ class GroqClientTool @Inject constructor(
             model.startsWith("qwen/qwen3", ignoreCase = true)
     }
 
+    // ✅ SỬA (Bug: request "đang chờ" mãi rồi Client Disconnected ở đúng mốc 30s): readTimeout
+    // cũ = 30s trong khi model vision (qwen3.6-27b) với prompt JSON schema nặng cần NHIỀU HƠN
+    // 30s để trả lời — client tự cắt kết nối đúng lúc model sắp xong. Tăng lên 60s để model có
+    // đủ thời gian, đồng thời thêm callTimeout làm trần tổng (bao gồm cả upload ảnh base64).
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
+
+    // ✅ MỚI (Sửa lỗi hủy request không lan xuống tầng HTTP): trước đây mọi nơi gọi
+    // client.newCall(request).execute() — đây là lệnh CHẶN (blocking), không nghe được tín hiệu
+    // hủy coroutine (vd withTimeout() ở CameraSkill). Khi coroutine bị hủy ở mốc timeout riêng
+    // của nó, request HTTP thật vẫn tiếp tục chạy ngầm cho tới khi readTimeout của OkHttp tự
+    // đóng socket — lãng phí kết nối/luồng và khiến timeout ở tầng gọi vô nghĩa. Dùng
+    // suspendCancellableCoroutine + enqueue() (bất đồng bộ) + hủy call thật khi coroutine bị
+    // hủy, để mọi withTimeout() ở tầng gọi (CameraSkill, VisionPlugin...) hoạt động đúng nghĩa.
+    private suspend fun executeCancellable(call: okhttp3.Call): okhttp3.Response =
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                    if (!continuation.isCancelled) continuation.resumeWithException(e)
+                }
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    continuation.resume(response)
+                }
+            })
+        }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -418,14 +447,16 @@ class GroqClientTool @Inject constructor(
                 }
             }.toString()
 
-            val parsed = client.newCall(
-                Request.Builder()
-                    .url(BASE_URL)
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .post(body.toRequestBody("application/json".toMediaType()))
-                    .build()
-            ).execute().use { response ->
+            val parsed = executeCancellable(
+                client.newCall(
+                    Request.Builder()
+                        .url(BASE_URL)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .post(body.toRequestBody("application/json".toMediaType()))
+                        .build()
+                )
+            ).use { response ->
                 captureRateLimit(response, model)
                 parseResponse(response, "chat")
             }
@@ -472,14 +503,16 @@ class GroqClientTool @Inject constructor(
         }.toString()
 
         val resultPair = try {
-            client.newCall(
-                Request.Builder()
-                    .url(BASE_URL)
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .post(body.toRequestBody("application/json".toMediaType()))
-                    .build()
-            ).execute().use { response ->
+            executeCancellable(
+                client.newCall(
+                    Request.Builder()
+                        .url(BASE_URL)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .post(body.toRequestBody("application/json".toMediaType()))
+                        .build()
+                )
+            ).use { response ->
                 captureRateLimit(response, model)
                 
                 // ✅ SỬA: routeIntent chính thức sử dụng hàm parseResponse chung của hệ thống.
@@ -557,14 +590,16 @@ class GroqClientTool @Inject constructor(
                 }
             }.toString()
 
-            val parsed = client.newCall(
-                Request.Builder()
-                    .url(BASE_URL)
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .addHeader("Content-Type", "application/json")
-                    .post(body.toRequestBody("application/json".toMediaType()))
-                    .build()
-            ).execute().use { response ->
+            val parsed = executeCancellable(
+                client.newCall(
+                    Request.Builder()
+                        .url(BASE_URL)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .post(body.toRequestBody("application/json".toMediaType()))
+                        .build()
+                )
+            ).use { response ->
                 captureRateLimit(response, model)
                 parseResponse(response, "analyzeImage")
             }

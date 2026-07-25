@@ -92,7 +92,9 @@ class VisionPlugin @Inject constructor(
         }
 
         return try {
-            val responseText = withTimeout(30_000L) {
+            // ✅ SỬA: đồng bộ với CameraSkill — 30s dễ bị OkHttp readTimeout (nay 60s) cắt giữa
+            // chừng với model vision nặng. Tăng lên 55s, chừa buffer dưới 60s của client HTTP.
+            val responseText = withTimeout(55_000L) {
                 groqClient.chat(
                     message = message,
                     extraContext = extraContext,
