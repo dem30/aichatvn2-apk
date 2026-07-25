@@ -59,10 +59,13 @@ object AppConfigDefaults {
     const val EMAIL_SUBJECT_PREFIX = "email.subject_prefix"
     const val EMAIL_MAX_ATTACHMENTS = "email.max_attachments"
 
-    // ───────────────────────── SCHEDULE ─────────────────────
-    const val SCHEDULE_CAMERA_SCAN_INTERVAL_MIN = "schedule.camera_scan_interval_min"
-
-    // ───────────────────────── HOUSE MANAGER ─────────────────
+    // ⚠️ ĐÃ XOÁ: SCHEDULE_CAMERA_SCAN_INTERVAL_MIN ("schedule.camera_scan_interval_min") — rác
+    // từ kiến trúc TaskScheduler cũ ("tự quét toàn bộ camera" định kỳ cứng). Đã xác nhận không
+    // còn nơi nào đọc key này: startScheduleLoop() trong WebhookGatewayService.kt dùng
+    // delay(60_000L) hardcode + đọc lịch từ ScheduleSkill (generic, do người dùng tự tạo), còn
+    // báo cáo camera hàng ngày dùng CAMERA_DAILY_REPORT_HOUR (scheduleDailyReport() trong
+    // CameraSkill.kt) — không phải key này. Không xoá dòng đã có sẵn trong DB thật (nếu có máy
+    // đã seed từ bản cũ) để tránh phải viết Migration, chỉ ngừng khai báo/seed từ đây trở đi.
     // ⚠️ ĐÃ XÓA: HOUSE_MANAGER_PROTECT_LIGHT/SIREN/CAMERAS/ACTIONS — cấu hình rời rạc riêng cho
     // nút Panic độc lập cũ (đèn/còi/camera dự phòng + kịch bản 5-bước fallback). Nút Panic đã
     // được thay bằng "Chạy thủ công" ngay trên từng Nhóm kịch bản — MỌI kích hoạt (tự động lẫn
@@ -348,14 +351,9 @@ object AppConfigDefaults {
         ),
 
         // ── SCHEDULE ──
-        AppConfigEntity(
-            key = SCHEDULE_CAMERA_SCAN_INTERVAL_MIN,
-            value = "15",
-            type = "int",
-            pluginId = "schedule",
-            label = "Chu kỳ quét camera (phút)",
-            description = "Khoảng thời gian giữa 2 lần TaskScheduler tự động quét toàn bộ camera. Mặc định 15 phút."
-        ),
+        // ⚠️ ĐÃ XOÁ seed của SCHEDULE_CAMERA_SCAN_INTERVAL_MIN — cùng lý do đã xoá khai báo
+        // const ở trên. Bảng "schedule" hiện chỉ còn ScheduleSkill tự quản lý lịch qua
+        // ScheduleEntity (bảng schedules), không cần config chu kỳ quét cứng nào ở đây nữa.
 
         // ── HOUSE MANAGER ──
         // ⚠️ ĐÃ XÓA seed của HOUSE_MANAGER_PROTECT_LIGHT/SIREN/CAMERAS/ACTIONS — cùng lý do đã

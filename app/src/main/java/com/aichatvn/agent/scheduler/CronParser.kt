@@ -32,10 +32,17 @@ object CronParser {
             val currentTotalMinutes = nowHour * 60 + nowMinute
             val targetTotalMinutes = cronHour * 60 + cronMinute
             
-            // SỬA BUG LOGIC: Chỉ chấp nhận chạy nếu giờ hiện tại trùng khớp hoặc trễ từ 0 đến 2 phút
-            // so với giờ hẹn định sẵn, đồng thời hôm nay chưa chạy lần nào.
+            // 🌟 SỬA: Bỏ giới hạn trên (cũ: chỉ chấp nhận nếu trễ 0-2 phút so với giờ hẹn).
+            // Lý do: bộ đếm định kỳ gọi matches() tối thiểu mỗi ~15 phút (mức sàn cứng của
+            // WorkManager PeriodicWorkRequest, xem SCHEDULE_CAMERA_SCAN_INTERVAL_MIN mặc định
+            // 15). Cửa sổ 3 phút cũ hẹp hơn hẳn chu kỳ kiểm tra 15 phút -> xác suất 1 lần check
+            // rơi trúng đúng 3 phút đó chỉ ~20%, nghĩa là ~80% khả năng lịch hàng ngày bị bỏ lỡ
+            // nguyên ngày hôm đó. Giờ chỉ cần "đã qua giờ hẹn của hôm nay" + "hôm nay chưa chạy
+            // lần nào" (isDifferentDay) là đủ để kích hoạt — không giới hạn trễ tối đa bao nhiêu
+            // phút, vì lastRunAt được cập nhật ngay sau khi chạy nên isDifferentDay tự đảm bảo
+            // không chạy lặp lại 2 lần trong cùng 1 ngày.
             val minutesDifference = currentTotalMinutes - targetTotalMinutes
-            return minutesDifference in 0..2 && isDifferentDay
+            return minutesDifference >= 0 && isDifferentDay
         }
 
         return false
