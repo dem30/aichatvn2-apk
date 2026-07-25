@@ -137,7 +137,7 @@ PluginAction(
         PluginParameter("enableCooldown", "boolean", "Bật/Tắt cooldown hoãn quét", false, "boolean"),
         PluginParameter("enableNotification", "boolean", "Bật/Tắt gửi thông báo", false, "boolean")
     )
-)
+),
 
 
             PluginAction(
