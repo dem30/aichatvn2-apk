@@ -163,24 +163,35 @@ class HouseManagerSkillImpl @Inject constructor(
                     PluginParameter("delayMs", "number", "Thời gian trì hoãn (milli-giây), ví dụ: 30000", true, "interval")
                 )
             ),
-            PluginAction(
-                // ✅ ĐÃ SỬA: Thay vì bắt chủ nhà gõ tay chuỗi precondition thô (dễ gõ sai), tách
-                // thành các tham số riêng với semanticType đặc thù để AlertActionFormSheet tự
-                // render Dropdown chọn nguồn/thiết bị/camera/thớt chat/thuộc tính/trạng thái —
-                // không cần gõ tay bất kỳ từ khóa hệ thống nào.
-                name = "check_precondition",
-                description = "Kiểm duyệt điều kiện thực tế (Planner Precondition Step)",
-                parameters = listOf(
-                    PluginParameter("source", "string", "Nguồn dữ liệu kiểm tra", true, "precondition_source"),
-                    PluginParameter("device", "string", "Chọn thiết bị Tuya", false, "device"),
-                    PluginParameter("camera", "string", "Chọn camera", false, "camera"),
-                    // ✅ MỚI (Sửa lỗi logic): Thêm tham số chọn thớt chat khách hàng đa kênh —
-                    // nếu không có tham số này, nhánh "chat" không thể biết đang kiểm tra thớt của ai.
-                    PluginParameter("chatSession", "string", "Chọn thớt chat khách hàng", false, "chatSession"),
-                    PluginParameter("attribute", "string", "Chọn thuộc tính kiểm tra", true, "precondition_attribute"),
-                    PluginParameter("expected", "string", "Chọn trạng thái mong muốn", true, "precondition_expected")
-                )
-            )
+            // Trong file HouseManagerSkillImpl.kt - đoạn override val manifest
+
+PluginAction(
+    name = "check_precondition",
+    description = "Kiểm duyệt điều kiện thực tế (Planner Precondition Step)",
+    parameters = listOf(
+        PluginParameter("source", "string", "Chọn nguồn dữ liệu", true, "precondition_source"),
+        
+        // 🌟 Tự động ẨN trừ khi source == "tuya"
+        PluginParameter("device", "string", "Chọn thiết bị Tuya", false, "device", 
+            dependsOn = "source", visibleWhen = listOf("tuya")),
+            
+        // 🌟 Tự động ẨN trừ khi source == "camera"
+        PluginParameter("camera", "string", "Chọn camera", false, "camera", 
+            dependsOn = "source", visibleWhen = listOf("camera")),
+            
+        // 🌟 Tự động ẨN trừ khi source == "chat"
+        PluginParameter("chatSession", "string", "Chọn thớt chat", false, "chatSession", 
+            dependsOn = "source", visibleWhen = listOf("chat")),
+            
+        // 🌟 Hiện khi source đã được chọn
+        PluginParameter("attribute", "string", "Chọn thuộc tính kiểm tra", true, "precondition_attribute",
+            dependsOn = "source"),
+            
+        // 🌟 Hiện khi attribute đã được chọn
+        PluginParameter("expected", "string", "Chọn trạng thái mong muốn", true, "precondition_expected",
+            dependsOn = "attribute")
+    )
+)
         )
     )
 

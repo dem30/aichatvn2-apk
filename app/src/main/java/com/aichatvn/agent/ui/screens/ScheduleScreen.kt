@@ -1,9 +1,12 @@
+// File: com/aichatvn/agent/ui/screens/ScheduleScreen.kt
+
 package com.aichatvn.agent.ui.screens
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -16,11 +19,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.aichatvn.agent.core.plugin.DynamicOptionRegistry
+import com.aichatvn.agent.core.plugin.OptionItem
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.data.model.ScheduleEntity
-import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.ui.viewmodels.ScheduleViewModel
 import org.json.JSONObject
 import java.util.UUID
@@ -32,15 +35,12 @@ fun ScheduleScreen(
     viewModel: ScheduleViewModel = hiltViewModel()
 ) {
     val schedules by viewModel.schedules.collectAsState()
-    val tuyaDevices by viewModel.tuyaDevices.collectAsState()
-    val activeCameras by viewModel.activeCameras.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var editingSchedule by remember { mutableStateOf<ScheduleEntity?>(null) }
-    
+
     LaunchedEffect(Unit) {
         viewModel.loadSchedules()
-        viewModel.loadDevicesAndCameras()
     }
 
     Scaffold(
@@ -48,9 +48,9 @@ fun ScheduleScreen(
             TopAppBar(
                 title = { Text("Lịch trình") },
                 actions = {
-                    IconButton(onClick = { 
+                    IconButton(onClick = {
                         editingSchedule = null
-                        showAddDialog = true 
+                        showAddDialog = true
                     }) {
                         Icon(Icons.Default.Add, "Thêm lịch")
                     }
@@ -68,9 +68,9 @@ fun ScheduleScreen(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("⏰", fontSize = MaterialTheme.typography.displayMedium.fontSize)
                     Text("Chưa có lịch trình nào")
-                    TextButton(onClick = { 
+                    TextButton(onClick = {
                         editingSchedule = null
-                        showAddDialog = true 
+                        showAddDialog = true
                     }) {
                         Text("Thêm lịch trình đầu tiên")
                     }
@@ -91,9 +91,9 @@ fun ScheduleScreen(
                         schedule = schedule,
                         onToggle = { viewModel.toggleSchedule(it) },
                         onDelete = { viewModel.deleteSchedule(it) },
-                        onEdit = { 
+                        onEdit = {
                             editingSchedule = it
-                            showAddDialog = true 
+                            showAddDialog = true
                         }
                     )
                 }
@@ -105,9 +105,8 @@ fun ScheduleScreen(
         AddScheduleDialog(
             plugins = viewModel.schedulablePlugins,
             editingSchedule = editingSchedule,
-            tuyaDevices = tuyaDevices,
-            activeCameras = activeCameras,
-            onDismiss = { 
+            optionRegistry = viewModel.optionRegistry, // 🌟 Dùng duy nhất Registry trung tâm
+            onDismiss = {
                 showAddDialog = false
                 editingSchedule = null
             },
@@ -135,9 +134,9 @@ fun ScheduleCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (schedule.enabled == 1) 
-                MaterialTheme.colorScheme.surface 
-            else 
+            containerColor = if (schedule.enabled == 1)
+                MaterialTheme.colorScheme.surface
+            else
                 MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
@@ -176,7 +175,7 @@ fun ScheduleCard(
                     )
                 }
             }
-            
+
             Switch(
                 checked = schedule.enabled == 1,
                 onCheckedChange = { onToggle(schedule.id) }
@@ -185,7 +184,7 @@ fun ScheduleCard(
             IconButton(onClick = { onEdit(schedule) }) {
                 Icon(Icons.Default.Edit, "Sửa", tint = MaterialTheme.colorScheme.primary)
             }
-            
+
             IconButton(onClick = { onDelete(schedule.id) }) {
                 Icon(Icons.Default.Delete, "Xóa", tint = MaterialTheme.colorScheme.error)
             }
@@ -193,10 +192,9 @@ fun ScheduleCard(
     }
 }
 
-// ✅ MỚI: Phục hồi cameraId/deviceId "sạch" từ giá trị đã lưu, phòng trường hợp dữ liệu cũ
-// từng bị lưu nhầm thành chuỗi hiển thị "landInfo (id)" hoặc "name (id)" thay vì ID thuần,
-// hoặc lệch khoảng trắng đầu/cuối khiến so khớp exact-match thất bại. Nếu không trích được
-// gì khớp, trả về nguyên giá trị gốc (đã trim) để không làm mất dữ liệu người dùng đã nhập.
+// ✅ GIỮ LẠI (không có trong bản patch đề xuất): tương thích ngược cho các lịch cũ đã lưu
+// device/camera dưới dạng chuỗi hiển thị "Tên (ID)" thay vì ID thô — nếu bỏ hàm này, mở sửa
+// một lịch cũ sẽ hiện Dropdown trống vì không khớp value nào trong danh sách optionRegistry trả về.
 private fun normalizeLegacyRefId(raw: String, validIds: List<String>): String {
     val trimmed = raw.trim()
     if (validIds.any { it.trim() == trimmed }) return trimmed
@@ -210,8 +208,7 @@ private fun normalizeLegacyRefId(raw: String, validIds: List<String>): String {
 fun AddScheduleDialog(
     plugins: List<Plugin>,
     editingSchedule: ScheduleEntity? = null,
-    tuyaDevices: List<TuyaDeviceEntity> = emptyList(),
-    activeCameras: List<CameraConfigEntity> = emptyList(),
+    optionRegistry: DynamicOptionRegistry, // 🌟 Inject registry
     onDismiss: () -> Unit,
     onSave: (ScheduleEntity) -> Unit
 ) {
@@ -293,15 +290,17 @@ fun AddScheduleDialog(
     val selectedWeekdays = remember { mutableStateListOf<Int>().apply { addAll(parsedWeekdays) } }
     val weekdayOptions = listOf("T2" to 1, "T3" to 2, "T4" to 3, "T5" to 4, "T6" to 5, "T7" to 6, "CN" to 0)
 
+    // Khôi phục dữ liệu tham số khi sửa (kèm chuẩn hoá ID cũ cho device/camera — xem
+    // normalizeLegacyRefId ở trên, giữ tương thích ngược với lịch tạo trước khi có Registry).
     LaunchedEffect(selectedAction) {
         paramValues.clear()
         paramBooleans.clear()
         selectedAction?.parameters?.forEach { p ->
             if (p.type == "boolean") paramBooleans[p.name] = false else paramValues[p.name] = ""
         }
-        
-        if (selectedAction != null && editingSchedule != null && 
-            editingSchedule.pluginId == selectedPlugin?.id && 
+
+        if (selectedAction != null && editingSchedule != null &&
+            editingSchedule.pluginId == selectedPlugin?.id &&
             editingSchedule.action == selectedAction?.name
         ) {
             try {
@@ -312,10 +311,10 @@ fun AddScheduleDialog(
                     } else {
                         val raw = json.opt(p.name)?.toString() ?: ""
                         paramValues[p.name] = when (p.semanticType) {
-                            // ✅ SỬA: tự phục hồi ID sạch nếu dữ liệu cũ bị lưu nhầm dạng
-                            // "landInfo (id)" / "name (id)", tránh hiển thị nhầm và gửi sai cameraId
-                            "camera" -> normalizeLegacyRefId(raw, activeCameras.map { it.id })
-                            "device" -> normalizeLegacyRefId(raw, tuyaDevices.map { it.id })
+                            "camera", "device" -> {
+                                val validIds = optionRegistry.getOptions(p.semanticType, emptyMap()).map { it.value }
+                                normalizeLegacyRefId(raw, validIds)
+                            }
                             else -> raw
                         }
                     }
@@ -340,10 +339,27 @@ fun AddScheduleDialog(
         }
     }
 
-    val requiredParamsFilled = selectedAction?.parameters
-        ?.filter { it.required }
-        ?.all { p -> p.type == "boolean" || !paramValues[p.name].isNullOrBlank() }
-        ?: true
+    // 🌟 LỌC THAM SỐ THÔNG MINH DỰA TRÊN DEPENDS_ON & VISIBLE_WHEN
+    val visibleParameters = remember(selectedAction, paramValues.toMap()) {
+        selectedAction?.parameters?.filter { param ->
+            if (param.dependsOn == null) {
+                true
+            } else {
+                val parentValue = paramValues[param.dependsOn]
+                if (parentValue.isNullOrBlank()) {
+                    false
+                } else if (param.visibleWhen != null) {
+                    param.visibleWhen.contains(parentValue)
+                } else {
+                    true
+                }
+            }
+        } ?: emptyList()
+    }
+
+    val requiredParamsFilled = visibleParameters
+        .filter { it.required }
+        .all { p -> p.type == "boolean" || !paramValues[p.name].isNullOrBlank() }
 
     val timingFilled = when (repeatMode) {
         "daily" -> true
@@ -371,9 +387,11 @@ fun AddScheduleDialog(
                     label = { Text("Tên lịch trình (tuỳ chọn)") },
                     placeholder = { Text("VD: Bật đèn phòng khách") },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp)
                 )
 
+                // 1. Dropdown Chọn Plugin
                 ExposedDropdownMenuBox(
                     expanded = pluginExpanded,
                     onExpandedChange = { pluginExpanded = it }
@@ -384,9 +402,8 @@ fun AddScheduleDialog(
                         readOnly = true,
                         label = { Text("Plugin") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = pluginExpanded) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .menuAnchor()
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        shape = RoundedCornerShape(8.dp)
                     )
                     ExposedDropdownMenu(
                         expanded = pluginExpanded,
@@ -404,6 +421,7 @@ fun AddScheduleDialog(
                     }
                 }
 
+                // 2. Dropdown Chọn Action
                 selectedPlugin?.let { plugin ->
                     ExposedDropdownMenuBox(
                         expanded = actionExpanded,
@@ -415,9 +433,8 @@ fun AddScheduleDialog(
                             readOnly = true,
                             label = { Text("Hành động") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = actionExpanded) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor()
+                            modifier = Modifier.fillMaxWidth().menuAnchor(),
+                            shape = RoundedCornerShape(8.dp)
                         )
                         ExposedDropdownMenu(
                             expanded = actionExpanded,
@@ -436,126 +453,86 @@ fun AddScheduleDialog(
                     }
                 }
 
-                selectedAction?.parameters?.forEach { param ->
-                    when {
-                        param.type == "boolean" -> {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("${param.name}${if (param.required) " *" else ""}")
-                                    Text(
-                                        param.description,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Switch(
-                                    checked = paramBooleans[param.name] ?: false,
-                                    onCheckedChange = { paramBooleans[param.name] = it }
-                                )
+                // 🌟 3. RENDER THAM SỐ TỰ ĐỘNG BẰNG DYNAMIC OPTION REGISTRY (Không hardcode tuyaDevices/activeCameras)
+                visibleParameters.forEach { param ->
+                    if (param.type == "boolean") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("${param.description}${if (param.required) " *" else ""}")
                             }
+                            Switch(
+                                checked = paramBooleans[param.name] ?: false,
+                                onCheckedChange = { paramBooleans[param.name] = it }
+                            )
                         }
-                        
-                        param.semanticType == "device" -> {
-                            var deviceExpanded by remember { mutableStateOf(false) }
-                            val selectedDeviceId = paramValues[param.name] ?: ""
-                            val selectedDevice = tuyaDevices.find { it.id.trim() == selectedDeviceId.trim() }
-                            val displayText = selectedDevice?.let { dev ->
-                                val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
-                                if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
-                            } ?: selectedDeviceId
+                    } else {
+                        var options by remember { mutableStateOf<List<OptionItem>>(emptyList()) }
+
+                        LaunchedEffect(param.semanticType, paramValues.toMap()) {
+                            options = optionRegistry.getOptions(param.semanticType, paramValues.toMap())
+                        }
+
+                        if (options.isNotEmpty()) {
+                            var dropdownExpanded by remember { mutableStateOf(false) }
+                            val currentValue = paramValues[param.name] ?: ""
+                            val currentLabel = options.find { it.value == currentValue }?.label ?: currentValue
 
                             ExposedDropdownMenuBox(
-                                expanded = deviceExpanded,
-                                onExpandedChange = { deviceExpanded = it }
+                                expanded = dropdownExpanded,
+                                onExpandedChange = { dropdownExpanded = it }
                             ) {
                                 OutlinedTextField(
-                                    value = displayText,
+                                    value = currentLabel,
                                     onValueChange = {},
                                     readOnly = true,
-                                    label = { Text("${param.name}${if (param.required) " *" else ""} — Chọn thiết bị") },
-                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = deviceExpanded) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .menuAnchor()
+                                    label = { Text("${param.description}${if (param.required) " *" else ""}") },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = dropdownExpanded) },
+                                    modifier = Modifier.fillMaxWidth().menuAnchor(),
+                                    shape = RoundedCornerShape(8.dp)
                                 )
                                 ExposedDropdownMenu(
-                                    expanded = deviceExpanded,
-                                    onDismissRequest = { deviceExpanded = false }
+                                    expanded = dropdownExpanded,
+                                    onDismissRequest = { dropdownExpanded = false }
                                 ) {
-                                    tuyaDevices.forEach { dev ->
-                                        val hasDuplicate = tuyaDevices.count { d -> d.name == dev.name } > 1
-                                        val itemLabel = if (hasDuplicate) "${dev.name} (${dev.id.takeLast(4)})" else dev.name
+                                    options.forEach { item ->
                                         DropdownMenuItem(
-                                            text = { Text(itemLabel) },
+                                            text = { Text(item.label) },
                                             onClick = {
-                                                paramValues[param.name] = dev.id
-                                                deviceExpanded = false
+                                                val oldVal = paramValues[param.name]
+                                                paramValues[param.name] = item.value
+
+                                                if (oldVal != item.value) {
+                                                    selectedAction?.parameters?.filter { it.dependsOn == param.name }?.forEach { child ->
+                                                        paramValues.remove(child.name)
+                                                    }
+                                                }
+                                                dropdownExpanded = false
                                             }
                                         )
                                     }
                                 }
                             }
-                        }
-
-                        param.semanticType == "camera" -> {
-                            var cameraExpanded by remember { mutableStateOf(false) }
-                            val selectedCameraId = paramValues[param.name] ?: ""
-val selectedCamera = activeCameras.find { it.id.trim() == selectedCameraId.trim() }
-val displayText = selectedCamera?.id ?: selectedCameraId
-
-
-                            ExposedDropdownMenuBox(
-                                expanded = cameraExpanded,
-                                onExpandedChange = { cameraExpanded = it }
-                            ) {
-                                OutlinedTextField(
-                                    value = displayText,
-                                    onValueChange = {},
-                                    readOnly = true,
-                                    label = { Text("${param.name}${if (param.required) " *" else ""} — Chọn camera") },
-                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = cameraExpanded) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .menuAnchor()
-                                )
-                                ExposedDropdownMenu(
-                                    expanded = cameraExpanded,
-                                    onDismissRequest = { cameraExpanded = false }
-                                ) {
-                                    activeCameras.forEach { cam ->
-                                        val itemLabel = cam.id                            
-                                      
-                                      DropdownMenuItem(
-                                            text = { Text(itemLabel) },
-                                            onClick = {
-                                                paramValues[param.name] = cam.id
-                                                cameraExpanded = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        else -> {
+                        } else {
                             OutlinedTextField(
                                 value = paramValues[param.name] ?: "",
                                 onValueChange = { paramValues[param.name] = it },
-                                label = { Text("${param.name}${if (param.required) " *" else ""} — ${param.description}") },
+                                label = { Text("${param.description}${if (param.required) " *" else ""}") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = param.type != "string" || param.name != "body",
                                 keyboardOptions = if (param.type == "number")
                                     KeyboardOptions(keyboardType = KeyboardType.Number)
-                                else KeyboardOptions.Default
+                                else KeyboardOptions.Default,
+                                shape = RoundedCornerShape(8.dp)
                             )
                         }
                     }
                 }
 
+                // 4. Chọn thời gian thực thi (Hàng ngày, Theo tuần, Lặp theo phút)
                 if (selectedAction != null) {
                     Divider(modifier = Modifier.padding(vertical = 4.dp))
                     Text("Khi nào chạy", style = MaterialTheme.typography.labelMedium)
@@ -616,7 +593,8 @@ val displayText = selectedCamera?.id ?: selectedCameraId
                                 label = { Text("Khoảng cách (phút)") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                shape = RoundedCornerShape(8.dp)
                             )
                         }
                     }
@@ -634,7 +612,8 @@ val displayText = selectedCamera?.id ?: selectedCameraId
                             },
                             label = { Text("Cron thủ công (VD: 0 8 * * *)") },
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
+                            singleLine = true,
+                            shape = RoundedCornerShape(8.dp)
                         )
                     }
                 }
@@ -670,12 +649,10 @@ val displayText = selectedCamera?.id ?: selectedCameraId
                     }
 
                     val paramsJson = JSONObject().apply {
-                        action.parameters.forEach { p ->
+                        visibleParameters.forEach { p ->
                             when (p.type) {
                                 "boolean" -> put(p.name, paramBooleans[p.name] ?: false)
                                 "number" -> paramValues[p.name]?.toDoubleOrNull()?.let { put(p.name, it) }
-                                // ✅ SỬA: trim() để không lưu lại khoảng trắng thừa (đặc biệt với
-                                // cameraId/deviceId — nguồn gốc của nhiều lỗi so khớp trong app này)
                                 else -> paramValues[p.name]?.trim()?.takeIf { it.isNotBlank() }?.let { put(p.name, it) }
                             }
                         }

@@ -75,7 +75,11 @@ data class PluginParameter(
     val placeholder: String = "",
     val enumValues: List<String> = emptyList(),
     val defaultValue: Any? = null,
-    val validationRegex: String = ""
+    val validationRegex: String = "",
+    // 🌟 MỚI: Tên tham số cha mà tham số này phụ thuộc vào
+    val dependsOn: String? = null,
+    // 🌟 MỚI: Danh sách các giá trị của tham số cha để tham số này ĐƯỢC HIỂN THỊ
+    val visibleWhen: List<String>? = null
 ) {
     fun normalize(value: Any?): Any? {
         val strVal = value?.toString()?.trim() ?: ""

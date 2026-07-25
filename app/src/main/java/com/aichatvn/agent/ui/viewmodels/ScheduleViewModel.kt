@@ -6,8 +6,6 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ScheduleEntity
-import com.aichatvn.agent.data.model.TuyaDeviceEntity
-import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.skills.ScheduleSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -18,40 +16,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import javax.inject.Inject
+import com.aichatvn.agent.core.plugin.DynamicOptionRegistry // 🌟 MỚI
+
 
 @HiltViewModel
 class ScheduleViewModel @Inject constructor(
     private val scheduleSkill: ScheduleSkill,
     private val agentKernel: AgentKernel,
-    private val database: AppDatabase
+    private val database: AppDatabase,
+    val optionRegistry: DynamicOptionRegistry // 🌟 MỚI: Inject Bộ điều hành Dropdown Động
 ) : ViewModel() {
 
     val schedules: StateFlow<List<ScheduleEntity>> = scheduleSkill.schedules
-
-    private val _tuyaDevices = MutableStateFlow<List<TuyaDeviceEntity>>(emptyList())
-    val tuyaDevices: StateFlow<List<TuyaDeviceEntity>> = _tuyaDevices.asStateFlow()
-
-    private val _activeCameras = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
-    val activeCameras: StateFlow<List<CameraConfigEntity>> = _activeCameras.asStateFlow()
 
     val schedulablePlugins: List<Plugin> =
         agentKernel.getAvailablePluginsForUI().filter { it.id != "schedule" }
 
     init {
         loadSchedules()
-        loadDevicesAndCameras()
     }
 
     fun loadSchedules() {
         viewModelScope.launch {
             scheduleSkill.loadSchedules()
-        }
-    }
-
-    fun loadDevicesAndCameras() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _tuyaDevices.value = database.tuyaDeviceDao().getAllDevices()
-            _activeCameras.value = database.cameraDao().getActiveCameras()
         }
     }
 

@@ -1,3 +1,5 @@
+// File: com/aichatvn/agent/ui/screens/HouseManagerScreen.kt
+
 package com.aichatvn.agent.ui.screens
 
 import androidx.compose.animation.animateColorAsState
@@ -27,6 +29,7 @@ import com.aichatvn.agent.data.model.displayName
 import com.aichatvn.agent.data.model.HouseSituation
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.skills.PlanStatus
+import com.aichatvn.agent.ui.components.SmartActionFormSheet // 🌟 MỚI: Dùng SmartActionFormSheet chuẩn
 import com.aichatvn.agent.ui.viewmodels.HouseManagerViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,25 +42,13 @@ fun HouseManagerScreen(
     val activePlans by viewModel.activePlans.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
 
-    // Đọc trạng thái các chính sách và chế độ từ ViewModel
     val isAway = situation?.ownerPresent == false
     val isSilentNightEnabled by viewModel.isSilentNightPolicyEnabled.collectAsState()
     val isVacationSafetyEnabled by viewModel.isVacationSafetyPolicyEnabled.collectAsState()
     val lastLearningRun by viewModel.lastLearningRunTime.collectAsState()
-    // ✅ MỚI: Khung giờ "Đang ngủ" chủ nhà tự chỉnh — thay cho hardcode cứng 22h-6h trước đây.
     val sleepStartHour by viewModel.sleepStartHour.collectAsState()
     val sleepEndHour by viewModel.sleepEndHour.collectAsState()
 
-    // ✅ MỚI: Ánh xạ thiết bị Quản gia + danh sách thiết bị/camera thật để hiển thị picker
-    // ⚠️ ĐÃ XÓA: protectLightDevice/protectSirenDevice/protectCameraIds — chỉ phục vụ Bảng cấu
-    // hình Thiết bị Răn đe + nút Panic độc lập cũ, cả hai đã bị gỡ (xem ghi chú bên dưới).
-    val availableTuyaDevices by viewModel.availableTuyaDevices.collectAsState()
-    val availableCameras by viewModel.availableCameras.collectAsState()
-    // ✅ MỚI: Danh sách thớt chat khách hàng thật để nạp cho picker chatSession
-    val availableChatSessions by viewModel.availableChatSessions.collectAsState()
-
-    // ✅ MỚI: showActionSheet cấp toàn màn hình cũ đã được thay bằng ModalBottomSheet
-    // theo-nhóm bên trong MultiWorkflowPlannerSection (mỗi nhóm tự quản lý bước riêng).
     val alertActionPlugins = viewModel.alertActionPlugins
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -101,7 +92,7 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 2. Chế độ Vắng nhà (Vacation Mode Toggle) — điều khiển hai chiều
+            // 2. Chế độ Vắng nhà (Vacation Mode Toggle)
             item {
                 VacationModeCard(
                     isAway = isAway,
@@ -119,10 +110,7 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 🧠 MỚI: Bảng cấu hình khung giờ ngủ — trước đây "isNightTime()" bị code cứng
-            // 22h-6h trong HouseManagerSkillImpl.kt, chủ nhà không xem/sửa được. Nay chủ nhà
-            // tự chọn giờ bắt đầu/kết thúc bằng nút bấm, lưu qua AppConfig và áp dụng ngay
-            // cho toàn bộ logic Mood tự động (SLEEPING/NIGHT) + chính sách ban đêm yên tĩnh.
+            // 4. Bảng cấu hình khung giờ ngủ
             item {
                 SleepScheduleCard(
                     startHour = sleepStartHour,
@@ -131,8 +119,7 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 🧠 MỚI: Bảng điều hành đa Nhóm kịch bản (Workflow Groups) — chủ nhà tự tạo không
-            // giới hạn số nhóm, mỗi nhóm có ngòi nổ riêng (camera/tuya/chat) và chuỗi bước tự do.
+            // 5. Bảng điều hành đa Nhóm kịch bản (Workflow Groups)
             item {
                 var activeGroupIdForAddingStep by remember { mutableStateOf<String?>(null) }
 
@@ -141,11 +128,10 @@ fun HouseManagerScreen(
                         onDismissRequest = { activeGroupIdForAddingStep = null },
                         sheetState = sheetState
                     ) {
-                        AlertActionFormSheet(
+                        // 🌟 DÙNG SMART_ACTION_FORM_SHEET TẬP TRUNG DÙNG CHUNG TOÀN APP
+                        SmartActionFormSheet(
                             plugins = alertActionPlugins,
-                            tuyaDevices = availableTuyaDevices,
-                            activeCameras = availableCameras,
-                            activeChatSessions = availableChatSessions,
+                            optionRegistry = viewModel.optionRegistry,
                             onSave = { cfg ->
                                 viewModel.addStepToGroup(activeGroupIdForAddingStep!!, cfg)
                                 activeGroupIdForAddingStep = null
@@ -161,10 +147,7 @@ fun HouseManagerScreen(
                 )
             }
 
-            // ⚠️ ĐÃ XÓA: Bảng cấu hình ánh xạ thiết bị răn đe (DeviceMappingConfigCard) — cấu hình
-            // dự phòng này chỉ phục vụ nút Panic độc lập cũ, nay không còn ai đọc tới nữa.
-
-            // 4. Kích hoạt Học máy thủ công (Manual Habit Mining)
+            // 6. Kích hoạt Học máy thủ công
             item {
                 HabitMiningCard(
                     lastRun = lastLearningRun,
@@ -172,17 +155,12 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 5. Thẻ Chỉ số Bản sao số (World State Index Overview)
+            // 7. Thẻ Chỉ số Bản sao số (World State Index Overview)
             item {
                 SituationOverviewGrid(situation = situation)
             }
 
-            // ⚠️ ĐÃ XÓA: Thẻ "Kích Hoạt Bảo Vệ Liên Hoàn Khẩn Cấp" (PanicTriggerCard) độc lập —
-            // đứng tách biệt khỏi các Nhóm kịch bản chủ nhà thực sự quản lý bên dưới, dễ gây hiểu
-            // lầm là 2 hệ thống khác nhau. Nút "Chạy thủ công" giờ nằm ngay trên từng
-            // WorkflowGroupCard, chạy đúng nhóm đó — xem MultiWorkflowPlannerSection bên dưới.
-
-            // Tiêu đề phân khu Kịch bản nền (Planner Timeline)
+            // Tiêu đề phân khu Kịch bản nền
             item {
                 Text(
                     text = "Kịch bản liên hoàn đang vận hành",
@@ -192,7 +170,7 @@ fun HouseManagerScreen(
                 )
             }
 
-            // 7. Danh sách các kịch bản Planner đang chạy dưới nền
+            // 8. Danh sách các kịch bản Planner đang chạy dưới nền
             if (activePlans.isEmpty()) {
                 item {
                     EmptyPlansCard()
@@ -268,7 +246,6 @@ fun PolicyControlCard(
                 modifier = Modifier.padding(bottom = 12.dp)
             )
 
-            // Dòng 1: silent_night
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -285,7 +262,6 @@ fun PolicyControlCard(
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))
 
-            // Dòng 2: vacation_safety
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -303,9 +279,6 @@ fun PolicyControlCard(
     }
 }
 
-// 🧠 MỚI: Cho phép chủ nhà tự chỉnh khung giờ "Đang ngủ / Ban đêm" thay vì code cứng 22h-6h.
-// Giờ bắt đầu > giờ kết thúc nghĩa là khung giờ vắt qua nửa đêm (vd 22h -> 6h sáng hôm sau),
-// giống cách hiểu tự nhiên của người dùng — không cần giải thích kỹ thuật gì thêm.
 @Composable
 fun SleepScheduleCard(
     startHour: Int,
@@ -380,9 +353,6 @@ fun HourStepper(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // ⚠️ Dùng nút chữ thay vì Icons.Default.Remove: icon này không có trong bộ icon
-            // lõi (core), chỉ có trong material-icons-extended -> gây lỗi unresolved reference
-            // nếu project chưa thêm dependency đó (giống trường hợp Icons.Default.School trước đây).
             IconButton(onClick = { onChange(((hour - 1) + 24) % 24) }) {
                 Text("−", fontSize = 20.sp, fontWeight = FontWeight.Bold)
             }
@@ -398,16 +368,6 @@ fun HourStepper(
         }
     }
 }
-
-// ⚠️ ĐÃ XÓA: CustomPlannerCard (kịch bản răn đe tự do kiểu cũ, thao tác trên 1 danh sách
-// "actions" phẳng) không còn được gọi ở bất kỳ đâu trên màn hình nữa — đã bị thay thế hoàn
-// toàn bởi MultiWorkflowPlannerSection/WorkflowGroupCard (kiến trúc đa Nhóm kịch bản). Đây là
-// code chết (dead code), đồng thời cũng mắc lỗi hiển thị "Không xác định"/"null" y hệt bug đã
-// sửa bên dưới — xóa hẳn thay vì vá lỗi cho code không bao giờ chạy.
-
-// ⚠️ ĐÃ XÓA: DeviceMappingConfigCard + DevicePickerDropdown — cấu hình thiết bị dự phòng
-// (đèn/còi/camera) chỉ phục vụ nút Panic độc lập cũ; nút đó đã bị gỡ, chọn thiết bị thật giờ
-// làm trực tiếp trong bước kịch bản qua VisualTriggerBuilderDialog/DeviceSelectorDropdown.
 
 @Composable
 fun HabitMiningCard(
@@ -442,9 +402,6 @@ fun HabitMiningCard(
                 shape = RoundedCornerShape(8.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
             ) {
-                // ✅ ĐÃ SỬA: Icons.Default.School không có trong bộ icon lõi (core),
-                // chỉ có trong material-icons-extended -> gây lỗi unresolved reference
-                // nếu project chưa thêm dependency đó. Thay bằng icon lõi PlayArrow.
                 Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Tự học")
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Học ngay", fontSize = 12.sp)
@@ -555,9 +512,6 @@ fun InfoIndicator(
     }
 }
 
-// ⚠️ ĐÃ XÓA: PanicTriggerCard — nút Panic độc lập cũ. Xem WorkflowGroupCard bên dưới cho nút
-// "Chạy thủ công" mới, gắn liền với từng Nhóm kịch bản thay vì đứng tách biệt.
-
 @Composable
 fun PlanStatusCard(plan: PlanStatus) {
     Card(
@@ -589,7 +543,6 @@ fun PlanStatusCard(plan: PlanStatus) {
             }
             Spacer(modifier = Modifier.height(8.dp))
 
-            // ✅ Bảo vệ phép chia 0 -> phòng chống crash NaN khi totalSteps == 0
             LinearProgressIndicator(
                 progress = {
                     if (plan.totalSteps > 0)
@@ -648,10 +601,6 @@ fun EmptyPlansCard() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// CƠ CHẾ QUY ĐỊNH TÔNG MÀU ĐỘNG (THEME MAPPER)
-// ─────────────────────────────────────────────────────────────────────────
-
 data class MoodTheme(val headerColor: Color, val contentColor: Color, val icon: ImageVector)
 
 @Composable
@@ -663,27 +612,27 @@ fun getThemeForMood(mood: HouseMood): MoodTheme {
             icon = Icons.Default.Warning
         )
         HouseMood.SLEEPING -> MoodTheme(
-            headerColor = Color(0xFF3F51B5), // Tím than huyền bí
+            headerColor = Color(0xFF3F51B5),
             contentColor = Color.White,
             icon = Icons.Default.Star
         )
         HouseMood.BUSY -> MoodTheme(
-            headerColor = Color(0xFFFF9800), // Cam nhộn nhịp
+            headerColor = Color(0xFFFF9800),
             contentColor = Color.White,
             icon = Icons.Default.Notifications
         )
         HouseMood.NIGHT -> MoodTheme(
-            headerColor = Color(0xFF1A237E), // Indigo đậm
+            headerColor = Color(0xFF1A237E),
             contentColor = Color.White,
             icon = Icons.Default.Star
         )
         HouseMood.VACATION -> MoodTheme(
-            headerColor = Color(0xFF009688), // Teal tươi mát
+            headerColor = Color(0xFF009688),
             contentColor = Color.White,
             icon = Icons.Default.Home
         )
         HouseMood.QUIET -> MoodTheme(
-            headerColor = Color(0xFF4CAF50), // Xanh thanh tịnh
+            headerColor = Color(0xFF4CAF50),
             contentColor = Color.White,
             icon = Icons.Default.Face
         )
@@ -695,14 +644,10 @@ fun getThemeForMood(mood: HouseMood): MoodTheme {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// TRÌNH SOẠN THẢO ĐA NHÓM KỊCH BẢN (VISUAL MULTI-WORKFLOW EDITOR)
-// ─────────────────────────────────────────────────────────────────────────
-
 @Composable
 fun MultiWorkflowPlannerSection(
     viewModel: HouseManagerViewModel,
-    onAddStepClick: (String) -> Unit // Truyền groupId đang được chọn để thêm bước
+    onAddStepClick: (String) -> Unit
 ) {
     val groups by viewModel.workflowGroups.collectAsState()
     val availableCameras by viewModel.availableCameras.collectAsState()
@@ -790,7 +735,6 @@ fun WorkflowGroupCard(
 ) {
     var isExpanded by remember { mutableStateOf(false) }
 
-    // Tự động dịch chuỗi trigger kỹ thuật dưới nền thành câu tiếng Việt thân thiện
     val friendlyTriggerText = remember(group.triggerSource, availableCameras, availableDevices) {
         translateTriggerToFriendlyVietnamese(group.triggerSource, availableCameras, availableDevices)
     }
@@ -838,9 +782,6 @@ fun WorkflowGroupCard(
                 }
             }
 
-            // ✅ MỚI: Nút "Chạy thủ công" thay cho nút Panic độc lập cũ — chạy đúng nhóm kịch
-            // bản này ngay lập tức, bất kể ngòi nổ tự động đã xảy ra hay chưa. Chỉ hiện khi nhóm
-            // có ít nhất 1 bước, tránh chạy một kế hoạch rỗng.
             if (group.steps.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedButton(
@@ -923,9 +864,6 @@ fun WorkflowGroupCard(
     }
 }
 
-/**
- * ✅ BỘ CHUYỂN ĐỔI NGÔN NGỮ TỰ NHIÊN: Dịch trigger thô thành tiếng Việt
- */
 fun translateTriggerToFriendlyVietnamese(
     triggerSource: String,
     availableCameras: List<CameraConfigEntity>,
@@ -965,14 +903,6 @@ fun translateTriggerToFriendlyVietnamese(
     return "🔥 Ngòi nổ: Khi $friendlyName $actionText"
 }
 
-// ✅ ĐÃ SỬA: Lệch pha hiển thị (UI) vs. thực thi (nền) cho bước check_precondition. Khi bạn tạo
-// bước này bằng bộ chọn Dropdown trực quan, dữ liệu được lưu dưới dạng tham số RỜI RẠC
-// (source/camera/device/chatSession/attribute/expected) — HouseManagerSkillImpl.kt khi CHẠY vẫn
-// tự ghép đúng các tham số này thành điều kiện và kiểm duyệt chính xác. Nhưng UI cũ chỉ tìm mỗi
-// khóa "precondition" (vốn để trống với bước tạo từ dropdown) nên luôn hiện "Không xác định" dù
-// kịch bản chạy đúng dưới nền. Hàm này ghép lại y hệt cách HouseManagerSkillImpl ghép, rồi tái sử
-// dụng translateTriggerToFriendlyVietnamese để dịch sang câu tiếng Việt — đảm bảo UI hiển thị
-// đúng 100% với những gì thực sự được kiểm duyệt.
 fun describeCheckPrecondition(
     step: AlertActionConfig,
     availableCameras: List<CameraConfigEntity>,
@@ -996,17 +926,10 @@ fun describeCheckPrecondition(
 
     if (compiled.isNullOrBlank()) return "Chưa cấu hình điều kiện"
 
-    // Câu trả về của translateTriggerToFriendlyVietnamese nói theo giọng "ngòi nổ sự kiện"
-    // ("🔥 Ngòi nổ: Khi ... xảy ra"), phù hợp để diễn giải một điều kiện kiểm duyệt trạng thái
-    // hiện tại — chỉ bỏ tiền tố "🔥 Ngòi nổ: " đi cho khớp ngữ cảnh "đang kiểm tra", không phải
-    // "đang chờ xảy ra".
     return translateTriggerToFriendlyVietnamese(compiled, availableCameras, availableDevices)
         .removePrefix("🔥 Ngòi nổ: ")
 }
 
-/**
- * Hộp thoại dựng kịch bản thả chọn — người dùng không cần gõ bất kỳ chuỗi kỹ thuật nào.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VisualTriggerBuilderDialog(
@@ -1016,7 +939,7 @@ fun VisualTriggerBuilderDialog(
     onConfirm: (name: String, source: String, entityId: String, value: String) -> Unit
 ) {
     var groupName by remember { mutableStateOf("") }
-    var selectedSource by remember { mutableStateOf("camera") } // camera | tuya | chat
+    var selectedSource by remember { mutableStateOf("camera") }
     var selectedEntityId by remember { mutableStateOf("") }
     var selectedExpectedValue by remember { mutableStateOf("suspicious") }
 
@@ -1061,40 +984,26 @@ fun VisualTriggerBuilderDialog(
                     }
                 }
 
-
-
-                
-
-                // Tìm đoạn code này trong VisualTriggerBuilderDialog ở HouseManagerScreen.kt:
-Text("Bước 2: Chọn thiết bị áp dụng", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-when (selectedSource) {
-    "camera" -> {
-        if (availableCameras.isEmpty()) {
-            Text("Chưa lắp camera nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-        } else {
-            // Thay thế đoạn DeviceSelectorDropdown bên dưới bằng bản cập nhật hiển thị chi tiết:
-            DeviceSelectorDropdown(
-                label = "Chọn camera giám sát",
-                list = availableCameras.map { camera ->
-                    val displayLabel = buildString {
-                        append(camera.customername.ifBlank { "Chưa đặt tên" })
-                        
-                        append(" (${camera.id})") // Đính kèm ID camera thật ở cuối để bảo đảm phân biệt được
+                Text("Bước 2: Chọn thiết bị áp dụng", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                when (selectedSource) {
+                    "camera" -> {
+                        if (availableCameras.isEmpty()) {
+                            Text("Chưa lắp camera nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        } else {
+                            DeviceSelectorDropdown(
+                                label = "Chọn camera giám sát",
+                                list = availableCameras.map { camera ->
+                                    val displayLabel = buildString {
+                                        append(camera.customername.ifBlank { "Chưa đặt tên" })
+                                        append(" (${camera.id})")
+                                    }
+                                    camera.id to displayLabel
+                                },
+                                selectedId = selectedEntityId,
+                                onSelected = { selectedEntityId = it }
+                            )
+                        }
                     }
-                    camera.id to displayLabel
-                },
-                selectedId = selectedEntityId,
-                onSelected = { selectedEntityId = it }
-            )
-        }
-    }
-    // Các nhánh "tuya" và "chat" bên dưới giữ nguyên...
-
-
-
-
-
-                    
                     "tuya" -> {
                         if (availableDevices.isEmpty()) {
                             Text("Chưa đồng bộ thiết bị Tuya nào.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -1155,7 +1064,7 @@ when (selectedSource) {
 @Composable
 fun DeviceSelectorDropdown(
     label: String,
-    list: List<Pair<String, String>>, // id to friendlyName
+    list: List<Pair<String, String>>,
     selectedId: String,
     onSelected: (String) -> Unit
 ) {

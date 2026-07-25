@@ -1,6 +1,5 @@
 package com.aichatvn.agent.ui.viewmodels
 
-import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -30,6 +29,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
+import com.aichatvn.agent.core.plugin.DynamicOptionRegistry // 🌟 MỚI
 
 data class CameraConfigDraft(
     val snapshotUrl: String = "",
@@ -62,16 +62,10 @@ class CameraDetailViewModel @Inject constructor(
     private val cameraSkill: CameraSkill,
     private val snapshotFetcher: SnapshotFetcher,
     private val agentKernel: com.aichatvn.agent.core.AgentKernel, // ✅ MỚI — lấy danh sách plugin cho dropdown, giống ScheduleViewModel
+    val optionRegistry: DynamicOptionRegistry, // 🌟 MỚI: Inject Registry trung tâm
     private val logger: Logger
 ) : ViewModel() {
 
-  // ✅ MỚI: Danh sách thiết bị/camera để dropdown trong AlertActionFormSheet chọn thay vì gõ ID tay
-    private val _tuyaDevicesForAlertAction = MutableStateFlow<List<TuyaDeviceEntity>>(emptyList())
-    val tuyaDevicesForAlertAction: StateFlow<List<TuyaDeviceEntity>> = _tuyaDevicesForAlertAction.asStateFlow()
-
-    private val _camerasForAlertAction = MutableStateFlow<List<CameraConfigEntity>>(emptyList())
-    val camerasForAlertAction: StateFlow<List<CameraConfigEntity>> = _camerasForAlertAction.asStateFlow()
-    
   // ✅ MỚI: Danh sách plugin routable để dropdown chọn (loại "camera" nếu muốn tránh tự-trigger đệ quy,
     // nhưng vẫn cho phép vì use-case hợp lệ: cam A phát hiện → bật smart_mode cam B)
     val alertActionPlugins: List<com.aichatvn.agent.core.plugin.Plugin> =
@@ -126,7 +120,6 @@ class CameraDetailViewModel @Inject constructor(
     init {
         loadCamera()
         loadSchedules()
-        loadAlertActionOptions() // ✅ MỚI: Nạp danh sách cho dropdown
         viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 val diagMap = cameraSkill.getDiagnostics()
@@ -627,16 +620,6 @@ class CameraDetailViewModel @Inject constructor(
 
 
 
-    // ✅ MỚI: Hàm nạp danh sách thiết bị/camera từ cơ sở dữ liệu
-    private fun loadAlertActionOptions() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _tuyaDevicesForAlertAction.value = database.tuyaDeviceDao().getAllDevices()
-            _camerasForAlertAction.value = database.cameraDao().getActiveCameras()
-        }
-    }
-
-
-    
 }
 
 // ✅ MỚI: AlertActionConfig + alertActionsToJson/FromJson đã chuyển sang

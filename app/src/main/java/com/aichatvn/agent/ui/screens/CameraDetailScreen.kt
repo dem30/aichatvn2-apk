@@ -29,6 +29,7 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.model.AlertActionConfig
+import com.aichatvn.agent.ui.components.SmartActionFormSheet
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
 import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
 import kotlinx.coroutines.Dispatchers
@@ -56,8 +57,6 @@ fun CameraDetailScreen(
     val scheduleResult by viewModel.scheduleResult.collectAsState()
 
     val alertActionPlugins = viewModel.alertActionPlugins
-    val tuyaDevicesForAlertAction by viewModel.tuyaDevicesForAlertAction.collectAsState()
-    val camerasForAlertAction by viewModel.camerasForAlertAction.collectAsState()
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val alertActionSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -107,10 +106,9 @@ fun CameraDetailScreen(
             onDismissRequest = { showAlertActionSheet = false },
             sheetState = alertActionSheetState
         ) {
-            AlertActionFormSheet(
+            SmartActionFormSheet(
                 plugins = alertActionPlugins,
-                tuyaDevices = tuyaDevicesForAlertAction,
-                activeCameras = camerasForAlertAction,
+                optionRegistry = viewModel.optionRegistry,
                 onSave = { cfg ->
                     viewModel.addAlertAction(cfg)
                     showAlertActionSheet = false
@@ -125,10 +123,9 @@ fun CameraDetailScreen(
             onDismissRequest = { showScheduleAlertActionSheet = false },
             sheetState = scheduleAlertActionSheetState
         ) {
-            AlertActionFormSheet(
+            SmartActionFormSheet(
                 plugins = alertActionPlugins,
-                tuyaDevices = tuyaDevicesForAlertAction,
-                activeCameras = camerasForAlertAction,
+                optionRegistry = viewModel.optionRegistry,
                 onSave = { cfg ->
                     viewModel.addScheduleAlertAction(cfg)
                     showScheduleAlertActionSheet = false

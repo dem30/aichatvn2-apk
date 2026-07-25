@@ -29,13 +29,15 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 import javax.inject.Inject
+import com.aichatvn.agent.core.plugin.DynamicOptionRegistry // 🌟 MỚI
 
 @HiltViewModel
 class HouseManagerViewModel @Inject constructor(
     private val houseManagerSkill: HouseManagerSkill,
     private val database: AppDatabase,
     private val configProvider: AppConfigProvider,
-    private val agentKernel: AgentKernel // Lấy danh sách plugin để hiển thị dropdown chọn plugin trong AlertActionFormSheet
+    private val agentKernel: AgentKernel, // Lấy danh sách plugin để hiển thị dropdown chọn plugin trong AlertActionFormSheet
+    val optionRegistry: DynamicOptionRegistry // 🌟 MỚI: Inject Registry
 ) : ViewModel() {
 
     private val _situation = MutableStateFlow<HouseSituation?>(null)
