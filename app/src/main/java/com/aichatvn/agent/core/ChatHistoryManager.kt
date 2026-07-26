@@ -33,6 +33,24 @@ data class PendingIntent(
 )
 
 /**
+ * ✅ MỚI: Trọng tâm tra cứu dữ liệu thực (SearchContract) gần nhất của 1 user —
+ * KHÔNG phân biệt domain (camera/tuya/đa kênh chat). Trước đây việc quyết định có
+ * đính kèm chỉ thị "gọi tool db_search" hay không chỉ dựa vào từ khoá cứng khớp
+ * với câu hỏi HIỆN TẠI (mentionsAppDomain trong AgentKernel.kt) — khiến câu hỏi
+ * đào sâu tiếp theo không chứa từ khoá domain nào (vd "họ mặc áo màu gì" sau khi
+ * vừa hỏi về camera) bị bỏ qua tool guard, và AI tự bịa câu trả lời từ lịch sử
+ * hội thoại thay vì tra cứu lại. `SearchFocus` lưu lại NGUỒN đã search thật (bất kể
+ * loại gì) + số thứ tự lượt hỏi (`turnIndex`), để các lượt hỏi kế tiếp có thể được
+ * suy ra là đang "đào sâu" vào cùng 1 kết quả search, không cần biết trước domain.
+ */
+data class SearchFocus(
+    val sourceCategory: String?,
+    val sourceIdOrName: String?,
+    val turnIndex: Int,
+    val setAt: Long = System.currentTimeMillis()
+)
+
+/**
  * ✅ ĐÃ SỬA (per-user scoping toàn diện): TẤT CẢ state trong class này — lịch sử hội thoại,
  * thiết bị vừa nhắc tới, hàng đợi pending, và khóa điều khiển riêng biệt (lockedControl) —
  * trước đây là GLOBAL (dùng chung cho mọi user/kênh chat), giờ được khoanh vùng theo
@@ -49,6 +67,10 @@ class ChatHistoryManager @Inject constructor() {
 
     private val historyByUser = mutableMapOf<String, MutableList<Pair<String, String>>>() // User to AI, theo username
     private val lastDeviceByUser = mutableMapOf<String, String>()
+
+    // ✅ MỚI: trọng tâm search gần nhất + bộ đếm lượt hỏi, theo từng user — xem SearchFocus ở trên
+    private val searchFocusByUser = mutableMapOf<String, SearchFocus>()
+    private val turnCounterByUser = mutableMapOf<String, Int>()
 
     // Bộ đệm danh sách đa lệnh dở dang song song, của TẤT CẢ user — lọc theo pending.username khi truy vấn
     private val pendingIntents = mutableListOf<PendingIntent>()
@@ -109,6 +131,27 @@ class ChatHistoryManager @Inject constructor() {
     fun getLastMentionedDevice(username: String): String? {
         return lastDeviceByUser[username]
     }
+
+    // ✅ MỚI: tăng bộ đếm lượt hỏi của user, trả về số thứ tự lượt hiện tại (bắt đầu từ 1).
+    // Gọi 1 lần duy nhất mỗi lượt chat() trong AgentKernel, dùng làm mốc so sánh với
+    // SearchFocus.turnIndex để biết câu hỏi hiện tại có đang "gần" 1 lần search thật gần đây không.
+    @Synchronized
+    fun bumpTurn(username: String): Int {
+        val next = (turnCounterByUser[username] ?: 0) + 1
+        turnCounterByUser[username] = next
+        return next
+    }
+
+    // ✅ MỚI: ghi lại trọng tâm search vừa thực hiện thành công (bất kể domain nào).
+    // Gọi ngay sau khi executeSearchContract() chạy xong trong AgentKernel.interceptAndExecuteToolCall.
+    @Synchronized
+    fun setLastSearchFocus(username: String, sourceCategory: String?, sourceIdOrName: String?) {
+        val turn = turnCounterByUser[username] ?: 0
+        searchFocusByUser[username] = SearchFocus(sourceCategory, sourceIdOrName, turn)
+    }
+
+    @Synchronized
+    fun getLastSearchFocus(username: String): SearchFocus? = searchFocusByUser[username]
 
     @Synchronized
     fun getRecentTurnsAsText(username: String): String {
@@ -231,6 +274,8 @@ class ChatHistoryManager @Inject constructor() {
         expiredIntents.removeAll { it.username == username }
         lockedControlByUser.remove(username)
         pendingLockRequestByUser.remove(username)
+        searchFocusByUser.remove(username)   // MỚI
+        turnCounterByUser.remove(username)   // MỚI
     }
 
     // Xóa TOÀN BỘ trạng thái của TẤT CẢ user — chỉ dùng cho reset toàn hệ thống (vd factory reset app)
@@ -242,5 +287,7 @@ class ChatHistoryManager @Inject constructor() {
         lockedControlByUser.clear()
         pendingLockRequestByUser.clear()
         expiredIntents.clear()
+        searchFocusByUser.clear()   // MỚI
+        turnCounterByUser.clear()   // MỚI
     }
 }

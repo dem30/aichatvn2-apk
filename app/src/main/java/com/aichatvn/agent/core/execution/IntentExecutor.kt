@@ -38,7 +38,13 @@ class IntentExecutor @Inject constructor(
         val normalizedParams = ParameterResolver.normalizeParams(intent.params, plugin, intent.action, plugins, context.resolvedQuery)
         val normalizedIntent = intent.copy(params = normalizedParams)
 
-        val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"] ?: normalizedIntent.params["deviceId"]
+        // ✅ MỚI: thêm "cameraId" vào danh sách khoá được theo dõi — TRƯỚC ĐÂY chỉ bắt device Tuya
+        // (device/device_id/deviceId), khiến ID camera vừa được thao tác (quét/chọn qua flow
+        // "Bạn muốn thao tác với camera nào?") không được ghi nhớ. Đây là 1 cơ chế DÙNG CHUNG cho
+        // mọi domain (không tách riêng "lastCameraByUser") — AgentKernel dùng lại giá trị này làm
+        // fallback khi câu hỏi tiếp theo không nêu rõ nguồn (vd "camera có ai qua lại không").
+        val device = normalizedIntent.params["device"] ?: normalizedIntent.params["device_id"]
+            ?: normalizedIntent.params["deviceId"] ?: normalizedIntent.params["cameraId"]
         device?.toString()?.let { chatHistoryManager.updateLastDevice(context.username, it) }
 
         val missing = ParameterResolver.getUnresolvedParams(normalizedIntent.params, plugin, normalizedIntent.action, plugins)

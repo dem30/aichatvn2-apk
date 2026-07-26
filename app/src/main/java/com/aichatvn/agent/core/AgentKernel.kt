@@ -167,6 +167,11 @@ class AgentKernel @Inject constructor(
             return ChatResponse("", "empty_message_guard", null)
         }
 
+        // ✅ MỚI: tăng bộ đếm lượt hỏi của user — dùng để so sánh với SearchFocus.turnIndex,
+        // quyết định câu hỏi hiện tại có đang "đào sâu" vào 1 lần search DB gần đây không,
+        // KHÔNG phân biệt domain (camera/tuya/đa kênh chat).
+        val currentTurn = chatHistoryManager.bumpTurn(username)
+
         val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(username, plugins)
 
         if (request.allowDeviceControl) {
@@ -285,7 +290,7 @@ class AgentKernel @Inject constructor(
                     val historySnapshot = buildHistorySnapshot(username)
 
                     val toolGuard = if (request.allowDeviceControl) {
-                        if (mentionsAppDomain(message)) buildToolCallingGuard() else ""
+                        if (shouldAttachToolGuard(message, username, currentTurn)) buildToolCallingGuard() else ""
                     } else {
                         CATALOG_SEARCH_TOOL_INSTRUCTION
                     }
@@ -328,7 +333,7 @@ class AgentKernel @Inject constructor(
                         val qaContext = buildQAContextForAgent(message, username)
 
                         val toolGuard = if (request.allowDeviceControl) {
-                            if (mentionsAppDomain(message)) buildToolCallingGuard() else ""
+                            if (shouldAttachToolGuard(message, username, currentTurn)) buildToolCallingGuard() else ""
                         } else {
                             CATALOG_SEARCH_TOOL_INSTRUCTION
                         }
@@ -502,7 +507,13 @@ class AgentKernel @Inject constructor(
         return try {
             val rawTimeframe = toolCall.params["timeframe"] ?: "today"
             val objectLabel = toolCall.params["object"] ?: "all"
-            val sourceHint = toolCall.params["source"]?.trim()
+            // ✅ MỚI: nếu model không nêu rõ "source" (câu hỏi đào sâu kiểu "camera có ai qua lại
+            // không" mà không nói tên camera nào), fallback về ID vừa được thao tác gần nhất
+            // (chatHistoryManager.getLastMentionedDevice — đã được IntentExecutor cập nhật cho
+            // CẢ camera lẫn thiết bị Tuya). Không có fallback này, search sẽ không lọc theo
+            // sourceIdOrName và có thể khớp nhầm sự kiện của MỘT CAMERA/THIẾT BỊ KHÁC cùng ngày.
+            val sourceHint = toolCall.params["source"]?.trim()?.takeIf { it.isNotBlank() }
+                ?: chatHistoryManager.getLastMentionedDevice(username)
 
             var resolvedSourceCategory: String? = null
             var resolvedSourceName: String? = null
@@ -555,6 +566,11 @@ class AgentKernel @Inject constructor(
             )
 
             val searchResult = databaseSearchHelper.executeSearchContract(contract)
+
+            // ✅ MỚI: ghi lại trọng tâm search vừa thực hiện (bất kể domain camera/tuya/chat),
+            // để các câu hỏi đào sâu tiếp theo (vd "họ mặc áo màu gì") tự động được coi là
+            // liên quan mà không cần khớp từ khoá cứng — xem shouldAttachToolGuard().
+            chatHistoryManager.setLastSearchFocus(username, resolvedSourceCategory, resolvedSourceName ?: sourceHint)
 
             val enrichedContext = buildString {
                 append(stripDbSearchInvite(baseContext))
@@ -754,6 +770,10 @@ class AgentKernel @Inject constructor(
     companion object {
         private const val MAX_QA_MATCHES_IN_CONTEXT = 3
         private const val MAX_QA_ANSWER_CHARS = 200
+
+        // Số lượt hỏi tiếp theo sau 1 lần search DB thật mà vẫn được coi là "đang đào sâu"
+        // vào cùng kết quả đó, dù câu hỏi không chứa từ khoá domain nào (camera/tuya/chat...).
+        private const val FOLLOWUP_TURN_WINDOW = 2
 
         private const val CATALOG_SEARCH_TOOL_INSTRUCTION = """🚨 QUY TẮC TÌM KIẾM THÔNG TIN:
 - Nếu chưa có đủ thông tin trong <SYSTEM_MEMORY> để trả lời câu hỏi của người dùng, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích):
@@ -982,6 +1002,20 @@ class AgentKernel @Inject constructor(
             (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
             "💬 Kênh chat hỗ trợ: facebook, telegram, website"
+    }
+
+    /**
+     * ✅ MỚI: Quyết định có đính kèm buildToolCallingGuard() hay không, KHÔNG chỉ dựa vào
+     * từ khoá cứng của câu hỏi hiện tại (mentionsAppDomain) mà còn dựa vào việc câu hỏi này
+     * có đang đào sâu vào 1 lần search DB thật vừa xảy ra hay không — bất kể domain là gì
+     * (camera, tuya, hay đa kênh chat facebook/telegram/website). mentionsAppDomain vẫn được
+     * giữ làm fast-path cho câu hỏi MỞ ĐẦU 1 chủ đề mới.
+     */
+    private fun shouldAttachToolGuard(message: String, username: String, currentTurn: Int): Boolean {
+        if (mentionsAppDomain(message)) return true
+        val focus = chatHistoryManager.getLastSearchFocus(username) ?: return false
+        val turnsSince = currentTurn - focus.turnIndex
+        return turnsSince in 0..FOLLOWUP_TURN_WINDOW
     }
 
     private fun mentionsAppDomain(msg: String): Boolean {
