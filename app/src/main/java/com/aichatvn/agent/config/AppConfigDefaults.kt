@@ -113,6 +113,17 @@ object AppConfigDefaults {
     // dùng để nhận cuộc gọi thoại/video P2P (WebRTC) từ thiết bị khác qua Render Gateway.
     const val CALL_DEVICE_CODE              = "call.device_code"
 
+    // ✅ MỚI: TURN server (Metered.ca) — CHỈ có STUN không đủ để 2 máy kết nối P2P qua
+    // NAT symmetric (rất phổ biến với mạng 4G/LTE VN và nhiều router WiFi) — kết quả là
+    // signaling (offer/answer) trao đổi thành công (nút Nghe/Từ chối hiện ra) nhưng
+    // audio/video KHÔNG BAO GIỜ truyền được. TURN server relay media khi P2P trực tiếp
+    // thất bại. Người dùng tự đăng ký tài khoản free tại metered.ca (500MB/tháng, không
+    // cần thẻ), lấy 2 giá trị này từ Dashboard -> TURN Server -> credential đầu tiên.
+    // Để trống = app chỉ dùng STUN công khai (Google) như trước — cuộc gọi có thể lúc
+    // được lúc không tùy mạng.
+    const val CALL_TURN_METERED_DOMAIN      = "call.turn_metered_domain"
+    const val CALL_TURN_METERED_API_KEY     = "call.turn_metered_api_key"
+
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
     // ─────────────────────────────────────────────────────────
@@ -134,6 +145,24 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Mã xác thực Gateway (Gateway Token)",
             description = "Mật khẩu bảo mật dùng chung để xác thực kết nối giữa điện thoại và Render Gateway."
+        ),
+
+        // ── CUỘC GỌI P2P (CALL) — TURN Server ──
+        AppConfigEntity(
+            key = CALL_TURN_METERED_DOMAIN,
+            value = "",
+            type = "string",
+            pluginId = "call",
+            label = "Metered Domain (TURN Server)",
+            description = "Tên domain dạng \"xxxx.metered.live\" — lấy từ Dashboard metered.ca -> Developers. Để trống nếu chưa đăng ký, cuộc gọi sẽ chỉ dùng STUN công khai (có thể lúc được lúc không tùy mạng)."
+        ),
+        AppConfigEntity(
+            key = CALL_TURN_METERED_API_KEY,
+            value = "",
+            type = "string",
+            pluginId = "call",
+            label = "Metered API Key (TURN Server)",
+            description = "API Key hiển thị cùng credential trên Dashboard metered.ca -> TURN Server -> credential đầu tiên. Đây là API Key scoped-theo-credential, an toàn dùng trực tiếp trên máy (KHÔNG phải Secret Key)."
         ),
 
         // ── FACEBOOK MESSENGER ──

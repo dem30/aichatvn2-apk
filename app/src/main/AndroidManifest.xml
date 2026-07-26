@@ -22,7 +22,7 @@
     <!-- Khai báo quyền chạy ngầm đặc biệt thay cho dataSync để tránh giới hạn thời gian chạy 6 tiếng -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- ❌ ĐÃ GỠ BỎ: Quyền chạy ngầm micro chạy ngầm cũ (FOREGROUND_SERVICE_MICROPHONE) -->
-    
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     

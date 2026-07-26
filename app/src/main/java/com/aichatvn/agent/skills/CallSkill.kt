@@ -1,6 +1,14 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
+import android.media.AudioManager
+import android.media.AudioAttributes
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel.PluginResult
@@ -22,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.webrtc.*
 import java.util.UUID
@@ -120,8 +129,34 @@ class CallSkill @Inject constructor(
     private var localAudioTrack: AudioTrack? = null
     private var videoCapturer: CameraVideoCapturer? = null
 
+    // ✅ MỚI: client HTTP riêng cho việc lấy iceServers động từ Metered TURN REST API —
+    // tách khỏi httpClient của GatewaySignalingManager để không phụ thuộc lẫn nhau.
+    private val turnApiClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
+    // ✅ MỚI: chuông + rung khi có cuộc gọi đến (RINGING)
+    private var ringtone: Ringtone? = null
+    private var vibrator: Vibrator? = null
+
     private val pendingRemoteIceCandidates = mutableListOf<IceCandidate>()
     private var incomingOfferCache: JSONObject? = null
+
+    // ✅ SỬA LỖI: job hoãn reset về IDLE sau ENDED/FAILED — được hủy bất cứ khi nào 1 cuộc
+    // gọi MỚI bắt đầu (startCall/answerCall), để tránh trường hợp job reset của cuộc gọi
+    // CŨ chạy trễ và đè mất state của cuộc gọi MỚI đang diễn ra.
+    private var returnToIdleJob: kotlinx.coroutines.Job? = null
+
+    private fun scheduleReturnToIdle() {
+        returnToIdleJob?.cancel()
+        returnToIdleJob = skillScope.launch {
+            kotlinx.coroutines.delay(1500)
+            if (_callUiState.value.state == CallState.ENDED || _callUiState.value.state == CallState.FAILED) {
+                _callUiState.value = CallUiState(state = CallState.IDLE)
+            }
+        }
+    }
 
     init {
         signalingManager.onCallSignalReceived = { signal ->
@@ -174,6 +209,8 @@ class CallSkill @Inject constructor(
         val callId = UUID.randomUUID().toString()
         val myCode = getOrCreateMyDeviceCode()
 
+        returnToIdleJob?.cancel()
+
         _callUiState.value = CallUiState(
             state = CallState.DIALING,
             remoteDeviceCode = targetDeviceCode,
@@ -211,6 +248,9 @@ class CallSkill @Inject constructor(
 
         val fromCode = offerSignal.getString("from")
         val withVideo = offerSignal.optBoolean("video", true)
+
+        returnToIdleJob?.cancel()
+        stopRingtoneAndVibration()
 
         _callUiState.value = CallUiState(
             state = CallState.CONNECTING,
@@ -289,12 +329,18 @@ class CallSkill @Inject constructor(
                 val callId = signal.optString("callId")
                 val withVideo = signal.optBoolean("video", true)
 
+                returnToIdleJob?.cancel()
                 _callUiState.value = CallUiState(
                     state = CallState.RINGING,
                     remoteDeviceCode = fromCode,
                     callId = callId,
                     isVideo = withVideo
                 )
+
+                // ✅ MỚI: đổ chuông + rung khi có cuộc gọi đến. Trước đây RINGING chỉ
+                // đổi UI (hiện nút Nghe/Từ chối) hoàn toàn im lặng — người dùng không
+                // có cách nào biết có cuộc gọi đến nếu không đang nhìn màn hình.
+                startRingtoneAndVibration()
 
                 logEvent("incoming_call", fromCode, "Cuộc gọi đến từ mã máy $fromCode")
             }
@@ -318,6 +364,11 @@ class CallSkill @Inject constructor(
             "call_end" -> {
                 teardownPeerConnection()
                 _callUiState.value = CallUiState(state = CallState.ENDED)
+                // ✅ SỬA LỖI: ENDED không có cơ chế nào tự chuyển về IDLE trước đây, nên
+                // nút "Gọi" ở DialScreen (enabled chỉ khi state == IDLE) bị kẹt vô hiệu
+                // vĩnh viễn sau khi đối phương cúp máy. Đợi ngắn để UI kịp hiện "Đã kết
+                // thúc" rồi tự reset về IDLE.
+                scheduleReturnToIdle()
             }
         }
     }
@@ -337,11 +388,8 @@ class CallSkill @Inject constructor(
             .createPeerConnectionFactory()
     }
 
-    private fun createPeerConnection(callId: String, remoteDeviceCode: String): PeerConnection? {
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
+    private suspend fun createPeerConnection(callId: String, remoteDeviceCode: String): PeerConnection? {
+        val iceServers = fetchIceServers()
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         }
@@ -364,18 +412,33 @@ class CallSkill @Inject constructor(
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED ->
                         _callUiState.value = _callUiState.value.copy(state = CallState.CONNECTED)
-                    PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED ->
+                    PeerConnection.IceConnectionState.FAILED, PeerConnection.IceConnectionState.DISCONNECTED -> {
                         _callUiState.value = _callUiState.value.copy(state = CallState.FAILED)
-                    PeerConnection.IceConnectionState.CLOSED ->
+                        // ✅ SỬA LỖI: cùng lỗi kẹt state như "call_end" — FAILED trước đây
+                        // không bao giờ tự thoát, khiến nút "Gọi" bị vô hiệu vĩnh viễn sau
+                        // khi rớt kết nối P2P (mất mạng, NAT traversal thất bại...).
+                        teardownPeerConnection()
+                        scheduleReturnToIdle()
+                    }
+                    PeerConnection.IceConnectionState.CLOSED -> {
                         _callUiState.value = _callUiState.value.copy(state = CallState.ENDED)
+                        scheduleReturnToIdle()
+                    }
                     else -> {}
                 }
             }
 
             override fun onTrack(transceiver: RtpTransceiver) {
                 val track = transceiver.receiver.track()
-                if (track is VideoTrack) {
-                    _remoteVideoTrack.value = track
+                when (track) {
+                    is VideoTrack -> _remoteVideoTrack.value = track
+                    // ✅ SỬA LỖI: audio track của đối phương trước đây bị bỏ qua hoàn
+                    // toàn trong onTrack (chỉ xử lý nhánh VideoTrack) — WebRTC Android
+                    // không tự động phát audio ra loa nếu track không được set enabled
+                    // rõ ràng phía nhận. Đây là lý do gọi kết nối được (nút hiện ra) mà
+                    // hoàn toàn không có âm thanh, kể cả ở cuộc gọi chỉ-thoại.
+                    is AudioTrack -> track.setEnabled(true)
+                    else -> {}
                 }
             }
 
@@ -390,10 +453,93 @@ class CallSkill @Inject constructor(
         })
     }
 
+    // ✅ MỚI: Lấy danh sách iceServers (STUN + TURN) động từ Metered.ca TURN REST API.
+    // TURN là bắt buộc để cuộc gọi hoạt động ổn định qua NAT symmetric (4G/LTE, nhiều
+    // router WiFi) — chỉ STUN thì signaling (offer/answer) vẫn trao đổi được (nút Nghe/
+    // Từ chối hiện ra bình thường) nhưng audio/video có thể không bao giờ truyền được.
+    //
+    // Nếu người dùng chưa điền CALL_TURN_METERED_DOMAIN/API_KEY trong Settings, hoặc gọi
+    // API thất bại (mất mạng, hết quota 500MB/tháng...), fallback về STUN công khai của
+    // Google như hành vi cũ — để không phá cuộc gọi hoàn toàn, dù tỉ lệ thành công sẽ phụ
+    // thuộc vào NAT của 2 mạng như trước khi có TURN.
+    private suspend fun fetchIceServers(): List<PeerConnection.IceServer> {
+        val fallbackStun = listOf(
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+        )
+
+        val domain = configProvider.getString(AppConfigDefaults.CALL_TURN_METERED_DOMAIN).trim()
+        val apiKey = configProvider.getString(AppConfigDefaults.CALL_TURN_METERED_API_KEY).trim()
+
+        if (domain.isBlank() || apiKey.isBlank()) {
+            logger.w("CallSkill", "⚠️ Chưa cấu hình TURN Server (Metered) trong Settings — chỉ dùng STUN công khai, cuộc gọi có thể lúc được lúc không tùy mạng.")
+            return fallbackStun
+        }
+
+        return try {
+            withContext(Dispatchers.IO) {
+                val url = "https://$domain/api/v1/turn/credentials?apiKey=$apiKey"
+                val request = okhttp3.Request.Builder().url(url).get().build()
+
+                turnApiClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("CallSkill", "⚠️ Lấy iceServers từ Metered thất bại, HTTP: ${response.code}. Dùng STUN dự phòng.")
+                        return@withContext fallbackStun
+                    }
+
+                    val bodyStr = response.body?.string() ?: return@withContext fallbackStun
+                    val arr = org.json.JSONArray(bodyStr)
+                    val servers = mutableListOf<PeerConnection.IceServer>()
+
+                    for (i in 0 until arr.length()) {
+                        val item = arr.getJSONObject(i)
+                        val urlsValue = item.opt("urls")
+                        val urlList = when (urlsValue) {
+                            is String -> listOf(urlsValue)
+                            is org.json.JSONArray -> (0 until urlsValue.length()).map { urlsValue.getString(it) }
+                            else -> emptyList()
+                        }
+                        if (urlList.isEmpty()) continue
+
+                        val username = item.optString("username", "")
+                        val credential = item.optString("credential", "")
+
+                        val builder = PeerConnection.IceServer.builder(urlList)
+                        if (username.isNotBlank()) builder.setUsername(username)
+                        if (credential.isNotBlank()) builder.setPassword(credential)
+                        servers.add(builder.createIceServer())
+                    }
+
+                    if (servers.isEmpty()) {
+                        logger.w("CallSkill", "⚠️ Metered trả về danh sách iceServers rỗng. Dùng STUN dự phòng.")
+                        fallbackStun
+                    } else {
+                        logger.i("CallSkill", "✅ Đã lấy ${servers.size} iceServers (STUN+TURN) từ Metered.")
+                        servers
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            logger.e("CallSkill", "❌ Lỗi khi lấy iceServers từ Metered: ${e.message}. Dùng STUN dự phòng.")
+            fallbackStun
+        }
+    }
+
     private fun addLocalMediaTracks(withVideo: Boolean) {
         val factory = peerConnectionFactory ?: return
+
+        // ✅ SỬA LỖI: đây là nguyên nhân chính của "kết nối được nhưng im lặng hoàn
+        // toàn, kể cả gọi thoại". WebRTC tạo/nhận audio track không có nghĩa là hệ
+        // điều hành Android tự route âm thanh ra loa — cần chủ động chuyển AudioManager
+        // sang MODE_IN_COMMUNICATION (đúng ngữ cảnh gọi VoIP) và bật loa ngoài, nếu
+        // không audio session có thể vẫn ở MODE_NORMAL và không phát ra được.
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = true
+
         val audioSource = factory.createAudioSource(MediaConstraints())
         localAudioTrack = factory.createAudioTrack("audio_${UUID.randomUUID()}", audioSource)
+        localAudioTrack?.setEnabled(true)
         peerConnection?.addTrack(localAudioTrack)
 
         if (withVideo) {
@@ -462,6 +608,69 @@ class CallSkill @Inject constructor(
         _remoteVideoTrack.value = null
         pendingRemoteIceCandidates.clear()
         incomingOfferCache = null
+        stopRingtoneAndVibration()
+
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_NORMAL
+        audioManager.isSpeakerphoneOn = false
+    }
+
+    // ✅ MỚI: phát chuông (âm mặc định của hệ thống cho cuộc gọi đến) + rung liên tục
+    // theo mẫu (không dùng vibrate() 1 lần vì sẽ tắt ngay). Idempotent — gọi nhiều lần
+    // liên tiếp (ví dụ nhận trùng 1 signal do mạng lặp) không tạo nhiều Ringtone chồng.
+    private fun startRingtoneAndVibration() {
+        stopRingtoneAndVibration()
+        try {
+            val uri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ringtone = RingtoneManager.getRingtone(context, uri)?.apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                }
+                play()
+            }
+        } catch (e: Exception) {
+            logger.e("CallSkill", "Không phát được chuông cuộc gọi đến: ${e.message}")
+        }
+
+        try {
+            val vib = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            vibrator = vib
+            val pattern = longArrayOf(0, 800, 500)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vib.vibrate(pattern, 0)
+            }
+        } catch (e: Exception) {
+            logger.e("CallSkill", "Không rung được cho cuộc gọi đến: ${e.message}")
+        }
+    }
+
+    private fun stopRingtoneAndVibration() {
+        try {
+            ringtone?.stop()
+        } catch (e: Exception) {
+            // bỏ qua — chuông có thể đã tự dừng
+        }
+        ringtone = null
+
+        try {
+            vibrator?.cancel()
+        } catch (e: Exception) {
+            // bỏ qua
+        }
+        vibrator = null
     }
 
     private fun logEvent(eventType: String, sourceId: String, summary: String) {

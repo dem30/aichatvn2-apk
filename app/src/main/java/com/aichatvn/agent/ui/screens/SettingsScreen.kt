@@ -485,7 +485,7 @@ private fun PluginConfigSection(
     }
 
     val grouped = configs.groupBy { it.pluginId }
-    val pluginOrder = listOf("global", "groq", "camera", "email", "schedule", "facebook", "telegram", "website")
+    val pluginOrder = listOf("global", "call", "groq", "camera", "email", "schedule", "facebook", "telegram", "website")
     val sortedGroups = (pluginOrder.mapNotNull { pid -> grouped[pid]?.let { pid to it } } +
         grouped.entries.filter { it.key !in pluginOrder }.map { it.toPair() })
 
@@ -522,6 +522,7 @@ private fun PluginGroupCard(
         "facebook"  -> Pair("📘", "Facebook Messenger")
         "telegram"  -> Pair("✈️", "Telegram Assistant")
         "website"   -> Pair("💻", "Website Chat Widget")
+        "call"      -> Pair("📞", "Cuộc gọi P2P & TURN Server")
         else        -> Pair("🔧", "Cấu hình $pluginId")
     }
 
