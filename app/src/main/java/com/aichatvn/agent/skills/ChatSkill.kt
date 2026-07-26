@@ -96,6 +96,18 @@ class ChatSkill @Inject constructor(
         private val QUANTITY_KEYWORDS = setOf(
             "bao nhieu", "may lan", "so luong", "tong cong", "duoc may"
         )
+
+        // ✅ MỚI: chặn tin nhắn khách ngoại kênh gửi tới quá dài trước khi nó đi vào cả 3 nơi:
+        // DB lưu trữ, event_log summary, và context gửi lên LLM (tốn token trực tiếp, và
+        // không kiểm soát được vì khách hàng bên ngoài là nguồn không tin cậy).
+        // 4000 ký tự ~ đủ cho một đoạn mô tả dài, đồng thời chặn được kiểu spam/paste-bomb.
+        private const val MAX_INCOMING_MESSAGE_LENGTH = 4000
+    }
+
+    private fun capIncomingMessage(raw: String): String {
+        if (raw.length <= MAX_INCOMING_MESSAGE_LENGTH) return raw
+        return raw.take(MAX_INCOMING_MESSAGE_LENGTH) +
+            "\n\n[...tin nhắn đã bị cắt bớt, tổng gốc ${raw.length} ký tự, vượt giới hạn xử lý]"
     }
 
     private fun isQuantityQuery(normalizedMsg: String): Boolean =
@@ -317,7 +329,8 @@ class ChatSkill @Inject constructor(
     private suspend fun recordIncomingChatEvent(
         message: String,
         username: String,
-        timestamp: Long
+        timestamp: Long,
+        hasImage: Boolean = false   // ✅ MỚI: để summary/event log biết khách có gửi kèm ảnh không
     ): String = withContext(Dispatchers.IO) {
         val mutex = chatMutexes.getOrPut(username) { Mutex() }
         mutex.withLock {
@@ -339,6 +352,18 @@ class ChatSkill @Inject constructor(
             } ?: 0
             val newUnread = prevUnread + 1
 
+            // ✅ MỚI: nhúng nội dung tin nhắn thật vào summary — đây là chỗ DatabaseSearchHelper
+            // và objectAliasResolver đọc để trả lời câu hỏi về NỘI DUNG, giống cách camera nhúng
+            // [objects: ...] vào summary của nó. Trước đây summary chỉ có metadata (intent/urgency/
+            // unread) nên mọi câu hỏi "khách nhắn gì" không bao giờ khớp được gì cả.
+            val contentPreview = message.replace("\n", " ").replace("\r", " ").trim().take(300)
+            val displayContent = when {
+                contentPreview.isNotBlank() && hasImage -> "📷 $contentPreview"
+                contentPreview.isNotBlank() -> contentPreview
+                hasImage -> "[Gửi hình ảnh, không có chú thích]"
+                else -> "(trống)"
+            }
+
             val eventPayload = org.json.JSONObject().apply {
                 put("platform", platform)
                 put("senderId", rawId)
@@ -347,6 +372,7 @@ class ChatSkill @Inject constructor(
                 put("urgency", urgency)
                 put("unread_count", newUnread)
                 put("last_message", message.take(80))
+                put("has_image", hasImage)   // ✅ MỚI
             }.toString()
 
             // 1. Cập nhật trạng thái sống World State
@@ -369,7 +395,7 @@ class ChatSkill @Inject constructor(
                     sourceId = username, // ✅ ĐÃ SỬA: Đổi từ rawId sang username để đồng bộ nhóm
                     eventType = "chat_session_state_change",
                     value = eventPayload,
-                    summary = "Tin nhắn mới từ [$platform] $rawId (Ý định: $intent, Độ khẩn cấp: $urgency, Chưa đọc: $newUnread)"
+                    summary = "Tin nhắn mới từ [$platform] $rawId: \"$displayContent\" (Ý định: $intent, Độ khẩn cấp: $urgency, Chưa đọc: $newUnread)"
                 )
             )
 
@@ -378,6 +404,9 @@ class ChatSkill @Inject constructor(
     }
 
     suspend fun saveExternalUserMessage(message: String, username: String, fileUrl: String? = null, imageBase64: String? = null) {
+        // ✅ MỚI: luôn ngoại kênh ở hàm này nên luôn cắt độ dài trước khi lưu/log/gửi AI
+        val safeMessage = capIncomingMessage(message)
+
         val resolvedFileUrl = if (!imageBase64.isNullOrEmpty()) {
             saveIncomingChatImage(imageBase64)
         } else {
@@ -387,7 +416,7 @@ class ChatSkill @Inject constructor(
             id = UUID.randomUUID().toString(),
             sessionToken = "session_$username",
             username = username,
-            content = message,
+            content = safeMessage,
             role = "user", 
             type = if (resolvedFileUrl != null) "image" else "text",
             fileUrl = resolvedFileUrl,
@@ -398,7 +427,7 @@ class ChatSkill @Inject constructor(
             database.chatMessageDao().insertMessage(userMessage)
             
             // Gọi hàm dùng chung recordIncomingChatEvent để ghi JSON/WorldState đồng nhất khi tắt Bot
-            recordIncomingChatEvent(message, username, userMessage.timestamp)
+            recordIncomingChatEvent(safeMessage, username, userMessage.timestamp, hasImage = !resolvedFileUrl.isNullOrEmpty())
         }
         messagesMutex.withLock {
             if (currentUsername == username) {
@@ -558,6 +587,10 @@ class ChatSkill @Inject constructor(
                 )
 
             } else {
+                // ✅ MỚI: chỉ cắt độ dài với khách ngoại kênh (nguồn không tin cậy) — người dùng
+                // nội bộ (default_user) có thể cố ý dán đoạn dài cần AI đọc nguyên vẹn.
+                val safeMessage = if (isExternal) capIncomingMessage(message) else message
+
                 val resolvedFileUrl = if (!imageBase64.isNullOrEmpty()) {
                     saveIncomingChatImage(imageBase64)
                 } else {
@@ -569,7 +602,7 @@ class ChatSkill @Inject constructor(
                     id = userMessageId,
                     sessionToken = "session_$username",
                     username = username,
-                    content = message,
+                    content = safeMessage,
                     role = "user", 
                     type = if (!resolvedFileUrl.isNullOrEmpty()) "image" else "text", 
                     fileUrl = resolvedFileUrl, 
@@ -580,7 +613,7 @@ class ChatSkill @Inject constructor(
                     database.chatMessageDao().insertMessage(userMessage)
                     if (isExternal) {
                         // ✅ SỬA LỖI LỚN BƯỚC 2: Gọi hàm dùng chung bóc tách JSON khi nhận tin nhắn đa kênh (kể cả khi Bot đang BẬT)
-                        recordIncomingChatEvent(message, username, userMessage.timestamp)
+                        recordIncomingChatEvent(safeMessage, username, userMessage.timestamp, hasImage = !resolvedFileUrl.isNullOrEmpty())
                     }
                 }
 
@@ -595,8 +628,8 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                val memoryContext = if (_chatMode.value == ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(message)) {
-                    buildMemoryContext(username, message) 
+                val memoryContext = if (_chatMode.value == ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
+                    buildMemoryContext(username, safeMessage) 
                 } else {
                     ""
                 }
@@ -609,7 +642,7 @@ class ChatSkill @Inject constructor(
 
                 val response = agentKernel.chat(
                     com.aichatvn.agent.core.ChatRequest(
-                        message = message,
+                        message = safeMessage,
                         username = username,
                         imageBase64 = imageBase64,
                         fileUrl = resolvedFileUrl, 

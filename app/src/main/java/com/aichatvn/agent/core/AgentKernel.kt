@@ -282,21 +282,42 @@ class AgentKernel @Inject constructor(
                     withTimeout(15_000L) {
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
-                        qa?.answer ?: runLocalQAEventAnalysis(message)
+                        qa?.answer ?: if (request.allowDeviceControl) {
+                            runLocalQAEventAnalysis(message)
+                        } else {
+                            // ✅ SỬA: khách ngoại bị chặn điều khiển thiết bị tuyệt đối không được
+                            // đọc WorldState/EventLog trong mode QA — trước đây hàm này chạy vô
+                            // điều kiện, không hề check allowDeviceControl.
+                            "Xin lỗi, hiện chưa có thông tin chính xác cho câu hỏi này. Vui lòng liên hệ nhân viên hỗ trợ để được hỗ trợ thêm."
+                        }
                     }
                 }
 
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
 
+                    // ✅ SỬA: Groq mode = AI kiến thức chung THUẦN TÚY cho khách ngoại bị chặn —
+                    // không còn gán CATALOG_SEARCH_TOOL_INSTRUCTION nữa (trước đây bị lẫn với
+                    // Combined mode, khiến khách ngoại "chỉ chat AI" vẫn lén tra được catalog).
                     val toolGuard = if (request.allowDeviceControl) {
                         if (shouldAttachToolGuard(message, username, currentTurn)) buildToolCallingGuard() else ""
                     } else {
-                        CATALOG_SEARCH_TOOL_INSTRUCTION
+                        ""
+                    }
+
+                    // ✅ MỚI: khi được phép điều khiển thiết bị (admin, hoặc khách ngoại lúc mở
+                    // khoá), Groq mode phải giữ được quyền tra database QA training giống Combined
+                    // mode — trước đây thiếu hẳn bước này nên Admin dùng Groq mode mất sạch quyền
+                    // catalog/FAQ, chỉ còn db_search (và db_search còn bị gate theo từ khoá).
+                    val qaContext = if (request.allowDeviceControl) {
+                        buildQAContextForAgent(message, username)
+                    } else {
+                        ""
                     }
 
                     val cleanContext = buildString {
                         append(baseGuard)
+                        if (qaContext.isNotEmpty()) append("\n\n$qaContext")
                         if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                         if (toolGuard.isNotEmpty()) append("\n\n$toolGuard")
                     }
@@ -317,7 +338,10 @@ class AgentKernel @Inject constructor(
                         baseContext = cleanContext,
                         historySnapshot = historySnapshot,
                         allowDeviceControl = request.allowDeviceControl,
-                        allowCatalogSearch = !request.allowDeviceControl
+                        // ✅ SỬA: Groq mode không còn đường catalog_search nữa (đã thay bằng
+                        // qaContext tiêm thẳng ở trên khi allowDeviceControl=true, và hoàn toàn
+                        // không có gì khi bị chặn) — luôn false, khác với Combined mode bên dưới.
+                        allowCatalogSearch = false
                     )
                 }
 
