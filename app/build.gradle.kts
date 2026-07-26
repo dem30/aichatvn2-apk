@@ -84,6 +84,10 @@ android {
 }
 
 dependencies {
+    implementation("io.github.webrtc-sdk:android:125.6422.07")
+}
+
+dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.0")

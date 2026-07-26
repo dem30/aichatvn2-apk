@@ -1,6 +1,11 @@
 package com.aichatvn.agent.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.view.ViewGroup
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
@@ -9,11 +14,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.aichatvn.agent.skills.CallState
 import com.aichatvn.agent.ui.viewmodels.CallViewModel
 import org.webrtc.RendererCommon
@@ -44,6 +54,34 @@ fun CallScreen(
     val uiState by vm.callUiState.collectAsState()
     val localVideoTrack by vm.localVideoTrack.collectAsState()
     val remoteVideoTrack by vm.remoteVideoTrack.collectAsState()
+
+    // ✅ MỚI: bấm "Nghe" cũng chạm camera/mic — cần xin quyền runtime giống DialScreen,
+    // không thể giả định người dùng đã cấp quyền từ trước (VD: nhận cuộc gọi lần đầu, chưa
+    // từng tự gọi đi bao giờ nên chưa qua bước xin quyền ở DialScreen).
+    val context = LocalContext.current
+    var pendingAnswerCallId by remember { mutableStateOf<String?>(null) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val allGranted = results.values.all { it }
+        if (allGranted) {
+            pendingAnswerCallId?.let { vm.answer(it) }
+        } else {
+            Toast.makeText(context, "Cần cấp quyền Camera & Micro để nghe máy", Toast.LENGTH_LONG).show()
+        }
+        pendingAnswerCallId = null
+    }
+
+    fun answerWithPermissionCheck(callId: String) {
+        val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val cam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (mic && cam) {
+            vm.answer(callId)
+        } else {
+            pendingAnswerCallId = callId
+            permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         // Video đối phương (Toàn màn hình)
@@ -89,7 +127,7 @@ fun CallScreen(
         ) {
             if (uiState.state == CallState.RINGING) {
                 Button(
-                    onClick = { uiState.callId?.let { vm.answer(it) } },
+                    onClick = { uiState.callId?.let { answerWithPermissionCheck(it) } },
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Green)
                 ) { Text("Nghe") }
                 Button(

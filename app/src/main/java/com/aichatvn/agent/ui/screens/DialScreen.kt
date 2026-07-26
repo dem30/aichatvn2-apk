@@ -1,5 +1,9 @@
 package com.aichatvn.agent.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
@@ -15,6 +19,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import android.widget.Toast
@@ -46,6 +51,44 @@ fun DialScreen(
     var myCode by remember { mutableStateOf("") }
     var targetInput by remember { mutableStateOf("") }
     var withVideo by remember { mutableStateOf(true) }
+
+    // ✅ MỚI: xin quyền CAMERA + RECORD_AUDIO tại runtime (khai trong Manifest chỉ là điều
+    // kiện cần, Android 6+ vẫn bắt buộc hỏi người dùng lúc chạy). pendingCallAfterPermission
+    // giữ lại ý định "Gọi" của người dùng để tự bấm gọi tiếp ngay sau khi cấp quyền xong,
+    // thay vì bắt họ bấm nút "Gọi" lần 2.
+    var pendingCallAfterPermission by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val allGranted = results.values.all { it }
+        if (allGranted && pendingCallAfterPermission) {
+            vm.startCall(targetInput, withVideo)
+        } else if (!allGranted) {
+            Toast.makeText(context, "Cần cấp quyền Camera & Micro để gọi được", Toast.LENGTH_LONG).show()
+        }
+        pendingCallAfterPermission = false
+    }
+
+    fun hasCallPermissions(): Boolean {
+        val mic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!withVideo) return mic
+        val cam = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        return mic && cam
+    }
+
+    fun requestCallOrPermission() {
+        if (hasCallPermissions()) {
+            vm.startCall(targetInput, withVideo)
+        } else {
+            pendingCallAfterPermission = true
+            val perms = if (withVideo) {
+                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+            } else {
+                arrayOf(Manifest.permission.RECORD_AUDIO)
+            }
+            permissionLauncher.launch(perms)
+        }
+    }
 
     LaunchedEffect(Unit) {
         myCode = vm.getMyCode()
@@ -133,7 +176,7 @@ fun DialScreen(
             Spacer(Modifier.height(24.dp))
 
             Button(
-                onClick = { vm.startCall(targetInput, withVideo) },
+                onClick = { requestCallOrPermission() },
                 enabled = targetInput.length == 8 && uiState.state == CallState.IDLE,
                 modifier = Modifier.fillMaxWidth()
             ) {
