@@ -542,6 +542,10 @@ class SettingsViewModel @Inject constructor(
                                     object : TypeToken<List<AppConfigEntity>>() {}.type
                                 )
                                 list.forEach { configProvider.upsert(it) }
+                                // ✅ MỚI: backup cũ có thể chứa các key đã ngừng dùng (vd
+                                // "schedule.camera_scan_interval_min") — dọn lại ngay, không chờ
+                                // tới lần khởi động app kế tiếp mới dọn.
+                                configProvider.cleanupDeadKeys()
                                 restoredCount += list.size
                                 continue
                             }

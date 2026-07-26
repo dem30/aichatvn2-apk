@@ -34,7 +34,36 @@ class AppConfigProvider @Inject constructor(
         dao.getConfigsByPluginFlow(pluginId)
 
     init {
-        scope.launch { seedDefaults() }
+        scope.launch {
+            seedDefaults()
+            cleanupDeadKeys()
+        }
+    }
+
+    // ─────────────────────────── DỌN DẸP KEY RÁC ───────────────────
+    // ✅ MỚI: Các key cấu hình đã bị xoá khỏi AppConfigDefaults.kt (không còn nơi nào đọc/ghi)
+    // nhưng vẫn có thể còn tồn tại trong DB thật của máy đã seed từ bản build cũ hơn — vì
+    // AppConfigDefaults.kt cố tình không xoá dòng cũ trong DB thật để tránh viết Migration.
+    // Màn Settings liệt kê NGUYÊN VẸN mọi dòng có trong DB (không lọc theo AppConfigDefaults),
+    // nên các key rác này cứ nằm ì hiển thị mãi — và nút Reset cũng không dọn được vì nó cần
+    // tìm default tương ứng trong AppConfigDefaults (đã bị xoá) mới chạy. Xoá thẳng ở đây,
+    // 1 lần mỗi lúc khởi động app — dao.delete() trên key không tồn tại chỉ là no-op an toàn.
+    private val deadConfigKeys = listOf(
+        "schedule.camera_scan_interval_min" // rác từ kiến trúc TaskScheduler cũ, xem AppConfigDefaults.kt
+    )
+
+    // ✅ SỬA: public hoá — ngoài lúc app khởi động, còn cần gọi lại đúng lúc sau khi
+    // SettingsViewModel.importSettings() phục hồi bảng app_config từ file backup, vì backup cũ
+    // (từ trước khi key này bị xoá khỏi AppConfigDefaults) sẽ ghi thẳng dòng rác trở lại DB,
+    // vượt qua hoàn toàn lượt dọn dẹp lúc khởi động (đã chạy xong từ trước khi import diễn ra).
+    suspend fun cleanupDeadKeys() = withContext(Dispatchers.IO) {
+        deadConfigKeys.forEach { key ->
+            try {
+                dao.delete(key)
+            } catch (e: Exception) {
+                logger.e("AppConfigProvider", "cleanupDeadKeys lỗi với key '$key': ${e.message}", e)
+            }
+        }
     }
 
     // ─────────────────────────── SEED ────────────────────────────
