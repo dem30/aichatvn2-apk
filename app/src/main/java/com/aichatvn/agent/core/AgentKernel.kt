@@ -507,12 +507,18 @@ class AgentKernel @Inject constructor(
         return try {
             val rawTimeframe = toolCall.params["timeframe"] ?: "today"
             val objectLabel = toolCall.params["object"] ?: "all"
-            // ✅ MỚI: nếu model không nêu rõ "source" (câu hỏi đào sâu kiểu "camera có ai qua lại
-            // không" mà không nói tên camera nào), fallback về ID vừa được thao tác gần nhất
-            // (chatHistoryManager.getLastMentionedDevice — đã được IntentExecutor cập nhật cho
-            // CẢ camera lẫn thiết bị Tuya). Không có fallback này, search sẽ không lọc theo
-            // sourceIdOrName và có thể khớp nhầm sự kiện của MỘT CAMERA/THIẾT BỊ KHÁC cùng ngày.
+            // ✅ ĐÃ SỬA: nếu model không nêu rõ "source" (câu hỏi đào sâu kiểu "camera có ai qua lại
+            // không" / "họ mặc áo màu gì" mà không nói tên nguồn nào), ưu tiên fallback về
+            // SearchFocus.sourceIdOrName — được ghi lại sau MỌI lần executeSearchContract() thành
+            // công, không phân biệt domain (camera/tuya/facebook/telegram/website), nên phủ đúng cả
+            // hội thoại đa kênh chat (vốn luôn đi qua nhánh db_search, KHÔNG đi qua device intent).
+            // Trước đây fallback duy nhất là getLastMentionedDevice — chỉ được IntentExecutor cập
+            // nhật khi có lệnh ĐIỀU KHIỂN camera/thiết bị Tuya — nên hội thoại chat (chỉ hỏi-đáp,
+            // không điều khiển thiết bị) không bao giờ có sourceHint, bị đối xử kém hơn camera/device.
+            // Giữ getLastMentionedDevice làm fallback cuối cho trường hợp vừa điều khiển thiết bị
+            // nhưng chưa search lần nào trong phiên (SearchFocus chưa có gì để cho).
             val sourceHint = toolCall.params["source"]?.trim()?.takeIf { it.isNotBlank() }
+                ?: chatHistoryManager.getLastSearchFocus(username)?.sourceIdOrName
                 ?: chatHistoryManager.getLastMentionedDevice(username)
 
             var resolvedSourceCategory: String? = null
