@@ -118,6 +118,13 @@ class WebhookGatewayService : Service() {
         startForegroundService()
         
         startCloudGatewaySSE()       
+        // ✅ SỬA LỖI: vòng lặp SSE riêng biệt cho tín hiệu cuộc gọi P2P, kết nối tới
+        // /call/stream/{deviceCode} — tách hẳn khỏi /stream/{token} dùng chung cho
+        // chat. Trước đây call_signal bị bắt lẫn trong luồng chat chung, và vì
+        // /stream/{token} broadcast theo token (nhiều máy có thể dùng chung 1 token),
+        // máy vừa gọi đi cũng nhận lại tín hiệu của chính mình. Kênh riêng theo
+        // deviceCode loại bỏ hoàn toàn vấn đề đó.
+        startCallSignalSSE()
         startTelegramLongPolling()   
         startHeartbeatLoop()         
         startScheduleLoop()
@@ -410,11 +417,7 @@ class WebhookGatewayService : Service() {
                                                         logger.i("CloudGateway", "🔑 Đã lưu ${pagesList.size} Facebook Pages vào cơ sở dữ liệu thành công!")
                                                     }
                                                 }
-                                           } else if (event == "call_signal" || jsonObj.optString("platform") == "call") {
-                                                // ✅ MỚI: Bắt tín hiệu cuộc gọi P2P đến và chuyển cho GatewaySignalingManager
-                                                val signalObj = jsonObj.optJSONObject("signal") ?: jsonObj
-                                                signalingManager.dispatchIncomingSignal(signalObj)
-                                           } else {
+                                            } else {
                                                 val platform = jsonObj.optString("platform", "website") 
                                                 val senderId = jsonObj.optString("senderId", "external_user")
                                                 val text = jsonObj.optString("text", "")
@@ -515,6 +518,90 @@ class WebhookGatewayService : Service() {
                 } catch (e: Exception) {
                     logger.e("CloudGateway", "❌ Mất đường ống SSE: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     updateNotification("Mất kết nối Gateway, đang kết nối lại...")
+                    delay(5000)
+                }
+            }
+        }
+    }
+
+    // ✅ SỬA LỖI: Vòng lặp SSE riêng biệt, độc lập hoàn toàn với startCloudGatewaySSE(),
+    // kết nối tới /call/stream/{deviceCode} trên gateway. deviceCode là mã riêng của
+    // TỪNG MÁY (khác với gatewayToken vốn dùng chung cho mọi máy của 1 người dùng),
+    // nên tín hiệu cuộc gọi nhận qua kênh này chỉ có thể là của đúng máy hiện tại —
+    // không còn khả năng broadcast nhầm sang máy khác dùng chung token.
+    private fun startCallSignalSSE() {
+        serviceScope.launch(Dispatchers.IO) {
+            var isOfflineLogged = false
+
+            while (isActive) {
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+
+                var deviceCode = configProvider.getString(AppConfigDefaults.CALL_DEVICE_CODE).trim()
+                if (deviceCode.isEmpty()) {
+                    // registerDeviceCode() (gọi từ startCloudGatewaySSE) sẽ tự sinh và lưu
+                    // deviceCode nếu chưa có — nếu vòng lặp này khởi động trước, đợi rồi thử lại.
+                    delay(2000)
+                    continue
+                }
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
+                    if (!isOfflineLogged) {
+                        logger.w("CallSignalSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh signaling.")
+                        isOfflineLogged = true
+                    }
+                    delay(5000)
+                    continue
+                }
+
+                if (!isNetworkAvailable()) {
+                    delay(5000)
+                    continue
+                }
+
+                isOfflineLogged = false
+
+                try {
+                    logger.i("CallSignalSSE", "🔌 Đang thiết lập đường ống SSE signaling riêng cho deviceCode=$deviceCode...")
+
+                    val request = Request.Builder()
+                        .url("$gatewayUrl/call/stream/$deviceCode")
+                        .header("Accept", "text/event-stream")
+                        .build()
+
+                    okHttpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            logger.w("CallSignalSSE", "⚠️ Kết nối SSE signaling thất bại, mã lỗi HTTP: ${response.code}")
+                            delay(5000)
+                            return@use
+                        }
+
+                        val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
+                        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                        var line: String? = null
+
+                        logger.i("CallSignalSSE", "🟢 Đường ống SSE signaling đã mở, sẵn sàng nhận tín hiệu cuộc gọi.")
+
+                        while (isActive && reader.readLine().also { line = it } != null) {
+                            val trimmedLine = line?.trim() ?: ""
+                            if (trimmedLine.startsWith("data:")) {
+                                val rawData = trimmedLine.substring(5).trim()
+                                if (rawData.isNotEmpty()) {
+                                    serviceScope.launch {
+                                        try {
+                                            val jsonObj = org.json.JSONObject(rawData)
+                                            val signalObj = jsonObj.optJSONObject("signal") ?: jsonObj
+                                            signalingManager.dispatchIncomingSignal(signalObj)
+                                        } catch (e: Exception) {
+                                            logger.e("CallSignalSSE", "Lỗi giải mã tín hiệu cuộc gọi: ${e.message}")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("CallSignalSSE", "❌ Mất đường ống SSE signaling: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     delay(5000)
                 }
             }
