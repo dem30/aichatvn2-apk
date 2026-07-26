@@ -57,6 +57,7 @@ import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.viewmodels.DashboardViewModel
+import com.aichatvn.agent.ui.navigation.Screen // ✅ MỚI: để điều hướng tới màn hình Gọi (DIAL_ROUTE)
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -247,6 +248,16 @@ fun DashboardScreen(
                                 }
                             )
                         }
+                    }
+                    // ✅ MỚI: Icon "Gọi" — mở màn nhập mã máy (DialScreen) để bắt đầu cuộc gọi
+                    // thoại/video P2P tới 1 thiết bị AIChatVN2 khác.
+                    IconButton(onClick = {
+                        navController.navigate(Screen.DIAL_ROUTE)
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.Call,
+                            contentDescription = "Gọi thoại/video"
+                        )
                     }
                     IconButton(onClick = {
                         viewModel.refreshDashboardNodes()

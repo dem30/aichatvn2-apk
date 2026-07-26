@@ -21,6 +21,8 @@ import com.aichatvn.agent.ui.screens.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichatvn.agent.ui.viewmodels.NavBadgeViewModel
 import com.aichatvn.agent.ui.viewmodels.HouseManagerViewModel // ✅ THÊM IMPORT: ViewModel của Quản gia AI
+import com.aichatvn.agent.ui.viewmodels.CallViewModel // ✅ MỚI: ViewModel bọc CallSkill cho DialScreen/CallScreen
+import com.aichatvn.agent.skills.CallState // ✅ MỚI: dùng để bắt trạng thái RINGING và tự điều hướng
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard  : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
@@ -47,6 +49,12 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
         // ✅ MỚI: Route cho màn Node-Graph trực quan hoá pipeline AgentKernel — màn con,
         // mở từ card "🧠 Pipeline AI" trong DiagnosticsScreen.
         const val PIPELINE_GRAPH_ROUTE = "pipeline_graph"
+        // ✅ MỚI: Màn nhập mã máy để gọi đi (dial pad) — mở từ icon "Gọi" trong Dashboard/Settings.
+        const val DIAL_ROUTE = "dial"
+        // ✅ MỚI: Màn cuộc gọi đang diễn ra (đổ chuông / đang gọi / đang kết nối). Được mở CHỦ
+        // ĐỘNG từ DialScreen sau khi bấm "Gọi", HOẶC tự bật lên từ bất kỳ đâu trong app khi có
+        // cuộc gọi đến (xem LaunchedEffect(callState.state) bên dưới trong AppNavigator).
+        const val CALL_ROUTE = "call"
     }
 }
 
@@ -85,6 +93,19 @@ fun AppNavigator(
     // ChatScreen để hiện đúng chỗ: icon Hộp thư đa kênh (Forum) trên TopAppBar của nó.
     val navBadgeViewModel: NavBadgeViewModel = hiltViewModel()
     val totalUnreadCount by navBadgeViewModel.totalUnreadCount.collectAsState()
+
+    // ✅ MỚI: CallViewModel bọc CallSkill (@Singleton), gọi ở đây (ngoài mọi composable(route))
+    // nên callUiState được theo dõi XUYÊN SUỐT app — dù Admin đang đứng ở Dashboard/Chat/bất
+    // cứ đâu, cuộc gọi đến (RINGING) vẫn tự bật CallScreen lên ngay, không cần người dùng tự
+    // vào DialScreen mới thấy được cuộc gọi.
+    val callViewModel: CallViewModel = hiltViewModel()
+    val callState by callViewModel.callUiState.collectAsState()
+
+    LaunchedEffect(callState.state) {
+        if (callState.state == CallState.RINGING && currentRoute != Screen.CALL_ROUTE) {
+            navController.navigate(Screen.CALL_ROUTE) { launchSingleTop = true }
+        }
+    }
 
     // Danh sách các tab chính hiển thị dưới thanh Bottom Navigation (Đã loại bỏ Diagnostics)
     // ✅ ĐÃ SỬA: Bổ sung Screen.HouseManager vào danh sách tab chính để hiển thị trực quan dưới Bottom Bar
@@ -201,6 +222,18 @@ fun AppNavigator(
             // ✅ MỚI: Đăng ký route cho PipelineGraphScreen — màn con hiển thị call graph
             // thật của AgentKernel (TraceNode) theo từng câu lệnh Admin gõ thử.
             composable(Screen.PIPELINE_GRAPH_ROUTE) { PipelineGraphScreen(navController) }
+
+            // ✅ MỚI: Màn nhập mã máy để gọi đi. Dùng CHUNG callViewModel đã hiltViewModel() ở
+            // scope Activity phía trên — KHÔNG gọi hiltViewModel() mới trong này — để tránh 2
+            // instance CallViewModel lệch state nhau (dù cùng trỏ 1 CallSkill @Singleton, tách
+            // instance ViewModel không cần thiết và dễ gây nhầm khi debug).
+            composable(Screen.DIAL_ROUTE) { DialScreen(navController, callViewModel) }
+
+            // ✅ MỚI: Màn cuộc gọi đang diễn ra — mở chủ động từ DialScreen sau start_call, hoặc
+            // tự bật khi RINGING (xem LaunchedEffect(callState.state) phía trên).
+            composable(Screen.CALL_ROUTE) {
+                CallScreen(vm = callViewModel, onClose = { navController.popBackStack() })
+            }
 
             // ✅ ĐÃ THÊM: Cấu hình màn hình Chat chi tiết nhận tham số username động từ InboxScreen chuyển sang
             composable(

@@ -42,6 +42,8 @@ import javax.inject.Inject
 import kotlin.jvm.JvmSuppressWildcards
 // ✅ THÊM IMPORT: Nhận biết interface Quản gia AI
 import com.aichatvn.agent.skills.HouseManagerSkill
+// ✅ THÊM IMPORT: Trình quản lý tín hiệu cuộc gọi P2P
+import com.aichatvn.agent.skills.GatewaySignalingManager
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
@@ -79,6 +81,10 @@ class WebhookGatewayService : Service() {
     // ✅ ĐÃ SỬA LỖI 5: Tiêm Provider của Quản gia AI vào cổng dịch vụ
     @Inject
     lateinit var houseManagerProvider: javax.inject.Provider<HouseManagerSkill>
+
+    // ✅ TIÊM THÊM: Trình quản lý tín hiệu cuộc gọi
+    @Inject
+    lateinit var signalingManager: GatewaySignalingManager
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
@@ -276,6 +282,42 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    // ✅ MỚI: Đăng ký DeviceCode của máy lên Gateway để nhận cuộc gọi thoại/video P2P
+    private fun registerDeviceCode(gatewayUrl: String, gatewayToken: String) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                var deviceCode = configProvider.getString(AppConfigDefaults.CALL_DEVICE_CODE).trim()
+                if (deviceCode.isEmpty()) {
+                    deviceCode = java.util.UUID.randomUUID().toString().take(8).uppercase()
+                    configProvider.set(AppConfigDefaults.CALL_DEVICE_CODE, deviceCode)
+                    logger.i("CloudGateway", "🔑 Đã tự sinh device_code mới cho Cuộc gọi P2P: $deviceCode")
+                }
+
+                val bodyJson = org.json.JSONObject().apply {
+                    put("token", gatewayToken)
+                    put("deviceCode", deviceCode)
+                }
+
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = bodyJson.toString().toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("$gatewayUrl/register_device_code")
+                    .post(requestBody)
+                    .build()
+
+                apiClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        logger.i("CloudGateway", "📇 Đã đăng ký device_code ($deviceCode) với Render Gateway.")
+                    } else {
+                        logger.w("CloudGateway", "⚠️ Đăng ký device_code thất bại, mã lỗi: ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                logger.e("CloudGateway", "❌ Lỗi khi đăng ký device_code: ${e.message}")
+            }
+        }
+    }
+
     private fun startCloudGatewaySSE() {
         serviceScope.launch(Dispatchers.IO) {
             var isOfflineLogged = false
@@ -331,6 +373,7 @@ class WebhookGatewayService : Service() {
 
                         registerPageMappings(gatewayUrl, gatewayToken)
                         registerWidgetKey(gatewayUrl, gatewayToken)
+                        registerDeviceCode(gatewayUrl, gatewayToken) // ✅ MỚI
 
                         while (isActive && reader.readLine().also { line = it } != null) {
                             val trimmedLine = line?.trim() ?: ""
@@ -367,6 +410,10 @@ class WebhookGatewayService : Service() {
                                                         logger.i("CloudGateway", "🔑 Đã lưu ${pagesList.size} Facebook Pages vào cơ sở dữ liệu thành công!")
                                                     }
                                                 }
+                                           } else if (event == "call_signal" || jsonObj.optString("platform") == "call") {
+                                                // ✅ MỚI: Bắt tín hiệu cuộc gọi P2P đến và chuyển cho GatewaySignalingManager
+                                                val signalObj = jsonObj.optJSONObject("signal") ?: jsonObj
+                                                signalingManager.dispatchIncomingSignal(signalObj)
                                            } else {
                                                 val platform = jsonObj.optString("platform", "website") 
                                                 val senderId = jsonObj.optString("senderId", "external_user")

@@ -108,6 +108,11 @@ object AppConfigDefaults {
     const val WEBSITE_ALLOWED_ORIGINS       = "website.allowed_origins"
     const val WEBSITE_WIDGET_KEY            = "website.widget_key"
 
+    // ───────────────────────── CUỘC GỌI P2P (CALL) ──────────
+    // ✅ MỚI: Mã định danh thiết bị (8 ký tự), tự sinh khi service kết nối Gateway lần đầu,
+    // dùng để nhận cuộc gọi thoại/video P2P (WebRTC) từ thiết bị khác qua Render Gateway.
+    const val CALL_DEVICE_CODE              = "call.device_code"
+
     // ─────────────────────────────────────────────────────────
     //  Danh sách đầy đủ để seed vào DB
     // ─────────────────────────────────────────────────────────
@@ -166,6 +171,16 @@ object AppConfigDefaults {
             pluginId = "website",
             label = "Widget Key (Mã nhúng công khai)",
             description = "Tự động sinh khi app kết nối Cloud Gateway lần đầu. An toàn để lộ công khai trên website — KHÁC với Gateway Token bí mật."
+        ),
+
+        // ── CUỘC GỌI P2P (CALL) ──
+        AppConfigEntity(
+            key = CALL_DEVICE_CODE,
+            value = "",
+            type = "string",
+            pluginId = "call",
+            label = "Mã thiết bị cuộc gọi (Device Code)",
+            description = "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại/video P2P từ các thiết bị khác."
         ),
 
         // ── GROQ ──
