@@ -13,6 +13,7 @@
     <!-- ✅ MỚI: WebRTC cần quyền này để chuyển audio route (loa ngoài/tai nghe/earpiece) và
          setMode(MODE_IN_COMMUNICATION) trong lúc gọi — thiếu quyền này audio vẫn phát được
          nhưng không chuyển được loa ngoài, một số máy còn bị lỗi echo/volume bất thường. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -49,7 +50,10 @@
             </intent-filter>
         </activity>
 
-        <receiver
+      <receiver
+    android:name=".receiver.CallActionReceiver"
+    android:exported="false" />
+      <receiver
             android:name=".receiver.BootReceiver"
             android:enabled="true"
             android:exported="true">

@@ -192,7 +192,10 @@ class WebhookGatewayService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AIChatVN2 Omnichannel")
             .setContentText(contentText)
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            // ✅ SỬA: icon silhouette riêng của app thay cho icon hệ thống generic
+            // (ic_menu_info_details, hình dấu "i" thông tin) — đồng bộ nhận diện thương
+            // hiệu với NotificationSkill/IncomingCallNotificationHelper.
+            .setSmallIcon(com.aichatvn.agent.R.drawable.ic_notification_small)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)

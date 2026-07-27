@@ -447,7 +447,9 @@ interface WorldStateDao {
         CustomerEntity::class,
         FacebookPageEntity::class,
         EventLogEntity::class,   
-        WorldStateEntity::class  
+        WorldStateEntity::class,
+        CallContactEntity::class,
+        CallLogEntity::class
     ],
     version = 15, 
     exportSchema = false
@@ -467,6 +469,8 @@ abstract class AppDatabase : RoomDatabase() {
     
     abstract fun eventLogDao(): EventLogDao   
     abstract fun worldStateDao(): WorldStateDao 
+    abstract fun callContactDao(): CallContactDao
+abstract fun callLogDao(): CallLogDao
 
     companion object {
         @Volatile

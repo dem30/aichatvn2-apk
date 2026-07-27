@@ -24,6 +24,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ArrowBack  
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -257,6 +260,14 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ✅ MỚI: Android 14+ (API 34) không tự cấp quyền full-screen intent khi cài đặt
+            // nữa — phải điều hướng người dùng qua đúng màn Settings hệ thống để tự bật.
+            // Thiếu quyền này không làm mất chuông/rung (CallSkill dùng Ringtone/Vibrator
+            // riêng, không phụ thuộc), chỉ mất phần "tự bật màn hình khi máy đang khoá".
+            FullScreenCallPermissionSection()
+
+            HorizontalDivider()
+
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 Text("Chế độ tối (Dark Mode)", style = MaterialTheme.typography.bodyLarge)
                 Switch(checked = darkMode, onCheckedChange = { viewModel.toggleDarkMode(it) })
@@ -290,6 +301,66 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun FullScreenCallPermissionSection() {
+    val context = LocalContext.current
+    // Chỉ có ý nghĩa từ Android 14 (API 34) — trước đó full-screen intent tự hoạt động
+    // ngay khi có quyền USE_FULL_SCREEN_INTENT khai trong Manifest, không cần bước này.
+    if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        return
+    }
+
+    val notificationManager = remember {
+        context.getSystemService(android.app.NotificationManager::class.java)
+    }
+    // Đọc lại mỗi lần màn hình quay lại foreground (người dùng bật xong trong Settings hệ
+    // thống rồi bấm Back quay về app) — không có API callback/Flow cho quyền này, nên
+    // dùng LifecycleEventObserver để refresh đúng lúc ON_RESUME thay vì chỉ đọc 1 lần lúc
+    // Composable khởi tạo (sẽ bị stale nếu người dùng vừa mới bật xong).
+    var isGranted by remember { mutableStateOf(notificationManager?.canUseFullScreenIntent() ?: true) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                isGranted = notificationManager?.canUseFullScreenIntent() ?: true
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Text("📞 Cuộc gọi đến (Full-screen)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isGranted) MaterialTheme.colorScheme.primaryContainer
+                              else MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                if (isGranted) "✅ Đã bật — cuộc gọi đến sẽ tự bật màn hình dù máy đang khoá."
+                else "⚠️ Chưa bật — cuộc gọi đến vẫn đổ chuông/rung bình thường, nhưng sẽ KHÔNG tự bật màn hình nếu máy đang khoá. Bấm nút bên dưới để bật.",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isGranted) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onErrorContainer
+            )
+            if (!isGranted) {
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        val intent = Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Mở cài đặt để bật") }
+            }
         }
     }
 }

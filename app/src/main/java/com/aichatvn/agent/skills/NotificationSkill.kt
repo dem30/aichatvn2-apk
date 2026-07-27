@@ -126,7 +126,15 @@ class NotificationSkill @Inject constructor(
         )
 
         val notification = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)
+            // ✅ SỬA: icon silhouette riêng của app (đơn sắc, bắt buộc theo quy định Android
+            // từ 5.0 trở đi — không thể hiện logo màu ở đây dù set gì khác đi nữa) — thay
+            // cho ic_notification cũ (nhìn giống chuông mặc định).
+            .setSmallIcon(R.drawable.ic_notification_small)
+            // ✅ MỚI: logo màu đầy đủ, hiện bên cạnh nội dung khi kéo notification xuống —
+            // dùng lại đúng icon app đã có sẵn (mipmap/ic_launcher), không cần tạo file mới.
+            .setLargeIcon(
+                android.graphics.BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher)
+            )
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
