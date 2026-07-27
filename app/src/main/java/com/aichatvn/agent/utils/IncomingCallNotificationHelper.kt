@@ -11,7 +11,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import com.aichatvn.agent.R
 import com.aichatvn.agent.receiver.CallActionReceiver
-import com.aichatvn.agent.ui.MainActivity
+import com.aichatvn.agent.MainActivity
 import com.aichatvn.agent.ui.navigation.Screen
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
