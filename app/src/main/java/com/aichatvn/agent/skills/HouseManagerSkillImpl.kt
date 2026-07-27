@@ -586,6 +586,22 @@ PluginAction(
 
     override suspend fun buildSystemContext(): String {
         val sit = cachedSituation ?: evaluateSituation()
+
+        // ✅ MỚI: báo cho AI biết có cuộc gọi nhỡ chưa xem không — cùng cách tính "nhỡ" như
+        // DatabaseSearchHelper (đếm incoming_call trừ call_answered trong 24h gần nhất), để
+        // câu trả lời nhất quán dù người dùng hỏi trực tiếp ("có cuộc gọi nhỡ nào không") hay
+        // chỉ đơn thuần trò chuyện chung (AI tự biết mà nhắc, giống cách nó biết "3 tin nhắn
+        // chưa đọc" qua pendingChatsCount).
+        val missedCallsCount = try {
+            val since = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+            val now = System.currentTimeMillis()
+            val callLogs = database.eventLogDao().getLogsInTimeframe(since, now).filter { it.source == "call" }
+            (callLogs.count { it.eventType == "incoming_call" } - callLogs.count { it.eventType == "call_answered" })
+                .coerceAtLeast(0)
+        } catch (e: Exception) {
+            0
+        }
+
         return """
             <SYSTEM_CONTEXT>
             Báo cáo trạng thái vận hành của Quản gia thông minh:
@@ -593,6 +609,7 @@ PluginAction(
             - Mức độ cảnh báo an ninh: Cấp độ ${sit.securityLevel} (0: Bình thường, 2: Nguy cơ xâm nhập)
             - Số lượng thiết bị thông minh Tuya đang hoạt động: ${sit.activeDevicesCount}
             - Tin nhắn chưa đọc cần hỗ trợ từ đa kênh: ${sit.pendingChatsCount}
+            - Cuộc gọi nhỡ trong 24 giờ qua: $missedCallsCount
             </SYSTEM_CONTEXT>
         """.trimIndent()
     }

@@ -66,6 +66,11 @@ class DatabaseSearchHelper @Inject constructor(
         val isChatCategory = contract.sourceCategory?.equals("chat", ignoreCase = true) == true
         val isSpecificChatPlatform = contract.sourceCategory in setOf("facebook", "telegram", "website")
         val isBrainCategory = contract.sourceCategory in setOf("system", "brain", "learning")
+        // ✅ MỚI: nhánh riêng cho lịch sử cuộc gọi P2P — CallSkill đã tự ghi event_logs với
+        // source="call" (outgoing_call/incoming_call/call_answered/call_rejected/call_ended),
+        // filter generic ở dưới (contract.sourceCategory != null -> filter theo source) đã tự
+        // hoạt động; nhánh này chỉ để hiển thị summaryText đẹp hơn thay vì rơi vào nhánh chung.
+        val isCallCategory = contract.sourceCategory?.equals("call", ignoreCase = true) == true
 
         var filtered = when {
             isChatCategory -> {
@@ -188,6 +193,29 @@ class DatabaseSearchHelper @Inject constructor(
                     }
                     
                     append("\nChi tiết nhật ký hoạt động chat:\n")
+                    truncatedLogs.forEach { log ->
+                        val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
+                        append("• [$timeStr] ${log.summary}\n")
+                    }
+                }
+            } else if (isCallCategory) {
+                append("--- Nhật ký Cuộc gọi P2P [${resolvedLabel.uppercase()}] ---\n")
+                if (filtered.isEmpty()) {
+                    append("Không ghi nhận cuộc gọi nào trong khoảng thời gian này.\n")
+                } else {
+                    val missedCount = filtered.count { it.eventType == "incoming_call" } -
+                        filtered.count { it.eventType == "call_answered" }
+                    val outgoingCount = filtered.count { it.eventType == "outgoing_call" }
+                    val incomingCount = filtered.count { it.eventType == "incoming_call" }
+
+                    append("💡 Thống kê cuộc gọi:\n")
+                    append("• Cuộc gọi đi: $outgoingCount lần\n")
+                    append("• Cuộc gọi đến: $incomingCount lần\n")
+                    if (missedCount > 0) {
+                        append("• Cuộc gọi nhỡ (không nghe/từ chối): $missedCount lần\n")
+                    }
+
+                    append("\nChi tiết nhật ký cuộc gọi:\n")
                     truncatedLogs.forEach { log ->
                         val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
                         append("• [$timeStr] ${log.summary}\n")

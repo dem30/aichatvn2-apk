@@ -35,6 +35,16 @@ class DynamicOptionRegistry @Inject constructor(
                     OptionItem(cam.id.trim(), "${cam.customername} (${cam.id.trim()})")
                 }
             }
+            // ✅ MỚI: Nạp danh sách Danh bạ cuộc gọi P2P đã lưu — dùng cho action start_call
+            // (tham số targetDeviceCode, semanticType="call") khi thiếu, hỏi lại kèm gợi ý
+            // chọn nhanh giống hệt cách "device"/"camera" đã làm ở trên. Sắp yêu thích lên
+            // đầu (đã có sẵn trong observeAll(), không cần sort lại ở đây).
+            "call" -> {
+                database.callContactDao().observeAll().first().map { contact ->
+                    val fav = if (contact.isFavorite) "⭐ " else ""
+                    OptionItem(contact.deviceCode.trim(), "$fav${contact.displayName} (${contact.deviceCode.trim()})")
+                }
+            }
             // 🌟 MỚI: Nạp danh sách Khách hàng từ Database
             "customer" -> {
                 database.customerDao().getAllCustomersFlow().first().map { cust ->
