@@ -233,6 +233,16 @@ class CallSkill @Inject constructor(
 
         val offer = createLocalOffer() ?: run {
             _callUiState.value = CallUiState(state = CallState.FAILED, errorMessage = "Không tạo được SDP offer")
+            // ✅ SỬA LỖI: thiếu dòng này khiến state bị kẹt vĩnh viễn ở FAILED — vì
+            // scheduleReturnToIdle() trước đây CHỈ được gọi từ onIceConnectionChange
+            // (FAILED/DISCONNECTED/CLOSED) và từ handleIncomingSignal("call_end"). Khi
+            // lỗi xảy ra NGAY TẠI ĐÂY (createOffer thất bại trước khi có peerConnection
+            // để bắn ICE state), không nhánh nào trong 2 nhánh trên được kích hoạt, nên
+            // CallSkill kẹt ở FAILED mãi mãi — mọi lần start_call sau đó đều bị chặn ở
+            // dòng "Đang trong cuộc gọi khác" ngay đầu hàm, kể cả khi không hề có cuộc
+            // gọi nào đang thực sự diễn ra. Máy bị dính lỗi này không bao giờ gửi được
+            // call_offer nữa cho tới khi tắt hẳn app (reset lại singleton CallSkill).
+            scheduleReturnToIdle()
             return PluginResult.Failure("Không tạo được SDP offer")
         }
 
@@ -277,6 +287,9 @@ class CallSkill @Inject constructor(
 
         val answer = createLocalAnswer() ?: run {
             _callUiState.value = CallUiState(state = CallState.FAILED, errorMessage = "Không tạo được SDP answer")
+            // ✅ SỬA LỖI: cùng lỗi kẹt state vĩnh viễn như nhánh createLocalOffer() ở
+            // startCall() — xem giải thích chi tiết ở đó.
+            scheduleReturnToIdle()
             return PluginResult.Failure("Không tạo được SDP answer")
         }
 
@@ -370,8 +383,11 @@ class CallSkill @Inject constructor(
                 )
                 // ✅ MỚI: log lại — để phân biệt được "không nhận được ice_candidate nào từ
                 // đối phương" (lỗi ở gateway/mạng) với "có nhận nhưng ICE vẫn không kết nối
-                // được" (lỗi NAT/TURN thật sự).
-                logger.i("CallSkill", "📩 Đã nhận ice_candidate từ đối phương (remoteDescription=${peerConnection?.remoteDescription != null})")
+                // được" (lỗi NAT/TURN thật sự). Kèm loại candidate (relay/srflx/host) của
+                // ĐỐI PHƯƠNG — nếu đối phương không bao giờ gửi được loại "relay", nghĩa là
+                // TURN phía họ không hoạt động (khác với việc TURN phía mình không hoạt động).
+                val remoteCandidateType = Regex("typ (\\w+)").find(candidate.sdp)?.groupValues?.get(1) ?: "unknown"
+                logger.i("CallSkill", "📩 Đã nhận ice_candidate [$remoteCandidateType] từ đối phương (remoteDescription=${peerConnection?.remoteDescription != null})")
                 if (peerConnection?.remoteDescription == null) {
                     pendingRemoteIceCandidates.add(candidate)
                 } else {
@@ -413,6 +429,22 @@ class CallSkill @Inject constructor(
 
         return peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
+                // ✅ MỚI: log loại candidate (host/srflx/relay) rút ra từ chuỗi SDP của
+                // chính candidate đó — dùng để chẩn đoán TURN có thực sự được dùng hay
+                // không, tách biệt với việc chỉ biết "đã lấy N iceServers từ Metered"
+                // (lấy được server không có nghĩa là candidate loại relay thực sự được
+                // gom — ví dụ domain/API key sai định dạng, TURN server từ chối cấp
+                // phát relay, hoặc mạng chặn cổng UDP/TCP tới TURN thì relay sẽ không
+                // bao giờ xuất hiện dù vẫn "lấy được 5 iceServers" thành công).
+                val candidateType = Regex("typ (\\w+)").find(candidate.sdp)?.groupValues?.get(1) ?: "unknown"
+                val icon = when (candidateType) {
+                    "relay" -> "🟢 [TURN relay]"
+                    "srflx" -> "🟡 [STUN srflx]"
+                    "host" -> "⚪ [Host local]"
+                    else -> "❔ [$candidateType]"
+                }
+                logger.i("CallSkill", "🧊 Candidate mới ($icon) → gửi tới deviceCode=$remoteDeviceCode")
+
                 signalingManager.sendCallSignal(
                     remoteDeviceCode,
                     JSONObject().apply {
@@ -492,8 +524,23 @@ class CallSkill @Inject constructor(
         val domain = configProvider.getString(AppConfigDefaults.CALL_TURN_METERED_DOMAIN).trim()
         val apiKey = configProvider.getString(AppConfigDefaults.CALL_TURN_METERED_API_KEY).trim()
 
+        // ✅ MỚI: nhãn cảnh báo dùng chung, in đậm và khác hẳn nhãn "✅ Đã lấy N
+        // iceServers" — trước đây khi fallback về STUN-only, log ("⚠️ ... Dùng STUN dự
+        // phòng.") rất dễ bị đọc lướt qua/nhầm với log thành công, khiến việc chẩn đoán
+        // "TURN có thực sự hoạt động không" phải suy luận gián tiếp qua log candidate
+        // relay/srflx lúc gọi thực tế thay vì biết ngay từ lúc fetch. Từ giờ mọi trường
+        // hợp fallback đều bắn 1 dòng riêng, tách biệt, dễ lọc trong System Logs.
+        fun logFallback(reason: String) {
+            logger.w(
+                "CallSkill",
+                "🚨🚨🚨 CUỘC GỌI SẼ DÙNG STUN-ONLY, KHÔNG CÓ TURN 🚨🚨🚨 Lý do: $reason — " +
+                    "cuộc gọi CHỈ kết nối được nếu mạng của cả 2 máy không phải Symmetric NAT " +
+                    "(4G/LTE Việt Nam rất hay dính loại này). Kiểm tra lại Domain/API Key Metered trong Settings."
+            )
+        }
+
         if (domain.isBlank() || apiKey.isBlank()) {
-            logger.w("CallSkill", "⚠️ Chưa cấu hình TURN Server (Metered) trong Settings — chỉ dùng STUN công khai, cuộc gọi có thể lúc được lúc không tùy mạng.")
+            logFallback("Chưa cấu hình TURN Server (Metered) trong Settings")
             return fallbackStun
         }
 
@@ -504,13 +551,30 @@ class CallSkill @Inject constructor(
 
                 turnApiClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
-                        logger.w("CallSkill", "⚠️ Lấy iceServers từ Metered thất bại, HTTP: ${response.code}. Dùng STUN dự phòng.")
+                        // ✅ MỚI: đọc kèm response body — Metered trả JSON message mô tả rõ
+                        // lỗi (vd: {"message":"credential not found"} khi apiKey sai/domain
+                        // sai, hoặc {"message":"Invalid request. Not subscribed to any turn
+                        // server plan"} khi hết/chưa có gói TURN) — trước đây chỉ log mã HTTP
+                        // suông (vd "HTTP: 401"), không đủ để phân biệt "sai key" với "hết gói"
+                        // với "domain sai" nếu không tự tay gọi lại API để soi.
+                        val errorBody = try { response.body?.string()?.take(300) } catch (e: Exception) { null }
+                        val hint = when (response.code) {
+                            401 -> "→ API Key SAI hoặc đã bị thu hồi/không khớp domain '$domain' — kiểm tra lại trong dashboard Metered."
+                            400 -> "→ Domain '$domain' có thể chưa đăng ký gói TURN server nào (kể cả free), hoặc thiếu tham số."
+                            500 -> "→ Lỗi phía server Metered, không phải lỗi cấu hình — thử lại sau."
+                            else -> "→ Kiểm tra domain/API Key hoặc trạng thái gói TURN trên Metered."
+                        }
+                        logFallback("Gọi API Metered thất bại, HTTP ${response.code} ($errorBody) $hint")
                         return@withContext fallbackStun
                     }
 
-                    val bodyStr = response.body?.string() ?: return@withContext fallbackStun
+                    val bodyStr = response.body?.string() ?: run {
+                        logFallback("Metered trả về HTTP thành công nhưng body rỗng")
+                        return@withContext fallbackStun
+                    }
                     val arr = org.json.JSONArray(bodyStr)
                     val servers = mutableListOf<PeerConnection.IceServer>()
+                    var turnUrlCount = 0
 
                     for (i in 0 until arr.length()) {
                         val item = arr.getJSONObject(i)
@@ -522,6 +586,8 @@ class CallSkill @Inject constructor(
                         }
                         if (urlList.isEmpty()) continue
 
+                        turnUrlCount += urlList.count { it.startsWith("turn:") || it.startsWith("turns:") }
+
                         val username = item.optString("username", "")
                         val credential = item.optString("credential", "")
 
@@ -531,17 +597,28 @@ class CallSkill @Inject constructor(
                         servers.add(builder.createIceServer())
                     }
 
-                    if (servers.isEmpty()) {
-                        logger.w("CallSkill", "⚠️ Metered trả về danh sách iceServers rỗng. Dùng STUN dự phòng.")
-                        fallbackStun
-                    } else {
-                        logger.i("CallSkill", "✅ Đã lấy ${servers.size} iceServers (STUN+TURN) từ Metered.")
-                        servers
+                    when {
+                        servers.isEmpty() -> {
+                            logFallback("Metered trả về danh sách iceServers rỗng")
+                            fallbackStun
+                        }
+                        // ✅ MỚI: Metered trả HTTP 200 + JSON hợp lệ KHÔNG đồng nghĩa với có
+                        // TURN thật — nếu response chỉ toàn URL "stun:" (không có "turn:"/
+                        // "turns:" nào), về bản chất vẫn là STUN-only dù code cũ từng log
+                        // "✅ Đã lấy N iceServers (STUN+TURN)" gây hiểu lầm là có TURN.
+                        turnUrlCount == 0 -> {
+                            logFallback("Metered trả HTTP 200 nhưng KHÔNG có URL turn:/turns: nào trong response (chỉ có STUN) — kiểm tra gói TURN trên Metered có đang active không")
+                            servers
+                        }
+                        else -> {
+                            logger.i("CallSkill", "✅ Đã lấy ${servers.size} iceServers từ Metered, gồm $turnUrlCount URL turn:/turns: thật sự.")
+                            servers
+                        }
                     }
                 }
             }
         } catch (e: Exception) {
-            logger.e("CallSkill", "❌ Lỗi khi lấy iceServers từ Metered: ${e.message}. Dùng STUN dự phòng.")
+            logFallback("Exception khi gọi Metered: ${e.message}")
             fallbackStun
         }
     }
