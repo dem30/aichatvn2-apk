@@ -86,6 +86,17 @@ class WebhookGatewayService : Service() {
     @Inject
     lateinit var signalingManager: GatewaySignalingManager
 
+    // ✅ SỬA LỖI: CallSkill.getOrCreateMyDeviceCode() (dùng Mutex, an toàn khi gọi đồng
+    // thời) giờ là NGUỒN DUY NHẤT sinh/đọc deviceCode. Trước đây registerDeviceCode() và
+    // startCallSignalSSE() bên dưới MỖI HÀM ĐỀU tự đọc-rồi-tự-sinh deviceCode riêng, không
+    // khóa với nhau — 2 coroutine chạy gần như đồng thời lúc service khởi động có thể cùng
+    // thấy config rỗng, cùng tự sinh 2 mã NGẪU NHIÊN KHÁC NHAU, rồi cái ghi sau "thắng" —
+    // trong khi cái ghi trước đã dùng đúng mã của NÓ để mở kết nối SSE/đăng ký. Kết quả:
+    // máy nghe mở kênh signaling ở 1 mã, nhưng mã hiển thị/dùng để người khác gọi tới lại
+    // là mã khác — không bao giờ khớp nhau.
+    @Inject
+    lateinit var callSkill: com.aichatvn.agent.skills.CallSkill
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
@@ -293,12 +304,9 @@ class WebhookGatewayService : Service() {
     private fun registerDeviceCode(gatewayUrl: String, gatewayToken: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
-                var deviceCode = configProvider.getString(AppConfigDefaults.CALL_DEVICE_CODE).trim()
-                if (deviceCode.isEmpty()) {
-                    deviceCode = java.util.UUID.randomUUID().toString().take(8).uppercase()
-                    configProvider.set(AppConfigDefaults.CALL_DEVICE_CODE, deviceCode)
-                    logger.i("CloudGateway", "🔑 Đã tự sinh device_code mới cho Cuộc gọi P2P: $deviceCode")
-                }
+                // ✅ SỬA LỖI: gọi qua callSkill.getOrCreateMyDeviceCode() (có Mutex) thay vì
+                // tự đọc-rồi-tự-sinh riêng — xem giải thích đầy đủ ở khai báo field callSkill.
+                val deviceCode = callSkill.getOrCreateMyDeviceCode()
 
                 val bodyJson = org.json.JSONObject().apply {
                     put("token", gatewayToken)
@@ -537,13 +545,13 @@ class WebhookGatewayService : Service() {
                 val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
                 val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
 
-                var deviceCode = configProvider.getString(AppConfigDefaults.CALL_DEVICE_CODE).trim()
-                if (deviceCode.isEmpty()) {
-                    // registerDeviceCode() (gọi từ startCloudGatewaySSE) sẽ tự sinh và lưu
-                    // deviceCode nếu chưa có — nếu vòng lặp này khởi động trước, đợi rồi thử lại.
-                    delay(2000)
-                    continue
-                }
+                // ✅ SỬA LỖI: gọi qua callSkill.getOrCreateMyDeviceCode() (Mutex-safe, cùng
+                // nguồn với registerDeviceCode()) thay vì tự đọc trực tiếp từ config — đảm
+                // bảo kênh SSE này LUÔN mở đúng bằng deviceCode đã đăng ký với gateway, dù
+                // vòng lặp này khởi động trước hay sau registerDeviceCode(). Không cần
+                // "đợi rồi thử lại" nữa vì getOrCreateMyDeviceCode() tự sinh (nếu chưa có)
+                // và trả về ngay, không bao giờ rỗng.
+                val deviceCode = callSkill.getOrCreateMyDeviceCode()
 
                 if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
                     if (!isOfflineLogged) {

@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.webrtc.*
@@ -194,12 +196,20 @@ class CallSkill @Inject constructor(
         }
     }
 
-    suspend fun getOrCreateMyDeviceCode(): String {
+    // ✅ SỬA LỖI: Mutex bảo vệ đoạn đọc-rồi-ghi (read-then-write) bên dưới. Trước đây,
+    // WebhookGatewayService.registerDeviceCode() và startCallSignalSSE() (chạy trên 2
+    // coroutine RIÊNG, khởi động gần như đồng thời lúc service start) đều tự đọc/tự sinh
+    // deviceCode ĐỘC LẬP, không khóa với nhau — có thể cùng thấy config rỗng, cùng sinh 2
+    // mã NGẪU NHIÊN KHÁC NHAU. Giờ cả 2 nơi đó gọi thẳng hàm NÀY (nguồn duy nhất), và
+    // Mutex đảm bảo dù gọi đồng thời từ nhiều coroutine, chỉ 1 mã được sinh/lưu.
+    private val deviceCodeMutex = Mutex()
+
+    suspend fun getOrCreateMyDeviceCode(): String = deviceCodeMutex.withLock {
         var existing = configProvider.getString(AppConfigDefaults.CALL_DEVICE_CODE).trim()
-        if (existing.isNotBlank()) return existing
+        if (existing.isNotBlank()) return@withLock existing
         existing = UUID.randomUUID().toString().take(8).uppercase()
         configProvider.set(AppConfigDefaults.CALL_DEVICE_CODE, existing)
-        return existing
+        existing
     }
 
     private suspend fun startCall(targetDeviceCode: String, withVideo: Boolean): PluginResult {
@@ -345,6 +355,9 @@ class CallSkill @Inject constructor(
                 logEvent("incoming_call", fromCode, "Cuộc gọi đến từ mã máy $fromCode")
             }
             "call_answer" -> {
+                // ✅ MỚI: log lại — trước đây nhánh này hoàn toàn im lặng, không cách nào
+                // biết máy gọi có THỰC SỰ nhận được answer từ máy nghe hay không khi debug.
+                logger.i("CallSkill", "📩 Đã nhận call_answer từ ${signal.optString("from")}")
                 setRemoteDescription(SessionDescription(SessionDescription.Type.ANSWER, signal.getString("sdp")))
                 flushPendingIceCandidates()
                 _callUiState.value = _callUiState.value.copy(state = CallState.CONNECTING)
@@ -355,6 +368,10 @@ class CallSkill @Inject constructor(
                     signal.optInt("sdpMLineIndex"),
                     signal.optString("candidate")
                 )
+                // ✅ MỚI: log lại — để phân biệt được "không nhận được ice_candidate nào từ
+                // đối phương" (lỗi ở gateway/mạng) với "có nhận nhưng ICE vẫn không kết nối
+                // được" (lỗi NAT/TURN thật sự).
+                logger.i("CallSkill", "📩 Đã nhận ice_candidate từ đối phương (remoteDescription=${peerConnection?.remoteDescription != null})")
                 if (peerConnection?.remoteDescription == null) {
                     pendingRemoteIceCandidates.add(candidate)
                 } else {
@@ -409,6 +426,10 @@ class CallSkill @Inject constructor(
             }
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+                // ✅ MỚI: log lại MỌI thay đổi trạng thái ICE — trước đây hoàn toàn im lặng,
+                // khiến không thể biết được cuộc gọi có thực sự đạt CONNECTED hay dừng ở
+                // CHECKING/FAILED chỉ bằng cách đọc log (phải đoán qua UI, không chắc chắn).
+                logger.i("CallSkill", "🧊 ICE state đổi: $state")
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED ->
                         _callUiState.value = _callUiState.value.copy(state = CallState.CONNECTED)
@@ -459,7 +480,7 @@ class CallSkill @Inject constructor(
     // Từ chối hiện ra bình thường) nhưng audio/video có thể không bao giờ truyền được.
     //
     // Nếu người dùng chưa điền CALL_TURN_METERED_DOMAIN/API_KEY trong Settings, hoặc gọi
-    // API thất bại (mất mạng, hết quota 500MB/tháng...), fallback về STUN công khai của
+    // API thất bại (mất mạng, hết quota 20GB/tháng của Open Relay Project...), fallback về STUN công khai của
     // Google như hành vi cũ — để không phá cuộc gọi hoàn toàn, dù tỉ lệ thành công sẽ phụ
     // thuộc vào NAT của 2 mạng như trước khi có TURN.
     private suspend fun fetchIceServers(): List<PeerConnection.IceServer> {
