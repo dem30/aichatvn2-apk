@@ -142,6 +142,33 @@ class WebhookGatewayService : Service() {
         
         startTuyaSyncLoop()
         startPatternMiningLoop()
+
+        // ✅ MỚI: SỬA BUG "LỆCH SESSION SSE" — trước đây khi người dùng Import/Lưu cấu
+        // hình mới trong SettingsScreen (đổi call.device_code, gateway URL/token...),
+        // startCloudGatewaySSE()/startCallSignalSSE() bên dưới KHÔNG biết gì cả: cả 2 đang
+        // block ở okHttpClient.newCall(request).execute() với request cũ, và vòng
+        // while(isActive) bên trong tuy CÓ đọc lại config mỗi lần lặp, nhưng chỉ lặp lại
+        // sau khi request HIỆN TẠI tự đứt (lỗi mạng/server restart) — không có gì chủ động
+        // đóng nó lại ngay khi cấu hình đổi. Đây là lý do trước đây phải "Restart OnRender"
+        // (ép server đóng kết nối) mới sửa được, thay vì tự nhận cấu hình mới ngay lập tức.
+        //
+        // dispatcher.cancelAll() ngắt NGAY mọi request HTTP đang chạy dở trên okHttpClient
+        // (dùng chung cho cả startCloudGatewaySSE() và startCallSignalSSE(), xem khai báo ở
+        // trên) — Call.execute() đang block sẽ ném IOException ngay lập tức, vòng
+        // while(isActive) bắt được, lặp lại, và tự đọc deviceCode/URL/token MỚI NHẤT từ
+        // configProvider/callSkill ở lượt kế tiếp. KHÔNG đụng tới pollingClient (Telegram
+        // long-poll) hay apiClient — 2 client đó tách riêng, không liên quan cấu hình
+        // deviceCode/gateway nên không cần ngắt.
+        //
+        // Chấp nhận đánh đổi: cả 2 kênh SSE (chat/webhook lẫn cuộc gọi) cùng gián đoạn
+        // 1-2 giây mỗi lần đổi cấu hình, kể cả khi chỉ 1 trong 2 thực sự cần restart — đơn
+        // giản và an toàn hơn nhiều so với tách riêng Call reference cho từng kênh.
+        serviceScope.launch {
+            configProvider.configUpdatedEvent.collect {
+                logger.i("WebhookGatewayService", "🔄 Cấu hình vừa đổi (Import/Lưu Settings) — ngắt SSE cũ để đăng ký lại ngay, không cần đợi Restart OnRender.")
+                okHttpClient.dispatcher.cancelAll()
+            }
+        }
     }
 
     private fun acquireWakeLock() {
@@ -192,10 +219,7 @@ class WebhookGatewayService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AIChatVN2 Omnichannel")
             .setContentText(contentText)
-            // ✅ SỬA: icon silhouette riêng của app thay cho icon hệ thống generic
-            // (ic_menu_info_details, hình dấu "i" thông tin) — đồng bộ nhận diện thương
-            // hiệu với NotificationSkill/IncomingCallNotificationHelper.
-            .setSmallIcon(com.aichatvn.agent.R.drawable.ic_notification_small)
+            .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)

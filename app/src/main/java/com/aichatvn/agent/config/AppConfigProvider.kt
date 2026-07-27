@@ -9,8 +9,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -29,6 +32,17 @@ class AppConfigProvider @Inject constructor(
     val allConfigs: StateFlow<List<AppConfigEntity>> = dao
         .getAllConfigsFlow()
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    // ✅ MỚI: báo hiệu riêng cho "cấu hình vừa đổi, có thể ảnh hưởng tới kết nối mạng nền
+    // (deviceCode, gateway URL/token, TURN...)" — KHÔNG dùng allConfigs cho việc này vì
+    // allConfigs bắn lại mỗi khi BẤT KỲ dòng nào trong app_config đổi (kể cả các key không
+    // liên quan mạng, ví dụ camera.cooldown_ms), sẽ khiến WebhookGatewayService ngắt kết nối
+    // SSE không cần thiết quá thường xuyên. Giữ extraBufferCapacity=1 + replay không cần —
+    // đây là "tick" tức thời, người lắng nghe (Service) đã chạy sẵn từ lúc onCreate, không
+    // cần replay nhỡ trước khi đăng ký; tryEmit không bao giờ chặn/mất tín hiệu vì bộ đệm 1
+    // đã đủ dồn nhiều lần đổi liên tiếp thành 1 lần restart SSE.
+    private val _configUpdatedEvent = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val configUpdatedEvent: SharedFlow<Unit> = _configUpdatedEvent.asSharedFlow()
 
     fun configsByPlugin(pluginId: String): Flow<List<AppConfigEntity>> =
         dao.getConfigsByPluginFlow(pluginId)
@@ -125,10 +139,12 @@ class AppConfigProvider @Inject constructor(
             ?: AppConfigEntity(key = key, value = value, updatedAt = System.currentTimeMillis())
         dao.upsert(entity)
         logger.d("AppConfigProvider", "set $key = $value")
+        _configUpdatedEvent.tryEmit(Unit)
     }
 
     suspend fun upsert(entity: AppConfigEntity) = withContext(Dispatchers.IO) {
         dao.upsert(entity.copy(updatedAt = System.currentTimeMillis()))
+        _configUpdatedEvent.tryEmit(Unit)
     }
 
     suspend fun delete(key: String) = withContext(Dispatchers.IO) {
@@ -137,5 +153,14 @@ class AppConfigProvider @Inject constructor(
 
     suspend fun getAll(): List<AppConfigEntity> = withContext(Dispatchers.IO) {
         dao.getAll()
+    }
+
+    // ✅ MỚI: SettingsViewModel.importSettings() phục hồi bảng app_config bằng SQL thô
+    // (sdb.insert() trực tiếp qua ContentValues, xem BƯỚC "data" trong import) — KHÔNG đi
+    // qua set()/upsert() ở trên, nên tự nó không bắn được _configUpdatedEvent. Gọi hàm này
+    // thủ công ngay sau khi import xong để WebhookGatewayService biết mà ngắt/mở lại SSE
+    // với deviceCode + gateway URL/token vừa phục hồi, thay vì phải đợi Restart OnRender.
+    fun notifyBulkConfigChanged() {
+        _configUpdatedEvent.tryEmit(Unit)
     }
 }

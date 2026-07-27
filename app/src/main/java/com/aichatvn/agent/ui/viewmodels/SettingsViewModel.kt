@@ -91,7 +91,12 @@ class SettingsViewModel @Inject constructor(
             "schedules",
             "app_config",
             "event_logs",  
-            "world_state"  
+            "world_state",
+            // ✅ MỚI: danh bạ cuộc gọi P2P — cơ chế generic ở trên (PRAGMA table_info +
+            // ContentValues) tự lo export/import ĐẦY ĐỦ mọi cột của bảng, không cần viết
+            // thêm nhánh xử lý riêng như "app_config" (chỉ app_config cần nhánh riêng vì đi
+            // qua configProvider.upsert() để bắn kèm sự kiện đổi cấu hình).
+            "call_contacts"
         )
     }
 
