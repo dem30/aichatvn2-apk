@@ -1,12 +1,17 @@
 package com.aichatvn.agent.utils
 
+import com.aichatvn.agent.data.CallContactDao
+import com.aichatvn.agent.data.CallLogDao
 import com.aichatvn.agent.data.EventLogDao
+import com.aichatvn.agent.data.model.CallDirection
+import com.aichatvn.agent.data.model.CallLogStatus
 import com.aichatvn.agent.data.model.EventLogEntity
 import com.aichatvn.agent.data.model.SearchContract
 import com.aichatvn.agent.data.model.QuestionType
 import com.aichatvn.agent.data.model.AggregationType
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.time.Instant
@@ -21,6 +26,13 @@ class DatabaseSearchHelper @Inject constructor(
     private val eventLogDao: EventLogDao,
     private val timeRangeResolver: TimeRangeResolver,
     private val objectAliasResolver: ObjectAliasResolver,
+    // ✅ MỚI: để nhánh isCallCategory hiển thị được TÊN người gọi (không chỉ deviceCode/summary
+    // thô) — trước đây isCallCategory chỉ đọc EventLogEntity, bỏ hoàn toàn bảng call_contacts
+    // dù bảng này đã có sẵn displayName cho từng deviceCode.
+    private val callContactDao: CallContactDao,
+    // ✅ MỚI: nguồn sự thật THẬT SỰ cho trạng thái từng cuộc gọi (ANSWERED/MISSED/REJECTED/
+    // FAILED) — xem countMissedCalls() bên dưới để hiểu vì sao không còn suy luận từ event_logs.
+    private val callLogDao: CallLogDao,
     private val logger: Logger
 ) {
 
@@ -28,6 +40,32 @@ class DatabaseSearchHelper @Inject constructor(
         private val DATETIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault())
                 .withZone(ZoneId.systemDefault())
+    }
+
+    /**
+     * ✅ ĐÃ SỬA: trước đây hàm này suy luận "cuộc gọi nhỡ" từ event_logs bằng công thức
+     * count(incoming_call) - count(call_answered) — công thức này đếm NHẦM cả cuộc gọi bị
+     * TỪ CHỐI (rejectCall() vẫn log event "incoming_call" lúc đổ chuông nhưng không có
+     * "call_answered", nên bị trừ ra thành "nhỡ" dù CallSkill đã ghi rõ status=REJECTED).
+     * Nguồn sự thật ĐÚNG là bảng call_logs (CallLogEntity.status): CallSkill.finalizeCallLog()
+     * chỉ gán MISSED khi direction=INCOMING và cuộc gọi chưa từng CONNECTED (không hề đi qua
+     * đường REJECTED/ANSWERED/FAILED) — xem CallSkill.kt dòng 308-312. Đọc thẳng từ đây thay vì
+     * suy luận lại, tự động đúng luôn cả trường hợp rejected/failed mà không cần thêm điều kiện.
+     * Lưu ý: CallLogDao.observeRecent() giới hạn 200 dòng gần nhất — nếu trong sinceMs..untilMs
+     * có nhiều hơn 200 cuộc gọi thì kết quả có thể thiếu; chấp nhận được vì đây vốn là giới hạn
+     * đã có sẵn của bảng call_logs, không phải giới hạn mới do hàm này gây ra.
+     */
+    suspend fun countMissedCalls(sinceMs: Long, untilMs: Long): Int = withContext(Dispatchers.IO) {
+        try {
+            callLogDao.observeRecent().first().count {
+                it.direction == CallDirection.INCOMING &&
+                    it.status == CallLogStatus.MISSED &&
+                    it.startedAt in sinceMs..untilMs
+            }
+        } catch (e: Exception) {
+            logger.e("DatabaseSearchHelper", "countMissedCalls (call_logs) lỗi: ${e.message}")
+            0
+        }
     }
 
     /**
@@ -203,8 +241,10 @@ class DatabaseSearchHelper @Inject constructor(
                 if (filtered.isEmpty()) {
                     append("Không ghi nhận cuộc gọi nào trong khoảng thời gian này.\n")
                 } else {
-                    val missedCount = filtered.count { it.eventType == "incoming_call" } -
-                        filtered.count { it.eventType == "call_answered" }
+                    // ✅ ĐÃ SỬA: dùng chung countMissedCalls() (nay đọc call_logs.status, xem
+                    // comment ở hàm đó) thay vì công thức "incoming_call - call_answered" cũ —
+                    // công thức cũ đếm NHẦM cuộc gọi bị từ chối thành "nhỡ".
+                    val missedCount = countMissedCalls(contract.sinceMs, contract.untilMs)
                     val outgoingCount = filtered.count { it.eventType == "outgoing_call" }
                     val incomingCount = filtered.count { it.eventType == "incoming_call" }
 
@@ -212,13 +252,24 @@ class DatabaseSearchHelper @Inject constructor(
                     append("• Cuộc gọi đi: $outgoingCount lần\n")
                     append("• Cuộc gọi đến: $incomingCount lần\n")
                     if (missedCount > 0) {
-                        append("• Cuộc gọi nhỡ (không nghe/từ chối): $missedCount lần\n")
+                        append("• Cuộc gọi nhỡ (không nghe, KHÔNG tính cuộc gọi bị từ chối): $missedCount lần\n")
                     }
 
                     append("\nChi tiết nhật ký cuộc gọi:\n")
                     truncatedLogs.forEach { log ->
                         val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
-                        append("• [$timeStr] ${log.summary}\n")
+                        // ✅ MỚI: tra tên người gọi qua call_contacts (deviceCode = log.sourceId,
+                        // theo đúng convention sourceId đang dùng cho camera/tuya trong file này).
+                        // Nếu không có contact lưu sẵn (số lạ/chưa lưu danh bạ) thì vẫn hiển thị
+                        // summary thô như trước, không để lỗi làm hỏng cả câu trả lời.
+                        val contactName = try {
+                            callContactDao.getByDeviceCode(log.sourceId)?.displayName?.takeIf { it.isNotBlank() }
+                        } catch (e: Exception) {
+                            logger.e("DatabaseSearchHelper", "Không tra được contact cho cuộc gọi ${log.sourceId}: ${e.message}")
+                            null
+                        }
+                        val callerNote = contactName?.let { " (người gọi: $it)" } ?: ""
+                        append("• [$timeStr] ${log.summary}$callerNote\n")
                     }
                 }
             } else if (isBrainCategory) {

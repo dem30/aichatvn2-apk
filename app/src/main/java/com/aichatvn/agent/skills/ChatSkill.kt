@@ -177,6 +177,18 @@ class ChatSkill @Inject constructor(
                 platformKeywords.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
             } else null
 
+            // ✅ MỚI: nhận diện câu hỏi thuộc miền "cuộc gọi" bằng GLOBAL_CALL_KEYWORDS (config,
+            // không hardcode) — trước đây không có nhánh này nên câu hỏi kiểu "có cuộc gọi nào
+            // không" rơi vào nhánh else mặc định và bị nhồi nguyên nhật ký camera không liên quan.
+            val callKeywords = configProvider.getString(
+                AppConfigDefaults.GLOBAL_CALL_KEYWORDS,
+                AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CALL_KEYWORDS)
+            ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+            val matchedCallQuery = matchedCamera == null && matchedDevice == null && matchedPlatform == null &&
+                callKeywords.any { kw ->
+                    normalizedMsg.contains(com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(kw))
+                }
+
             val until = parsedRange?.until ?: now
             val rawLogs = database.eventLogDao().getLogsInTimeframe(since, until)
             
@@ -188,6 +200,7 @@ class ChatSkill @Inject constructor(
                     it.sourceId == matchedDevice.id || it.summary.contains(matchedDevice.name, ignoreCase = true)
                 }
                 matchedPlatform != null -> rawLogs.filter { it.source == matchedPlatform }
+                matchedCallQuery -> rawLogs.filter { it.source == "call" }
                 normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> rawLogs.filter { it.source == "camera" }
                 normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> rawLogs.filter { it.source == "tuya" }
                 else -> rawLogs.filter { it.eventType in setOf("person_detected", "state_change") }
@@ -205,6 +218,7 @@ class ChatSkill @Inject constructor(
                     matchedCamera != null -> "camera ${matchedCamera.customername}"
                     matchedDevice != null -> "thiết bị ${matchedDevice.name}"
                     matchedPlatform != null -> "kênh $matchedPlatform"
+                    matchedCallQuery -> "nhật ký cuộc gọi"
                     normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> "các camera"
                     normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> "các thiết bị đóng ngắt"
                     else -> "hệ thống"
@@ -260,6 +274,8 @@ class ChatSkill @Inject constructor(
                     append("--- Nhật ký hoạt động Thiết bị ${matchedDevice.name} ($rangeLabel) ---\n")
                 } else if (matchedPlatform != null) {
                     append("--- Nhật ký hoạt động kênh $matchedPlatform ($rangeLabel) ---\n")
+                } else if (matchedCallQuery) {
+                    append("--- Nhật ký cuộc gọi ($rangeLabel) ---\n")
                 } else {
                     append("--- Nhật ký hoạt động tổng hợp ($rangeLabel) ---\n")
                 }

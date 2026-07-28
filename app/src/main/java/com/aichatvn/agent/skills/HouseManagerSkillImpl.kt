@@ -124,6 +124,9 @@ class HouseManagerSkillImpl @Inject constructor(
     private val emailSkill: EmailSkill,
     private val notificationSkill: NotificationSkill,
     private val intentExecutorProvider: Provider<IntentExecutor>,
+    // ✅ MỚI: dùng chung công thức đếm cuộc gọi nhỡ với DatabaseSearchHelper thay vì tự viết lại
+    // (xem countMissedCalls) — tránh 2 công thức lệch nhau nếu sau này chỉ 1 bên được sửa.
+    private val databaseSearchHelper: com.aichatvn.agent.utils.DatabaseSearchHelper,
     logger: Logger
 ) : BaseSkill("house_manager", "Quản gia điều hành thông minh", logger), HouseManagerSkill {
 
@@ -595,9 +598,7 @@ PluginAction(
         val missedCallsCount = try {
             val since = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
             val now = System.currentTimeMillis()
-            val callLogs = database.eventLogDao().getLogsInTimeframe(since, now).filter { it.source == "call" }
-            (callLogs.count { it.eventType == "incoming_call" } - callLogs.count { it.eventType == "call_answered" })
-                .coerceAtLeast(0)
+            databaseSearchHelper.countMissedCalls(since, now)
         } catch (e: Exception) {
             0
         }

@@ -566,12 +566,31 @@ class AgentKernel @Inject constructor(
                     } catch (e: Exception) { null }
                 } else null
 
+                // ✅ MỚI: nhận diện sourceHint thuộc miền "cuộc gọi" bằng đúng danh sách từ khoá
+                // GLOBAL_CALL_KEYWORDS (config, không hardcode) — trước đây khối when() dưới đây
+                // không có nhánh nào cho "call", nên dù model trả về source="cuộc gọi", nó bị bỏ
+                // qua, resolvedSourceCategory ở lại null và SearchContract rơi vào nhánh chung
+                // (else) của executeSearchContract() thay vì nhánh isCallCategory đã viết sẵn.
+                val isCallHint = getCallKeywordsNormalized().any { kw -> normHint.contains(kw) }
+
                 when {
                     matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id } }
                     matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id } }
+                    isCallHint -> resolvedSourceCategory = "call"
                     normHint.contains("facebook") || normHint.contains("fb") -> resolvedSourceCategory = "facebook"
                     normHint.contains("telegram") -> resolvedSourceCategory = "telegram"
                     normHint.contains("website") || normHint.contains("web") -> resolvedSourceCategory = "website"
+                }
+            }
+
+            // ✅ MỚI: model không phải lúc nào cũng điền "source" (schema tool db_search mô tả
+            // field này là "tên camera/thiết bị" nên với câu hỏi cuộc gọi model hay để trống).
+            // Nếu sourceHint không giúp resolve ra được gì, vẫn kiểm tra thẳng câu hỏi gốc của
+            // user — cùng danh sách GLOBAL_CALL_KEYWORDS — trước khi để lọt vào nhánh chung.
+            if (resolvedSourceCategory == null) {
+                val normOriginal = StringSimilarityUtil.normalizeVietnamese(originalMessage.lowercase())
+                if (getCallKeywordsNormalized().any { kw -> normOriginal.contains(kw) }) {
+                    resolvedSourceCategory = "call"
                 }
             }
 
@@ -1019,16 +1038,26 @@ class AgentKernel @Inject constructor(
             }
         } catch (e: Exception) { emptyList() }
 
+        // ✅ MỚI: lấy vài từ khoá mẫu từ GLOBAL_CALL_KEYWORDS (config) để gợi ý cho model biết
+        // "source" còn có thể là "cuộc gọi" — trước đây field này chỉ mô tả "tên camera/thiết
+        // bị" nên model không có cách nào biết mà yêu cầu tra lịch sử cuộc gọi qua tool này.
+        val callKeywordSample = try {
+            configProvider.getString(
+                AppConfigDefaults.GLOBAL_CALL_KEYWORDS,
+                AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CALL_KEYWORDS)
+            ).split(",").map { it.trim() }.filter { it.isNotBlank() }.take(3)
+        } catch (e: Exception) { listOf("cuộc gọi") }
+
         return "🚨 QUY TẮC TRUY VẤN DỮ LIỆU THỰC TẾ:\n" +
-            "1. Nếu người dùng hỏi về hoạt động của camera/thiết bị/kênh ngoại trong quá khứ hoặc hiện tại mà bạn chưa có thông tin thô, " +
+            "1. Nếu người dùng hỏi về hoạt động của camera/thiết bị/kênh ngoại/cuộc gọi trong quá khứ hoặc hiện tại mà bạn chưa có thông tin thô, " +
             "hãy trả về DUY NHẤT một chuỗi JSON thô có cấu trúc sau (tuyệt đối không markdown, không giải thích gì thêm):\n" +
             "{\n" +
             "  \"tool\": \"db_search\",\n" +
             "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
             "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
-            "  \"source\": \"tên camera hoặc thiết bị mà người dùng nhắc tới\"\n" +
+            "  \"source\": \"tên camera hoặc thiết bị mà người dùng nhắc tới, hoặc '${callKeywordSample.joinToString("/")}' nếu người dùng hỏi về lịch sử/cuộc gọi nhỡ\"\n" +
             "}\n" +
-            "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây. Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
+            "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây (câu hỏi về cuộc gọi luôn hợp lệ, không cần khớp danh sách này). Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
             "💬 Kênh chat hỗ trợ: facebook, telegram, website"
@@ -1041,14 +1070,28 @@ class AgentKernel @Inject constructor(
      * (camera, tuya, hay đa kênh chat facebook/telegram/website). mentionsAppDomain vẫn được
      * giữ làm fast-path cho câu hỏi MỞ ĐẦU 1 chủ đề mới.
      */
-    private fun shouldAttachToolGuard(message: String, username: String, currentTurn: Int): Boolean {
+    private suspend fun shouldAttachToolGuard(message: String, username: String, currentTurn: Int): Boolean {
         if (mentionsAppDomain(message)) return true
         val focus = chatHistoryManager.getLastSearchFocus(username) ?: return false
         val turnsSince = currentTurn - focus.turnIndex
         return turnsSince in 0..FOLLOWUP_TURN_WINDOW
     }
 
-    private fun mentionsAppDomain(msg: String): Boolean {
+    // ✅ MỚI: từ khoá miền "cuộc gọi" đọc từ AppConfig (GLOBAL_CALL_KEYWORDS) thay vì hardcode,
+    // để user tự thêm/sửa qua Settings mà không cần sửa code/build lại app. Dùng chung cho cả
+    // mentionsAppDomain() (quyết định có gắn tool guard hay không) và sourceHint resolve bên
+    // interceptAndExecuteToolCall() (route đúng sourceCategory="call"), tránh 2 nơi lệch nhau.
+    private suspend fun getCallKeywordsNormalized(): List<String> {
+        val raw = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CALL_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CALL_KEYWORDS)
+        )
+        return raw.split(",")
+            .map { StringSimilarityUtil.normalizeVietnamese(it.trim()) }
+            .filter { it.isNotBlank() }
+    }
+
+    private suspend fun mentionsAppDomain(msg: String): Boolean {
         val original = msg.trim()
         val norm = StringSimilarityUtil.normalizeVietnamese(original)
 
@@ -1067,8 +1110,9 @@ class AgentKernel @Inject constructor(
 
         val matchesSafe = safeNormalizedKeywords.any { kw -> containsWord(norm, kw) }
         val matchesSensitive = diacriticSensitiveKeywords.any { kw -> containsWord(original, kw, ignoreCase = true) }
+        val matchesCall = getCallKeywordsNormalized().any { kw -> norm.contains(kw) }
 
-        return matchesSafe || matchesSensitive
+        return matchesSafe || matchesSensitive || matchesCall
     }
 
     private suspend fun isExitLockPhrase(msg: String): Boolean {

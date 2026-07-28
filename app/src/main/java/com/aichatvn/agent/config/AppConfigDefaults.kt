@@ -116,6 +116,11 @@ object AppConfigDefaults {
     // ✅ MỚI: Từ khoá kích hoạt tra cứu lịch sử (Memory Recall) trong ChatSkill.isPastMemoryQuery() —
     // thay cho PAST_QUERY_KEYWORDS hardcode cứng trước đây.
     const val GLOBAL_MEMORY_QUERY_KEYWORDS  = "global.memory_query_keywords"
+    // ✅ MỚI: từ khoá riêng để nhận diện câu hỏi thuộc miền "cuộc gọi" — tách khỏi
+    // GLOBAL_MEMORY_QUERY_KEYWORDS vì mục đích khác: không chỉ kích hoạt tra ký ức, mà còn
+    // dùng để route sourceCategory="call" ở AgentKernel (mentionsAppDomain, sourceHint resolve)
+    // và ChatSkill (buildMemoryContext), để user tự thêm từ khoá qua Settings mà không cần sửa code.
+    const val GLOBAL_CALL_KEYWORDS          = "global.call_keywords"
 
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
@@ -573,6 +578,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Từ khoá kích hoạt tra cứu lịch sử (Memory Recall)",
             description = "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn bạn gõ chứa 1 trong các từ này, hệ thống sẽ tự tra lại nhật ký (chat, cuộc gọi, camera, thiết bị) để trả lời chính xác thay vì để AI tự đoán/bịa. Thêm từ khoá riêng của bạn vào cuối danh sách (vd: 'nãy giờ', 'khách nào') nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CALL_KEYWORDS,
+            value = "cuộc gọi,gọi nhỡ,gọi đến,gọi đi,ai gọi,ai gọi nhỡ,bỏ lỡ cuộc gọi,goi nho,cuoc goi",
+            type = "string",
+            pluginId = "global",
+            label = "Từ khoá nhận diện câu hỏi về Cuộc gọi",
+            description = "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền 'cuộc gọi' — sẽ tra đúng nhật ký cuộc gọi (nguồn 'call') thay vì lẫn vào camera/thiết bị, và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
         )
     )
 }
