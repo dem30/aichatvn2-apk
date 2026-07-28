@@ -19,7 +19,6 @@ import com.aichatvn.agent.utils.StringSimilarityUtil
 import com.aichatvn.agent.utils.DatabaseSearchHelper
 import com.aichatvn.agent.utils.TimeRangeResolver
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -432,10 +431,6 @@ class AgentKernel @Inject constructor(
 
             val activeCameras = database.cameraDao().getActiveCameras()
             val activeDevices = database.tuyaDeviceDao().getAllDevices()
-            // ✅ MỚI: cho phép nhận diện tên gợi nhớ đã lưu trong danh bạ cuộc gọi (vd "Mẹ",
-            // "Văn phòng") ngay trong câu hỏi QA cục bộ — cùng cấp với camera/thiết bị Tuya,
-            // để "hôm qua Mẹ có gọi không" tự thu hẹp search về đúng nguồn "call".
-            val callContacts = database.callContactDao().observeAll().first()
 
             val matchedCam = activeCameras.find { cam ->
                 val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(cam.customername.lowercase()) ?: ""
@@ -445,10 +440,6 @@ class AgentKernel @Inject constructor(
                 val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase()) ?: ""
                 normalized.contains(normName) || normalized.contains(dev.id.lowercase())
             }
-            val matchedContact = callContacts.find { contact ->
-                val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(contact.displayName.lowercase()) ?: ""
-                normName.isNotBlank() && (normalized.contains(normName) || normalized.contains(contact.deviceCode.lowercase()))
-            }
 
             var sourceCategory: String? = null
             var sourceName: String? = null
@@ -456,18 +447,12 @@ class AgentKernel @Inject constructor(
             when {
                 matchedCam != null -> { sourceCategory = "camera"; sourceName = matchedCam.customername.ifBlank { matchedCam.id } }
                 matchedDev != null -> { sourceCategory = "tuya"; sourceName = matchedDev.name.ifBlank { matchedDev.id } }
-                // ✅ MỚI: khớp theo tên danh bạ đã lưu (ưu tiên trước từ khoá "gọi" chung chung,
-                // vì tên riêng cụ thể hơn) hoặc từ khoá chung về cuộc gọi.
-                matchedContact != null -> { sourceCategory = "call"; sourceName = matchedContact.displayName.ifBlank { matchedContact.deviceCode } }
                 normalized.contains("camera") || normalized.contains("cam") -> sourceCategory = "camera"
                 normalized.contains("den") || normalized.contains("quat") || normalized.contains("thiet bi") -> sourceCategory = "tuya"
                 normalized.contains("facebook") || normalized.contains("fb") -> sourceCategory = "facebook"
                 normalized.contains("telegram") -> sourceCategory = "telegram"
                 normalized.contains("website") || normalized.contains("web") -> sourceCategory = "website"
                 normalized.contains("tin nhan") || normalized.contains("nhan tin") -> sourceCategory = "chat"
-                // ✅ MỚI: từ khoá chung về cuộc gọi khi không nêu tên cụ thể (vd "hôm qua có
-                // ai gọi tới không", "cuộc gọi nhỡ nào không").
-                normalized.contains("goi ") || normalized.contains("cuoc goi") || normalized.contains("nghe may") || normalized.contains("goi nho") -> sourceCategory = "call"
             }
 
             val deviceState = when {
@@ -580,27 +565,13 @@ class AgentKernel @Inject constructor(
                         }
                     } catch (e: Exception) { null }
                 } else null
-                // ✅ MỚI: khớp theo tên/mã danh bạ đã lưu — chỉ thử khi camera/thiết bị Tuya
-                // đều không khớp, cùng thứ tự ưu tiên như 2 nhánh trên.
-                val matchedContact = if (matchedCamera == null && matchedDevice == null) {
-                    try {
-                        database.callContactDao().observeAll().first().find { contact ->
-                            val normName = StringSimilarityUtil.normalizeVietnamese(contact.displayName.lowercase())
-                            (normName.isNotBlank() && (normName.contains(normHint) || normHint.contains(normName))) ||
-                            normHint.contains(contact.deviceCode.lowercase())
-                        }
-                    } catch (e: Exception) { null }
-                } else null
 
                 when {
                     matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id } }
                     matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id } }
-                    matchedContact != null -> { resolvedSourceCategory = "call"; resolvedSourceName = matchedContact.displayName.ifBlank { matchedContact.deviceCode } }
                     normHint.contains("facebook") || normHint.contains("fb") -> resolvedSourceCategory = "facebook"
                     normHint.contains("telegram") -> resolvedSourceCategory = "telegram"
                     normHint.contains("website") || normHint.contains("web") -> resolvedSourceCategory = "website"
-                    // ✅ MỚI: từ khoá chung, khi hint không khớp tên cụ thể nào ở trên.
-                    normHint.contains("goi") || normHint.contains("cuoc goi") -> resolvedSourceCategory = "call"
                 }
             }
 
@@ -1089,11 +1060,7 @@ class AgentKernel @Inject constructor(
         val safeNormalizedKeywords = listOf(
             "camera", "canh bao", "phat hien", "nguoi la", "xam nhap",
             "dieu hoa", "thiet bi", "tin nhan", "nhan tin",
-            "liet ke", "lich su", "hom qua", "may gio", "kiem tra",
-            // ✅ MỚI: câu hỏi mở đầu về cuộc gọi P2P (vd "hôm qua có ai gọi tới không",
-            // "cuộc gọi nhỡ nào không", "mình đã gọi cho Mẹ chưa") — cùng cấp với các domain
-            // khác ở trên, để shouldAttachToolGuard() nhận diện ngay từ lượt hỏi đầu tiên.
-            "cuoc goi", "goi nho", "goi den", "goi di", "nghe may"
+            "liet ke", "lich su", "hom qua", "may gio", "kiem tra"
         )
 
         val diacriticSensitiveKeywords = listOf("đèn", "cửa", "quạt", "bật", "tắt", "quay")
@@ -1104,18 +1071,27 @@ class AgentKernel @Inject constructor(
         return matchesSafe || matchesSensitive
     }
 
-    private fun isExitLockPhrase(msg: String): Boolean {
+    private suspend fun isExitLockPhrase(msg: String): Boolean {
         val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
-        val exitPhrases = setOf("thoat dieu khien", "ra khoi dieu khien", "ket thuc dieu khien", "thoat")
+        val exitPhrases = configProvider.getString(
+            AppConfigDefaults.GLOBAL_EXIT_LOCK_PHRASES,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_EXIT_LOCK_PHRASES)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
         return norm in exitPhrases
     }
 
-    private fun parseYesNo(msg: String): Boolean? {
+    private suspend fun parseYesNo(msg: String): Boolean? {
         val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
-        
-        val yesKeywords = setOf("co", "dung", "u", "ok", "dong y", "chuan", "phai", "co nhe", "co chu", "dung roi")
-        val noKeywords = setOf("khong", "khoi", "thoi", "huy", "sai", "khong dau", "khong nhe", "bo qua")
-        
+
+        val yesKeywords = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CONFIRM_YES_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CONFIRM_YES_KEYWORDS)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+        val noKeywords = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CONFIRM_NO_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CONFIRM_NO_KEYWORDS)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+
         val isYes = yesKeywords.any { kw -> 
             norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
         }
@@ -1145,7 +1121,7 @@ class AgentKernel @Inject constructor(
         return matched?.manifest?.id
     }
 
-    private fun handleLockConfirmation(userMessage: String, username: String, pluginId: String): RouterOutcome {
+    private suspend fun handleLockConfirmation(userMessage: String, username: String, pluginId: String): RouterOutcome {
         val matchedPlugin = plugins.find { it.manifest.id == pluginId }
         val displayName = matchedPlugin?.manifest?.name ?: pluginId
         return when (parseYesNo(userMessage)) {

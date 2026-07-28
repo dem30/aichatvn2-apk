@@ -32,20 +32,6 @@ import javax.inject.Singleton
 
 private val EMAIL_REGEX = Regex("[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}")
 
-private val CLAUSE_FILLER_WORDS = listOf(
-    "giúp tôi", "giúp mình", "hộ tôi", "hộ mình", "dùm tôi", "dùm mình",
-    "luôn", "dùm", "nha", "nhé", "nhá", "thôi", "nè", "ạ"
-)
-
-private fun stripFillerWords(text: String): String {
-    var result = text
-    for (filler in CLAUSE_FILLER_WORDS) {
-        val pattern = Regex("(?<!\\p{L})${Regex.escape(filler)}(?!\\p{L})", RegexOption.IGNORE_CASE)
-        result = pattern.replace(result, " ")
-    }
-    return result.replace(Regex("\\s+"), " ").trim()
-}
-
 @Singleton
 class RoutingPipeline @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
@@ -72,6 +58,23 @@ class RoutingPipeline @Inject constructor(
             "den", "quat", "camera", "bom", "khoa", "thiet bi", "tuya", "canh bao", "email", "thu", "status",
             "huy", "xoa", "sua", "doi", "them", "xem", "hen gio", "bao thuc"
         )
+    }
+
+    // ✅ MỚI: đọc danh sách filler word từ AppConfigDefaults.GLOBAL_CLAUSE_FILLER_WORDS thay vì
+    // hardcode cứng CLAUSE_FILLER_WORDS như trước — so khớp trên văn bản GỐC CÒN DẤU (không
+    // normalize), giữ đúng hành vi cũ.
+    private suspend fun stripFillerWords(text: String): String {
+        val fillerWords = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CLAUSE_FILLER_WORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CLAUSE_FILLER_WORDS)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+
+        var result = text
+        for (filler in fillerWords) {
+            val pattern = Regex("(?<!\\p{L})${Regex.escape(filler)}(?!\\p{L})", RegexOption.IGNORE_CASE)
+            result = pattern.replace(result, " ")
+        }
+        return result.replace(Regex("\\s+"), " ").trim()
     }
 
     private fun isPotentialCommand(message: String): Boolean {

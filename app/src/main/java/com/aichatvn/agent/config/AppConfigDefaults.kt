@@ -98,6 +98,21 @@ object AppConfigDefaults {
     // schema mà interceptAndExecuteToolCall() parse được) — không tự ý thêm persona/quy tắc nào khác.
     const val GLOBAL_CHAT_SYSTEM_PROMPT     = "global.chat_system_prompt"
 
+    // ✅ MỚI: Từ khoá xác nhận Có/Không khi hệ thống hỏi lại (vd: xác nhận khoá điều khiển thiết bị) —
+    // thay cho 2 setOf hardcode cứng trước đây trong AgentKernel.parseYesNo().
+    const val GLOBAL_CONFIRM_YES_KEYWORDS   = "global.confirm_yes_keywords"
+    const val GLOBAL_CONFIRM_NO_KEYWORDS    = "global.confirm_no_keywords"
+
+    // ✅ MỚI: Câu để thoát chế độ khoá điều khiển 1 plugin riêng biệt — thay cho setOf hardcode
+    // cứng trước đây trong AgentKernel.isExitLockPhrase().
+    const val GLOBAL_EXIT_LOCK_PHRASES      = "global.exit_lock_phrases"
+
+    // ✅ MỚI: Từ đệm (filler words) bị lọc bỏ khỏi câu trước khi tách mệnh đề / nhận diện lệnh —
+    // thay cho CLAUSE_FILLER_WORDS hardcode cứng trước đây trong RoutingPipeline.kt.
+    // LƯU Ý: khác các key trên, danh sách này được so khớp trên văn bản GỐC CÒN DẤU (không qua
+    // normalizeVietnamese), nên giá trị mặc định giữ nguyên dấu.
+    const val GLOBAL_CLAUSE_FILLER_WORDS    = "global.clause_filler_words"
+
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
@@ -514,6 +529,38 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Prompt hệ thống cho AI chat (khi khách bị khoá điều khiển thiết bị)",
             description = "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CONFIRM_YES_KEYWORDS,
+            value = "co,dung,u,ok,dong y,chuan,phai,co nhe,co chu,dung roi",
+            type = "string",
+            pluginId = "global",
+            label = "Từ khoá xác nhận \"Có\"",
+            description = "Từ khoá (không dấu, cách nhau bằng dấu phẩy) được hiểu là ĐỒNG Ý khi hệ thống hỏi lại (vd: xác nhận khoá điều khiển 1 thiết bị riêng). Thêm từ khoá riêng vào cuối nếu bạn hay trả lời theo cách khác."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CONFIRM_NO_KEYWORDS,
+            value = "khong,khoi,thoi,huy,sai,khong dau,khong nhe,bo qua",
+            type = "string",
+            pluginId = "global",
+            label = "Từ khoá xác nhận \"Không\"",
+            description = "Từ khoá (không dấu, cách nhau bằng dấu phẩy) được hiểu là TỪ CHỐI khi hệ thống hỏi lại. Thêm từ khoá riêng vào cuối nếu bạn hay trả lời theo cách khác."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_EXIT_LOCK_PHRASES,
+            value = "thoat dieu khien,ra khoi dieu khien,ket thuc dieu khien,thoat",
+            type = "string",
+            pluginId = "global",
+            label = "Câu lệnh thoát chế độ điều khiển riêng",
+            description = "Câu (không dấu, cách nhau bằng dấu phẩy) mà khi bạn gõ KHỚP TOÀN BỘ câu sẽ thoát chế độ khoá điều khiển riêng cho 1 thiết bị/plugin. Thêm câu riêng vào cuối nếu muốn dùng cách nói khác."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CLAUSE_FILLER_WORDS,
+            value = "giúp tôi,giúp mình,hộ tôi,hộ mình,dùm tôi,dùm mình,luôn,dùm,nha,nhé,nhá,thôi,nè,ạ",
+            type = "string",
+            pluginId = "global",
+            label = "Từ đệm bị lọc bỏ khi phân tích câu lệnh",
+            description = "Từ đệm/lịch sự (giữ nguyên dấu, cách nhau bằng dấu phẩy) sẽ bị loại khỏi câu trước khi tách mệnh đề và nhận diện lệnh điều khiển thiết bị. Thêm từ đệm bạn hay dùng vào cuối danh sách nếu hệ thống chưa nhận ra."
         )
     )
 }
