@@ -445,15 +445,41 @@ class AgentKernel @Inject constructor(
             var sourceCategory: String? = null
             var sourceName: String? = null
 
+            // ✅ MỚI: đọc từ khoá từ AppConfig (cùng 4 key GLOBAL_CAMERA_KEYWORDS/
+            // GLOBAL_DEVICE_KEYWORDS/GLOBAL_CHAT_KEYWORDS/GLOBAL_CALL_KEYWORDS đã dùng ở
+            // mentionsAppDomain()) thay vì hardcode riêng 1 bộ khác ở đây — trước đây hàm này có
+            // bộ từ khoá THỨ HAI, lệch hẳn với mentionsAppDomain() (thiếu "call" hoàn toàn, các
+            // từ camera/tuya/chat cũng không đồng bộ khi user tự sửa qua Settings).
+            // Dùng lại VietnameseTextNormalizer (không phải StringSimilarityUtil.normalizeVietnamese
+            // như bên AgentKernel.getXKeywordsNormalized()) để khớp đúng cách "normalized" của
+            // CHÍNH hàm này đã được build ở trên — tránh trộn 2 bộ chuẩn hoá khác nhau.
+            fun readKeywordsNormalized(key: String, fallback: List<String>): List<String> {
+                return try {
+                    configProvider.getString(key, AppConfigDefaults.defaultOf(key))
+                        .split(",")
+                        .map { com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(it.trim().lowercase()) ?: "" }
+                        .filter { it.isNotBlank() }
+                } catch (e: Exception) { fallback }
+            }
+
+            val cameraKeywords = readKeywordsNormalized(AppConfigDefaults.GLOBAL_CAMERA_KEYWORDS, listOf("camera"))
+            val deviceKeywords = readKeywordsNormalized(AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS, listOf("thiet bi"))
+            val chatKeywords = readKeywordsNormalized(AppConfigDefaults.GLOBAL_CHAT_KEYWORDS, listOf("tin nhan"))
+            val callKeywordsLocal = readKeywordsNormalized(AppConfigDefaults.GLOBAL_CALL_KEYWORDS, listOf("cuoc goi"))
+
             when {
                 matchedCam != null -> { sourceCategory = "camera"; sourceName = matchedCam.customername.ifBlank { matchedCam.id } }
                 matchedDev != null -> { sourceCategory = "tuya"; sourceName = matchedDev.name.ifBlank { matchedDev.id } }
-                normalized.contains("camera") || normalized.contains("cam") -> sourceCategory = "camera"
-                normalized.contains("den") || normalized.contains("quat") || normalized.contains("thiet bi") -> sourceCategory = "tuya"
+                cameraKeywords.any { normalized.contains(it) } -> sourceCategory = "camera"
+                deviceKeywords.any { normalized.contains(it) } -> sourceCategory = "tuya"
+                // ✅ MỚI: trước đây KHÔNG có nhánh nào gán sourceCategory = "call" trong hàm này —
+                // câu hỏi cuộc gọi ở QA mode (khi miss catalog) sẽ rơi vào nhánh chung (không lọc
+                // nguồn "call"), khác hẳn hành vi của luồng Groq/db_search.
+                callKeywordsLocal.any { normalized.contains(it) } -> sourceCategory = "call"
                 normalized.contains("facebook") || normalized.contains("fb") -> sourceCategory = "facebook"
                 normalized.contains("telegram") -> sourceCategory = "telegram"
                 normalized.contains("website") || normalized.contains("web") -> sourceCategory = "website"
-                normalized.contains("tin nhan") || normalized.contains("nhan tin") -> sourceCategory = "chat"
+                chatKeywords.any { normalized.contains(it) } -> sourceCategory = "chat"
             }
 
             val deviceState = when {

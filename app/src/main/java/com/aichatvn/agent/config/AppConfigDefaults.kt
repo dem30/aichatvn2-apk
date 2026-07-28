@@ -601,7 +601,7 @@ object AppConfigDefaults {
         // đang hoạt động, để hành vi không đổi ngay sau khi migrate.
         AppConfigEntity(
             key = GLOBAL_CAMERA_KEYWORDS,
-            value = "camera,canh bao,phat hien,nguoi la,xam nhap",
+            value = "camera,cam,canh bao,phat hien,nguoi la,xam nhap",
             type = "string",
             pluginId = "global",
             label = "Từ khoá nhận diện câu hỏi về Camera",

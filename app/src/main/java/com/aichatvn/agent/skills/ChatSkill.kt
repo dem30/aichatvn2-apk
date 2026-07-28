@@ -143,8 +143,13 @@ class ChatSkill @Inject constructor(
         }
     }
 
-    private suspend fun buildMemoryContext(username: String, userMessage: String): String = withContext(Dispatchers.IO) {
-        if (username != "default_user") return@withContext ""
+    // ✅ SỬA: trước đây hàm này chặn CỨNG mọi username khác "default_user", hoàn toàn không đọc
+    // GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL — nghĩa là khách ngoại kênh (telegram_xxx,
+    // facebook_xxx...) KHÔNG BAO GIỜ có SYSTEM_MEMORY (log camera/thiết bị/cuộc gọi) dù admin đã
+    // tắt switch khoá. Giờ nhận thêm allowExternalAccess (= !blockExternalDeviceControl, tính
+    // tại nơi gọi) để tôn trọng đúng switch admin đã cấu hình, thay vì hardcode theo username.
+    private suspend fun buildMemoryContext(username: String, userMessage: String, allowExternalAccess: Boolean): String = withContext(Dispatchers.IO) {
+        if (username != "default_user" && !allowExternalAccess) return@withContext ""
 
         try {
             val now = System.currentTimeMillis()
@@ -641,7 +646,11 @@ class ChatSkill @Inject constructor(
                 )
 
                 val memoryContext = if (_chatMode.value != ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
-                    buildMemoryContext(username, safeMessage) 
+                    // ✅ SỬA: truyền đúng cờ admin đã cấu hình (!blockExternalDeviceControl) thay
+                    // vì để buildMemoryContext() tự hardcode chặn theo username như trước — đây
+                    // chính là chỗ khiến khách ngoại kênh (VD Telegram) không bao giờ có
+                    // SYSTEM_MEMORY dù switch khoá đã tắt.
+                    buildMemoryContext(username, safeMessage, allowExternalAccess = !blockExternalDeviceControl)
                 } else {
                     ""
                 }
