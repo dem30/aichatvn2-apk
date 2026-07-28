@@ -102,6 +102,33 @@ class WebhookGatewayService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
 
+    // ✅ SỬA LỖI (root cause thật sự của "câm/mù, chỉ hết khi restart Render"):
+    // okHttpClient.dispatcher.cancelAll() KHÔNG đủ mạnh để đóng chắc chắn 1 kết nối
+    // SSE đang mở tới /call/stream/{deviceCode} — endpoint này dùng EventSourceResponse
+    // với ping=15 (xem app.py phía server) để giữ kết nối sống bằng comment ping mỗi 15s.
+    // Việc giữ kết nối bền bằng ping khiến cancelAll() không luôn ngắt được ngay socket
+    // cấp thấp đang trong trạng thái "chờ dữ liệu tiếp theo" — khác với kênh
+    // /stream/{token} (không dùng ping) vốn dễ tự timeout/đứt hơn nên vẫn tự reconnect
+    // bình thường. Hệ quả quan sát được: sau khi đổi call.device_code, log luôn thấy
+    // CloudGateway đứt/nối lại và đăng ký deviceCode MỚI, nhưng KHÔNG BAO GIỜ thấy dòng
+    // "[CallSignalSSE] Đang thiết lập..." lặp lại — kênh nhận tín hiệu cuộc gọi
+    // (offer/answer/ICE) vẫn treo với deviceCode CŨ vô thời hạn.
+    //
+    // Cách sửa chắc chắn: giữ thẳng tham chiếu tới Call đang chạy của MỖI kênh, và gọi
+    // .cancel() trực tiếp lên đúng Call đó — thay vì cancelAll() gián tiếp qua dispatcher.
+    // Call.cancel() đảm bảo đóng ngay socket bất kể trạng thái ping/giữ kết nối.
+    @Volatile private var cloudGatewayCall: okhttp3.Call? = null
+    @Volatile private var callSignalCall: okhttp3.Call? = null
+
+    // ✅ SỬA LỖI: gọi .cancel() trực tiếp lên từng Call reference thay vì
+    // okHttpClient.dispatcher.cancelAll() — đảm bảo đóng chắc chắn CẢ HAI kênh SSE
+    // (kể cả /call/stream/{deviceCode} vốn được giữ bền bằng ping=15 phía server),
+    // để cả 2 luôn cùng resync deviceCode/token mới nhất, không bao giờ lệch pha.
+    private fun forceResyncBothChannels() {
+        cloudGatewayCall?.cancel()
+        callSignalCall?.cancel()
+    }
+
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
@@ -186,7 +213,7 @@ class WebhookGatewayService : Service() {
         serviceScope.launch {
             configProvider.configUpdatedEvent.collect {
                 logger.i("WebhookGatewayService", "🔄 Cấu hình vừa đổi (Import/Lưu Settings) — ngắt SSE cũ để đăng ký lại ngay, không cần đợi Restart OnRender.")
-                okHttpClient.dispatcher.cancelAll()
+                forceResyncBothChannels()
             }
         }
     }
@@ -418,7 +445,9 @@ class WebhookGatewayService : Service() {
                         .header("Accept", "text/event-stream")
                         .build()
 
-                    okHttpClient.newCall(request).execute().use { response ->
+                    val call = okHttpClient.newCall(request)
+                    cloudGatewayCall = call
+                    call.execute().use { response ->
                         if (!response.isSuccessful) {
                             logger.w("CloudGateway", "⚠️ Kết nối SSE thất bại với mã lỗi HTTP: ${response.code}")
                             updateNotification("Lỗi kết nối SSE (${response.code})")
@@ -589,9 +618,11 @@ class WebhookGatewayService : Service() {
                     // Trước đây chỉ restart Render mới sửa được vì restart ép TCP của CẢ 2
                     // kênh cùng đứt đồng thời -> cả 2 cùng resync deviceCode nhất quán.
                     //
-                    // Cách sửa: chủ động cancelAll() ngay tại đây để ép kênh CallSignalSSE
-                    // cũng đứt và tự resync deviceCode mới nhất, không cần đợi restart Render.
-                    okHttpClient.dispatcher.cancelAll()
+                    // Cách sửa: chủ động ngắt cả 2 Call reference ngay tại đây (không chỉ
+                    // riêng cancelAll() vốn không đủ mạnh với kênh giữ bền bằng ping) để ép
+                    // kênh CallSignalSSE cũng đứt và tự resync deviceCode mới nhất, không
+                    // cần đợi restart Render.
+                    forceResyncBothChannels()
                     delay(5000)
                 }
             }
@@ -643,7 +674,9 @@ class WebhookGatewayService : Service() {
                         .header("Accept", "text/event-stream")
                         .build()
 
-                    okHttpClient.newCall(request).execute().use { response ->
+                    val call = okHttpClient.newCall(request)
+                    callSignalCall = call
+                    call.execute().use { response ->
                         if (!response.isSuccessful) {
                             logger.w("CallSignalSSE", "⚠️ Kết nối SSE signaling thất bại, mã lỗi HTTP: ${response.code}")
                             delay(5000)
@@ -678,10 +711,10 @@ class WebhookGatewayService : Service() {
                     logger.e("CallSignalSSE", "❌ Mất đường ống SSE signaling: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     // ✅ SỬA LỖI: đồng bộ chiều ngược lại với startCloudGatewaySSE() — nếu
                     // CHÍNH kênh signaling này tự đứt trước (lỗi mạng riêng của nó), cũng
-                    // chủ động cancelAll() để ép kênh CloudGateway đứt theo và cả 2 cùng
-                    // resync deviceCode/token mới nhất đồng thời, tránh lệch pha deviceCode
-                    // giữa 2 kênh (xem giải thích đầy đủ trong startCloudGatewaySSE()).
-                    okHttpClient.dispatcher.cancelAll()
+                    // chủ động ngắt cả 2 Call reference để ép kênh CloudGateway đứt theo và
+                    // cả 2 cùng resync deviceCode/token mới nhất đồng thời, tránh lệch pha
+                    // deviceCode giữa 2 kênh (xem giải thích đầy đủ trong startCloudGatewaySSE()).
+                    forceResyncBothChannels()
                     delay(5000)
                 }
             }
