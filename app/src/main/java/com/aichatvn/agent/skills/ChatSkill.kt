@@ -20,7 +20,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -84,14 +83,6 @@ class ChatSkill @Inject constructor(
     private val chatMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
     companion object {
-        private val PAST_QUERY_KEYWORDS = setOf(
-            "mấy hôm trước", "hôm qua", "hôm nay", "gần đây", "vừa rồi", "lúc nãy",
-            "lịch sử", "nhật ký", "hoạt động", "đã làm gì", "đã xảy ra",
-            "có ai gọi", "có ai nhắn", "tin nhắn gì", "cuộc gọi", "bỏ lỡ", "chưa đọc",
-            "mấy ngày nay", "tuần trước", "tuần này", "trước đó",
-            "sự kiện", "biến cố", "cảnh báo", "báo cáo", "camera", "thiết bị"
-        )
-
         private const val DEFAULT_MEMORY_LOOKBACK_DAYS = 3
 
         private val QUANTITY_KEYWORDS = setOf(
@@ -140,11 +131,15 @@ class ChatSkill @Inject constructor(
     private fun logHasObject(summary: String, label: String): Boolean =
         summary.contains("[objects:", ignoreCase = true) && summary.contains(label, ignoreCase = true)
 
-    private fun isPastMemoryQuery(message: String): Boolean {
+    private suspend fun isPastMemoryQuery(message: String): Boolean {
         val norm = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(message)
-        return PAST_QUERY_KEYWORDS.any { keyword ->
-            val normKeyword = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(keyword)
-            norm.contains(normKeyword)
+        val keywords = configProvider.getString(
+            AppConfigDefaults.GLOBAL_MEMORY_QUERY_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_MEMORY_QUERY_KEYWORDS)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+
+        return keywords.any { keyword ->
+            norm.contains(com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(keyword))
         }
     }
 
@@ -172,22 +167,13 @@ class ChatSkill @Inject constructor(
                 val normDevName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase())
                 normalizedMsg.contains(normDevName) || normalizedMsg.contains(dev.id.lowercase())
             }
-            // ✅ MỚI: khớp theo tên/mã danh bạ cuộc gọi đã lưu — cùng cấp camera/thiết bị Tuya,
-            // để "hôm qua Mẹ có gọi tới không" (hỏi trực tiếp trong app, chế độ QA) tự thu hẹp
-            // đúng về nguồn "call" giống hệt cách camera/tuya đã hoạt động ở đây.
-            val matchedContact = if (matchedCamera == null && matchedDevice == null) {
-                database.callContactDao().observeAll().first().find { contact ->
-                    val normName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(contact.displayName.lowercase())
-                    normName.isNotBlank() && (normalizedMsg.contains(normName) || normalizedMsg.contains(contact.deviceCode.lowercase()))
-                }
-            } else null
 
             val platformKeywords = mapOf(
                 "facebook" to listOf("facebook", "fb", "fanpage"),
                 "telegram" to listOf("telegram"),
                 "website" to listOf("website", "trang web", "widget web")
             )
-            val matchedPlatform = if (matchedCamera == null && matchedDevice == null && matchedContact == null) {
+            val matchedPlatform = if (matchedCamera == null && matchedDevice == null) {
                 platformKeywords.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
             } else null
 
@@ -201,17 +187,9 @@ class ChatSkill @Inject constructor(
                 matchedDevice != null -> rawLogs.filter {
                     it.sourceId == matchedDevice.id || it.summary.contains(matchedDevice.name, ignoreCase = true)
                 }
-                // ✅ MỚI: khớp theo tên danh bạ đã lưu — CallSkill ghi sourceId = mã máy đối
-                // phương (fromCode/targetDeviceCode), không phải tên hiển thị, nên lọc theo cả
-                // deviceCode lẫn tên xuất hiện trong summary (đã có sẵn trong logEvent()).
-                matchedContact != null -> rawLogs.filter {
-                    it.source == "call" && (it.sourceId == matchedContact.deviceCode || it.summary.contains(matchedContact.displayName, ignoreCase = true))
-                }
                 matchedPlatform != null -> rawLogs.filter { it.source == matchedPlatform }
                 normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> rawLogs.filter { it.source == "camera" }
                 normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> rawLogs.filter { it.source == "tuya" }
-                // ✅ MỚI: từ khoá chung về cuộc gọi khi không nêu tên cụ thể.
-                normalizedMsg.contains("cuoc goi") || normalizedMsg.contains("goi nho") || normalizedMsg.contains("nghe may") -> rawLogs.filter { it.source == "call" }
                 else -> rawLogs.filter { it.eventType in setOf("person_detected", "state_change") }
             }
 
@@ -226,7 +204,6 @@ class ChatSkill @Inject constructor(
                 val subjectLabel = when {
                     matchedCamera != null -> "camera ${matchedCamera.customername}"
                     matchedDevice != null -> "thiết bị ${matchedDevice.name}"
-                    matchedContact != null -> "cuộc gọi với ${matchedContact.displayName}"
                     matchedPlatform != null -> "kênh $matchedPlatform"
                     normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> "các camera"
                     normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> "các thiết bị đóng ngắt"
@@ -647,7 +624,7 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                val memoryContext = if (_chatMode.value == ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
+                val memoryContext = if (_chatMode.value != ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
                     buildMemoryContext(username, safeMessage) 
                 } else {
                     ""
