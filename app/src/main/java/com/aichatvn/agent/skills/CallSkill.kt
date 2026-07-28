@@ -5,6 +5,7 @@ import android.media.AudioManager
 import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -171,6 +172,13 @@ class CallSkill @Inject constructor(
     // ✅ MỚI: chuông + rung khi có cuộc gọi đến (RINGING)
     private var ringtone: Ringtone? = null
     private var vibrator: Vibrator? = null
+
+    // ✅ MỚI (sửa "người gọi không biết đang đổ chuông, máy gọi im lặng hoàn toàn"):
+    // ToneGenerator phát âm "tút... tút..." tiêu chuẩn ở MÁY GỌI ĐI trong lúc DIALING —
+    // trước đây chỉ máy NHẬN có âm thanh (startRingtoneAndVibration() qua Ringtone),
+    // máy gọi hoàn toàn im lặng nên người gọi không có cách nào biết cuộc gọi đã tới
+    // đối phương hay đang treo/lỗi mạng.
+    private var ringbackToneGenerator: ToneGenerator? = null
 
     private val pendingRemoteIceCandidates = mutableListOf<IceCandidate>()
     private var incomingOfferCache: JSONObject? = null
@@ -387,6 +395,11 @@ class CallSkill @Inject constructor(
             peerDisplayName = peerName
         )
 
+        // ✅ MỚI: phát âm tút-tút cho người gọi ngay khi bắt đầu quay số, dừng lại ở
+        // mọi điểm thoát khỏi DIALING (call_answer/call_end/FAILED) — xem
+        // startRingbackTone()/stopRingbackTone().
+        startRingbackTone()
+
         peerConnection = createPeerConnection(callId, targetDeviceCode)
         addLocalMediaTracks(withVideo)
 
@@ -438,7 +451,22 @@ class CallSkill @Inject constructor(
 
     private suspend fun answerCall(callId: String): PluginResult {
         val offerSignal = incomingOfferCache?.takeIf { it.optString("callId") == callId }
-            ?: return PluginResult.Failure("Không tìm thấy cuộc gọi $callId")
+            ?: run {
+                // ✅ SỬA LỖI (root cause "cuộc gọi nhỡ vẫn hiện, bấm Nghe không được"):
+                // incomingOfferCache đã bị teardownPeerConnection() xóa (= null) ngay khi
+                // nhận "call_end" — nghĩa là bên gọi đã cúp máy TRƯỚC KHI người này bấm
+                // Nghe (cuộc gọi nhỡ). Notification/CallScreen có thể vẫn đang hiển thị
+                // "cuộc gọi đến" do độ trễ dọn dẹp của hệ thống hoặc do màn hình đang tắt
+                // đúng lúc call_end xử lý. Trước đây chỉ trả Failure ở đây — với người
+                // dùng, bấm "Nghe" không phản hồi gì trông giống hệt app bị treo/lỗi.
+                // Chủ động đưa UI về IDLE ngay để rõ ràng "cuộc gọi đã kết thúc", thay vì
+                // im lặng báo lỗi và để màn hình kẹt ở trạng thái cũ.
+                if (_callUiState.value.callId == callId && _callUiState.value.state != CallState.IDLE) {
+                    incomingCallNotificationHelper.cancelIncomingCallNotification(callId)
+                    _callUiState.value = CallUiState(state = CallState.IDLE)
+                }
+                return PluginResult.Failure("Cuộc gọi đã kết thúc (cuộc gọi nhỡ)")
+            }
 
         val fromCode = offerSignal.getString("from")
         val withVideo = offerSignal.optBoolean("video", true)
@@ -588,6 +616,10 @@ class CallSkill @Inject constructor(
                 logger.i("CallSkill", "📩 Đã nhận call_answer từ ${signal.optString("from")}")
                 setRemoteDescription(SessionDescription(SessionDescription.Type.ANSWER, signal.getString("sdp")))
                 flushPendingIceCandidates()
+                // ✅ MỚI: đối phương đã bắt máy — dừng âm tút-tút ngay (peerConnection vẫn
+                // tiếp tục dùng, không qua teardownPeerConnection() ở đây nên phải dừng
+                // riêng tại đây).
+                stopRingbackTone()
                 _callUiState.value = _callUiState.value.copy(state = CallState.CONNECTING)
             }
             "ice_candidate" -> {
@@ -939,6 +971,11 @@ class CallSkill @Inject constructor(
         pendingRemoteIceCandidates.clear()
         incomingOfferCache = null
         stopRingtoneAndVibration()
+        // ✅ MỚI: dừng âm ringback (nếu đang DIALING) ở đây — teardownPeerConnection()
+        // là điểm dọn dẹp chung cho MỌI đường thoát khỏi cuộc gọi (call_answer nhận
+        // được, call_end, FAILED, reject, ICE closed), nên đặt ở đây đảm bảo không bao
+        // giờ sót trường hợp nào khiến âm tút-tút kêu mãi không dừng.
+        stopRingbackTone()
 
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_NORMAL
@@ -1001,6 +1038,30 @@ class CallSkill @Inject constructor(
             // bỏ qua
         }
         vibrator = null
+    }
+
+    // ✅ MỚI: âm "tút... tút..." nghe ở máy GỌI ĐI trong lúc chờ đối phương bắt máy
+    // (DIALING) — dùng TONE_SUP_RINGTONE chuẩn Android (âm báo hiệu cuộc gọi đang đổ
+    // chuông, khác hẳn TONE_CDMA/DTMF). startTone() với duration=-1 phát lặp liên tục
+    // cho tới khi release() — không cần tự vòng lặp delay/replay thủ công.
+    private fun startRingbackTone() {
+        stopRingbackTone()
+        try {
+            ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, ToneGenerator.MAX_VOLUME)
+            ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE, -1)
+        } catch (e: Exception) {
+            logger.e("CallSkill", "Không phát được âm ringback (đang gọi đi): ${e.message}")
+        }
+    }
+
+    private fun stopRingbackTone() {
+        try {
+            ringbackToneGenerator?.stopTone()
+            ringbackToneGenerator?.release()
+        } catch (e: Exception) {
+            // bỏ qua — tone có thể đã tự dừng
+        }
+        ringbackToneGenerator = null
     }
 
     private fun logEvent(eventType: String, sourceId: String, summary: String) {
