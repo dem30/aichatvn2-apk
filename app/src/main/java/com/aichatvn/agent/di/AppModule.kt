@@ -13,6 +13,8 @@ import com.aichatvn.agent.core.router.RoutingPipeline
 import com.aichatvn.agent.core.execution.IntentExecutor
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.EventLogDao 
+import com.aichatvn.agent.data.CallContactDao
+import com.aichatvn.agent.data.CallLogDao
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -49,6 +51,20 @@ object AppModule {
     @Singleton
     fun provideEventLogDao(database: AppDatabase): EventLogDao {
         return database.eventLogDao()
+    }
+
+    // ✅ MỚI: bổ sung binding cho DatabaseSearchHelper (đã inject CallContactDao/CallLogDao
+    // để hiển thị tên người gọi và đọc trạng thái MISSED/REJECTED thật từ call_logs)
+    @Provides
+    @Singleton
+    fun provideCallContactDao(database: AppDatabase): CallContactDao {
+        return database.callContactDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideCallLogDao(database: AppDatabase): CallLogDao {
+        return database.callLogDao()
     }
 
     @Provides
