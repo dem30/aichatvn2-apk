@@ -30,6 +30,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.first                               
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -107,8 +108,27 @@ class WebhookGatewayService : Service() {
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    private val apiClient = okHttpClient.newBuilder()
+    // ✅ SỬA LỖI (root cause "code mới không có tác dụng cho tới khi restart Render"):
+    // apiClient TRƯỚC ĐÂY được tạo bằng okHttpClient.newBuilder(), nghĩa là nó DÙNG
+    // CHUNG Dispatcher (và connection pool) với okHttpClient — dispatcher đó chính là
+    // cái bị okHttpClient.dispatcher.cancelAll() gọi mỗi khi configUpdatedEvent bắn
+    // (xem onCreate() bên dưới). Hệ quả: registerDeviceCode()/registerWidgetKey()/
+    // registerPageMappings() — vốn gọi qua apiClient trong 1 coroutine riêng ngay khi
+    // SSE reconnect — có thể bị cancelAll() của LẦN GỌI TIẾP THEO hủy giữa chừng nếu
+    // configUpdatedEvent bắn liên tiếp nhanh (rất hay gặp khi Import backup, vì Import
+    // ghi nhiều key app_config cùng lúc -> emit nhiều lần dồn dập). Request đăng ký mã
+    // máy mới vì vậy có thể KHÔNG BAO GIỜ tới được server, dù log vẫn hiện "đăng ký
+    // thành công" ở LẦN GỌI TRƯỚC đó với mã CŨ — khiến server chỉ biết mã đầu tiên cho
+    // tới khi Render restart (dispatcher mới, không còn request cũ để cancel nhầm).
+    //
+    // Cho apiClient một Dispatcher RIÊNG (không share với okHttpClient) để
+    // cancelAll() của 2 kênh SSE dài hạn không bao giờ đụng tới các request đăng ký
+    // ngắn hạn này.
+    private val apiClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .dispatcher(Dispatcher())
         .build()
 
     private val pollingClient = OkHttpClient.Builder()
