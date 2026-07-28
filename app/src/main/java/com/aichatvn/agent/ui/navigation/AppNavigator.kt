@@ -192,7 +192,16 @@ fun AppNavigator(
         // ✅ IN-APP FLOATING CALL BUBBLE (Bong bóng cuộc gọi nổi trong ứng dụng)
         // Hiển thị khi đang có cuộc gọi hoạt động VÀ người dùng KHÔNG đứng ở CallScreen
         // =========================================================================
-        val isCallActive = callState.state != CallState.IDLE && callState.state != CallState.DISCONNECTED
+        val isCallActive = when (callState.state) {
+    CallState.DIALING,
+    CallState.RINGING,
+    CallState.CONNECTING,
+    CallState.CONNECTED -> true
+
+    CallState.IDLE,
+    CallState.ENDED,
+    CallState.FAILED -> false
+}
         val isNotOnCallScreen = currentRoute != Screen.CALL_ROUTE
 
         AnimatedVisibility(
