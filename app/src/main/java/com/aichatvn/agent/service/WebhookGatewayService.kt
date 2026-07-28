@@ -573,6 +573,25 @@ class WebhookGatewayService : Service() {
                 } catch (e: Exception) {
                     logger.e("CloudGateway", "❌ Mất đường ống SSE: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     updateNotification("Mất kết nối Gateway, đang kết nối lại...")
+                    // ✅ SỬA LỖI (root cause "câm/mù cho tới khi restart Render"): trước đây
+                    // khi CHỈ kênh này (CloudGateway) tự đứt do timeout/lỗi mạng đơn thuần
+                    // (không phải do configUpdatedEvent), kênh CallSignalSSE bên dưới KHÔNG
+                    // hề bị ảnh hưởng — nó tiếp tục giữ nguyên kết nối SSE cũ với deviceCode
+                    // CŨ (đọc 1 lần lúc vòng lặp của NÓ khởi động), dù CloudGateway sắp
+                    // reconnect và đăng ký deviceCode MỚI NHẤT qua registerDeviceCode().
+                    // Kết quả: server nhận đúng deviceCode mới, nhưng máy vẫn đang LẮNG NGHE
+                    // tín hiệu cuộc gọi ở kênh SSE của deviceCode CŨ — 2 kênh lệch pha nhau.
+                    // Signaling (offer/answer/ICE) qua /call_signal vẫn "gửi thành công" vì
+                    // route chỉ dựa vào targetDeviceCode do máy GỌI ĐI cung cấp, nhưng máy
+                    // NHẬN không nhận đúng luồng tín hiệu mới nhất qua kênh SSE cũ của nó ->
+                    // WebRTC negotiation không hoàn tất -> kết nối "được" (UI hiện đổ
+                    // chuông/nghe máy) nhưng audio/video không bao giờ thiết lập (câm/mù).
+                    // Trước đây chỉ restart Render mới sửa được vì restart ép TCP của CẢ 2
+                    // kênh cùng đứt đồng thời -> cả 2 cùng resync deviceCode nhất quán.
+                    //
+                    // Cách sửa: chủ động cancelAll() ngay tại đây để ép kênh CallSignalSSE
+                    // cũng đứt và tự resync deviceCode mới nhất, không cần đợi restart Render.
+                    okHttpClient.dispatcher.cancelAll()
                     delay(5000)
                 }
             }
@@ -657,6 +676,12 @@ class WebhookGatewayService : Service() {
                     }
                 } catch (e: Exception) {
                     logger.e("CallSignalSSE", "❌ Mất đường ống SSE signaling: ${e.message}. Đang thử kết nối lại sau 5 giây...")
+                    // ✅ SỬA LỖI: đồng bộ chiều ngược lại với startCloudGatewaySSE() — nếu
+                    // CHÍNH kênh signaling này tự đứt trước (lỗi mạng riêng của nó), cũng
+                    // chủ động cancelAll() để ép kênh CloudGateway đứt theo và cả 2 cùng
+                    // resync deviceCode/token mới nhất đồng thời, tránh lệch pha deviceCode
+                    // giữa 2 kênh (xem giải thích đầy đủ trong startCloudGatewaySSE()).
+                    okHttpClient.dispatcher.cancelAll()
                     delay(5000)
                 }
             }
