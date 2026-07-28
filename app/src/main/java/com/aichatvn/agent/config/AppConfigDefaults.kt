@@ -122,6 +122,14 @@ object AppConfigDefaults {
     // và ChatSkill (buildMemoryContext), để user tự thêm từ khoá qua Settings mà không cần sửa code.
     const val GLOBAL_CALL_KEYWORDS          = "global.call_keywords"
 
+    // ✅ MỚI: cùng khuôn với GLOBAL_CALL_KEYWORDS — tách riêng từ khoá nhận diện miền cho
+    // camera/thiết bị/kênh chat, để mentionsAppDomain() ở AgentKernel không còn hardcode cứng
+    // 2 danh sách (safeNormalizedKeywords/diacriticSensitiveKeywords), và user có thể tự thêm
+    // từ khoá riêng qua Settings mà không cần sửa code/build lại app — nhất quán với call.
+    const val GLOBAL_CAMERA_KEYWORDS        = "global.camera_keywords"
+    const val GLOBAL_DEVICE_KEYWORDS        = "global.device_keywords"
+    const val GLOBAL_CHAT_KEYWORDS          = "global.chat_keywords"
+
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
@@ -586,6 +594,34 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Từ khoá nhận diện câu hỏi về Cuộc gọi",
             description = "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền 'cuộc gọi' — sẽ tra đúng nhật ký cuộc gọi (nguồn 'call') thay vì lẫn vào camera/thiết bị, và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
+        ),
+        // ✅ MỚI: cùng khuôn với GLOBAL_CALL_KEYWORDS ở trên — trước đây 3 danh sách này bị
+        // hardcode cứng trong AgentKernel.mentionsAppDomain() (safeNormalizedKeywords/
+        // diacriticSensitiveKeywords), user không tự thêm từ khoá được. Giờ seed đúng giá trị cũ
+        // đang hoạt động, để hành vi không đổi ngay sau khi migrate.
+        AppConfigEntity(
+            key = GLOBAL_CAMERA_KEYWORDS,
+            value = "camera,canh bao,phat hien,nguoi la,xam nhap",
+            type = "string",
+            pluginId = "global",
+            label = "Từ khoá nhận diện câu hỏi về Camera",
+            description = "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền camera và cho phép AI gọi tool tra cứu nhật ký. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_DEVICE_KEYWORDS,
+            value = "dieu hoa,thiet bi,đèn,cửa,quạt,bật,tắt,quay",
+            type = "string",
+            pluginId = "global",
+            label = "Từ khoá nhận diện câu hỏi về Thiết bị",
+            description = "Danh sách từ khoá, cách nhau bằng dấu phẩy. LƯU Ý: khác các danh sách khác, danh sách này được so khớp trên văn bản GỐC CÒN DẤU (không qua chuẩn hoá bỏ dấu), để tránh nhầm lẫn giữa các từ gần giống nhau (vd 'đèn'/'đến'). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền thiết bị Tuya và cho phép AI gọi tool tra cứu."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_CHAT_KEYWORDS,
+            value = "tin nhan,nhan tin,facebook,telegram,website,chat",
+            type = "string",
+            pluginId = "global",
+            label = "Từ khoá nhận diện câu hỏi về Kênh chat",
+            description = "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền chat đa kênh (facebook/telegram/website) và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
         )
     )
 }

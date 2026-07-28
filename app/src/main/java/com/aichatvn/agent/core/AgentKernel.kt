@@ -22,6 +22,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
@@ -594,6 +595,19 @@ class AgentKernel @Inject constructor(
                 }
             }
 
+            // ✅ MỚI: tương tự fallback "call" ở trên — trước đây KHÔNG có fallback nào cho kênh
+            // chat (facebook/telegram/website), dù buildToolCallingGuard() giờ đã mô tả field
+            // "source" nên nhận các giá trị này. Nếu model vẫn để trống/điền sai, dò thẳng câu
+            // hỏi gốc như đã làm cho call, để không rơi vào nhánh chung (mất lọc theo kênh).
+            if (resolvedSourceCategory == null) {
+                val normOriginal = StringSimilarityUtil.normalizeVietnamese(originalMessage.lowercase())
+                when {
+                    normOriginal.contains("facebook") || normOriginal.contains(" fb ") || normOriginal.endsWith("fb") -> resolvedSourceCategory = "facebook"
+                    normOriginal.contains("telegram") -> resolvedSourceCategory = "telegram"
+                    normOriginal.contains("website") || normOriginal.contains("trang web") -> resolvedSourceCategory = "website"
+                }
+            }
+
             val timeframe = if (objectLabel == "all" && resolvedSourceCategory == null && rawTimeframe in setOf("last_3_days", "last_7_days")) {
                 logger.w("AgentKernel", "⚠️ [Cost Guard] Chặn combo tốn kém object=all + $rawTimeframe (không có source thu hẹp), ép về 'today'")
                 "today"
@@ -1038,6 +1052,17 @@ class AgentKernel @Inject constructor(
             }
         } catch (e: Exception) { emptyList() }
 
+        // ✅ MỚI: danh bạ cuộc gọi THẬT (call_contacts) — trước đây "call" là nguồn DUY NHẤT
+        // không có danh sách hiển thị nào trong prompt, trong khi camera/tuya đều liệt kê tên+ID
+        // thật từ DB. Lưu ý: câu hỏi về cuộc gọi vẫn hợp lệ ngay cả với số lạ chưa lưu (rule 2 bên
+        // dưới không đổi) — danh sách này chỉ để model biết TÊN các liên hệ đã lưu, giúp trả lời
+        // tự nhiên hơn khi user hỏi kiểu "gọi cho Tuấn xem" thay vì chỉ thấy mã máy thô.
+        val callContactNames = try {
+            database.callContactDao().observeAll().first().map {
+                if (it.displayName.isNotBlank()) "${it.displayName} (mã máy: ${it.deviceCode})" else "mã máy: ${it.deviceCode}"
+            }
+        } catch (e: Exception) { emptyList() }
+
         // ✅ MỚI: lấy vài từ khoá mẫu từ GLOBAL_CALL_KEYWORDS (config) để gợi ý cho model biết
         // "source" còn có thể là "cuộc gọi" — trước đây field này chỉ mô tả "tên camera/thiết
         // bị" nên model không có cách nào biết mà yêu cầu tra lịch sử cuộc gọi qua tool này.
@@ -1048,19 +1073,36 @@ class AgentKernel @Inject constructor(
             ).split(",").map { it.trim() }.filter { it.isNotBlank() }.take(3)
         } catch (e: Exception) { listOf("cuộc gọi") }
 
+        // ✅ MỚI: kênh chat THẬT đang cấu hình (trước đây hardcode cứng "facebook, telegram,
+        // website" bất kể đã cấu hình hay chưa — trong khi camera/tuya luôn đọc DB thật). Dùng
+        // đúng điều kiện mà WebhookGatewayService dùng để coi 1 kênh là "đã bật":
+        // facebook -> có ít nhất 1 page đã đăng ký; telegram -> có bot token; website -> có
+        // gateway URL + token.
+        val enabledChatChannels = try {
+            buildList {
+                if (database.facebookPageDao().getAllPages().isNotEmpty()) add("facebook")
+                if (configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim().isNotBlank()) add("telegram")
+                val gwUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gwToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                if (gwUrl.isNotBlank() && gwToken.isNotBlank()) add("website")
+            }
+        } catch (e: Exception) { emptyList() }
+
         return "🚨 QUY TẮC TRUY VẤN DỮ LIỆU THỰC TẾ:\n" +
-            "1. Nếu người dùng hỏi về hoạt động của camera/thiết bị/kênh ngoại/cuộc gọi trong quá khứ hoặc hiện tại mà bạn chưa có thông tin thô, " +
+            "1. Nếu người dùng hỏi về hoạt động của camera/thiết bị/kênh chat/cuộc gọi trong quá khứ hoặc hiện tại mà bạn chưa có thông tin thô, " +
             "hãy trả về DUY NHẤT một chuỗi JSON thô có cấu trúc sau (tuyệt đối không markdown, không giải thích gì thêm):\n" +
             "{\n" +
             "  \"tool\": \"db_search\",\n" +
             "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
             "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
-            "  \"source\": \"tên camera hoặc thiết bị mà người dùng nhắc tới, hoặc '${callKeywordSample.joinToString("/")}' nếu người dùng hỏi về lịch sử/cuộc gọi nhỡ\"\n" +
+            "  \"source\": \"tên camera hoặc thiết bị mà người dùng nhắc tới; hoặc '${callKeywordSample.joinToString("/")}' nếu hỏi về lịch sử/cuộc gọi nhỡ; " +
+            "hoặc 'facebook'/'telegram'/'website' nếu hỏi về tin nhắn/hội thoại của một kênh chat cụ thể\"\n" +
             "}\n" +
-            "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây (câu hỏi về cuộc gọi luôn hợp lệ, không cần khớp danh sách này). Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
+            "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây (câu hỏi về cuộc gọi hoặc kênh chat luôn hợp lệ, không cần khớp danh sách thiết bị). Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
-            "💬 Kênh chat hỗ trợ: facebook, telegram, website"
+            (if (callContactNames.isNotEmpty()) "📞 Danh bạ cuộc gọi đã lưu: ${callContactNames.joinToString(", ")}\n" else "") +
+            "💬 Kênh chat hỗ trợ: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình kênh chat nào")
     }
 
     /**
@@ -1091,6 +1133,41 @@ class AgentKernel @Inject constructor(
             .filter { it.isNotBlank() }
     }
 
+    // ✅ MỚI: cùng khuôn getCallKeywordsNormalized() ở trên — camera và chat so khớp trên văn
+    // bản ĐÃ chuẩn hoá bỏ dấu (không nhạy dấu), giống cách "call" đang làm.
+    private suspend fun getCameraKeywordsNormalized(): List<String> {
+        val raw = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CAMERA_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CAMERA_KEYWORDS)
+        )
+        return raw.split(",")
+            .map { StringSimilarityUtil.normalizeVietnamese(it.trim()) }
+            .filter { it.isNotBlank() }
+    }
+
+    private suspend fun getChatKeywordsNormalized(): List<String> {
+        val raw = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CHAT_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_KEYWORDS)
+        )
+        return raw.split(",")
+            .map { StringSimilarityUtil.normalizeVietnamese(it.trim()) }
+            .filter { it.isNotBlank() }
+    }
+
+    // ✅ MỚI: thiết bị (đèn/cửa/quạt/bật/tắt...) VẪN giữ nguyên hành vi cũ — so khớp trên văn bản
+    // GỐC CÒN DẤU (không qua normalizeVietnamese), vì bỏ dấu dễ gây nhầm giữa các từ gần giống
+    // nhau (vd "đèn" ~ "đến" sau khi bỏ dấu đều thành "den"). Đây là lý do trước đây
+    // diacriticSensitiveKeywords được tách riêng khỏi safeNormalizedKeywords — giữ nguyên khi
+    // chuyển sang đọc từ AppConfig, không gộp chung cách so khớp với camera/chat/call.
+    private suspend fun getDeviceKeywordsOriginal(): List<String> {
+        val raw = configProvider.getString(
+            AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS)
+        )
+        return raw.split(",").map { it.trim() }.filter { it.isNotBlank() }
+    }
+
     private suspend fun mentionsAppDomain(msg: String): Boolean {
         val original = msg.trim()
         val norm = StringSimilarityUtil.normalizeVietnamese(original)
@@ -1100,19 +1177,20 @@ class AgentKernel @Inject constructor(
             return Regex("(?<!\\p{L})${Regex.escape(keyword)}(?!\\p{L})", opts).containsMatchIn(haystack)
         }
 
-        val safeNormalizedKeywords = listOf(
-            "camera", "canh bao", "phat hien", "nguoi la", "xam nhap",
-            "dieu hoa", "thiet bi", "tin nhan", "nhan tin",
+        // ✅ Giữ lại nhóm từ khoá CHUNG không thuộc riêng 1 domain nào (camera/thiết bị/chat/call)
+        // — đây chỉ là dấu hiệu "có khả năng đang hỏi về hoạt động/lịch sử", không định danh
+        // domain cụ thể, nên không cần đưa vào AppConfig riêng theo từng kênh.
+        val genericQueryKeywords = listOf(
             "liet ke", "lich su", "hom qua", "may gio", "kiem tra"
         )
 
-        val diacriticSensitiveKeywords = listOf("đèn", "cửa", "quạt", "bật", "tắt", "quay")
-
-        val matchesSafe = safeNormalizedKeywords.any { kw -> containsWord(norm, kw) }
-        val matchesSensitive = diacriticSensitiveKeywords.any { kw -> containsWord(original, kw, ignoreCase = true) }
+        val matchesGeneric = genericQueryKeywords.any { kw -> containsWord(norm, kw) }
+        val matchesCamera = getCameraKeywordsNormalized().any { kw -> containsWord(norm, kw) }
+        val matchesDevice = getDeviceKeywordsOriginal().any { kw -> containsWord(original, kw, ignoreCase = true) }
+        val matchesChat = getChatKeywordsNormalized().any { kw -> containsWord(norm, kw) }
         val matchesCall = getCallKeywordsNormalized().any { kw -> norm.contains(kw) }
 
-        return matchesSafe || matchesSensitive || matchesCall
+        return matchesGeneric || matchesCamera || matchesDevice || matchesChat || matchesCall
     }
 
     private suspend fun isExitLockPhrase(msg: String): Boolean {
