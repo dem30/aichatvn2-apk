@@ -159,7 +159,13 @@ class DatabaseSearchHelper @Inject constructor(
             }
         }
 
-        if (contract.targetObject != null && contract.targetObject.lowercase() != "all" && contract.targetObject.lowercase() != "none") {
+        // ✅ SỬA: targetObject (person/car/dog...) chỉ có ý nghĩa cho camera/tuya (vật thể vật lý
+        // trong khung hình/trạng thái thiết bị) — áp filter này lên summary của chat/call/brain
+        // (dạng "Tin nhắn từ [telegram]...", "Cuộc gọi đến...") luôn luôn KHÔNG khớp
+        // objectAliasResolver.matches(), nên trước đây chỉ cần model lỡ điền object="person" là
+        // toàn bộ log chat/call/brain bị lọc sạch, dù sourceCategory đã resolve đúng.
+        if (contract.targetObject != null && contract.targetObject.lowercase() != "all" && contract.targetObject.lowercase() != "none" &&
+            !isChatCategory && !isSpecificChatPlatform && !isCallCategory && !isBrainCategory) {
             filtered = filtered.filter { log ->
                 objectAliasResolver.matches(log.summary, contract.targetObject)
             }
@@ -233,7 +239,15 @@ class DatabaseSearchHelper @Inject constructor(
                     append("\nChi tiết nhật ký hoạt động chat:\n")
                     truncatedLogs.forEach { log ->
                         val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
-                        append("• [$timeStr] ${log.summary}\n")
+                        // ✅ MỚI: log.summary chỉ có ý định/khẩn cấp/số chưa đọc, KHÔNG có nội
+                        // dung tin nhắn thật — nội dung thật nằm trong log.value (JSON field
+                        // "last_message", được HouseManagerSkillImpl.handleChatEventDecision()
+                        // ghi kèm mỗi event). Parse ra để trả lời được câu "tin nhắn nói gì".
+                        val lastMessage = try {
+                            JSONObject(log.value).optString("last_message", "").takeIf { it.isNotBlank() }
+                        } catch (e: Exception) { null }
+                        val messageNote = lastMessage?.let { " — Nội dung: \"$it\"" } ?: ""
+                        append("• [$timeStr] ${log.summary}$messageNote\n")
                     }
                 }
             } else if (isCallCategory) {
