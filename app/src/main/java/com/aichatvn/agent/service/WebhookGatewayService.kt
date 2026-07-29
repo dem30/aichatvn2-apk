@@ -28,6 +28,8 @@ import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.scheduler.CronParser 
 import androidx.datastore.preferences.core.stringPreferencesKey    
 import kotlinx.coroutines.flow.first                               
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import okhttp3.Dispatcher
@@ -48,6 +50,38 @@ import com.aichatvn.agent.skills.GatewaySignalingManager
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
+
+    // ✅ MỚI: sửa race condition — startTelegramLongPolling() trước đây bọc mỗi tin nhắn trong
+    // serviceScope.launch { } RIÊNG BIỆT, không await, nên 2 tin nhắn liên tiếp của CÙNG 1
+    // username (vd "Quét camera" rồi "Hủy" gõ nhanh, rơi vào cùng 1 lần getUpdates()) có thể
+    // chạy processQuery() SONG SONG, không đảm bảo thứ tự — khiến "Hủy" đôi khi được xử lý
+    // TRƯỚC KHI pending intent của "Quét camera" kịp ghi xong vào ChatHistoryManager, nên
+    // resolveCancel() không tìm thấy gì để hủy và rơi thẳng xuống chat AI. Dùng 1 Mutex riêng
+    // theo từng username để ép đúng thứ tự xử lý tin nhắn của CÙNG 1 người, nhưng vẫn cho
+    // nhiều username khác nhau chạy song song bình thường (không dùng chung 1 Mutex global).
+    private val userProcessingMutex = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private fun mutexFor(username: String): Mutex =
+        userProcessingMutex.computeIfAbsent(username) { Mutex() }
+
+    // ✅ MỚI: khử trùng lặp sự kiện webhook theo NỘI DUNG (gateway không cấp message/event ID).
+    // Chỉ chặn nếu đúng (platform, senderId, text, imageUrl) lặp lại trong vòng
+    // WEBHOOK_DEDUP_WINDOW_MS — đủ ngắn để không chặn nhầm khách thật sự gõ lại y hệt sau đó.
+    private val recentWebhookEvents = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val WEBHOOK_DEDUP_WINDOW_MS = 10_000L
+    private fun isDuplicateWebhookEvent(dedupKey: String): Boolean {
+        val now = System.currentTimeMillis()
+        recentWebhookEvents.entries.removeIf { now - it.value > WEBHOOK_DEDUP_WINDOW_MS }
+        var isDup = false
+        recentWebhookEvents.compute(dedupKey) { _, lastSeen ->
+            if (lastSeen != null && now - lastSeen <= WEBHOOK_DEDUP_WINDOW_MS) {
+                isDup = true
+                lastSeen
+            } else {
+                now
+            }
+        }
+        return isDup
+    }
 
     @Inject
     lateinit var agentKernel: AgentKernel
@@ -512,6 +546,19 @@ class WebhookGatewayService : Service() {
                                                 if (text.isNotBlank() || incomingImageUrl != null || incomingImageBase64Raw != null) {
                                                     val unifiedUsername = "${platform}_$senderId"
 
+                                                    // ✅ MỚI: chặn xử lý trùng lặp — gateway SSE có thể gửi lại cùng 1 sự kiện
+                                                    // khi client reconnect (đã biết từ trước: mất heartbeat -> reconnect ->
+                                                    // gateway gửi lại backlog), không có message/event ID để khử trùng theo ID
+                                                    // nên khử theo nội dung trong 1 khung ngắn. Đây chính là nguyên nhân khách
+                                                    // nhận được 2 phản hồi cho 1 tin nhắn: processQuery() bị gọi 2 lần độc lập
+                                                    // cho cùng 1 nội dung, phản hồi nhanh (catalog/groq) tới trước, phản hồi
+                                                    // đúng (device command) tới sau.
+                                                    val dedupKey = "$platform|$senderId|$text|${incomingImageUrl ?: ""}"
+                                                    if (isDuplicateWebhookEvent(dedupKey)) {
+                                                        logger.w("CloudGateway", "⚠️ Bỏ qua sự kiện webhook trùng lặp (trong ${WEBHOOK_DEDUP_WINDOW_MS}ms): $unifiedUsername")
+                                                        return@launch
+                                                    }
+
                                                     if (platform == "facebook" && incomingPageId.isNotBlank()) {
                                                         withContext(Dispatchers.IO) {
                                                             val existingForPage = database.cameraDao().getCustomerSetting(senderId)
@@ -548,46 +595,52 @@ class WebhookGatewayService : Service() {
                                                     )
                                                     val isBotEnabled = chatDecision.shouldAutoRespond
 
-                                                    if (isBotEnabled) {
-                                                        val result = chatSkill.processQuery(
-                                                            message = text,
-                                                            username = unifiedUsername,
-                                                            extraContext = "page_id:$incomingPageId",
-                                                            fileUrl = incomingImageUrl,
-                                                            imageBase64 = resolvedImageBase64
-                                                        )
+                                                    // ✅ MỚI: cùng lý do với Telegram — mỗi sự kiện SSE chạy trong 1
+                                                    // serviceScope.launch riêng, không await lẫn nhau, nên 2 tin liên tiếp của
+                                                    // CÙNG 1 khách (senderId) có thể chạy processQuery() song song, không đảm
+                                                    // bảo thứ tự. Khoá theo unifiedUsername để tin sau đợi tin trước xử lý xong.
+                                                    mutexFor(unifiedUsername).withLock {
+                                                        if (isBotEnabled) {
+                                                            val result = chatSkill.processQuery(
+                                                                message = text,
+                                                                username = unifiedUsername,
+                                                                extraContext = "page_id:$incomingPageId",
+                                                                fileUrl = incomingImageUrl,
+                                                                imageBase64 = resolvedImageBase64
+                                                            )
 
-                                                        if (result is AgentKernel.PluginResult.Success) {
-                                                            val replyMap = result.data as? Map<*, *>
-                                                            val replyText = (replyMap?.get("response") as? String) ?: ""
-                                                            val replyImagePath = replyMap?.get("imagePath") as? String
-                                                            val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
+                                                            if (result is AgentKernel.PluginResult.Success) {
+                                                                val replyMap = result.data as? Map<*, *>
+                                                                val replyText = (replyMap?.get("response") as? String) ?: ""
+                                                                val replyImagePath = replyMap?.get("imagePath") as? String
+                                                                val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
 
-                                                            if (replyText.isNotEmpty() || replyImageBase64 != null) {
-                                                                when (platform) {
-                                                                    "facebook" -> {
-                                                                        val fbParams = mutableMapOf<String, Any>(
-                                                                            "recipient_id" to senderId,
-                                                                            "message" to replyText,
-                                                                            "page_id" to incomingPageId
-                                                                        )
-                                                                        if (replyImageBase64 != null) fbParams["image_base64"] = replyImageBase64
-                                                                        findPlugin("facebook")?.execute("send_messenger", fbParams)
-                                                                    }
-                                                                    "website" -> {
-                                                                        sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText, replyImageBase64)
+                                                                if (replyText.isNotEmpty() || replyImageBase64 != null) {
+                                                                    when (platform) {
+                                                                        "facebook" -> {
+                                                                            val fbParams = mutableMapOf<String, Any>(
+                                                                                "recipient_id" to senderId,
+                                                                                "message" to replyText,
+                                                                                "page_id" to incomingPageId
+                                                                            )
+                                                                            if (replyImageBase64 != null) fbParams["image_base64"] = replyImageBase64
+                                                                            findPlugin("facebook")?.execute("send_messenger", fbParams)
+                                                                        }
+                                                                        "website" -> {
+                                                                            sendWebsiteReply(gatewayUrl, gatewayToken, senderId, replyText, replyImageBase64)
+                                                                        }
                                                                     }
                                                                 }
                                                             }
+                                                        } else {
+                                                            chatSkill.saveExternalUserMessage(
+                                                                message = text,
+                                                                username = unifiedUsername,
+                                                                fileUrl = incomingImageUrl,
+                                                                imageBase64 = resolvedImageBase64
+                                                            )
+                                                            logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời. (ảnh: ${resolvedImageBase64 != null})")
                                                         }
-                                                    } else {
-                                                        chatSkill.saveExternalUserMessage(
-                                                            message = text,
-                                                            username = unifiedUsername,
-                                                            fileUrl = incomingImageUrl,
-                                                            imageBase64 = resolvedImageBase64
-                                                        )
-                                                        logger.i("CloudGateway", "👤 Khách hàng $unifiedUsername đang ở chế độ Người Trực. Bot không tự trả lời. (ảnh: ${resolvedImageBase64 != null})")
                                                     }
                                                 }
                                             }
@@ -780,29 +833,34 @@ class WebhookGatewayService : Service() {
                                         serviceScope.launch {
                                             val imageBase64 = largestPhotoFileId?.let { downloadTelegramPhotoAsBase64(botToken, it) }
 
-                                            if (isBotEnabled) {
-                                                val result = chatSkill.processQuery(
-                                                    message = effectiveText,
-                                                    username = unifiedUsername,
-                                                    imageBase64 = imageBase64
-                                                )
-                                                if (result is AgentKernel.PluginResult.Success) {
-                                                    val replyMap = result.data as? Map<*, *>
-                                                    val replyText = (replyMap?.get("response") as? String) ?: ""
-                                                    val replyImagePath = replyMap?.get("imagePath") as? String
-                                                    val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
-                                                    if (replyImageBase64 != null) {
-                                                        sendTelegramPhoto(botToken, chatId, replyImageBase64, replyText)
-                                                    } else if (replyText.isNotEmpty()) {
-                                                        sendTelegramMessage(botToken, chatId, replyText)
+                                            // ✅ MỚI: khoá theo đúng username này — nếu tin nhắn TRƯỚC của CÙNG
+                                            // chatId vẫn đang xử lý dở (vd đang chờ Groq trả lời), tin nhắn này
+                                            // sẽ ĐỢI đến lượt thay vì chạy song song không kiểm soát thứ tự.
+                                            mutexFor(unifiedUsername).withLock {
+                                                if (isBotEnabled) {
+                                                    val result = chatSkill.processQuery(
+                                                        message = effectiveText,
+                                                        username = unifiedUsername,
+                                                        imageBase64 = imageBase64
+                                                    )
+                                                    if (result is AgentKernel.PluginResult.Success) {
+                                                        val replyMap = result.data as? Map<*, *>
+                                                        val replyText = (replyMap?.get("response") as? String) ?: ""
+                                                        val replyImagePath = replyMap?.get("imagePath") as? String
+                                                        val replyImageBase64 = replyImagePath?.let { readLocalFileAsBase64(it) }
+                                                        if (replyImageBase64 != null) {
+                                                            sendTelegramPhoto(botToken, chatId, replyImageBase64, replyText)
+                                                        } else if (replyText.isNotEmpty()) {
+                                                            sendTelegramMessage(botToken, chatId, replyText)
+                                                        }
                                                     }
+                                                } else {
+                                                    chatSkill.saveExternalUserMessage(
+                                                        message = effectiveText,
+                                                        username = unifiedUsername,
+                                                        imageBase64 = imageBase64
+                                                    )
                                                 }
-                                            } else {
-                                                chatSkill.saveExternalUserMessage(
-                                                    message = effectiveText,
-                                                    username = unifiedUsername,
-                                                    imageBase64 = imageBase64
-                                                )
                                             }
                                         }
                                     }
