@@ -558,7 +558,18 @@ class AgentKernel @Inject constructor(
         return try {
             val rawTimeframe = toolCall.params["timeframe"] ?: "today"
             val objectLabel = toolCall.params["object"] ?: "all"
-            // ✅ ĐÃ SỬA: nếu model không nêu rõ "source" (câu hỏi đào sâu kiểu "camera có ai qua lại
+            // ✅ MỚI: schema mới ưu tiên "category" (enum cố định: camera/tuya/call/facebook/
+            // telegram/website) + "target" (tên cụ thể) — model chỉ cần chọn đúng 1 trong 6 giá
+            // trị thay vì tự diễn giải cả cụm string tự do như "source" cũ. Validate với enum
+            // hợp lệ: nếu model trả category rác (không nằm trong 6 giá trị), coi như không có,
+            // rơi xuống toàn bộ chuỗi fallback cũ bên dưới (sourceHint/SearchFocus/keyword) —
+            // không vỡ hành vi cũ, chỉ THÊM một đường đi tắt chính xác hơn khi model tuân theo
+            // đúng schema mới.
+            val validCategories = setOf("camera", "tuya", "call", "facebook", "telegram", "website")
+            val directCategory = toolCall.params["category"]?.trim()?.lowercase()?.takeIf { it in validCategories }
+            val directTarget = toolCall.params["target"]?.trim()?.takeIf { it.isNotBlank() }
+
+            // ✅ ĐÃ SỬA: nếu model không nêu rõ "source"/"category" (câu hỏi đào sâu kiểu "camera có ai qua lại
             // không" / "họ mặc áo màu gì" mà không nói tên nguồn nào), ưu tiên fallback về
             // SearchFocus.sourceIdOrName — được ghi lại sau MỌI lần executeSearchContract() thành
             // công, không phân biệt domain (camera/tuya/facebook/telegram/website), nên phủ đúng cả
@@ -568,11 +579,12 @@ class AgentKernel @Inject constructor(
             // không điều khiển thiết bị) không bao giờ có sourceHint, bị đối xử kém hơn camera/device.
             // Giữ getLastMentionedDevice làm fallback cuối cho trường hợp vừa điều khiển thiết bị
             // nhưng chưa search lần nào trong phiên (SearchFocus chưa có gì để cho).
-            val sourceHint = toolCall.params["source"]?.trim()?.takeIf { it.isNotBlank() }
+            val sourceHint = directTarget
+                ?: toolCall.params["source"]?.trim()?.takeIf { it.isNotBlank() }
                 ?: chatHistoryManager.getLastSearchFocus(username)?.sourceIdOrName
                 ?: chatHistoryManager.getLastMentionedDevice(username)
 
-            var resolvedSourceCategory: String? = null
+            var resolvedSourceCategory: String? = directCategory
             var resolvedSourceName: String? = null
             if (!sourceHint.isNullOrBlank()) {
                 val normHint = StringSimilarityUtil.normalizeVietnamese(sourceHint.lowercase())
@@ -600,17 +612,21 @@ class AgentKernel @Inject constructor(
                 // (else) của executeSearchContract() thay vì nhánh isCallCategory đã viết sẵn.
                 val isCallHint = getCallKeywordsNormalized().any { kw -> normHint.contains(kw) }
 
+                // matchedCamera/matchedDevice tra được từ target/sourceHint LUÔN được ưu tiên
+                // hơn directCategory — vì nếu model đã cho tên cụ thể khớp đúng thiết bị thật,
+                // đó là tín hiệu đáng tin hơn 1 category rời rạc (phòng trường hợp model điền
+                // category="camera" nhưng target lại trùng tên 1 thiết bị Tuya do nhầm lẫn).
                 when {
                     matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id } }
                     matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id } }
-                    isCallHint -> resolvedSourceCategory = "call"
-                    normHint.contains("facebook") || normHint.contains("fb") -> resolvedSourceCategory = "facebook"
-                    normHint.contains("telegram") -> resolvedSourceCategory = "telegram"
-                    normHint.contains("website") || normHint.contains("web") -> resolvedSourceCategory = "website"
+                    isCallHint && resolvedSourceCategory == null -> resolvedSourceCategory = "call"
+                    resolvedSourceCategory == null && (normHint.contains("facebook") || normHint.contains("fb")) -> resolvedSourceCategory = "facebook"
+                    resolvedSourceCategory == null && normHint.contains("telegram") -> resolvedSourceCategory = "telegram"
+                    resolvedSourceCategory == null && (normHint.contains("website") || normHint.contains("web")) -> resolvedSourceCategory = "website"
                 }
             }
 
-            // ✅ MỚI: model không phải lúc nào cũng điền "source" (schema tool db_search mô tả
+            // ✅ MỚI: model không phải lúc nào cũng điền "source"/"target" (schema tool db_search mô tả
             // field này là "tên camera/thiết bị" nên với câu hỏi cuộc gọi model hay để trống).
             // Nếu sourceHint không giúp resolve ra được gì, vẫn kiểm tra thẳng câu hỏi gốc của
             // user — cùng danh sách GLOBAL_CALL_KEYWORDS — trước khi để lọt vào nhánh chung.
@@ -631,6 +647,31 @@ class AgentKernel @Inject constructor(
                     normOriginal.contains("facebook") || normOriginal.contains(" fb ") || normOriginal.endsWith("fb") -> resolvedSourceCategory = "facebook"
                     normOriginal.contains("telegram") -> resolvedSourceCategory = "telegram"
                     normOriginal.contains("website") || normOriginal.contains("trang web") -> resolvedSourceCategory = "website"
+                }
+            }
+
+            // ✅ MỚI (bổ sung theo yêu cầu): fallback keyword cho camera/tuya — đối xứng với
+            // fallback "call"/chat ở trên. Trước đây KHÔNG có nhánh nào dò lại câu hỏi gốc cho
+            // camera/thiết bị khi model trả category/source sai (vd "all" hoặc nhầm sang kênh
+            // chat) — đây chính là nguyên nhân log thực tế: câu "Có thiết bị nào bật hôm qua
+            // không" nhưng model trả source="all"/"telegram", khiến SearchContract rơi vào nhánh
+            // chung thay vì lọc đúng theo tuya. Dùng lại đúng GLOBAL_CAMERA_KEYWORDS/
+            // GLOBAL_DEVICE_KEYWORDS (config, không hardcode) — cùng nguồn đã dùng ở
+            // mentionsAppDomain() và nhánh QA Mode phía trên — để nhất quán trong toàn bộ file.
+            if (resolvedSourceCategory == null || resolvedSourceCategory == "all") {
+                val normOriginal = StringSimilarityUtil.normalizeVietnamese(originalMessage.lowercase())
+                val cameraKeywordsHere = try {
+                    configProvider.getString(AppConfigDefaults.GLOBAL_CAMERA_KEYWORDS, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CAMERA_KEYWORDS))
+                        .split(",").map { StringSimilarityUtil.normalizeVietnamese(it.trim().lowercase()) }.filter { it.isNotBlank() }
+                } catch (e: Exception) { listOf("camera") }
+                val deviceKeywordsHere = try {
+                    configProvider.getString(AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS))
+                        .split(",").map { StringSimilarityUtil.normalizeVietnamese(it.trim().lowercase()) }.filter { it.isNotBlank() }
+                } catch (e: Exception) { listOf("thiet bi") }
+
+                when {
+                    cameraKeywordsHere.any { normOriginal.contains(it) } -> resolvedSourceCategory = "camera"
+                    deviceKeywordsHere.any { normOriginal.contains(it) } -> resolvedSourceCategory = "tuya"
                 }
             }
 
@@ -801,11 +842,24 @@ class AgentKernel @Inject constructor(
                 "db_search" -> {
                     val timeframe = json.optString("timeframe", "today")
                     val objectLabel = json.optString("object", "all")
-                    val source = json.optString("source", "").trim()
+                    // ✅ MỚI: schema JSON đổi từ 1 field "source" tự do (gộp chung tên thiết bị /
+                    // literal "cuộc gọi" / tên kênh chat, khiến model phải tự đoán ngữ nghĩa và hay
+                    // trả sai — xem log thực tế: câu hỏi về thiết bị Tuya nhưng model trả
+                    // source="all" hoặc source="telegram") sang 2 field tách biệt:
+                    // "category" (enum cố định camera/tuya/call/facebook/telegram/website) và
+                    // "target" (tên cụ thể, chỉ cần khi category=camera/tuya). Model chỉ cần chọn
+                    // đúng 1 trong 6 giá trị enum thay vì tự do diễn giải cả cụm string.
+                    // Vẫn đọc "source" (schema cũ) làm fallback để không vỡ nếu model/cache prompt
+                    // cũ còn trả theo format cũ trong lúc chuyển đổi.
+                    val category = json.optString("category", "").trim()
+                    val target = json.optString("target", "").trim()
+                    val legacySource = json.optString("source", "").trim()
                     ToolCall(tool, buildMap {
                         put("timeframe", timeframe)
                         put("object", objectLabel)
-                        if (source.isNotBlank()) put("source", source)
+                        if (category.isNotBlank()) put("category", category)
+                        if (target.isNotBlank()) put("target", target)
+                        if (legacySource.isNotBlank()) put("source", legacySource)
                     })
                 }
                 "catalog_search" -> {
@@ -1121,9 +1175,14 @@ class AgentKernel @Inject constructor(
             "  \"tool\": \"db_search\",\n" +
             "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
             "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
-            "  \"source\": \"tên camera hoặc thiết bị mà người dùng nhắc tới; hoặc '${callKeywordSample.joinToString("/")}' nếu hỏi về lịch sử/cuộc gọi nhỡ; " +
-            "hoặc 'facebook'/'telegram'/'website' nếu hỏi về tin nhắn/hội thoại của một kênh chat cụ thể\"\n" +
+            "  \"category\": \"camera | tuya | call | facebook | telegram | website\",\n" +
+            "  \"target\": \"tên camera hoặc thiết bị cụ thể mà người dùng nhắc tới nếu category là camera\/tuya; để trống nếu không\"\n" +
             "}\n" +
+            "Lưu ý chọn \"category\":\n" +
+            "- \"camera\" hoặc \"tuya\": khi hỏi về hoạt động camera\/thiết bị thông minh cụ thể (kèm \"target\" đúng tên).\n" +
+            "- \"call\": khi hỏi về ${callKeywordSample.joinToString("/")}, lịch sử/cuộc gọi nhỡ.\n" +
+            "- \"facebook\"\/\"telegram\"\/\"website\": khi hỏi về tin nhắn\/hội thoại của một kênh chat cụ thể.\n" +
+            "- Nếu câu hỏi KHÔNG nêu rõ nguồn nào (vd hỏi tiếp theo một câu trước đó), bỏ hẳn field \"category\" thay vì đoán đại — hệ thống sẽ tự suy ra từ ngữ cảnh trước đó.\n" +
             "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây (câu hỏi về cuộc gọi hoặc kênh chat luôn hợp lệ, không cần khớp danh sách thiết bị). Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
