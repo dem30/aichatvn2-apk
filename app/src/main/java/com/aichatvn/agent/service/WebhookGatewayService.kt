@@ -28,6 +28,7 @@ import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.scheduler.CronParser 
 import androidx.datastore.preferences.core.stringPreferencesKey    
 import kotlinx.coroutines.flow.first                               
+import kotlinx.coroutines.flow.debounce                            
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import dagger.hilt.android.AndroidEntryPoint
@@ -244,11 +245,26 @@ class WebhookGatewayService : Service() {
         // Chấp nhận đánh đổi: cả 2 kênh SSE (chat/webhook lẫn cuộc gọi) cùng gián đoạn
         // 1-2 giây mỗi lần đổi cấu hình, kể cả khi chỉ 1 trong 2 thực sự cần restart — đơn
         // giản và an toàn hơn nhiều so với tách riêng Call reference cho từng kênh.
+        // ✅ SỬA LỖI (root cause "Telegram timeout liên tục, tin nhắn biến mất hoàn toàn"):
+        // configUpdatedEvent trước đây được collect() TRỰC TIẾP không debounce — khi Import
+        // backup ghi hàng chục key app_config liên tiếp trong <1 giây, mỗi lần ghi bắn 1 sự
+        // kiện, mỗi sự kiện gọi forceResyncBothChannels() NGAY LẬP TỨC (huỷ + mở lại 2 kết nối
+        // SSE + gọi lại registerDeviceCode/registerWidgetKey qua coroutine launch riêng). Hàng
+        // chục lần resync dồn dập như vậy làm bão hoà Dispatchers.IO ngay đúng lúc vòng lặp
+        // Telegram long-polling (cũng chạy trên Dispatchers.IO) đang chờ response — khiến
+        // request getUpdates() bị đói tài nguyên, vượt readTimeout(25s) của pollingClient, và
+        // timeout hết vòng này đến vòng khác cho tới khi storm cấu hình dừng hẳn. Trong lúc đó
+        // tin nhắn Telegram gửi tới đơn giản là CHƯA TỪNG được getUpdates() nhận về, nên không
+        // bao giờ tới processQuery()/DB — không inbox, không notify, không log Groq nào cả.
+        // Debounce 800ms: chỉ resync 1 lần sau khi cơn bão config-update lắng xuống, thay vì
+        // resync ngay từng sự kiện một.
         serviceScope.launch {
-            configProvider.configUpdatedEvent.collect {
-                logger.i("WebhookGatewayService", "🔄 Cấu hình vừa đổi (Import/Lưu Settings) — ngắt SSE cũ để đăng ký lại ngay, không cần đợi Restart OnRender.")
-                forceResyncBothChannels()
-            }
+            configProvider.configUpdatedEvent
+                .debounce(800)
+                .collect {
+                    logger.i("WebhookGatewayService", "🔄 Cấu hình vừa đổi (Import/Lưu Settings) — ngắt SSE cũ để đăng ký lại ngay, không cần đợi Restart OnRender.")
+                    forceResyncBothChannels()
+                }
         }
     }
 
@@ -774,8 +790,14 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    // ✅ SỬA LỖI (bổ sung, phòng vệ thêm cho storm cấu hình): dispatcher IO RIÊNG với độ song
+    // song giới hạn, tách hẳn khỏi Dispatchers.IO dùng chung — để hàng chục coroutine
+    // resync/register bắn dồn dập lúc Import Settings không còn có thể tranh giành thread với
+    // vòng lặp long-polling Telegram đang chờ response (vốn chỉ cần 1 thread riêng, luôn rảnh).
+    private val telegramPollDispatcher = Dispatchers.IO.limitedParallelism(2)
+
     private fun startTelegramLongPolling() {
-        serviceScope.launch(Dispatchers.IO) {
+        serviceScope.launch(telegramPollDispatcher) {
             var lastUpdateId = 0
             delay(3000)
 
