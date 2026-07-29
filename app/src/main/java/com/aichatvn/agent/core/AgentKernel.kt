@@ -306,19 +306,13 @@ class AgentKernel @Inject constructor(
                         ""
                     }
 
-                    // ✅ MỚI: khi được phép điều khiển thiết bị (admin, hoặc khách ngoại lúc mở
-                    // khoá), Groq mode phải giữ được quyền tra database QA training giống Combined
-                    // mode — trước đây thiếu hẳn bước này nên Admin dùng Groq mode mất sạch quyền
-                    // catalog/FAQ, chỉ còn db_search (và db_search còn bị gate theo từ khoá).
-                    val qaContext = if (request.allowDeviceControl) {
-                        buildQAContextForAgent(message, username)
-                    } else {
-                        ""
-                    }
-
+                    // ✅ SỬA: Groq mode KHÔNG còn đường nào chạm catalog QA nữa, dù admin hay
+                    // khách ngoại (trước đây admin bị lén tiêm qaContext ở đây, đá chéo sang
+                    // search nội bộ vốn chỉ dành cho khách ngoại). Admin → chỉ db_search qua
+                    // toolGuard; khách ngoại bị chặn → AI kiến thức chung THUẦN TÚY, không có
+                    // catalog dưới bất kỳ hình thức nào (thụ động lẫn qua tool).
                     val cleanContext = buildString {
                         append(baseGuard)
-                        if (qaContext.isNotEmpty()) append("\n\n$qaContext")
                         if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                         if (toolGuard.isNotEmpty()) append("\n\n$toolGuard")
                     }
@@ -339,9 +333,7 @@ class AgentKernel @Inject constructor(
                         baseContext = cleanContext,
                         historySnapshot = historySnapshot,
                         allowDeviceControl = request.allowDeviceControl,
-                        // ✅ SỬA: Groq mode không còn đường catalog_search nữa (đã thay bằng
-                        // qaContext tiêm thẳng ở trên khi allowDeviceControl=true, và hoàn toàn
-                        // không có gì khi bị chặn) — luôn false, khác với Combined mode bên dưới.
+                        // Groq mode không có đường catalog_search nào (xem comment ở trên) — luôn false.
                         allowCatalogSearch = false
                     )
                 }
@@ -354,9 +346,13 @@ class AgentKernel @Inject constructor(
                         perfectMatch.answer
                     } else {
                         val historySnapshot = buildHistorySnapshot(username)
-                        
-                        val qaContext = buildQAContextForAgent(message, username)
 
+                        // ✅ SỬA: Admin chỉ dùng db_search — không còn tra catalog QA thụ động ở
+                        // đây nữa (trước đây qaContext build vô điều kiện, lẫn cho cả admin).
+                        // Khách ngoại bị chặn cũng không còn qaContext thụ động song song với
+                        // CATALOG_SEARCH_TOOL_INSTRUCTION bên dưới — tránh 2 lần search catalog
+                        // trùng lặp trong cùng 1 request; khách ngoại chỉ tra catalog CHỦ ĐỘNG
+                        // qua tool catalog_search khi model tự thấy cần (2-pass).
                         val toolGuard = if (request.allowDeviceControl) {
                             if (shouldAttachToolGuard(message, username, currentTurn)) buildToolCallingGuard() else ""
                         } else {
@@ -365,7 +361,6 @@ class AgentKernel @Inject constructor(
 
                         val fullContext = buildString {
                             append(baseGuard)
-                            if (qaContext.isNotEmpty()) append("\n\n$qaContext")
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                             if (toolGuard.isNotEmpty()) append("\n\n$toolGuard")
                         }
@@ -553,6 +548,25 @@ class AgentKernel @Inject constructor(
             return "Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị hiện đang được khoá truy cập. Vui lòng liên hệ Quản trị viên để được mở quyền."
         }
 
+        // ✅ MỚI: category="qa" là QA database (catalog/FAQ/generic) đặt ĐỒNG CẤP với camera/
+        // tuya/call/chat ngay trong schema db_search — admin chỉ cần quản lý 1 đường search duy
+        // nhất, không cần tool catalog_search riêng nữa. Định tuyến sang đúng luồng search()
+        // (fuzzyMatchChatCatalog qua handleCatalogSearchToolCall) thay vì DatabaseSearchHelper.
+        val requestedCategory = toolCall.params["category"]?.trim()?.lowercase()
+        if (toolCall.tool == "db_search" && requestedCategory == "qa") {
+            val qaQuery = toolCall.params["target"]?.trim()?.takeIf { it.isNotBlank() } ?: originalMessage
+            logger.i("AgentKernel", "📥 [Two-Pass Intercepted] db_search category=qa → định tuyến sang catalog: '$qaQuery'")
+            return handleCatalogSearchToolCall(
+                originalMessage = originalMessage,
+                toolCall = ToolCall("catalog_search", mapOf("query" to qaQuery)),
+                username = username,
+                baseContext = baseContext,
+                historySnapshot = historySnapshot,
+                allowDeviceControl = allowDeviceControl,
+                toolDepth = toolDepth
+            )
+        }
+
         logger.i("AgentKernel", "📥 [Two-Pass Intercepted] Phát hiện AI yêu cầu gọi Tool: '${toolCall.tool}' (tham số: ${toolCall.params})")
 
         return try {
@@ -565,7 +579,7 @@ class AgentKernel @Inject constructor(
             // rơi xuống toàn bộ chuỗi fallback cũ bên dưới (sourceHint/SearchFocus/keyword) —
             // không vỡ hành vi cũ, chỉ THÊM một đường đi tắt chính xác hơn khi model tuân theo
             // đúng schema mới.
-            val validCategories = setOf("camera", "tuya", "call", "facebook", "telegram", "website")
+            val validCategories = setOf("camera", "tuya", "call", "facebook", "telegram", "website", "chat")
             val directCategory = toolCall.params["category"]?.trim()?.lowercase()?.takeIf { it in validCategories }
             val directTarget = toolCall.params["target"]?.trim()?.takeIf { it.isNotBlank() }
 
@@ -684,6 +698,25 @@ class AgentKernel @Inject constructor(
 
             val timeRange = timeRangeResolver.resolve(timeframe)
 
+            // ✅ MỚI: "keyword" (chuỗi tự do model chép từ câu hỏi user) → detailsKeywords.
+            // Trước đây field này tồn tại sẵn trong SearchContract và ĐÃ được
+            // DatabaseSearchHelper.executeSearchContract() lọc đúng (log.summary.contains(...)),
+            // nhưng không có đường nào gán giá trị từ toolCall.params — nên luôn rỗng, không lọc
+            // được nội dung. Giữ nguyên 1 phần tử duy nhất (không tách từ) vì contains() đã khớp cả cụm dài.
+            val keywordParam = toolCall.params["keyword"]?.trim()?.takeIf { it.isNotBlank() }
+
+            // ✅ MỚI: nhánh isCallCategory + granularity="summary" trong DatabaseSearchHelper đọc
+            // THẲNG call_logs thô theo mốc thời gian (xem comment ở đó) — hoàn toàn KHÔNG đi qua
+            // biến `filtered` đã áp detailsKeywords, nên nếu để nguyên granularity="summary" thì
+            // keyword sẽ bị lờ đi hoàn toàn dù model đã điền đúng. Ép về "detail" khi có keyword
+            // để filter theo nội dung thực sự có tác dụng — cùng tinh thần Cost Guard phía trên.
+            val resolvedGranularity = if (keywordParam != null && resolvedSourceCategory == "call") {
+                logger.w("AgentKernel", "⚠️ [Keyword Guard] category=call + keyword được yêu cầu → ép granularity=detail (nhánh summary bỏ qua keyword filter)")
+                "detail"
+            } else {
+                toolCall.params["granularity"] ?: "detail"
+            }
+
             val contract = SearchContract(
                 questionType = QuestionType.OTHER,
                 sinceMs = timeRange.since,
@@ -693,10 +726,19 @@ class AgentKernel @Inject constructor(
                 sourceIdOrName = resolvedSourceName ?: sourceHint,
                 targetObject = objectLabel,
                 aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE,
-                granularity = toolCall.params["granularity"] ?: "detail"
+                granularity = resolvedGranularity,
+                detailsKeywords = keywordParam?.let { listOf(it) } ?: emptyList()
             )
 
-            val searchResult = databaseSearchHelper.executeSearchContract(contract)
+            val searchResult = if (keywordParam != null) {
+                // ✅ MỚI: khi đã có "keyword" lọc theo nội dung, kết quả còn lại đã gần chính
+                // xác (đúng ý user, không phải liệt kê chung chung theo thời gian nữa) — không
+                // cần trả 20 dòng mặc định về AI, chỉ cần top vài dòng khớp nhất để tiết kiệm
+                // token. Vẫn dùng đúng executeSearchContract() sẵn có, chỉ giảm limit.
+                databaseSearchHelper.executeSearchContract(contract, limit = KEYWORD_MATCH_LIMIT)
+            } else {
+                databaseSearchHelper.executeSearchContract(contract)
+            }
 
             // ✅ MỚI: ghi lại trọng tâm search vừa thực hiện (bất kể domain camera/tuya/chat),
             // để các câu hỏi đào sâu tiếp theo (vd "họ mặc áo màu gì") tự động được coi là
@@ -861,6 +903,11 @@ class AgentKernel @Inject constructor(
                     // prompt cũ chưa biết field này.
                     val granularity = json.optString("granularity", "detail").trim().lowercase()
                         .takeIf { it == "summary" } ?: "detail"
+                    // ✅ MỚI: "keyword" — chuỗi tự do để lọc theo NỘI DUNG log (log.summary),
+                    // đưa thẳng vào SearchContract.detailsKeywords ở interceptAndExecuteToolCall().
+                    // Không tách từ, không chuẩn hoá gì thêm ở đây — DatabaseSearchHelper đã dùng
+                    // contains(ignoreCase=true) nên khớp cả cụm dài nguyên văn.
+                    val keyword = json.optString("keyword", "").trim()
                     ToolCall(tool, buildMap {
                         put("timeframe", timeframe)
                         put("object", objectLabel)
@@ -868,6 +915,7 @@ class AgentKernel @Inject constructor(
                         if (target.isNotBlank()) put("target", target)
                         if (legacySource.isNotBlank()) put("source", legacySource)
                         put("granularity", granularity)
+                        if (keyword.isNotBlank()) put("keyword", keyword)
                     })
                 }
                 "catalog_search" -> {
@@ -922,27 +970,28 @@ class AgentKernel @Inject constructor(
         private const val MAX_QA_MATCHES_IN_CONTEXT = 3
         private const val MAX_QA_ANSWER_CHARS = 200
 
+        // ✅ MỚI: khi db_search có "keyword" (đã lọc gần chính xác theo nội dung log), chỉ trả
+        // về top N dòng khớp gần nhất về thời gian cho AI thay vì mặc định 20 dòng — tương tự
+        // tinh thần MAX_QA_MATCHES_IN_CONTEXT bên trên cho catalog_search.
+        private const val KEYWORD_MATCH_LIMIT = 5
+
         // Số lượt hỏi tiếp theo sau 1 lần search DB thật mà vẫn được coi là "đang đào sâu"
         // vào cùng kết quả đó, dù câu hỏi không chứa từ khoá domain nào (camera/tuya/chat...).
         private const val FOLLOWUP_TURN_WINDOW = 2
 
-        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = """🚨 QUY TẮC TÌM KIẾM THÔNG TIN:
-- Nếu chưa có đủ thông tin trong <SYSTEM_MEMORY> để trả lời câu hỏi của người dùng, hãy trả về DUY NHẤT một chuỗi JSON thô (tuyệt đối không markdown, không giải thích):
-{
-  "tool": "catalog_search",
-  "query": "từ khóa tìm kiếm"
-}
-- Nếu đã có thông tin từ <SYSTEM_MEMORY>, hãy trả lời tự nhiên bằng Tiếng Việt và KHÔNG được gọi lại tool."""
+        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = """🚨 TÌM KIẾM THÔNG TIN (catalog_search):
+- Thiếu info trong <SYSTEM_MEMORY> để trả lời → trả DUY NHẤT 1 JSON thô (không markdown, không giải thích): {"tool": "catalog_search", "query": "từ khóa tìm kiếm"}
+- Đã đủ info từ <SYSTEM_MEMORY> → trả lời tự nhiên bằng Tiếng Việt, KHÔNG gọi lại tool."""
     }
 
     private fun stripDbSearchInvite(guardText: String): String {
-        val marker = "🚨 QUY TẮC TRUY VẤN DỮ LIỆU THỰC TẾ:"
+        val marker = "🚨 TRUY VẤN DỮ LIỆU THỰC TẾ (db_search):"
         val idx = guardText.indexOf(marker)
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
 
     private fun stripCatalogSearchInvite(guardText: String): String {
-        val marker = "🚨 QUY TẮC TÌM KIẾM THÔNG TIN:"
+        val marker = "🚨 TÌM KIẾM THÔNG TIN (catalog_search):"
         val idx = guardText.indexOf(marker)
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
@@ -954,20 +1003,6 @@ class AgentKernel @Inject constructor(
             append("\n\nKết quả tìm kiếm catalogue trên là cuối cùng. Nếu có nội dung liên quan, dùng ngay để trả lời (được phép là thông tin tổng quát). Nếu không, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ. Không gọi lại tool. Trả lời bằng văn bản tự nhiên.\n")
             append("</SYSTEM_MEMORY>")
         }
-    }
-
-    private suspend fun buildQAContextForAgent(message: String, username: String): String {
-        val matches = search(message, username, 0.7f)
-            .sortedByDescending { it.similarity }
-            .take(MAX_QA_MATCHES_IN_CONTEXT)
-        if (matches.isEmpty()) return ""
-        val resultText = matches.joinToString("\n") { match ->
-            val answer = match.qa.answer.let {
-                if (it.length > MAX_QA_ANSWER_CHARS) it.take(MAX_QA_ANSWER_CHARS) + "…" else it
-            }
-            "📚 Q: ${match.qa.question}\n   A: $answer (độ tương tự: ${String.format("%.2f", match.similarity)})"
-        }
-        return wrapCatalogSearchResult(resultText)
     }
 
     suspend fun tryDeviceCommand(
@@ -1104,10 +1139,9 @@ class AgentKernel @Inject constructor(
         maxSentences: Int
     ): String {
         val antiHallucinationGuard =
-            "⚠️ Bạn KHÔNG có khả năng điều khiển thiết bị thật. Nếu câu hỏi của user là yêu cầu " +
-            "điều khiển thiết bị (bật/tắt/mở/đóng/đặt lịch...), TUYỆT ĐỐI không tự khẳng định đã " +
-            "thực hiện hành động đó — hãy hỏi lại rõ hơn hoặc báo chưa thực hiện được.\n" +
-            "⚠️ Trả lời NGẮN GỌN, đi thẳng vào trọng tâm — tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
+            "⚠️ Không tự nhận đã điều khiển thiết bị thật (bật/tắt/mở/đóng/đặt lịch...) — " +
+            "nếu chưa chắc đã thực hiện, hỏi lại rõ hơn hoặc báo chưa làm được.\n" +
+            "⚠️ Trả lời tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
 
         val houseManagerContext = try {
             houseManagerProvider.get().buildSystemContext()
@@ -1176,26 +1210,14 @@ class AgentKernel @Inject constructor(
             }
         } catch (e: Exception) { emptyList() }
 
-        return "🚨 QUY TẮC TRUY VẤN DỮ LIỆU THỰC TẾ:\n" +
-            "1. Nếu người dùng hỏi về hoạt động của camera/thiết bị/kênh chat/cuộc gọi trong quá khứ hoặc hiện tại mà bạn chưa có thông tin thô, " +
-            "hãy trả về DUY NHẤT một chuỗi JSON thô có cấu trúc sau (tuyệt đối không markdown, không giải thích gì thêm):\n" +
-            "{\n" +
-            "  \"tool\": \"db_search\",\n" +
-            "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
-            "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
-            "  \"category\": \"camera | tuya | call | facebook | telegram | website\",\n" +
-            "  \"target\": \"tên camera hoặc thiết bị cụ thể mà người dùng nhắc tới nếu category là camera/tuya; để trống nếu không\",\n" +
-            "  \"granularity\": \"summary | detail\"\n" +
-            "}\n" +
-            "Lưu ý chọn \"granularity\":\n" +
-            "- \"summary\": khi câu hỏi chỉ cần số liệu/kết quả tổng hợp (vd \"hôm nay có mấy cuộc gọi\", \"hôm qua có ai gọi nhỡ không\") — KHÔNG cần xem từng dòng log thô.\n" +
-            "- \"detail\": khi câu hỏi cần biết diễn biến/nội dung cụ thể (vd \"lúc 5 giờ chiều nói chuyện gì\", \"cuộc gọi lúc đó kéo dài bao lâu\") hoặc khi không chắc — mặc định dùng \"detail\".\n" +
-            "Lưu ý chọn \"category\":\n" +
-            "- \"camera\" hoặc \"tuya\": khi hỏi về hoạt động camera/thiết bị thông minh cụ thể (kèm \"target\" đúng tên).\n" +
-            "- \"call\": khi hỏi về ${callKeywordSample.joinToString("/")}, lịch sử/cuộc gọi nhỡ.\n" +
-            "- \"facebook\"/\"telegram\"/\"website\": khi hỏi về tin nhắn/hội thoại của một kênh chat cụ thể.\n" +
-            "- Nếu câu hỏi KHÔNG nêu rõ nguồn nào (vd hỏi tiếp theo một câu trước đó), bỏ hẳn field \"category\" thay vì đoán đại — hệ thống sẽ tự suy ra từ ngữ cảnh trước đó.\n" +
-            "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây (câu hỏi về cuộc gọi hoặc kênh chat luôn hợp lệ, không cần khớp danh sách thiết bị). Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
+        return "🚨 TRUY VẤN DỮ LIỆU THỰC TẾ (db_search):\n" +
+            "Hỏi về hoạt động camera/thiết bị/kênh chat/cuộc gọi (quá khứ/hiện tại), HOẶC câu hỏi kiến thức chung/FAQ/hướng dẫn sử dụng mà chưa có info → trả DUY NHẤT 1 JSON thô (không markdown, không giải thích):\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên cụ thể nếu category=camera/tuya; từ khóa tìm kiếm nếu category=qa; để trống nếu không\",\"keyword\":\"từ khóa/cụm từ NỘI DUNG cần lọc trong log (vd 'đặt hàng', 'giao hàng trễ'); chép nguyên văn từ câu hỏi user; để trống nếu không cần lọc theo nội dung\",\"granularity\":\"summary|detail\"}\n" +
+            "- timeframe: mốc cụ thể không khớp enum (vd \"ngày 27\", \"3 hôm trước\") → chọn khung NHỎ NHẤT còn chứa mốc đó, rồi để granularity=detail lọc lại đúng ngày/giờ. Bỏ qua field này (giữ mặc định) khi category=qa.\n" +
+            "- granularity: summary=chỉ cần số liệu tổng hợp (vd \"hôm nay mấy cuộc gọi\"); detail=cần nội dung/diễn biến cụ thể hoặc không chắc (mặc định).\n" +
+            "- category: camera/tuya=thiết bị cụ thể (kèm target đúng tên); call=hỏi về ${callKeywordSample.joinToString("/")}, lịch sử/gọi nhỡ; facebook/telegram/website=tin nhắn/hội thoại của ĐÚNG 1 kênh đó; chat=tin nhắn nói chung khi KHÔNG rõ/không nêu tên kênh cụ thể (gộp mọi kênh); qa=câu hỏi chung/FAQ/chính sách/hướng dẫn không thuộc log thiết bị-cuộc gọi-tin nhắn cụ thể (kèm target=từ khóa cần tra). Hỏi tiếp câu trước, không rõ nguồn → bỏ hẳn field category, để hệ thống tự suy từ ngữ cảnh.\n" +
+            "- keyword: chỉ dùng khi câu hỏi cần lọc theo NỘI DUNG cụ thể bên trong log (vd \"tin nhắn nào nói cần đặt hàng\" → keyword=\"đặt hàng\"). Không dùng để lọc theo kênh/loại thiết bị — việc đó đã có category/target lo.\n" +
+            "- Chỉ gọi tool cho thiết bị có tên/ID khớp danh sách dưới (cuộc gọi/kênh chat/qa luôn hợp lệ, không cần khớp danh sách). Thiết bị lạ không có trong danh sách → trả lời thẳng KHÔNG lắp đặt, TUYỆT ĐỐI không gọi tool.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ cuộc gọi đã lưu: ${callContactNames.joinToString(", ")}\n" else "") +

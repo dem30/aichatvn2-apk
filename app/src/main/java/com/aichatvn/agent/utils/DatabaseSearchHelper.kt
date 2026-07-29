@@ -180,9 +180,26 @@ class DatabaseSearchHelper @Inject constructor(
 
         if (contract.detailsKeywords.isNotEmpty()) {
             filtered = filtered.filter { log ->
-                contract.detailsKeywords.any { keyword ->
+                val matchesSummary = contract.detailsKeywords.any { keyword ->
                     log.summary.contains(keyword, ignoreCase = true)
                 }
+                // ✅ MỚI: với chat/facebook/telegram/website, log.summary CHỈ chứa ý định/khẩn
+                // cấp (vd "ý định=order_request"), KHÔNG chứa nội dung tin nhắn thật — nội dung
+                // đó nằm trong log.value (JSON field "last_message", xem nhánh isChatCategory ở
+                // summaryText bên dưới). Nếu chỉ so trên summary, keyword như "đặt hàng" sẽ
+                // KHÔNG BAO GIỜ khớp dù tin nhắn thật có chứa từ đó → filter trả rỗng sai.
+                // Parse thêm last_message để so khớp, cùng convention try/catch an toàn đã dùng
+                // ở filter sourceIdOrName phía trên.
+                val matchesLastMessage = if (!matchesSummary && (isChatCategory || isSpecificChatPlatform)) {
+                    try {
+                        val lastMessage = JSONObject(log.value).optString("last_message", "")
+                        lastMessage.isNotBlank() && contract.detailsKeywords.any { keyword ->
+                            lastMessage.contains(keyword, ignoreCase = true)
+                        }
+                    } catch (_: Exception) { false }
+                } else false
+
+                matchesSummary || matchesLastMessage
             }
         }
 
