@@ -453,7 +453,7 @@ class AgentKernel @Inject constructor(
             // Dùng lại VietnameseTextNormalizer (không phải StringSimilarityUtil.normalizeVietnamese
             // như bên AgentKernel.getXKeywordsNormalized()) để khớp đúng cách "normalized" của
             // CHÍNH hàm này đã được build ở trên — tránh trộn 2 bộ chuẩn hoá khác nhau.
-            fun readKeywordsNormalized(key: String, fallback: List<String>): List<String> {
+            suspend fun readKeywordsNormalized(key: String, fallback: List<String>): List<String> {
                 return try {
                     configProvider.getString(key, AppConfigDefaults.defaultOf(key))
                         .split(",")
