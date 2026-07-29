@@ -1221,6 +1221,7 @@ class AgentKernel @Inject constructor(
             "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên thiết bị/camera đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"tóm tắt ngắn nội dung cần lọc trong log, copy sát câu hỏi; để trống nếu không cần\",\"granularity\":\"summary|detail\"}\n" +
             "- category=qa cho câu hỏi chung không thuộc camera/thiết bị/cuộc gọi/tin nhắn cụ thể. category=chat khi hỏi tin nhắn nhưng không rõ kênh nào. Không rõ nguồn → bỏ hẳn field category.\n" +
             "- Chỉ gọi tool cho thiết bị khớp danh sách dưới (cuộc gọi/chat/qa luôn hợp lệ). Thiết bị lạ không có trong danh sách → trả lời KHÔNG lắp đặt, không gọi tool.\n" +
+            "- TUYỆT ĐỐI không tự bịa nội dung/ngày giờ/chi tiết cụ thể của log, tin nhắn hay cuộc gọi khi chưa nhận được dữ liệu thật từ tool trong lượt này. Nếu câu hỏi đào sâu vào nội dung cụ thể của điều vừa được nhắc tới (vd \"tin nhắn nói gì\", \"lúc mấy giờ\") mà bạn CHƯA có dữ liệu đó → PHẢI trả JSON db_search để lấy lại, không tự suy diễn hay đoán.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +

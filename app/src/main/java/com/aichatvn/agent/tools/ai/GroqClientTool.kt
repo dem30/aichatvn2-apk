@@ -632,12 +632,12 @@ class GroqClientTool @Inject constructor(
         }
         var parseFailed = false
         val text = try {
-            val raw = JSONObject(bodyStr)
+            val messageObj = JSONObject(bodyStr)
                 .getJSONArray("choices")
                 .getJSONObject(0)
                 .getJSONObject("message")
-                .getString("content")
-                .trim()
+
+            val raw = messageObj.optString("content", "").trim()
 
             val hasOpenThink = raw.contains("<think>", ignoreCase = true)
             val hasCloseThink = raw.contains("</think>", ignoreCase = true)
@@ -652,16 +652,54 @@ class GroqClientTool @Inject constructor(
             // ✅ SỬA: Siết chặt chuỗi rỗng sau khi bóc tách khối suy luận để đảm bảo
             // các lớp gọi API luôn nhận được dữ liệu thô hợp lệ hoặc lỗi rõ ràng thay vì bong bóng chat trống.
             if (stripped.isBlank()) {
-                logger.e("GroqClientTool", "$caller: nội dung rỗng sau khi bóc <think> (model đã dùng hết token để suy luận), body=$bodyStr")
-                throw IllegalStateException("Nội dung trả về rỗng sau khi bóc khối suy luận")
+                // ✅ MỚI: một số model (gpt-oss-120b) đôi khi trả toàn bộ JSON tool-call vào field
+                // "reasoning" riêng biệt của response thay vì "content" — trước đây "content" rỗng
+                // bị coi thẳng là lỗi, dù model đã trả lời đúng, chỉ đặt sai chỗ. Chỉ fallback khi
+                // "reasoning" chứa đúng 1 khối JSON hợp lệ có key "tool" — tránh lấy nhầm đoạn suy
+                // luận lộn xộn (thường bằng tiếng Anh, không phải câu trả lời cuối) làm nội dung thật.
+                val fallback = extractToolCallJson(messageObj.optString("reasoning", ""))
+                if (fallback != null) {
+                    logger.w("GroqClientTool", "$caller: content rỗng, dùng tool-call JSON tìm thấy trong reasoning")
+                    fallback
+                } else {
+                    logger.e("GroqClientTool", "$caller: nội dung rỗng sau khi bóc <think> (model đã dùng hết token để suy luận), body=$bodyStr")
+                    throw IllegalStateException("Nội dung trả về rỗng sau khi bóc khối suy luận")
+                }
+            } else {
+                stripped
             }
-
-            stripped
         } catch (e: Exception) {
             logger.e("GroqClientTool", "$caller parse error: ${e.message}, body=$bodyStr")
             parseFailed = true
             "Không thể đọc phản hồi từ AI. Vui lòng thử lại."
         }
         return GroqParsedResponse(text, usage, isError = parseFailed)
+    }
+
+    // ✅ MỚI: tìm khối JSON tool-call hợp lệ đầu tiên trong 1 đoạn text tự do (reasoning), dùng
+    // đếm độ sâu dấu ngoặc {} thay vì regex non-greedy (regex sẽ dừng sai ở dấu "}" đóng của
+    // "params" lồng bên trong, không phải "}" đóng ngoài cùng của toàn khối JSON).
+    private fun extractToolCallJson(text: String): String? {
+        if (text.isBlank()) return null
+        val start = text.indexOf('{')
+        if (start == -1) return null
+        var depth = 0
+        for (i in start until text.length) {
+            when (text[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) {
+                        val candidate = text.substring(start, i + 1)
+                        return try {
+                            if (JSONObject(candidate).has("tool")) candidate else null
+                        } catch (e: Exception) {
+                            null
+                        }
+                    }
+                }
+            }
+        }
+        return null
     }
 }
