@@ -593,10 +593,26 @@ class AgentKernel @Inject constructor(
             // không điều khiển thiết bị) không bao giờ có sourceHint, bị đối xử kém hơn camera/device.
             // Giữ getLastMentionedDevice làm fallback cuối cho trường hợp vừa điều khiển thiết bị
             // nhưng chưa search lần nào trong phiên (SearchFocus chưa có gì để cho).
-            val sourceHint = directTarget
+            // 🐛 SỬA LỖI NGHIÊM TRỌNG (phát hiện từ log thực tế: câu hỏi "có tin nhắn nào nói
+            // đặt hàng" bị hijack thành search camera): trước đây sourceHint LUÔN rơi xuống
+            // chatHistoryManager.getLastSearchFocus(username)?.sourceIdOrName (leftover từ lượt
+            // search TRƯỚC, có thể thuộc domain khác hẳn) ngay cả khi model đã tự chọn ĐÚNG
+            // "category" ở lượt này (vd "chat"). Nếu leftover đó tình cờ khớp tên 1 camera/thiết
+            // bị thật (vd "vinh"), khối matchedCamera/matchedDevice bên dưới sẽ GHI ĐÈ
+            // resolvedSourceCategory từ "chat" thành "camera" — khiến search chạy sai domain, và
+            // vì search sai lại tự ghi SearchFocus mới = camera, lỗi này tự lặp lại vô hạn ở mọi
+            // lượt hỏi "chat" sau đó, không bao giờ tìm thấy tin nhắn thật.
+            // Sửa: tách riêng "gợi ý của CHÍNH lượt này" (target/source model vừa cho) khỏi "gợi ý
+            // xuyên lượt" (SearchFocus/lastMentionedDevice, có thể thuộc lượt search cũ khác domain
+            // hẳn) — chỉ cho phép gợi ý xuyên lượt GHI ĐÈ category khi model KHÔNG tự cho category ở
+            // lượt này (giữ đúng tính năng "đào sâu" cũ) hoặc khi domain trùng khớp sẵn với category
+            // model chọn (không có gì thật sự bị ghi đè). Nếu gợi ý chỉ là leftover xuyên lượt VÀ
+            // model đã chọn 1 category khác domain hẳn — bỏ qua gợi ý cũ, tin category của model.
+            val currentTurnHint = directTarget
                 ?: toolCall.params["source"]?.trim()?.takeIf { it.isNotBlank() }
-                ?: chatHistoryManager.getLastSearchFocus(username)?.sourceIdOrName
+            val staleFallbackHint = chatHistoryManager.getLastSearchFocus(username)?.sourceIdOrName
                 ?: chatHistoryManager.getLastMentionedDevice(username)
+            val sourceHint = currentTurnHint ?: staleFallbackHint
 
             var resolvedSourceCategory: String? = directCategory
             var resolvedSourceName: String? = null
@@ -626,13 +642,21 @@ class AgentKernel @Inject constructor(
                 // (else) của executeSearchContract() thay vì nhánh isCallCategory đã viết sẵn.
                 val isCallHint = getCallKeywordsNormalized().any { kw -> normHint.contains(kw) }
 
-                // matchedCamera/matchedDevice tra được từ target/sourceHint LUÔN được ưu tiên
-                // hơn directCategory — vì nếu model đã cho tên cụ thể khớp đúng thiết bị thật,
-                // đó là tín hiệu đáng tin hơn 1 category rời rạc (phòng trường hợp model điền
-                // category="camera" nhưng target lại trùng tên 1 thiết bị Tuya do nhầm lẫn).
+                // matchedCamera/matchedDevice tra được từ target/sourceHint được ưu tiên hơn
+                // directCategory — NHƯNG chỉ khi gợi ý đến từ chính lượt này (currentTurnHint), hoặc
+                // model không tự cho category (đào sâu xuyên lượt), hoặc gợi ý cũ đó vốn đã cùng
+                // domain với category model chọn (không có gì để "ghi đè" thật sự). Nếu gợi ý chỉ là
+                // leftover xuyên lượt VÀ model đã chọn 1 category khác domain hẳn — bỏ qua gợi ý cũ,
+                // tin category của model (fix cho bug đã tìm thấy trong log thực tế).
+                val staleHintOnly = currentTurnHint == null
+                val allowCrossDomainOverride = !staleHintOnly || directCategory == null
                 when {
-                    matchedCamera != null -> { resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id } }
-                    matchedDevice != null -> { resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id } }
+                    matchedCamera != null && (allowCrossDomainOverride || directCategory == "camera") -> {
+                        resolvedSourceCategory = "camera"; resolvedSourceName = matchedCamera.customername.ifBlank { matchedCamera.id }
+                    }
+                    matchedDevice != null && (allowCrossDomainOverride || directCategory == "tuya") -> {
+                        resolvedSourceCategory = "tuya"; resolvedSourceName = matchedDevice.name.ifBlank { matchedDevice.id }
+                    }
                     isCallHint && resolvedSourceCategory == null -> resolvedSourceCategory = "call"
                     resolvedSourceCategory == null && (normHint.contains("facebook") || normHint.contains("fb")) -> resolvedSourceCategory = "facebook"
                     resolvedSourceCategory == null && normHint.contains("telegram") -> resolvedSourceCategory = "telegram"
@@ -723,7 +747,11 @@ class AgentKernel @Inject constructor(
                 untilMs = timeRange.until,
                 timeframeLabel = timeRange.label,
                 sourceCategory = resolvedSourceCategory,
-                sourceIdOrName = resolvedSourceName ?: sourceHint,
+                // 🐛 Cùng fix ở trên: nếu gợi ý chỉ đến từ leftover xuyên lượt (không phải chính lượt
+                // này) VÀ model đã chọn category khác domain với gợi ý đó (bị chặn ghi đè ở khối
+                // trên), thì KHÔNG dùng gợi ý cũ đó làm sourceIdOrName nữa — nếu không, category dù
+                // đã đúng ("chat") nhưng vẫn bị lọc nhầm theo tên cũ ("vinh"), tiếp tục trả về rỗng.
+                sourceIdOrName = resolvedSourceName ?: (if (currentTurnHint != null || directCategory == null) sourceHint else null),
                 targetObject = objectLabel,
                 aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE,
                 granularity = resolvedGranularity,
