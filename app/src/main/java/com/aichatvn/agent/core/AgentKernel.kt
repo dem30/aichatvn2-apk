@@ -1176,12 +1176,12 @@ class AgentKernel @Inject constructor(
             "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
             "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
             "  \"category\": \"camera | tuya | call | facebook | telegram | website\",\n" +
-            "  \"target\": \"tên camera hoặc thiết bị cụ thể mà người dùng nhắc tới nếu category là camera\/tuya; để trống nếu không\"\n" +
+            "  \"target\": \"tên camera hoặc thiết bị cụ thể mà người dùng nhắc tới nếu category là camera/tuya; để trống nếu không\"\n" +
             "}\n" +
             "Lưu ý chọn \"category\":\n" +
-            "- \"camera\" hoặc \"tuya\": khi hỏi về hoạt động camera\/thiết bị thông minh cụ thể (kèm \"target\" đúng tên).\n" +
+            "- \"camera\" hoặc \"tuya\": khi hỏi về hoạt động camera/thiết bị thông minh cụ thể (kèm \"target\" đúng tên).\n" +
             "- \"call\": khi hỏi về ${callKeywordSample.joinToString("/")}, lịch sử/cuộc gọi nhỡ.\n" +
-            "- \"facebook\"\/\"telegram\"\/\"website\": khi hỏi về tin nhắn\/hội thoại của một kênh chat cụ thể.\n" +
+            "- \"facebook\"/\"telegram\"/\"website\": khi hỏi về tin nhắn/hội thoại của một kênh chat cụ thể.\n" +
             "- Nếu câu hỏi KHÔNG nêu rõ nguồn nào (vd hỏi tiếp theo một câu trước đó), bỏ hẳn field \"category\" thay vì đoán đại — hệ thống sẽ tự suy ra từ ngữ cảnh trước đó.\n" +
             "2. Chỉ được gọi tool cho thiết bị thật sự có tên hoặc ID trùng khớp hoặc nằm trong danh sách đăng ký dưới đây (câu hỏi về cuộc gọi hoặc kênh chat luôn hợp lệ, không cần khớp danh sách thiết bị). Nếu người dùng hỏi một thiết bị lạ không tồn tại, hãy trả lời thẳng là hệ thống không lắp đặt thiết bị đó, TUYỆT ĐỐI không được gọi tool.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
