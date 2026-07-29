@@ -14,5 +14,10 @@ data class SearchContract(
     val targetObject: String? = null,   // person, car, dog...
     val detailsKeywords: List<String> = emptyList(),
     val deviceState: String? = null,     // "true", "false"
-    val aggregation: AggregationType = AggregationType.NONE
+    val aggregation: AggregationType = AggregationType.NONE,
+    // ✅ MỚI: "summary" | "detail" — do chính AI (Groq) điền qua tool call db_search khi nó
+    // biết câu hỏi chỉ cần số liệu tổng hợp (vd "hôm nay có mấy cuộc gọi"), không cần liệt kê
+    // từng dòng log thô. Mặc định "detail" để giữ nguyên hành vi cũ (liệt kê chi tiết) cho mọi
+    // caller chưa biết tới field này (QA Mode cục bộ, tool call cũ chưa có granularity).
+    val granularity: String = "detail"
 )

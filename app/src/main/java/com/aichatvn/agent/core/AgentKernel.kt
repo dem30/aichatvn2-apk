@@ -692,7 +692,8 @@ class AgentKernel @Inject constructor(
                 sourceCategory = resolvedSourceCategory,
                 sourceIdOrName = resolvedSourceName ?: sourceHint,
                 targetObject = objectLabel,
-                aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE
+                aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE,
+                granularity = toolCall.params["granularity"] ?: "detail"
             )
 
             val searchResult = databaseSearchHelper.executeSearchContract(contract)
@@ -854,12 +855,19 @@ class AgentKernel @Inject constructor(
                     val category = json.optString("category", "").trim()
                     val target = json.optString("target", "").trim()
                     val legacySource = json.optString("source", "").trim()
+                    // ✅ MỚI: "summary | detail" — model tự yêu cầu mức độ chi tiết cần thiết cho
+                    // câu hỏi (xem buildToolCallingGuard()). Validate với 2 giá trị hợp lệ; giá trị
+                    // rác/thiếu -> mặc định "detail" giống hành vi cũ, không vỡ gì với model/cache
+                    // prompt cũ chưa biết field này.
+                    val granularity = json.optString("granularity", "detail").trim().lowercase()
+                        .takeIf { it == "summary" } ?: "detail"
                     ToolCall(tool, buildMap {
                         put("timeframe", timeframe)
                         put("object", objectLabel)
                         if (category.isNotBlank()) put("category", category)
                         if (target.isNotBlank()) put("target", target)
                         if (legacySource.isNotBlank()) put("source", legacySource)
+                        put("granularity", granularity)
                     })
                 }
                 "catalog_search" -> {
@@ -1176,8 +1184,12 @@ class AgentKernel @Inject constructor(
             "  \"timeframe\": \"today | yesterday | last_3_days | last_7_days\",\n" +
             "  \"object\": \"person | car | motorbike | dog | cat | package | all\",\n" +
             "  \"category\": \"camera | tuya | call | facebook | telegram | website\",\n" +
-            "  \"target\": \"tên camera hoặc thiết bị cụ thể mà người dùng nhắc tới nếu category là camera/tuya; để trống nếu không\"\n" +
+            "  \"target\": \"tên camera hoặc thiết bị cụ thể mà người dùng nhắc tới nếu category là camera/tuya; để trống nếu không\",\n" +
+            "  \"granularity\": \"summary | detail\"\n" +
             "}\n" +
+            "Lưu ý chọn \"granularity\":\n" +
+            "- \"summary\": khi câu hỏi chỉ cần số liệu/kết quả tổng hợp (vd \"hôm nay có mấy cuộc gọi\", \"hôm qua có ai gọi nhỡ không\") — KHÔNG cần xem từng dòng log thô.\n" +
+            "- \"detail\": khi câu hỏi cần biết diễn biến/nội dung cụ thể (vd \"lúc 5 giờ chiều nói chuyện gì\", \"cuộc gọi lúc đó kéo dài bao lâu\") hoặc khi không chắc — mặc định dùng \"detail\".\n" +
             "Lưu ý chọn \"category\":\n" +
             "- \"camera\" hoặc \"tuya\": khi hỏi về hoạt động camera/thiết bị thông minh cụ thể (kèm \"target\" đúng tên).\n" +
             "- \"call\": khi hỏi về ${callKeywordSample.joinToString("/")}, lịch sử/cuộc gọi nhỡ.\n" +

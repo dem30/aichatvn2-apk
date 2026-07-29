@@ -333,6 +333,23 @@ class CallSkill @Inject constructor(
             }
         }
 
+        // ✅ SỬA (nhất quán event_log/call_logs): trước đây logEvent() được gọi rải rác ở
+        // 6 nơi khác nhau ngoài hàm này (rejectCall/endCall có gọi, nhưng SDP offer/answer
+        // thất bại, đối phương cúp máy (call_end nhận từ xa), và ICE FAILED/DISCONNECTED thì
+        // KHÔNG hề gọi) — khiến event_logs bị thiếu hẳn 1 số cuộc gọi mà call_logs vẫn có.
+        // Chuyển logEvent() vào ĐÂY vì finalizeCallLog() vốn đã chạy ở TẤT CẢ 6 đường thoát
+        // cuộc gọi không điều kiện — ghi cùng 1 chỗ, cùng 1 lần gọi, đảm bảo event_logs không
+        // bao giờ thiếu 1 cuộc gọi nào nữa, giống pattern world_state+event_logs của CameraSkill.
+        val peerLabel = peerName?.takeIf { it.isNotBlank() } ?: peerDeviceCode
+        val directionLabel = if (direction == CallDirection.INCOMING) "đến" else "đi"
+        val (eventType, statusLabel) = when (status) {
+            CallLogStatus.ANSWERED -> "call_ended" to "đã kết thúc (${durationSec}s)"
+            CallLogStatus.MISSED -> "call_missed" to "bị nhỡ"
+            CallLogStatus.REJECTED -> "call_rejected" to "bị từ chối"
+            else -> "call_failed" to "thất bại"
+        }
+        logEvent(eventType, peerDeviceCode, "Cuộc gọi $directionLabel với $peerLabel $statusLabel")
+
         connectedAtMs = 0L
         callStartedAtMs = 0L
         callDirectionForCurrentCall = null
@@ -532,7 +549,6 @@ class CallSkill @Inject constructor(
                     put("reason", "rejected")
                 }
             )
-            logEvent("call_rejected", fromCode, "Đã từ chối cuộc gọi từ mã máy $fromCode")
         }
         finalizeCallLog(
             snapshot.callId, snapshot.remoteDeviceCode, snapshot.peerDisplayName,
@@ -555,7 +571,6 @@ class CallSkill @Inject constructor(
                     put("reason", "hangup")
                 }
             )
-            logEvent("call_ended", remote, "Đã kết thúc cuộc gọi với $remote")
         }
         finalizeCallLog(
             current.callId, current.remoteDeviceCode, current.peerDisplayName,

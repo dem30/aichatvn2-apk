@@ -40,6 +40,13 @@ class DatabaseSearchHelper @Inject constructor(
         private val DATETIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault())
                 .withZone(ZoneId.systemDefault())
+
+        // ✅ MỚI: dùng cho granularity="summary" — "HH:mm-HH:mm ngày dd/MM" (1 dòng/cuộc gọi
+        // ghép sẵn giờ bắt đầu-kết thúc từ call_logs, thay vì liệt kê 2-3 dòng event_logs thô).
+        private val CALL_SUMMARY_TIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()).withZone(ZoneId.systemDefault())
+        private val CALL_SUMMARY_DATE_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("dd/MM", Locale.getDefault()).withZone(ZoneId.systemDefault())
     }
 
     /**
@@ -270,20 +277,58 @@ class DatabaseSearchHelper @Inject constructor(
                     }
 
                     append("\nChi tiết nhật ký cuộc gọi:\n")
-                    truncatedLogs.forEach { log ->
-                        val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
-                        // ✅ MỚI: tra tên người gọi qua call_contacts (deviceCode = log.sourceId,
-                        // theo đúng convention sourceId đang dùng cho camera/tuya trong file này).
-                        // Nếu không có contact lưu sẵn (số lạ/chưa lưu danh bạ) thì vẫn hiển thị
-                        // summary thô như trước, không để lỗi làm hỏng cả câu trả lời.
-                        val contactName = try {
-                            callContactDao.getByDeviceCode(log.sourceId)?.displayName?.takeIf { it.isNotBlank() }
+                    if (contract.granularity == "summary") {
+                        // ✅ MỚI: granularity=summary — đọc thẳng call_logs (đã có sẵn
+                        // startedAt/durationSec/status 1-dòng/cuộc gọi, do CallSkill.finalizeCallLog()
+                        // ghi) thay vì liệt kê từng dòng event_logs thô (2-3 dòng/cuộc gọi:
+                        // outgoing/answered/ended...). Giảm token đáng kể khi có nhiều cuộc gọi
+                        // test liên tiếp trong thời gian ngắn — không cần tự ghép cặp bắt đầu/kết
+                        // thúc từ text summary (dễ sai khi 2 cuộc gọi cách nhau vài giây).
+                        val callLogRows = try {
+                            callLogDao.observeRecent().first()
+                                .filter { it.startedAt in contract.sinceMs..contract.untilMs }
+                                .sortedBy { it.startedAt }
                         } catch (e: Exception) {
-                            logger.e("DatabaseSearchHelper", "Không tra được contact cho cuộc gọi ${log.sourceId}: ${e.message}")
-                            null
+                            logger.e("DatabaseSearchHelper", "Không đọc được call_logs cho granularity=summary: ${e.message}")
+                            emptyList()
                         }
-                        val callerNote = contactName?.let { " (người gọi: $it)" } ?: ""
-                        append("• [$timeStr] ${log.summary}$callerNote\n")
+                        if (callLogRows.isEmpty()) {
+                            append("(Không có dữ liệu chi tiết trong khoảng này — xem thống kê ở trên)\n")
+                        }
+                        callLogRows.forEach { log ->
+                            val startStr = CALL_SUMMARY_TIME_FORMATTER.format(Instant.ofEpochMilli(log.startedAt))
+                            val endStr = CALL_SUMMARY_TIME_FORMATTER.format(Instant.ofEpochMilli(log.startedAt + log.durationSec * 1000L))
+                            val dateStr = CALL_SUMMARY_DATE_FORMATTER.format(Instant.ofEpochMilli(log.startedAt))
+                            val directionLabel = if (log.direction == CallDirection.INCOMING) "gọi đến từ" else "gọi đi tới"
+                            val peerLabel = log.peerName?.takeIf { it.isNotBlank() }
+                                ?: try {
+                                    callContactDao.getByDeviceCode(log.peerDeviceCode)?.displayName?.takeIf { it.isNotBlank() }
+                                } catch (e: Exception) { null }
+                                ?: log.peerDeviceCode
+                            val resultLabel = when (log.status) {
+                                CallLogStatus.ANSWERED -> "đã kết nối (${log.durationSec}s)"
+                                CallLogStatus.MISSED -> "nhỡ"
+                                CallLogStatus.REJECTED -> "bị từ chối"
+                                else -> "thất bại"
+                            }
+                            append("• $startStr-$endStr ngày $dateStr: $directionLabel $peerLabel, kết quả $resultLabel\n")
+                        }
+                    } else {
+                        truncatedLogs.forEach { log ->
+                            val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
+                            // ✅ MỚI: tra tên người gọi qua call_contacts (deviceCode = log.sourceId,
+                            // theo đúng convention sourceId đang dùng cho camera/tuya trong file này).
+                            // Nếu không có contact lưu sẵn (số lạ/chưa lưu danh bạ) thì vẫn hiển thị
+                            // summary thô như trước, không để lỗi làm hỏng cả câu trả lời.
+                            val contactName = try {
+                                callContactDao.getByDeviceCode(log.sourceId)?.displayName?.takeIf { it.isNotBlank() }
+                            } catch (e: Exception) {
+                                logger.e("DatabaseSearchHelper", "Không tra được contact cho cuộc gọi ${log.sourceId}: ${e.message}")
+                                null
+                            }
+                            val callerNote = contactName?.let { " (người gọi: $it)" } ?: ""
+                            append("• [$timeStr] ${log.summary}$callerNote\n")
+                        }
                     }
                 }
             } else if (isBrainCategory) {
