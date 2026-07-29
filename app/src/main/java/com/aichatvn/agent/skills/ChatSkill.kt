@@ -5,6 +5,7 @@ import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.core.ChatHistoryManager
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
 import com.aichatvn.agent.core.plugin.PluginParameter
@@ -40,6 +41,7 @@ class ChatSkill @Inject constructor(
     @ApplicationContext private val context: Context,
     private val agentKernel: AgentKernel,
     private val configProvider: AppConfigProvider,
+    private val chatHistoryManager: ChatHistoryManager,
     logger: Logger
 ) : BaseSkill("chat", "Chat với AI", logger), Plugin {
 
@@ -84,6 +86,12 @@ class ChatSkill @Inject constructor(
 
     companion object {
         private const val DEFAULT_MEMORY_LOOKBACK_DAYS = 3
+
+        // ✅ MỚI: cửa sổ thời gian coi SearchFocus (AgentKernel.ChatHistoryManager) là "còn nóng"
+        // — nếu Two-Pass vừa search thật cho user này trong khoảng này, buildMemoryContext() sẽ
+        // không tự nhồi thêm nữa (xem chỗ dùng bên dưới). 5 phút đủ phủ hầu hết chuỗi hỏi liên
+        // tiếp trong 1 phiên chat, nhưng không quá dài để chặn buildMemoryContext() ở phiên mới.
+        private const val SEARCH_FOCUS_FRESH_MS = 5 * 60 * 1000L
 
         private val QUANTITY_KEYWORDS = setOf(
             "bao nhieu", "may lan", "so luong", "tong cong", "duoc may"
@@ -645,7 +653,21 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                val memoryContext = if (_chatMode.value != ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
+                // ✅ MỚI (theo yêu cầu: "tắt luôn"): buildMemoryContext() từng chạy song song,
+                // độc lập với Two-Pass db_search của AgentKernel — cả 2 đường cùng tự đoán domain
+                // và tự nhồi log riêng, dẫn tới 2 khối <SYSTEM_MEMORY> chồng nhau trong cùng 1
+                // request (đã thấy trong log build thật: 1 khối tự đây, 1 khối từ
+                // interceptAndExecuteToolCall sau khi model gọi db_search) — tốn token gấp đôi mà
+                // Two-Pass mới hơn (có category=chat/qa, keyword lọc nội dung, KEYWORD_MATCH_LIMIT)
+                // luôn chính xác và gọn hơn bản nhồi sẵn ở đây. Nếu AgentKernel vừa/đang tự search
+                // cho user này (SearchFocus còn "nóng" — set trong khoảng SEARCH_FOCUS_FRESH_MS gần
+                // đây), coi như Two-Pass đã/sẽ phụ trách domain này → không cần buildMemoryContext()
+                // nhồi thêm nữa, để nó tự search lại theo đúng câu hỏi + keyword hiện tại.
+                val hasFreshSearchFocus = chatHistoryManager.getLastSearchFocus(username)
+                    ?.let { (System.currentTimeMillis() - it.setAt) <= SEARCH_FOCUS_FRESH_MS } == true
+
+                val memoryContext = if (!hasFreshSearchFocus &&
+                    _chatMode.value != ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
                     // ✅ SỬA: truyền đúng cờ admin đã cấu hình (!blockExternalDeviceControl) thay
                     // vì để buildMemoryContext() tự hardcode chặn theo username như trước — đây
                     // chính là chỗ khiến khách ngoại kênh (VD Telegram) không bao giờ có

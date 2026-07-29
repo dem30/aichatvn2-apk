@@ -1210,19 +1210,24 @@ class AgentKernel @Inject constructor(
             }
         } catch (e: Exception) { emptyList() }
 
+        // ✅ RÚT GỌN (theo yêu cầu): trước đây mỗi field (timeframe/granularity/category/keyword)
+        // có 1 dòng giải thích + ví dụ riêng — đúng nội dung cần nhắc AI mỗi lượt (vì Groq không
+        // có trí nhớ giữa các lần gọi), nhưng dài hơn mức cần thiết. Giữ lại đúng 3 thứ bắt buộc
+        // AI phải biết: (1) JSON schema + enum hợp lệ, (2) catalogue tên thật (camera/thiết bị/
+        // danh bạ/kênh chat) để copy đúng vào target, (3) rule "không tự bịa thiết bị lạ". Bỏ các
+        // câu ví dụ minh hoạ và diễn giải lặp ý đã nằm sẵn trong tên field.
         return "🚨 TRUY VẤN DỮ LIỆU THỰC TẾ (db_search):\n" +
-            "Hỏi về hoạt động camera/thiết bị/kênh chat/cuộc gọi (quá khứ/hiện tại), HOẶC câu hỏi kiến thức chung/FAQ/hướng dẫn sử dụng mà chưa có info → trả DUY NHẤT 1 JSON thô (không markdown, không giải thích):\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên cụ thể nếu category=camera/tuya; từ khóa tìm kiếm nếu category=qa; để trống nếu không\",\"keyword\":\"từ khóa/cụm từ NỘI DUNG cần lọc trong log (vd 'đặt hàng', 'giao hàng trễ'); chép nguyên văn từ câu hỏi user; để trống nếu không cần lọc theo nội dung\",\"granularity\":\"summary|detail\"}\n" +
-            "- timeframe: mốc cụ thể không khớp enum (vd \"ngày 27\", \"3 hôm trước\") → chọn khung NHỎ NHẤT còn chứa mốc đó, rồi để granularity=detail lọc lại đúng ngày/giờ. Bỏ qua field này (giữ mặc định) khi category=qa.\n" +
-            "- granularity: summary=chỉ cần số liệu tổng hợp (vd \"hôm nay mấy cuộc gọi\"); detail=cần nội dung/diễn biến cụ thể hoặc không chắc (mặc định).\n" +
-            "- category: camera/tuya=thiết bị cụ thể (kèm target đúng tên); call=hỏi về ${callKeywordSample.joinToString("/")}, lịch sử/gọi nhỡ; facebook/telegram/website=tin nhắn/hội thoại của ĐÚNG 1 kênh đó; chat=tin nhắn nói chung khi KHÔNG rõ/không nêu tên kênh cụ thể (gộp mọi kênh); qa=câu hỏi chung/FAQ/chính sách/hướng dẫn không thuộc log thiết bị-cuộc gọi-tin nhắn cụ thể (kèm target=từ khóa cần tra). Hỏi tiếp câu trước, không rõ nguồn → bỏ hẳn field category, để hệ thống tự suy từ ngữ cảnh.\n" +
-            "- keyword: chỉ dùng khi câu hỏi cần lọc theo NỘI DUNG cụ thể bên trong log (vd \"tin nhắn nào nói cần đặt hàng\" → keyword=\"đặt hàng\"). Không dùng để lọc theo kênh/loại thiết bị — việc đó đã có category/target lo.\n" +
-            "- Chỉ gọi tool cho thiết bị có tên/ID khớp danh sách dưới (cuộc gọi/kênh chat/qa luôn hợp lệ, không cần khớp danh sách). Thiết bị lạ không có trong danh sách → trả lời thẳng KHÔNG lắp đặt, TUYỆT ĐỐI không gọi tool.\n" +
-            (if (cameraNames.isNotEmpty()) "📷 Camera đang có: ${cameraNames.joinToString(", ")}\n" else "") +
-            (if (deviceNames.isNotEmpty()) "🔌 Thiết bị đang có: ${deviceNames.joinToString(", ")}\n" else "") +
-            (if (callContactNames.isNotEmpty()) "📞 Danh bạ cuộc gọi đã lưu: ${callContactNames.joinToString(", ")}\n" else "") +
-            "💬 Kênh chat hỗ trợ: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình kênh chat nào")
+            "Cần tra hoạt động camera/thiết bị/chat/cuộc gọi, hoặc câu hỏi chung/FAQ chưa có info → trả DUY NHẤT 1 JSON thô:\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên thiết bị/camera đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"tóm tắt ngắn nội dung cần lọc trong log, copy sát câu hỏi; để trống nếu không cần\",\"granularity\":\"summary|detail\"}\n" +
+            "- category=qa cho câu hỏi chung không thuộc camera/thiết bị/cuộc gọi/tin nhắn cụ thể. category=chat khi hỏi tin nhắn nhưng không rõ kênh nào. Không rõ nguồn → bỏ hẳn field category.\n" +
+            "- Chỉ gọi tool cho thiết bị khớp danh sách dưới (cuộc gọi/chat/qa luôn hợp lệ). Thiết bị lạ không có trong danh sách → trả lời KHÔNG lắp đặt, không gọi tool.\n" +
+            (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
+            (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
+            (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
+            "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") +
+            (if (callKeywordSample.isNotEmpty()) "\n📞 call còn hiểu: ${callKeywordSample.joinToString("/")}" else "")
     }
+
 
     /**
      * ✅ MỚI: Quyết định có đính kèm buildToolCallingGuard() hay không, KHÔNG chỉ dựa vào
