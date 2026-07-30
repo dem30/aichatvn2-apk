@@ -431,11 +431,18 @@ class AgentKernel @Inject constructor(
             val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalized, now)
             val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
             val until = parsedRange?.until ?: now
-            
-            val label: String = if (parsedRange != null && parsedRange.label != null) {
+
+            // ✅ MỚI: MINH BẠCH FALLBACK — cùng tinh thần nhãn "(mặc định 3 ngày)" mà
+            // TimeRangeResolver.resolve() (đường AI) đã làm khi không nhận diện được timeframe.
+            // Trước đây khi VietnameseTimeRangeParser.parse() trả null (không tìm thấy cụm thời
+            // gian nào trong câu — có thể do câu không nói rõ, hoặc do cách diễn đạt nằm ngoài các
+            // dạng parser này hỗ trợ), nhãn vẫn ghi cứng "hôm nay" — giống hệt như khi user CHỦ Ý
+            // hỏi về hôm nay, khiến câu trả lời trông như đã hiểu đúng ý trong khi thực chất chỉ là
+            // đoán/mặc định 24 giờ qua. Sửa: phân biệt rõ 2 trường hợp bằng nhãn khác nhau.
+            val label: String = if (parsedRange != null) {
                 parsedRange.label
             } else {
-                "hôm nay"
+                "24 giờ gần nhất (không xác định được mốc thời gian cụ thể, dùng mặc định)"
             }
 
             val isQuantity = QUANTITY_KEYWORDS.any { normalized.contains(it) }
