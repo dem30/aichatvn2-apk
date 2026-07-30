@@ -299,7 +299,7 @@ class AgentKernel @Inject constructor(
                                 rawAnswer
                             }
                         } ?: if (request.allowDeviceControl) {
-                            runLocalQAEventAnalysis(message)
+                            runLocalQAEventAnalysis(message, username)
                         } else {
                             // ✅ SỬA: khách ngoại bị chặn điều khiển thiết bị tuyệt đối không được
                             // đọc WorldState/EventLog trong mode QA — trước đây hàm này chạy vô
@@ -423,7 +423,7 @@ class AgentKernel @Inject constructor(
         return ChatResponse(responseText, usedMode, usedPluginId)
     }
 
-    private suspend fun runLocalQAEventAnalysis(userQuery: String): String = withContext(Dispatchers.IO) {
+    private suspend fun runLocalQAEventAnalysis(userQuery: String, username: String): String = withContext(Dispatchers.IO) {
         try {
             val now = System.currentTimeMillis()
             val normalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userQuery.lowercase()) ?: ""
@@ -501,10 +501,66 @@ class AgentKernel @Inject constructor(
                 chatKeywords.any { normalized.contains(it) } -> sourceCategory = "chat"
             }
 
+            // ✅ MỚI: FOLLOW-UP FALLBACK — cùng tinh thần resolveActiveDomains()/SearchFocus ở
+            // đường Groq 2-pass. Câu hỏi đào sâu kiểu "họ mặc áo màu gì" không chứa từ khoá
+            // camera/tuya/chat/call nào → sourceCategory ở trên vẫn null. Trước đây QA mode local
+            // không có đường fallback này nên luôn search KHÔNG lọc domain, dễ trả nhầm nguồn khi
+            // có nhiều camera/thiết bị. Chỉ fallback khi câu hỏi hiện tại KHÔNG tự nêu domain nào
+            // (giữ đúng nguyên tắc "gợi ý lượt này luôn thắng gợi ý xuyên lượt").
+            if (sourceCategory == null) {
+                chatHistoryManager.getLastSearchFocus(username)?.let { focus ->
+                    sourceCategory = when (focus.sourceCategory) {
+                        "camera" -> "camera"
+                        "tuya" -> "tuya"
+                        "call" -> "call"
+                        "facebook", "telegram", "website", "chat" -> focus.sourceCategory
+                        else -> null
+                    }
+                    if (sourceCategory != null && sourceName == null) {
+                        sourceName = focus.sourceIdOrName
+                    }
+                }
+            }
+
+            // ✅ MỚI: "keyword"/detailsKeywords — cùng khoảng cách log đã lộ ra ở đường Groq
+            // 2-pass (interceptAndExecuteToolCall): trước đây hàm local này chỉ lọc theo
+            // category/timeframe/object thô, không lọc theo NỘI DUNG câu hỏi (vd "nói cần đặt
+            // hàng"). Không có model AI để tự tóm tắt keyword ngắn gọn ở đây như bên đường Groq —
+            // nên KHÔNG thể dùng thẳng nguyên cả câu hỏi làm keyword: log.summary/last_message
+            // không chứa nguyên văn câu hỏi (kèm cả từ nghi vấn, mốc thời gian, tên domain...),
+            // contains() trên cả câu gần như luôn fail → lọc rỗng kết quả đúng đắn thay vì cải
+            // thiện gì. Thay vào đó: cắt bỏ khỏi câu gốc (giữ dấu, không normalize — vì
+            // log.summary tiếng Việt có dấu) các cụm điều khiển ĐÃ nhận diện được ở trên (nhãn
+            // thời gian đã parse, tên domain/thiết bị/camera đã match), chỉ giữ phần còn lại làm
+            // keyword thô. Nếu phần còn lại quá ngắn (≤2 ký tự sau khi trim) — không đủ tin cậy để
+            // lọc — bỏ hẳn keyword, coi như không xác định được, để tránh lọc rỗng nhầm.
+            val keywordParam: String? = if (!isQuantity && !isYesNo) {
+                var stripped = userQuery
+                parsedRange?.label?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
+                sourceName?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
+                matchedCam?.customername?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
+                matchedDev?.name?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
+                stripped = stripped.trim()
+                stripped.takeIf { it.length > 2 }
+            } else {
+                null
+            }
+
             val deviceState = when {
                 normalized.contains("bat") || normalized.contains("mo") -> "true"
                 normalized.contains("tat") -> "false"
                 else -> null
+            }
+
+            // ✅ MỚI: cùng Keyword Guard đã áp ở interceptAndExecuteToolCall() — category=call +
+            // granularity=summary đọc thẳng callLogDao.observeRecent() theo mốc thời gian, bỏ qua
+            // hoàn toàn biến `filtered` mà detailsKeywords lọc trên đó. Không ép granularity ở đây
+            // (hàm local này không có tham số granularity riêng như schema AI), nhưng path
+            // "call" đã return sớm summaryText bên dưới (bộ sinh câu riêng của
+            // DatabaseSearchHelper.isCallCategory) nên không bị ảnh hưởng bởi keyword dù có hay
+            // không — giữ nguyên hành vi cũ cho call, chỉ log cảnh báo nếu có keyword bị bỏ qua.
+            if (keywordParam != null && sourceCategory == "call") {
+                logger.w("AgentKernel", "⚠️ [Keyword Guard] QA local: category=call + keyword — nhánh call dùng bộ sinh câu riêng, keyword không áp dụng ở đây.")
             }
 
             val contract = SearchContract(
@@ -516,10 +572,24 @@ class AgentKernel @Inject constructor(
                 sourceIdOrName = sourceName ?: matchedCam?.id ?: matchedDev?.id,
                 targetObject = extractObjectLabel(normalized),
                 deviceState = deviceState,
-                aggregation = aggregation
+                aggregation = aggregation,
+                detailsKeywords = keywordParam?.let { listOf(it) } ?: emptyList()
             )
 
-            val searchResult = databaseSearchHelper.executeSearchContract(contract)
+            // ✅ MỚI: cùng KEYWORD_MATCH_LIMIT đã dùng ở đường Groq 2-pass — kết quả đã lọc theo
+            // nội dung thì gần chính xác, không cần trả nhiều dòng về bộ sinh câu Kotlin thuần.
+            val searchResult = if (keywordParam != null) {
+                databaseSearchHelper.executeSearchContract(contract, limit = KEYWORD_MATCH_LIMIT)
+            } else {
+                databaseSearchHelper.executeSearchContract(contract)
+            }
+
+            // ✅ MỚI: ghi lại SearchFocus sau search thành công — cùng cơ chế đã áp cho đường Groq
+            // 2-pass, để câu hỏi đào sâu TIẾP THEO (kể cả khi lại rơi vào QA mode local) cũng có
+            // domain để fallback, không chỉ có tác dụng một chiều từ Groq mode sang QA mode.
+            if (sourceCategory != null) {
+                chatHistoryManager.setLastSearchFocus(username, sourceCategory, sourceName ?: matchedCam?.id ?: matchedDev?.id)
+            }
 
             // ✅ MỚI: "call" đã có bộ sinh câu RIÊNG trong DatabaseSearchHelper.isCallCategory
             // (thống kê đi/đến/nhỡ chính xác qua countMissedCalls()) — không viết lại bộ sinh câu
