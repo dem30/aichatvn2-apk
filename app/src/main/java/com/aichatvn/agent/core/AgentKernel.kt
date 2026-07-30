@@ -547,6 +547,18 @@ class AgentKernel @Inject constructor(
             // DANH SÁCH TỪ (không phải 1 cụm dài) để nơi match có thể so khớp TỪNG TỪ với
             // log.summary thay vì đòi khớp nguyên cả cụm. Nếu không còn từ nào sau khi lọc — bỏ
             // hẳn keyword, coi như không xác định được, tránh lọc rỗng nhầm.
+            // 🐛 SỬA LỖI THỰC TẾ (câu hỏi "hôm qua có ai nhắn nội dung báo giá không" luôn ra rỗng
+            // dù log.summary CÓ chứa đúng "báo giá" — xem ChatSkill.recordIncomingChatEvent(), mỗi
+            // tin nhắn được ghi thành 1 dòng EventLogEntity riêng với nội dung thật nhúng thẳng vào
+            // summary, nên storage KHÔNG phải nguyên nhân): comment ở trên đã ghi rõ ý định "giữ
+            // dấu — vì log.summary tiếng Việt có dấu", NHƯNG dòng code ngay dưới lại gọi
+            // VietnameseTextNormalizer.normalize() trên `stripped` TRƯỚC KHI tách từ — nghĩa là
+            // keywordParam cuối cùng luôn bị strip dấu ("báo giá" → "bao","gia"), trong khi
+            // log.summary/last_message mà nó đem so ở DatabaseSearchHelper (contains(), không
+            // strip dấu) vẫn giữ nguyên dấu ("báo giá") → "báo giá".contains("bao") luôn = false,
+            // lọc rỗng 100% các từ khoá có dấu (gần như mọi nội dung tiếng Việt thật). Sửa: tách từ
+            // từ CHÍNH `stripped` (còn dấu), chỉ dùng bản normalize (không dấu) để QUYẾT ĐỊNH từ
+            // nào là stopword/quá ngắn — giữ nguyên từ CÓ DẤU trong danh sách keyword cuối cùng.
             val keywordParam: List<String> = if (!isQuantity && !isYesNo) {
                 var stripped = userQuery
                 parsedRange?.label?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
@@ -554,11 +566,13 @@ class AgentKernel @Inject constructor(
                 matchedCam?.customername?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 matchedDev?.name?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
 
-                val strippedNormalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(stripped.lowercase()) ?: stripped.lowercase()
-                strippedNormalized
+                stripped
                     .split(Regex("\\s+"))
                     .map { it.trim() }
-                    .filter { it.length > 1 && it !in STOPWORD_KEYWORDS }
+                    .filter { word ->
+                        val normWord = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(word.lowercase()) ?: word.lowercase()
+                        normWord.length > 1 && normWord !in STOPWORD_KEYWORDS
+                    }
             } else {
                 emptyList()
             }
@@ -902,14 +916,38 @@ class AgentKernel @Inject constructor(
                 }
             }
 
-            val timeframe = if (objectLabel == "all" && resolvedSourceCategory == null && rawTimeframe in setOf("last_3_days", "last_7_days")) {
-                logger.w("AgentKernel", "⚠️ [Cost Guard] Chặn combo tốn kém object=all + $rawTimeframe (không có source thu hẹp), ép về 'today'")
-                "today"
+            // ✅ MỚI: ĐỒNG BỘ VỚI QA LOCAL (runLocalQAEventAnalysis) — trước đây đường AI/Groq chỉ
+            // biết 4 giá trị enum thô mà model tự phải "dịch" câu hỏi sang
+            // (today|yesterday|last_3_days|last_7_days), rồi TimeRangeResolver.resolve() cũng chỉ
+            // hiểu đúng 4 giá trị đó (mọi thứ khác rơi vào nhánh else "mặc định lùi lại 3 ngày").
+            // Điều đó khiến đường AI KHÔNG THỂ xử lý "hôm kia", "tuần trước", "tháng trước", "3
+            // tiếng trước", "5 ngày trước", ngày tuyệt đối ("15/5", "ngày 20 tháng 3")... trong khi
+            // đường QA local (VietnameseTimeRangeParser) đã hỗ trợ đầy đủ các dạng này từ lâu.
+            // Sửa: parse THẲNG câu hỏi gốc bằng đúng VietnameseTimeRangeParser mà QA local dùng —
+            // nếu tìm thấy cụm thời gian tường minh, dùng luôn (khớp 100% hành vi QA local). Chỉ
+            // khi câu hỏi KHÔNG chứa cụm thời gian nào parser nhận ra (vd câu hỏi đào sâu không
+            // nhắc lại mốc thời gian, hoặc diễn đạt ngoài phạm vi parser) thì mới rơi về enum thô
+            // AI tự phân loại (rawTimeframe) qua TimeRangeResolver.resolve() như cũ — giữ nguyên
+            // vai trò "lưới an toàn" của đường cũ, không bỏ đi.
+            val nowMs = System.currentTimeMillis()
+            val normalizedForTime = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(originalMessage.lowercase()) ?: originalMessage.lowercase()
+            val vnParsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedForTime, nowMs)
+
+            var timeRange = if (vnParsedRange != null) {
+                com.aichatvn.agent.utils.TimeRange(vnParsedRange.since, vnParsedRange.until, vnParsedRange.label)
             } else {
-                rawTimeframe
+                timeRangeResolver.resolve(rawTimeframe)
             }
 
-            val timeRange = timeRangeResolver.resolve(timeframe)
+            // ✅ SỬA: Cost Guard trước đây chỉ chặn dựa trên ENUM thô (rawTimeframe in
+            // last_3_days/last_7_days) — nên bị "lọt lưới" ngay khi timeRange thực tế đến từ
+            // VietnameseTimeRangeParser ở trên (vd "tháng trước"/"7 ngày trước" có thể dài đúng
+            // bằng hoặc hơn last_7_days nhưng không mang tên enum đó). Chuyển điều kiện chặn sang
+            // đúng ĐỘ DÀI khoảng thời gian đã resolve (>24h), áp dụng nhất quán cho cả 2 nguồn.
+            if (objectLabel == "all" && resolvedSourceCategory == null && (timeRange.until - timeRange.since) > 24 * 60 * 60 * 1000L) {
+                logger.w("AgentKernel", "⚠️ [Cost Guard] Chặn combo tốn kém object=all + khoảng '${timeRange.label}' (không có source thu hẹp), ép về 'today'")
+                timeRange = timeRangeResolver.resolve("today")
+            }
 
             // ✅ MỚI: "keyword" (chuỗi tự do model chép từ câu hỏi user) → detailsKeywords.
             // Trước đây field này tồn tại sẵn trong SearchContract và ĐÃ được
@@ -918,12 +956,55 @@ class AgentKernel @Inject constructor(
             // được nội dung. Giữ nguyên 1 phần tử duy nhất (không tách từ) vì contains() đã khớp cả cụm dài.
             val keywordParam = toolCall.params["keyword"]?.trim()?.takeIf { it.isNotBlank() }
 
+            // ✅ MỚI: ĐỒNG BỘ VỚI QA LOCAL — QA local đã bỏ hẳn enum object cứng
+            // (extractObjectLabel/OBJECT_LABEL_KEYWORDS, xem comment ở runLocalQAEventAnalysis)
+            // vì objectAliasResolver.matches() chỉ khớp đúng 6 giá trị enum (person/car/motorbike/
+            // dog/cat/package) — bất kỳ vật thể nào ngoài 6 giá trị đó (vd "con bò") đều bị model ép
+            // vào 1 trong 6 giá trị SAI hoặc "all", rồi filter cứng theo giá trị sai đó xoá sạch kết
+            // quả, dù log.summary có chứa đúng từ "bò". Trong khi QA local chỉ cần dò bằng từ khoá
+            // nội dung là ra ngay. Sửa: đường AI KHÔNG còn dùng "object" để lọc cứng nữa (xem
+            // targetObject = null bên dưới) — nếu model đã điền "keyword" thì dùng thẳng; nếu model
+            // CHỈ điền "object" (quên điền keyword) thì suy ra 1 từ khoá tiếng Việt tương ứng từ
+            // đúng 6 giá trị enum để vẫn lọc được qua CÙNG một cơ chế so khớp nội dung như mọi
+            // trường hợp khác — không còn đường lọc cứng nào riêng cho object nữa.
+            val objectFallbackKeyword = mapOf(
+                "person" to "người", "car" to "ô tô", "motorbike" to "xe máy",
+                "dog" to "chó", "cat" to "mèo", "package" to "gói hàng"
+            )[objectLabel.lowercase()]
+
+            // ✅ MỚI (bug thực tế: "hôm qua có ai nhắn nội dung báo giá không" luôn ra rỗng):
+            // schema mô tả "target" là "tên thiết bị/camera... hoặc từ khóa nếu qa" — KHÔNG hề nói
+            // gì về việc dùng target để tìm NỘI DUNG tin nhắn cho category=chat/facebook/telegram/
+            // website, nên model hay điền nhầm nội dung câu hỏi ("báo giá") vào target thay vì
+            // keyword. currentTurnHint/sourceHint sau đó bị gán thẳng vào contract.sourceIdOrName —
+            // filter này ở DatabaseSearchHelper CHỈ so khớp trên sourceId/senderId/device_name
+            // (KHÔNG so trên log.value["last_message"] — nội dung tin nhắn thật), nên 1 hint là nội
+            // dung câu hỏi như "báo giá" không bao giờ khớp được → filtered rỗng NGAY TỪ bước lọc
+            // sourceIdOrName, trước cả khi kịp chạy tới bước lọc keyword/last_message bên dưới.
+            // Kết quả: câu trả lời chỉ còn dựa được vào thống kê tin chưa đọc/tin nhắn cuối cùng đã
+            // có sẵn trong log gần nhất, đúng như hiện tượng quan sát được.
+            // Sửa: với domain chat/facebook/telegram/website, sourceIdOrName CHỈ được áp dụng khi
+            // hint đó đã khớp được với 1 tên/kênh THẬT SỰ đã biết (resolvedSourceName != null, vd
+            // model tự nêu đúng "facebook"/"telegram"/"website"). Nếu hint chưa khớp được gì (rất
+            // có thể là nội dung câu hỏi bị điền nhầm chỗ) — không dùng nó để lọc cứng theo tên
+            // nữa, mà coi nó như 1 từ khoá nội dung bổ sung, đi qua đúng con đường
+            // detailsKeywords/last_message đã có sẵn — cùng triết lý "tìm kiếm chủ yếu trên từ
+            // khoá" đã áp cho object ở trên.
+            val isChatDomain = resolvedSourceCategory in setOf("chat", "facebook", "telegram", "website")
+            val currentTurnOrStaleHint = if (currentTurnHint != null || directCategory == null) sourceHint else null
+            val finalSourceIdOrName = resolvedSourceName ?: (if (isChatDomain) null else currentTurnOrStaleHint)
+            val unresolvedHintAsKeyword = if (isChatDomain && resolvedSourceName == null) {
+                currentTurnOrStaleHint?.takeIf { it.isNotBlank() }
+            } else null
+
+            val effectiveKeyword = keywordParam ?: objectFallbackKeyword ?: unresolvedHintAsKeyword
+
             // ✅ MỚI: nhánh isCallCategory + granularity="summary" trong DatabaseSearchHelper đọc
             // THẲNG call_logs thô theo mốc thời gian (xem comment ở đó) — hoàn toàn KHÔNG đi qua
             // biến `filtered` đã áp detailsKeywords, nên nếu để nguyên granularity="summary" thì
             // keyword sẽ bị lờ đi hoàn toàn dù model đã điền đúng. Ép về "detail" khi có keyword
             // để filter theo nội dung thực sự có tác dụng — cùng tinh thần Cost Guard phía trên.
-            val resolvedGranularity = if (keywordParam != null && resolvedSourceCategory == "call") {
+            val resolvedGranularity = if (effectiveKeyword != null && resolvedSourceCategory == "call") {
                 logger.w("AgentKernel", "⚠️ [Keyword Guard] category=call + keyword được yêu cầu → ép granularity=detail (nhánh summary bỏ qua keyword filter)")
                 "detail"
             } else {
@@ -940,14 +1021,18 @@ class AgentKernel @Inject constructor(
                 // này) VÀ model đã chọn category khác domain với gợi ý đó (bị chặn ghi đè ở khối
                 // trên), thì KHÔNG dùng gợi ý cũ đó làm sourceIdOrName nữa — nếu không, category dù
                 // đã đúng ("chat") nhưng vẫn bị lọc nhầm theo tên cũ ("vinh"), tiếp tục trả về rỗng.
-                sourceIdOrName = resolvedSourceName ?: (if (currentTurnHint != null || directCategory == null) sourceHint else null),
-                targetObject = objectLabel,
+                // ✅ Cùng nguyên tắc trên: với domain chat, chỉ dùng finalSourceIdOrName khi đã thật
+                // sự khớp tên/kênh — hint chưa khớp được gì đã chuyển sang effectiveKeyword ở trên.
+                sourceIdOrName = finalSourceIdOrName,
+                // ✅ SỬA: không còn lọc cứng theo "object" nữa (xem comment objectFallbackKeyword ở
+                // trên) — khớp đúng nguyên tắc "tìm kiếm chủ yếu trên từ khoá" mà QA local đã dùng.
+                targetObject = null,
                 aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE,
                 granularity = resolvedGranularity,
-                detailsKeywords = keywordParam?.let { listOf(it) } ?: emptyList()
+                detailsKeywords = effectiveKeyword?.let { listOf(it) } ?: emptyList()
             )
 
-            val searchResult = if (keywordParam != null) {
+            val searchResult = if (effectiveKeyword != null) {
                 // ✅ MỚI: khi đã có "keyword" lọc theo nội dung, kết quả còn lại đã gần chính
                 // xác (đúng ý user, không phải liệt kê chung chung theo thời gian nữa) — không
                 // cần trả 20 dòng mặc định về AI, chỉ cần top vài dòng khớp nhất để tiết kiệm
@@ -960,7 +1045,7 @@ class AgentKernel @Inject constructor(
             // ✅ MỚI: ghi lại trọng tâm search vừa thực hiện (bất kể domain camera/tuya/chat),
             // để các câu hỏi đào sâu tiếp theo (vd "họ mặc áo màu gì") tự động được coi là
             // liên quan mà không cần khớp từ khoá cứng — xem shouldAttachToolGuard().
-            chatHistoryManager.setLastSearchFocus(username, resolvedSourceCategory, resolvedSourceName ?: sourceHint)
+            chatHistoryManager.setLastSearchFocus(username, resolvedSourceCategory, finalSourceIdOrName ?: sourceHint)
 
             // ✅ SỬA: dọn sạch cả đoạn mời gọi Tool lẫn khối <SYSTEM_MEMORY> cũ thụ động của Pass 1
             val cleanBaseContext = stripOldSystemMemory(stripDbSearchInvite(baseContext))
@@ -1472,7 +1557,9 @@ class AgentKernel @Inject constructor(
             "Cần tra hoạt động camera/thiết bị/chat/cuộc gọi, hoặc câu hỏi chung/FAQ chưa có info → trả DUY NHẤT 1 JSON thô:\n" +
             "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên thiết bị/camera đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"tóm tắt ngắn nội dung cần lọc trong log, copy sát câu hỏi; để trống nếu không cần\",\"granularity\":\"summary|detail\"}\n" +
             "- NẾU câu hỏi đề cập hoặc liên quan tới Camera, sự kiện, nhận diện vật thể (mèo, chó, người, màu sắc...) hay kiểm tra có/không trên camera (dù câu hỏi kỳ lạ như 'mèo xanh', 'người áo đỏ') → BẮT BUỘC trả DUY NHẤT 1 JSON db_search để kiểm tra dữ liệu thực tế trước. TUYỆT ĐỐI KHÔNG tự bịa hay giải thích lý thuyết tính năng khi chưa check DB.\n" +
+            "- \"object\" chỉ là gợi ý thô, KHÔNG dùng để lọc cứng — nếu vật thể/con vật trong câu hỏi không khớp đúng 1 trong 6 giá trị liệt kê (vd 'con bò', 'con gà'), CỨ để object gần đúng nhất hoặc \"all\", đừng cố ép. Việc lọc nội dung thật sự nằm ở \"keyword\": BẮT BUỘC luôn copy nguyên từ chỉ vật thể/con vật/màu sắc/chi tiết cụ thể mà câu hỏi nhắc tới (vd 'con bò', 'áo đỏ') vào \"keyword\", dù đã điền \"object\" hay chưa.\n" +
             "- category=qa cho câu hỏi chung không thuộc camera/thiết bị/cuộc gọi/tin nhắn cụ thể. category=chat khi hỏi tin nhắn nhưng không rõ kênh nào. Không rõ nguồn → bỏ hẳn field category.\n" +
+            "- Với category=chat/facebook/telegram/website: \"target\" CHỈ dùng cho tên kênh (facebook/telegram/website) nếu biết rõ, TUYỆT ĐỐI không đặt nội dung câu hỏi (vd \"báo giá\", \"đặt hàng\") vào \"target\" — mọi nội dung/từ khoá tin nhắn cần tìm PHẢI đặt trong \"keyword\", nếu không kết quả sẽ bị lọc sai và trả về rỗng.\n" +
             "- Chỉ gọi tool cho thiết bị khớp danh sách dưới (cuộc gọi/chat/qa luôn hợp lệ). Thiết bị lạ không có trong danh sách → trả lời KHÔNG lắp đặt, không gọi tool.\n" +
             "- TUYỆT ĐỐI không tự bịa nội dung/ngày giờ/chi tiết cụ thể của log, tin nhắn hay cuộc gọi khi chưa nhận được dữ liệu thật từ tool trong lượt này. Nếu câu hỏi đào sâu vào nội dung cụ thể của điều vừa được nhắc tới (vd \"tin nhắn nói gì\", \"lúc mấy giờ\") mà bạn CHƯA có dữ liệu đó → PHẢI trả JSON db_search để lấy lại, không tự suy diễn hay đoán.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
