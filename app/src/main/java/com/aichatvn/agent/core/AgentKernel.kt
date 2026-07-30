@@ -283,7 +283,22 @@ class AgentKernel @Inject constructor(
                     withTimeout(15_000L) {
                         val matches = search(message, username)
                         val qa = matches.firstOrNull()?.qa
-                        qa?.answer ?: if (request.allowDeviceControl) {
+                        qa?.answer?.let { rawAnswer ->
+                            // ✅ MỚI: Dynamic Template Binding — CHỈ thay biến khi câu trả lời trong
+                            // Catalog thực sự có chứa placeholder (contains("{")), không xử lý gì
+                            // thêm nếu là câu tĩnh thông thường. Thuần Kotlin/SQLite, không gọi AI.
+                            if (rawAnswer.contains("{")) {
+                                val cameraCount = try { database.cameraDao().getActiveCameras().size } catch (e: Exception) { 0 }
+                                val deviceCount = try { database.tuyaDeviceDao().getAllDevices().size } catch (e: Exception) { 0 }
+                                val nowStr = java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date())
+                                rawAnswer
+                                    .replace("{camera_count}", cameraCount.toString())
+                                    .replace("{device_count}", deviceCount.toString())
+                                    .replace("{current_time}", nowStr)
+                            } else {
+                                rawAnswer
+                            }
+                        } ?: if (request.allowDeviceControl) {
                             runLocalQAEventAnalysis(message)
                         } else {
                             // ✅ SỬA: khách ngoại bị chặn điều khiển thiết bị tuyệt đối không được
@@ -505,7 +520,62 @@ class AgentKernel @Inject constructor(
             )
 
             val searchResult = databaseSearchHelper.executeSearchContract(contract)
-            searchResult.summaryText
+
+            // ✅ MỚI: "call" đã có bộ sinh câu RIÊNG trong DatabaseSearchHelper.isCallCategory
+            // (thống kê đi/đến/nhỡ chính xác qua countMissedCalls()) — không viết lại bộ sinh câu
+            // chung ở đây cho call, tránh trùng lặp logic và mất số liệu chi tiết đã có sẵn.
+            if (sourceCategory == "call") {
+                return@withContext searchResult.summaryText
+            }
+
+            val total = searchResult.totalCount
+            val logs = searchResult.logs
+
+            val targetName = sourceName ?: when (sourceCategory) {
+                "camera" -> "camera"
+                "tuya" -> "thiết bị"
+                "chat" -> "tin nhắn"
+                "facebook" -> "kênh Facebook"
+                "telegram" -> "kênh Telegram"
+                "website" -> "kênh Website"
+                else -> "hệ thống"
+            }
+            // ✅ MỚI: giữ lại 2 tín hiệu deviceState/targetObject đã tính ở trên (contract dùng
+            // chúng để LỌC dữ liệu) — nhắc lại trong câu trả lời để Admin biết đúng điều kiện đã
+            // lọc, tránh câu trả lời tự nhiên nhưng mơ hồ ("có 3 sự kiện" nhưng không rõ đang lọc
+            // theo trạng thái bật/tắt hay đối tượng nào).
+            val stateNote = when (deviceState) {
+                "true" -> " (trạng thái: bật/mở)"
+                "false" -> " (trạng thái: tắt)"
+                else -> ""
+            }
+            val objectNote = contract.targetObject?.let { " (đối tượng: $it)" } ?: ""
+
+            // 🔊 BỘ PHÁT SINH VĂN BẢN TIẾNG VIỆT TỰ NHIÊN THUẦN KOTLIN (0 AI) — thay cho việc trả
+            // thẳng summaryText dạng "--- Nhật ký hoạt động tổng hợp ---" (đọc như log thô hơn là
+            // câu trả lời trực tiếp cho Admin).
+            when {
+                isYesNo -> {
+                    if (total > 0) {
+                        val latest = logs.lastOrNull()?.summary?.takeIf { it.isNotBlank() }
+                        val latestNote = if (latest != null) " (Gần nhất: $latest)" else ""
+                        "CÓ. Trong $label ghi nhận $total sự kiện liên quan đến $targetName$stateNote$objectNote.$latestNote"
+                    } else {
+                        "KHÔNG. Trong $label không ghi nhận sự kiện nào từ $targetName$stateNote$objectNote."
+                    }
+                }
+                isQuantity -> {
+                    "Trong $label, $targetName ghi nhận tổng cộng $total lần hoạt động$stateNote$objectNote."
+                }
+                total > 0 -> {
+                    val details = logs.takeLast(3).joinToString("\n• ") { log ->
+                        val timeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(log.timestamp))
+                        "[$timeStr] ${log.summary}"
+                    }
+                    "Trong $label, ghi nhận $total hoạt động của $targetName:\n• $details"
+                }
+                else -> "Trong $label, $targetName hoạt động bình thường, không có bản ghi mới."
+            }
         } catch (e: Exception) {
             logger.e("AgentKernel", "Lỗi phân tích sự kiện cục bộ trong QA Mode: ${e.message}", e)
             "Không thể phân tích dữ liệu cục bộ lúc này."
