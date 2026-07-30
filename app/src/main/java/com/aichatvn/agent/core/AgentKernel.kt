@@ -132,6 +132,12 @@ data class ChatResponse(
     val imagePath: String? = null
 )
 
+// ✅ MỚI: carrier tối thiểu để interceptAndExecuteToolCall()/handleCatalogSearchToolCall()
+// mang thêm imagePath (lấy từ EventLogEntity khớp nhất khi db_search trúng camera) lên tới
+// ChatResponse cuối, mà không phải đổi kiểu String của cả nhánh "qa"/"groq"/"combined" trong
+// chat() — chỉ 2 hàm này đổi kiểu trả về, còn responseText ở chat() vẫn là String như cũ.
+private data class ToolCallOutcome(val text: String, val imagePath: String? = null)
+
 @Singleton
 class AgentKernel @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
@@ -277,6 +283,11 @@ class AgentKernel @Inject constructor(
             buildMinimalGuard()
         }
 
+        // ✅ MỚI: ảnh (nếu có) tìm được từ Two-Pass db_search — gán ở nhánh "groq"/"combined"
+        // bên dưới, dùng cho ChatResponse.imagePath cuối hàm. Giữ responseText là String thuần
+        // cho mọi nhánh của when() như cũ, thay vì đổi cả khối sang kiểu ToolCallOutcome.
+        var searchImagePath: String? = null
+
         var responseText = try {
             when (usedMode.lowercase()) {
                 "qa" -> {
@@ -347,7 +358,7 @@ class AgentKernel @Inject constructor(
                         )
                     }
 
-                    interceptAndExecuteToolCall(
+                    val outcome = interceptAndExecuteToolCall(
                         originalMessage = message,
                         responseRaw = responsePass1,
                         username = username,
@@ -357,6 +368,8 @@ class AgentKernel @Inject constructor(
                         // Groq mode không có đường catalog_search nào (xem comment ở trên) — luôn false.
                         allowCatalogSearch = false
                     )
+                    searchImagePath = outcome.imagePath
+                    outcome.text
                 }
 
                 else -> {
@@ -398,7 +411,7 @@ class AgentKernel @Inject constructor(
                             )
                         }
 
-                        interceptAndExecuteToolCall(
+                        val outcome = interceptAndExecuteToolCall(
                             originalMessage = message,
                             responseRaw = responsePass1,
                             username = username,
@@ -407,6 +420,8 @@ class AgentKernel @Inject constructor(
                             allowDeviceControl = request.allowDeviceControl,
                             allowCatalogSearch = !request.allowDeviceControl
                         )
+                        searchImagePath = outcome.imagePath
+                        outcome.text
                     }
                 }
             }
@@ -420,7 +435,7 @@ class AgentKernel @Inject constructor(
         if (expiredNotification != null) {
             responseText = "$expiredNotification\n\n$responseText"
         }
-        return ChatResponse(responseText, usedMode, usedPluginId)
+        return ChatResponse(responseText, usedMode, usedPluginId, searchImagePath)
     }
 
     private suspend fun runLocalQAEventAnalysis(userQuery: String, username: String): String = withContext(Dispatchers.IO) {
@@ -730,25 +745,25 @@ class AgentKernel @Inject constructor(
         allowCatalogSearch: Boolean = false,
         toolDepth: Int = 0,
         lastSearchResultText: String? = null
-    ): String {
-        val toolCall = parseToolCall(responseRaw) ?: return responseRaw
+    ): ToolCallOutcome {
+        val toolCall = parseToolCall(responseRaw) ?: return ToolCallOutcome(responseRaw)
 
         if (toolDepth >= 1) {
             logger.w("AgentKernel", "⚠️ [Tool Loop Guard] Model bỏ qua chỉ thị, vẫn gọi tool lần nữa (depth=$toolDepth). Tự trả lời từ dữ liệu đã tra được thay vì lặp lại.")
-            return buildFallbackFromSearchResult(lastSearchResultText)
+            return ToolCallOutcome(buildFallbackFromSearchResult(lastSearchResultText))
         }
 
         if (toolCall.tool == "catalog_search") {
             if (!allowCatalogSearch) {
                 logger.w("AgentKernel", "⚠️ Chặn catalog_search: chế độ/nhánh hiện tại không được phép dùng tool này.")
-                return "Xin lỗi, hiện chưa có thông tin chính xác cho câu hỏi này. Vui lòng liên hệ nhân viên hỗ trợ để được hỗ trợ thêm."
+                return ToolCallOutcome("Xin lỗi, hiện chưa có thông tin chính xác cho câu hỏi này. Vui lòng liên hệ nhân viên hỗ trợ để được hỗ trợ thêm.")
             }
             return handleCatalogSearchToolCall(originalMessage, toolCall, username, baseContext, historySnapshot, allowDeviceControl, toolDepth)
         }
 
         if (!allowDeviceControl) {
             logger.w("AgentKernel", "⚠️ Chặn gọi Tool db_search: điều khiển/truy cập đang bị khoá cho username=$username")
-            return "Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị hiện đang được khoá truy cập. Vui lòng liên hệ Quản trị viên để được mở quyền."
+            return ToolCallOutcome("Dạ, để bảo vệ quyền riêng tư của gia đình, nhật ký hoạt động camera và thiết bị hiện đang được khoá truy cập. Vui lòng liên hệ Quản trị viên để được mở quyền.")
         }
 
         // ✅ MỚI: category="qa" là QA database (catalog/FAQ/generic) đặt ĐỒNG CẤP với camera/
@@ -1064,6 +1079,12 @@ class AgentKernel @Inject constructor(
 
             logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
 
+            // ✅ MỚI: lấy ảnh của dòng log KHỚP GẦN NHẤT trong kết quả search vừa chạy (logs đã
+            // sort tăng dần theo timestamp ở executeSearchContract(), nên phần tử cuối là mới
+            // nhất) — chỉ log camera có gắn imagePath (EventLogEntity.imagePath, xem CameraSkill.
+            // saveAlertToHistory()); tuya/call/chat luôn null nên tự động không có ảnh đính kèm.
+            val bestImagePath = searchResult.logs.lastOrNull { it.imagePath != null }?.imagePath
+
             withTimeout(15_000L) {
                 val responsePass2 = groqClient.chat(
                     message = originalMessage,
@@ -1072,7 +1093,7 @@ class AgentKernel @Inject constructor(
                     imageUrl = null
                 )
                 
-                interceptAndExecuteToolCall(
+                val outcome = interceptAndExecuteToolCall(
                     originalMessage = originalMessage,
                     responseRaw = responsePass2,
                     username = username,
@@ -1083,12 +1104,16 @@ class AgentKernel @Inject constructor(
                     toolDepth = toolDepth + 1,
                     lastSearchResultText = searchResult.summaryText
                 )
+                // ✅ MỚI: ưu tiên ảnh do lượt gọi sâu hơn (nếu có) tự tìm được; nếu không, dùng
+                // ảnh từ chính lượt search này — trường hợp thường gặp nhất vì pass 2 thường trả
+                // thẳng văn bản (không gọi tool nữa) nên outcome.imagePath ở đó luôn null.
+                outcome.copy(imagePath = outcome.imagePath ?: bestImagePath)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý dữ liệu Two-Pass Loop, quay về Fallback lượt 1: ${e.message}", e)
-            responseRaw
+            ToolCallOutcome(responseRaw)
         }
     }
 
@@ -1100,7 +1125,7 @@ class AgentKernel @Inject constructor(
         historySnapshot: List<Map<String, String>>,
         allowDeviceControl: Boolean,
         toolDepth: Int
-    ): String {
+    ): ToolCallOutcome {
         val query = toolCall.params["query"]?.takeIf { it.isNotBlank() } ?: originalMessage
         logger.i("AgentKernel", "📥 [Catalog Search Intercepted] AI yêu cầu tìm thêm trong catalogue: '$query'")
 
@@ -1152,7 +1177,7 @@ class AgentKernel @Inject constructor(
             throw e
         } catch (e: Exception) {
             logger.e("AgentKernel", "⚠️ Gặp lỗi khi xử lý catalog_search Two-Pass: ${e.message}", e)
-            "Xin lỗi, hệ thống đang gặp sự cố khi tìm kiếm thông tin. Vui lòng thử lại sau."
+            ToolCallOutcome("Xin lỗi, hệ thống đang gặp sự cố khi tìm kiếm thông tin. Vui lòng thử lại sau.")
         }
     }
 

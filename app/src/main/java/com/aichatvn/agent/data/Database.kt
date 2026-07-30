@@ -451,7 +451,10 @@ interface WorldStateDao {
         CallContactEntity::class,
         CallLogEntity::class
     ],
-    version = 15, 
+    // ✅ MỚI: bump 15 → 16 do EventLogEntity thêm cột imagePath. Vẫn cần bump dù dùng
+    // fallbackToDestructiveMigration() — Room so khớp identity hash theo version khi mở DB,
+    // không bump sẽ báo lỗi integrity dù có destructive fallback hay không.
+    version = 16, 
     exportSchema = false
 )
 @TypeConverters(Converters::class)

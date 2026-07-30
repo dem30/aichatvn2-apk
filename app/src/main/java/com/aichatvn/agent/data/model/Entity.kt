@@ -200,7 +200,11 @@ data class EventLogEntity(
     val sourceId: String,     // ID cụ thể của thiết bị/camera/kênh liên lạc
     val eventType: String,    // "state_change", "person_detected", "missed_call", "incoming_message"
     val value: String,        // Giá trị trạng thái thô
-    val summary: String       // Tóm tắt ngôn ngữ tự nhiên để AI dễ đọc
+    val summary: String,      // Tóm tắt ngôn ngữ tự nhiên để AI dễ đọc
+    // ✅ MỚI: đường dẫn ảnh cảnh báo tương ứng (copy từ AlertEntity.imagePath tại đúng thời
+    // điểm ghi log này) — để db_search/DatabaseSearchHelper trả lời camera có thể đính kèm
+    // đúng ảnh của sự kiện khớp, thay vì chỉ có text. null với log không có ảnh (tuya/call/chat).
+    val imagePath: String? = null
 )
 
 // ==================== WORLD STATE (BẢN SAO SỐ THỜI GIAN THỰC) ====================

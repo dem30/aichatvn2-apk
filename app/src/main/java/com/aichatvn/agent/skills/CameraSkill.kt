@@ -1987,9 +1987,14 @@ PluginAction(
         val tid = camera.id.trim()
         try {
             val now = System.currentTimeMillis()
+            // ✅ MỚI: gom về 1 biến chung ở scope ngoài if/else — trước đây imagePath
+            // (nhánh else) và refreshedImagePath (nhánh merge) chỉ tồn tại local trong từng
+            // nhánh, nên khối eventLogDao().insertLog() dùng chung bên dưới không có cách nào
+            // đọc được giá trị này để lưu kèm vào EventLogEntity.
+            var resolvedImagePath: String? = null
 
             if (shouldMerge && existingAlert != null) {
-                val refreshedImagePath = imageBytes?.let { saveAlertImage(existingAlert.id, it) }
+                resolvedImagePath = imageBytes?.let { saveAlertImage(existingAlert.id, it) }
                 withContext(Dispatchers.IO) {
                     database.alertDao().mergeAlertUpdate(
                         alertId = existingAlert.id,
@@ -2002,13 +2007,13 @@ PluginAction(
                         drift = drift,
                         baselineDiff = baselineDiff,
                         driftTrigger = driftTrigger,
-                        imagePath = refreshedImagePath,
+                        imagePath = resolvedImagePath,
                         aiStateJson = aiStateJson
                     )
                 }
                 logger.d("CameraSkill", "🔗 [Nén sự kiện] Đã gộp và cập nhật nội dung mới nhất vào bản ghi #${existingAlert.id}")
             } else {
-                val imagePath = imageBytes?.let { saveAlertImage(alertId, it) }
+                resolvedImagePath = imageBytes?.let { saveAlertImage(alertId, it) }
 
                 val scheduleLabel = scheduleId?.let { id ->
                     withContext(Dispatchers.IO) {
@@ -2039,7 +2044,7 @@ PluginAction(
                     drift = drift,
                     baselineDiff = baselineDiff,
                     driftTrigger = driftTrigger,
-                    imagePath = imagePath,
+                    imagePath = resolvedImagePath,
                     emailSent = if (emailSent) 1 else 0,
                     isSuspicious = 1,
                     isRead = 0,
@@ -2070,7 +2075,8 @@ PluginAction(
                         sourceId = tid,
                         eventType = derivedEventType,
                         value = "Phát hiện bất thường",
-                        summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment$objectsSuffix"
+                        summary = "Camera ${camera.customername} ($tid) phát hiện: $aiComment$objectsSuffix",
+                        imagePath = resolvedImagePath
                     )
                 )
                 WorldStateHelper.setAttribute(
