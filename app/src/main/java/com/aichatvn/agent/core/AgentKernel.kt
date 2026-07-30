@@ -536,21 +536,31 @@ class AgentKernel @Inject constructor(
             // nên KHÔNG thể dùng thẳng nguyên cả câu hỏi làm keyword: log.summary/last_message
             // không chứa nguyên văn câu hỏi (kèm cả từ nghi vấn, mốc thời gian, tên domain...),
             // contains() trên cả câu gần như luôn fail → lọc rỗng kết quả đúng đắn thay vì cải
-            // thiện gì. Thay vào đó: cắt bỏ khỏi câu gốc (giữ dấu, không normalize — vì
-            // log.summary tiếng Việt có dấu) các cụm điều khiển ĐÃ nhận diện được ở trên (nhãn
-            // thời gian đã parse, tên domain/thiết bị/camera đã match), chỉ giữ phần còn lại làm
-            // keyword thô. Nếu phần còn lại quá ngắn (≤2 ký tự sau khi trim) — không đủ tin cậy để
-            // lọc — bỏ hẳn keyword, coi như không xác định được, để tránh lọc rỗng nhầm.
-            val keywordParam: String? = if (!isQuantity && !isYesNo) {
+            // thiện gì (vd log thực tế: "tuần trước camera có ghi nhận được con bò nào không" —
+            // log.summary thật chỉ ghi "phát hiện: Một con bò lông dài màu nâu...", không chứa
+            // nguyên cụm "có ghi nhận được ... nào không").
+            //
+            // Sửa: (1) cắt bỏ khỏi câu gốc (giữ dấu — vì log.summary tiếng Việt có dấu) các cụm
+            // điều khiển ĐÃ nhận diện được ở trên (nhãn thời gian đã parse, tên domain/thiết
+            // bị/camera đã match); (2) sau đó lọc thêm STOPWORD_KEYWORDS (từ hỏi/hư từ không mang
+            // nội dung: "có", "nào", "không", "được", "ghi nhận"...) khỏi từng từ còn lại, giữ
+            // DANH SÁCH TỪ (không phải 1 cụm dài) để nơi match có thể so khớp TỪNG TỪ với
+            // log.summary thay vì đòi khớp nguyên cả cụm. Nếu không còn từ nào sau khi lọc — bỏ
+            // hẳn keyword, coi như không xác định được, tránh lọc rỗng nhầm.
+            val keywordParam: List<String> = if (!isQuantity && !isYesNo) {
                 var stripped = userQuery
                 parsedRange?.label?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 sourceName?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 matchedCam?.customername?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 matchedDev?.name?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
-                stripped = stripped.trim()
-                stripped.takeIf { it.length > 2 }
+
+                val strippedNormalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(stripped.lowercase()) ?: stripped.lowercase()
+                strippedNormalized
+                    .split(Regex("\\s+"))
+                    .map { it.trim() }
+                    .filter { it.length > 1 && it !in STOPWORD_KEYWORDS }
             } else {
-                null
+                emptyList()
             }
 
             val deviceState = when {
@@ -566,10 +576,17 @@ class AgentKernel @Inject constructor(
             // "call" đã return sớm summaryText bên dưới (bộ sinh câu riêng của
             // DatabaseSearchHelper.isCallCategory) nên không bị ảnh hưởng bởi keyword dù có hay
             // không — giữ nguyên hành vi cũ cho call, chỉ log cảnh báo nếu có keyword bị bỏ qua.
-            if (keywordParam != null && sourceCategory == "call") {
+            if (keywordParam.isNotEmpty() && sourceCategory == "call") {
                 logger.w("AgentKernel", "⚠️ [Keyword Guard] QA local: category=call + keyword — nhánh call dùng bộ sinh câu riêng, keyword không áp dụng ở đây.")
             }
 
+            // ✅ MỚI: bỏ hẳn enum object cứng (extractObjectLabel/OBJECT_LABEL_KEYWORDS) — bộ 6
+            // nhóm cũ (person/car/motorbike/dog/cat/package) thiếu rất nhiều đối tượng thực tế
+            // (vd "con bò" trong log thật ở trên), không có đường mở rộng động qua AppConfig như
+            // các bộ từ khoá domain khác. targetObject giờ luôn null ở QA local — không còn lọc
+            // "cứng" theo loại đối tượng, để hẳn keywordParam (danh sách từ, bao gồm cả tên đối
+            // tượng như "bò") lo việc lọc nội dung, đúng vai trò mà nó đã đảm nhiệm cho các domain
+            // khác (chat/facebook/...).
             val contract = SearchContract(
                 questionType = questionType,
                 sinceMs = since,
@@ -577,15 +594,15 @@ class AgentKernel @Inject constructor(
                 timeframeLabel = label,
                 sourceCategory = sourceCategory,
                 sourceIdOrName = sourceName ?: matchedCam?.id ?: matchedDev?.id,
-                targetObject = extractObjectLabel(normalized),
+                targetObject = null,
                 deviceState = deviceState,
                 aggregation = aggregation,
-                detailsKeywords = keywordParam?.let { listOf(it) } ?: emptyList()
+                detailsKeywords = keywordParam
             )
 
             // ✅ MỚI: cùng KEYWORD_MATCH_LIMIT đã dùng ở đường Groq 2-pass — kết quả đã lọc theo
             // nội dung thì gần chính xác, không cần trả nhiều dòng về bộ sinh câu Kotlin thuần.
-            val searchResult = if (keywordParam != null) {
+            val searchResult = if (keywordParam.isNotEmpty()) {
                 databaseSearchHelper.executeSearchContract(contract, limit = KEYWORD_MATCH_LIMIT)
             } else {
                 databaseSearchHelper.executeSearchContract(contract)
@@ -660,7 +677,11 @@ class AgentKernel @Inject constructor(
     }
 
     private val QUANTITY_KEYWORDS = setOf("bao nhieu", "may lan", "so luong", "tong cong", "duoc may", "dem")
-    
+
+    // ⚠️ KHÔNG CÒN ĐƯỢC GỌI từ runLocalQAEventAnalysis() (đã bỏ enum object cứng — xem comment ở
+    // đó). Giữ lại nguyên trạng ở đây (không xoá) vì không chắc còn nơi khác trong repo thật gọi
+    // tới 2 khai báo này ngoài phạm vi file trích này — Vinh tự xác nhận rồi xoá nếu đúng là dead
+    // code, tránh xoá nhầm nếu có call site khác chưa thấy được trong 1 file này.
     private val OBJECT_LABEL_KEYWORDS = mapOf(
         "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom"),
         "car" to listOf("oto", "xe hoi", "xe oto", "xe bon banh"),
@@ -672,6 +693,18 @@ class AgentKernel @Inject constructor(
 
     private fun extractObjectLabel(normalizedMsg: String): String? =
         OBJECT_LABEL_KEYWORDS.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
+
+    // ✅ MỚI: dùng trong keywordParam của runLocalQAEventAnalysis() — lọc bỏ từ hỏi/hư từ tiếng
+    // Việt không mang nội dung thật (đã qua VietnameseTextNormalizer nên không dấu), để phần còn
+    // lại là các từ mang nghĩa (tên vật thể, hành động...) dùng match-theo-từ với log.summary.
+    // Danh sách không đầy đủ tuyệt đối — bổ sung dần khi phát hiện case fail mới, giống cách
+    // GLOBAL_CAMERA_KEYWORDS... được tinh chỉnh qua từng lần debug thực tế.
+    private val STOPWORD_KEYWORDS = setOf(
+        "co", "khong", "nao", "duoc", "da", "se", "dang", "la", "va", "hay", "hoac",
+        "the", "thi", "sao", "gi", "ai", "may", "cho", "voi", "cua", "tu", "den",
+        "ghi", "nhan", "kiem", "tra", "xem", "toi", "biet",
+        "camera", "thiet", "bi", "tin", "nhan", "cuoc", "goi"
+    )
 
     private suspend fun interceptAndExecuteToolCall(
         originalMessage: String,
