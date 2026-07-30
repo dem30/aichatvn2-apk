@@ -754,10 +754,22 @@ class ChatSkill @Inject constructor(
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
 
+                // ✅ SỬA LỖI: server giờ BẮT BUỘC widgetKey trong payload /send để xác định
+                // đúng khách website (nhiều máy có thể chung 1 gatewayToken). Trước đây hàm
+                // này (dùng riêng cho người trực trả lời thủ công, khác với sendWebsiteReply
+                // của WebhookGatewayService dùng cho bot tự động) không gửi widgetKey — server
+                // từ chối request với "Missing widgetKey", nhưng vì code chỉ đọc responseCode
+                // mà không kiểm tra nội dung lỗi nên trông như gửi thành công, khiến người
+                // trực KHÔNG THỂ chat được với khách dù bot tự động vẫn hoạt động bình thường
+                // (đường bot đã có widgetKey từ trước). Widget_key của máy này là nguồn duy
+                // nhất, giống hệt cách WebhookGatewayService đọc.
+                val widgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
+
                 val payload = org.json.JSONObject().apply {
                     put("platform", "website")
                     put("recipientId", senderId)
                     put("message", text)
+                    put("widgetKey", widgetKey)
                     if (!imageBase64.isNullOrEmpty()) {
                         put("imageBase64", imageBase64)
                     }
@@ -766,7 +778,11 @@ class ChatSkill @Inject constructor(
                 conn.outputStream.use { os ->
                     os.write(payload.toByteArray(Charsets.UTF_8))
                 }
-                conn.responseCode
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    logger.e("ChatSkill", "⚠️ Gửi phản hồi Website thất bại, HTTP $code: $errBody")
+                }
             } catch (e: Exception) {
                 logger.e("ChatSkill", "Gửi phản hồi cho khách Website thất bại: ${e.message}")
             } finally {

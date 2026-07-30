@@ -399,15 +399,37 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    // ✅ SỬA LỖI: Mutex bảo vệ đoạn đọc-rồi-ghi (read-then-write) bên dưới, theo đúng
+    // pattern đã áp dụng cho deviceCode ở CallSkill.getOrCreateMyDeviceCode() — nguồn
+    // duy nhất sinh/đọc widget_key, tránh race-condition nếu sau này có thêm điểm gọi
+    // registerWidgetKey() thứ 2 (hiện tại chỉ có 1 điểm gọi, nhưng rẻ để phòng ngừa
+    // ngay từ bây giờ hơn là debug lại race-condition y hệt deviceCode đã từng gặp).
+    private val widgetKeyMutex = Mutex()
+
+    private suspend fun getOrCreateMyWidgetKey(): String = widgetKeyMutex.withLock {
+        var existing = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
+        if (existing.isNotBlank()) return@withLock existing
+        existing = java.util.UUID.randomUUID().toString().replace("-", "")
+        configProvider.set(AppConfigDefaults.WEBSITE_WIDGET_KEY, existing)
+        // ⚠️ CẢNH BÁO QUAN TRỌNG: widget_key cũ (nếu có) không được lưu ở đâu khác
+        // ngoài field này — khi bị xóa (cài lại app, xóa dữ liệu, khôi phục backup
+        // thiếu field này...), key MỚI sinh ra ở đây sẽ KHÔNG khớp với mã nhúng
+        // <script> đã dán sẵn trên (các) website từ trước (mã đó chứa widget_key CŨ,
+        // là văn bản tĩnh, không tự cập nhật theo máy). Hệ quả: mọi tin nhắn từ khách
+        // qua các website đó sẽ liên tục bị lọc/bỏ qua (xem bộ lọc incomingWidgetKey ở
+        // luồng nhận SSE) cho tới khi người dùng vào Cài đặt lấy lại mã nhúng MỚI và
+        // dán đè lên toàn bộ website đang dùng mã cũ.
+        logger.w("CloudGateway", "⚠️ ĐÃ TỰ SINH widget_key MỚI (widget_key cũ bị mất do xóa dữ liệu/cài lại). " +
+            "Mọi website đang dùng mã nhúng CŨ sẽ ngừng nhận tin nhắn cho tới khi bạn vào " +
+            "Cài đặt > Website Chat Widget, lấy mã nhúng MỚI và dán đè lên (các) website đang dùng.")
+        updateNotification("⚠️ Widget key đã đổi — cần dán lại mã nhúng mới trên website!")
+        existing
+    }
+
     private fun registerWidgetKey(gatewayUrl: String, gatewayToken: String) {
         serviceScope.launch(Dispatchers.IO) {
             try {
-                var widgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
-                if (widgetKey.isEmpty()) {
-                    widgetKey = java.util.UUID.randomUUID().toString().replace("-", "")
-                    configProvider.set(AppConfigDefaults.WEBSITE_WIDGET_KEY, widgetKey)
-                    logger.i("CloudGateway", "🔑 Đã tự sinh widget_key mới cho Website widget.")
-                }
+                val widgetKey = getOrCreateMyWidgetKey()
 
                 val bodyJson = org.json.JSONObject().apply {
                     put("token", gatewayToken)
@@ -579,8 +601,8 @@ class WebhookGatewayService : Service() {
                                                 // đúng widgetKey (mã nhúng) mà máy đó đang phụ trách thì bỏ qua ngay,
                                                 // không chờ tới bước xử lý/trả lời.
                                                 if (platform == "website" && incomingWidgetKey != null) {
-                                                    val myWidgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
-                                                    if (myWidgetKey.isNotEmpty() && incomingWidgetKey != myWidgetKey) {
+                                                    val myWidgetKey = getOrCreateMyWidgetKey()
+                                                    if (incomingWidgetKey != myWidgetKey) {
                                                         logger.i("CloudGateway", "⏭️ Bỏ qua tin nhắn website của widgetKey khác (không thuộc máy này): $incomingWidgetKey")
                                                         return@launch
                                                     }
@@ -933,7 +955,7 @@ class WebhookGatewayService : Service() {
                 // token thôi không đủ để phân biệt khách của widget nào). Luôn dùng
                 // widgetKey của chính máy này — máy chỉ nên trả lời khách thuộc widget
                 // của mình (đã được lọc đúng từ bước nhận, xem incomingWidgetKey ở trên).
-                val myWidgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
+                val myWidgetKey = getOrCreateMyWidgetKey()
                 val payload = org.json.JSONObject().apply {
                     put("platform", "website")
                     put("recipientId", senderId)
