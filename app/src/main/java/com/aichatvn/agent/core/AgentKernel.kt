@@ -301,7 +301,13 @@ class AgentKernel @Inject constructor(
                     // không còn gán CATALOG_SEARCH_TOOL_INSTRUCTION nữa (trước đây bị lẫn với
                     // Combined mode, khiến khách ngoại "chỉ chat AI" vẫn lén tra được catalog).
                     val toolGuard = if (request.allowDeviceControl) {
-                        if (shouldAttachToolGuard(message, username, currentTurn)) buildToolCallingGuard() else ""
+                        if (shouldAttachToolGuard(message, username, currentTurn)) {
+                            // ✅ MỚI: lọc catalog gửi kèm theo đúng domain câu hỏi đang hỏi (camera/
+                            // tuya/call/chat) — tiết kiệm token khi nhà có nhiều camera/thiết bị.
+                            // Set rỗng (không xác định được domain) → buildToolCallingGuard() tự
+                            // rơi về hành vi gốc, gửi đủ catalog như trước, không đoán bừa.
+                            buildToolCallingGuard(resolveActiveDomains(message, username))
+                        } else ""
                     } else {
                         ""
                     }
@@ -354,7 +360,10 @@ class AgentKernel @Inject constructor(
                         // trùng lặp trong cùng 1 request; khách ngoại chỉ tra catalog CHỦ ĐỘNG
                         // qua tool catalog_search khi model tự thấy cần (2-pass).
                         val toolGuard = if (request.allowDeviceControl) {
-                            if (shouldAttachToolGuard(message, username, currentTurn)) buildToolCallingGuard() else ""
+                            if (shouldAttachToolGuard(message, username, currentTurn)) {
+                                // ✅ MỚI: cùng cơ chế lọc theo domain như nhánh "groq" ở trên.
+                                buildToolCallingGuard(resolveActiveDomains(message, username))
+                            } else ""
                         } else {
                             CATALOG_SEARCH_TOOL_INSTRUCTION
                         }
@@ -773,8 +782,11 @@ class AgentKernel @Inject constructor(
             // liên quan mà không cần khớp từ khoá cứng — xem shouldAttachToolGuard().
             chatHistoryManager.setLastSearchFocus(username, resolvedSourceCategory, resolvedSourceName ?: sourceHint)
 
+            // ✅ SỬA: dọn sạch cả đoạn mời gọi Tool lẫn khối <SYSTEM_MEMORY> cũ thụ động của Pass 1
+            val cleanBaseContext = stripOldSystemMemory(stripDbSearchInvite(baseContext))
+
             val enrichedContext = buildString {
-                append(stripDbSearchInvite(baseContext))
+                append(cleanBaseContext)
                 append("\n\n")
                 append("<SYSTEM_MEMORY>\n")
                 append(searchResult.summaryText)
@@ -1018,6 +1030,15 @@ class AgentKernel @Inject constructor(
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
 
+    // ✅ MỚI: stripDbSearchInvite() chỉ cắt phần toolGuard (nằm SAU marker), còn extraContext
+    // (chứa <SYSTEM_MEMORY> thụ động từ ChatSkill.buildMemoryContext(), được ghép vào cleanContext
+    // TRƯỚC marker) vẫn còn nguyên. Nếu không dọn thêm ở đây, enrichedContext của Pass 2 sẽ có 2
+    // khối <SYSTEM_MEMORY> chồng nhau (1 cũ thụ động từ Pass 1 + 1 mới vừa db_search xong), khiến
+    // model dễ lẫn lộn dữ liệu cũ/mới. Regex non-greedy + String.replace (thay hết mọi match).
+    private fun stripOldSystemMemory(guardText: String): String {
+        return guardText.replace(Regex("<SYSTEM_MEMORY>[\\s\\S]*?</SYSTEM_MEMORY>"), "").trim()
+    }
+
     private fun stripCatalogSearchInvite(guardText: String): String {
         val marker = "🚨 TÌM KIẾM THÔNG TIN (catalog_search):"
         val idx = guardText.indexOf(marker)
@@ -1190,53 +1211,76 @@ class AgentKernel @Inject constructor(
         }
     }
 
-    private suspend fun buildToolCallingGuard(): String {
-        val cameraNames = try {
-            database.cameraDao().getActiveCameras().map {
-                if (it.customername.isNotBlank()) "${it.customername} (ID: ${it.id})" else "ID: ${it.id}"
-            }
-        } catch (e: Exception) { emptyList() }
-        val deviceNames = try {
-            database.tuyaDeviceDao().getAllDevices().map {
-                if (it.name.isNotBlank()) "${it.name} (ID: ${it.id})" else "ID: ${it.id}"
-            }
-        } catch (e: Exception) { emptyList() }
+    // ✅ MỚI: activeDomains rỗng = hành vi GỐC HỆT như trước (gửi đủ catalog camera+thiết bị+
+    // danh bạ+kênh chat, không lọc gì cả) — an toàn cho mọi chỗ gọi cũ nếu lỡ quên truyền tham
+    // số. Chỉ khi activeDomains có nội dung (đã xác định rõ domain qua resolveActiveDomains())
+    // mới lọc bớt phần catalog KHÔNG liên quan, để giảm token cho nhà nhiều camera/thiết bị.
+    // Phần schema JSON + 4 rule bắt buộc bên dưới giữ NGUYÊN 100% — model vẫn phải biết đủ tất
+    // cả category hợp lệ dù đang trong ngữ cảnh 1 domain, vì câu hỏi có thể đổi domain giữa
+    // chừng ngay lượt kế tiếp.
+    private suspend fun buildToolCallingGuard(activeDomains: Set<String> = emptySet()): String {
+        val includeAll = activeDomains.isEmpty()
+
+        val cameraNames = if (includeAll || "camera" in activeDomains) {
+            try {
+                database.cameraDao().getActiveCameras().map {
+                    if (it.customername.isNotBlank()) "${it.customername} (ID: ${it.id})" else "ID: ${it.id}"
+                }
+            } catch (e: Exception) { emptyList() }
+        } else emptyList()
+
+        val deviceNames = if (includeAll || "tuya" in activeDomains) {
+            try {
+                database.tuyaDeviceDao().getAllDevices().map {
+                    if (it.name.isNotBlank()) "${it.name} (ID: ${it.id})" else "ID: ${it.id}"
+                }
+            } catch (e: Exception) { emptyList() }
+        } else emptyList()
 
         // ✅ MỚI: danh bạ cuộc gọi THẬT (call_contacts) — trước đây "call" là nguồn DUY NHẤT
         // không có danh sách hiển thị nào trong prompt, trong khi camera/tuya đều liệt kê tên+ID
         // thật từ DB. Lưu ý: câu hỏi về cuộc gọi vẫn hợp lệ ngay cả với số lạ chưa lưu (rule 2 bên
         // dưới không đổi) — danh sách này chỉ để model biết TÊN các liên hệ đã lưu, giúp trả lời
         // tự nhiên hơn khi user hỏi kiểu "gọi cho Tuấn xem" thay vì chỉ thấy mã máy thô.
-        val callContactNames = try {
-            database.callContactDao().observeAll().first().map {
-                if (it.displayName.isNotBlank()) "${it.displayName} (mã máy: ${it.deviceCode})" else "mã máy: ${it.deviceCode}"
-            }
-        } catch (e: Exception) { emptyList() }
+        val callContactNames = if (includeAll || "call" in activeDomains) {
+            try {
+                database.callContactDao().observeAll().first().map {
+                    if (it.displayName.isNotBlank()) "${it.displayName} (mã máy: ${it.deviceCode})" else "mã máy: ${it.deviceCode}"
+                }
+            } catch (e: Exception) { emptyList() }
+        } else emptyList()
 
         // ✅ MỚI: lấy vài từ khoá mẫu từ GLOBAL_CALL_KEYWORDS (config) để gợi ý cho model biết
         // "source" còn có thể là "cuộc gọi" — trước đây field này chỉ mô tả "tên camera/thiết
         // bị" nên model không có cách nào biết mà yêu cầu tra lịch sử cuộc gọi qua tool này.
-        val callKeywordSample = try {
-            configProvider.getString(
-                AppConfigDefaults.GLOBAL_CALL_KEYWORDS,
-                AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CALL_KEYWORDS)
-            ).split(",").map { it.trim() }.filter { it.isNotBlank() }.take(3)
-        } catch (e: Exception) { listOf("cuộc gọi") }
+        val callKeywordSample = if (includeAll || "call" in activeDomains) {
+            try {
+                configProvider.getString(
+                    AppConfigDefaults.GLOBAL_CALL_KEYWORDS,
+                    AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CALL_KEYWORDS)
+                ).split(",").map { it.trim() }.filter { it.isNotBlank() }.take(3)
+            } catch (e: Exception) { listOf("cuộc gọi") }
+        } else emptyList()
 
         // ✅ MỚI: kênh chat THẬT đang cấu hình (trước đây hardcode cứng "facebook, telegram,
         // website" bất kể đã cấu hình hay chưa — trong khi camera/tuya luôn đọc DB thật). Dùng
         // đúng điều kiện mà WebhookGatewayService dùng để coi 1 kênh là "đã bật":
         // facebook -> có ít nhất 1 page đã đăng ký; telegram -> có bot token; website -> có
         // gateway URL + token.
-        val enabledChatChannels = try {
-            buildList {
-                if (database.facebookPageDao().getAllPages().isNotEmpty()) add("facebook")
-                if (configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim().isNotBlank()) add("telegram")
-                val gwUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-                val gwToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
-                if (gwUrl.isNotBlank() && gwToken.isNotBlank()) add("website")
-            }
-        } catch (e: Exception) { emptyList() }
+        val enabledChatChannels = if (includeAll || "chat" in activeDomains) {
+            try {
+                buildList {
+                    if (database.facebookPageDao().getAllPages().isNotEmpty()) add("facebook")
+                    if (configProvider.getString(AppConfigDefaults.TELEGRAM_BOT_TOKEN).trim().isNotBlank()) add("telegram")
+                    val gwUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                    val gwToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                    if (gwUrl.isNotBlank() && gwToken.isNotBlank()) add("website")
+                }
+            } catch (e: Exception) { emptyList() }
+        } else emptyList()
+        // ✅ MỚI: chỉ hiển thị dòng "💬 Chat:" khi domain chat thực sự liên quan — trước đây dòng
+        // này LUÔN xuất hiện (kể cả khi hỏi thuần về camera), tốn token không cần thiết.
+        val showChatLine = includeAll || "chat" in activeDomains
 
         // ✅ RÚT GỌN (theo yêu cầu): trước đây mỗi field (timeframe/granularity/category/keyword)
         // có 1 dòng giải thích + ví dụ riêng — đúng nội dung cần nhắc AI mỗi lượt (vì Groq không
@@ -1247,13 +1291,14 @@ class AgentKernel @Inject constructor(
         return "🚨 TRUY VẤN DỮ LIỆU THỰC TẾ (db_search):\n" +
             "Cần tra hoạt động camera/thiết bị/chat/cuộc gọi, hoặc câu hỏi chung/FAQ chưa có info → trả DUY NHẤT 1 JSON thô:\n" +
             "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên thiết bị/camera đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"tóm tắt ngắn nội dung cần lọc trong log, copy sát câu hỏi; để trống nếu không cần\",\"granularity\":\"summary|detail\"}\n" +
+            "- NẾU câu hỏi đề cập hoặc liên quan tới Camera, sự kiện, nhận diện vật thể (mèo, chó, người, màu sắc...) hay kiểm tra có/không trên camera (dù câu hỏi kỳ lạ như 'mèo xanh', 'người áo đỏ') → BẮT BUỘC trả DUY NHẤT 1 JSON db_search để kiểm tra dữ liệu thực tế trước. TUYỆT ĐỐI KHÔNG tự bịa hay giải thích lý thuyết tính năng khi chưa check DB.\n" +
             "- category=qa cho câu hỏi chung không thuộc camera/thiết bị/cuộc gọi/tin nhắn cụ thể. category=chat khi hỏi tin nhắn nhưng không rõ kênh nào. Không rõ nguồn → bỏ hẳn field category.\n" +
             "- Chỉ gọi tool cho thiết bị khớp danh sách dưới (cuộc gọi/chat/qa luôn hợp lệ). Thiết bị lạ không có trong danh sách → trả lời KHÔNG lắp đặt, không gọi tool.\n" +
             "- TUYỆT ĐỐI không tự bịa nội dung/ngày giờ/chi tiết cụ thể của log, tin nhắn hay cuộc gọi khi chưa nhận được dữ liệu thật từ tool trong lượt này. Nếu câu hỏi đào sâu vào nội dung cụ thể của điều vừa được nhắc tới (vd \"tin nhắn nói gì\", \"lúc mấy giờ\") mà bạn CHƯA có dữ liệu đó → PHẢI trả JSON db_search để lấy lại, không tự suy diễn hay đoán.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
-            "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") +
+            (if (showChatLine) "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") else "") +
             (if (callKeywordSample.isNotEmpty()) "\n📞 call còn hiểu: ${callKeywordSample.joinToString("/")}" else "")
     }
 
@@ -1344,6 +1389,57 @@ class AgentKernel @Inject constructor(
         val matchesCall = getCallKeywordsNormalized().any { kw -> norm.contains(kw) }
 
         return matchesGeneric || matchesCamera || matchesDevice || matchesChat || matchesCall
+    }
+
+    // ✅ MỚI: TÁCH PROMPT THEO DOMAIN (Modular Tool Guard — chỉ tối ưu token, không thêm cơ chế
+    // nhận diện domain thứ hai). Tái dùng NGUYÊN VẸN 4 bộ keyword (GLOBAL_CAMERA/DEVICE/CHAT/
+    // CALL_KEYWORDS) mà mentionsAppDomain() ở trên đã dùng — không đọc RoutingPipeline/NLU riêng,
+    // không tốn thêm 1 lượt phân tích nào mỗi turn. Khác mentionsAppDomain() ở chỗ: thay vì trả
+    // Boolean "có domain nào không", hàm này trả về CHÍNH XÁC domain nào khớp, để
+    // buildToolCallingGuard() biết catalog nào cần gửi.
+    //
+    // ⚠️ Khi câu hỏi chỉ chứa từ khoá CHUNG (genericQueryKeywords: "liệt kê", "lịch sử"...) mà
+    // không khớp domain cụ thể nào, cố tình trả về SET RỖNG (không phải "tất cả domain") — để
+    // buildToolCallingGuard() rơi vào nhánh an toàn phía dưới (gửi đủ catalog như hành vi gốc),
+    // tránh lặp lại lỗi tự mâu thuẫn của các bản nháp trước: gán domain "GENERAL" rồi vẫn nhồi
+    // hết → không tiết kiệm được token nào trong đúng trường hợp phổ biến nhất (câu hỏi mơ hồ).
+    private suspend fun matchedDomainsInMessage(msg: String): Set<String> {
+        val original = msg.trim()
+        val norm = StringSimilarityUtil.normalizeVietnamese(original)
+
+        fun containsWord(haystack: String, keyword: String, ignoreCase: Boolean = false): Boolean {
+            val opts = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
+            return Regex("(?<!\\p{L})${Regex.escape(keyword)}(?!\\p{L})", opts).containsMatchIn(haystack)
+        }
+
+        val genericQueryKeywords = listOf("liet ke", "lich su", "hom qua", "may gio", "kiem tra")
+        if (genericQueryKeywords.any { kw -> containsWord(norm, kw) }) return emptySet()
+
+        val domains = mutableSetOf<String>()
+        if (getCameraKeywordsNormalized().any { kw -> containsWord(norm, kw) }) domains.add("camera")
+        if (getDeviceKeywordsOriginal().any { kw -> containsWord(original, kw, ignoreCase = true) }) domains.add("tuya")
+        if (getChatKeywordsNormalized().any { kw -> containsWord(norm, kw) }) domains.add("chat")
+        if (getCallKeywordsNormalized().any { kw -> norm.contains(kw) }) domains.add("call")
+        return domains
+    }
+
+    // ✅ MỚI: Domain của LƯỢT NÀY ưu tiên trước — nếu câu hỏi không tự nêu domain nào (vd câu hỏi
+    // đào sâu "họ mặc áo màu gì" không chứa từ khoá camera/tuya/chat/call nào), fallback sang
+    // SearchFocus đã ghi ở lần search DB thật gần nhất — TÁI DÙNG đúng
+    // chatHistoryManager.getLastSearchFocus() mà shouldAttachToolGuard() bên dưới đã dùng, không
+    // thêm nguồn dữ liệu mới. Nếu vẫn không xác định được → trả set rỗng, gọi nơi dùng tự hiểu là
+    // "gửi đủ catalog như cũ", không đoán bừa.
+    private suspend fun resolveActiveDomains(message: String, username: String): Set<String> {
+        val currentTurnDomains = matchedDomainsInMessage(message)
+        if (currentTurnDomains.isNotEmpty()) return currentTurnDomains
+
+        return when (chatHistoryManager.getLastSearchFocus(username)?.sourceCategory) {
+            "camera" -> setOf("camera")
+            "tuya" -> setOf("tuya")
+            "call" -> setOf("call")
+            "facebook", "telegram", "website", "chat" -> setOf("chat")
+            else -> emptySet()
+        }
     }
 
     private suspend fun isExitLockPhrase(msg: String): Boolean {

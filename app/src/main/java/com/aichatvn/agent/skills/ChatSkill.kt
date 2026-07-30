@@ -220,6 +220,10 @@ class ChatSkill @Inject constructor(
             }
 
             val dateFmt = java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.getDefault())
+            // ✅ MỚI: mốc "bây giờ" tường minh để tiêm vào cả 2 khối SYSTEM_MEMORY bên dưới — nếu
+            // không có dòng này, model chỉ thấy các dòng log dạng HH:mm dd/MM/yyyy mà không biết
+            // "hiện tại" là lúc nào, dễ nhầm log hôm qua/hôm kia thành đang diễn ra bây giờ.
+            val currentTimeStr = dateFmt.format(java.util.Date(now))
 
             val objectLabel = extractObjectLabel(normalizedMsg)
             val objectFilteredLogs = if (objectLabel != null) {
@@ -244,6 +248,7 @@ class ChatSkill @Inject constructor(
                 val objectNote = if (objectLabel != null) " (đối tượng: $objectLabel)" else ""
                 return@withContext buildString {
                     append("<SYSTEM_MEMORY>\n") 
+                    append("🕒 THỜI GIAN HỆ THỐNG HIỆN TẠI: $currentTimeStr\n\n")
                     append("Trong khoảng $rangeLabel, $subjectLabel ghi nhận ${countedLogs.size} sự kiện$stateNote$objectNote.\n")
                     append("Hãy trả lời trực tiếp con số này, không cần liệt kê chi tiết trừ khi người dùng hỏi thêm.\n")
                     append("</SYSTEM_MEMORY>") 
@@ -281,6 +286,9 @@ class ChatSkill @Inject constructor(
 
             buildString {
                 append("<SYSTEM_MEMORY>\n") 
+                // ✅ MỚI: khẳng định mốc thời gian thực tại của hệ thống, để AI không nhầm ngày
+                // giờ trong các dòng nhật ký (quá khứ) với thời điểm đang trả lời (hiện tại).
+                append("🕒 THỜI GIAN HỆ THỐNG HIỆN TẠI: $currentTimeStr\n\n")
                 if (matchedCamera != null) {
                     append("--- Nhật ký hoạt động Camera ${matchedCamera.customername} ($rangeLabel) ---\n")
                 } else if (matchedDevice != null) {
@@ -302,7 +310,8 @@ class ChatSkill @Inject constructor(
                     append("\n")
                 }
                 if (unreadLines.isNotEmpty()) {
-                    append("--- Tin nhắn khách hàng chưa đọc ---\n")
+                    // ✅ SỬA: đổi tiêu đề rõ ràng để không bị nhầm với nhật ký quá khứ ở trên
+                    append("--- Tin nhắn khách hàng chưa đọc (HIỆN TẠI) ---\n")
                     append(unreadLines.joinToString("\n"))
                     append("\n")
                 }
