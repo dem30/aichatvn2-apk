@@ -154,6 +154,10 @@ class WebhookGatewayService : Service() {
     // Call.cancel() đảm bảo đóng ngay socket bất kể trạng thái ping/giữ kết nối.
     @Volatile private var cloudGatewayCall: okhttp3.Call? = null
     @Volatile private var callSignalCall: okhttp3.Call? = null
+    // ✅ MỚI: tham chiếu Call riêng cho kênh SSE tin nhắn Website theo widget_key
+    // (/widget/inbox/{widget_key}/{token}) — cùng lý do với 2 tham chiếu ở trên: cần
+    // .cancel() trực tiếp để đảm bảo đóng chắc chắn, không dựa vào cancelAll() gián tiếp.
+    @Volatile private var websiteMessageCall: okhttp3.Call? = null
 
     // ✅ SỬA LỖI: gọi .cancel() trực tiếp lên từng Call reference thay vì
     // okHttpClient.dispatcher.cancelAll() — đảm bảo đóng chắc chắn CẢ HAI kênh SSE
@@ -162,6 +166,10 @@ class WebhookGatewayService : Service() {
     private fun forceResyncBothChannels() {
         cloudGatewayCall?.cancel()
         callSignalCall?.cancel()
+        // ✅ MỚI: ngắt luôn kênh SSE tin nhắn Website riêng để nó cũng resync
+        // widget_key/token mới nhất đồng thời với 2 kênh còn lại — tránh lệch pha
+        // giống hệt lý do đã áp dụng cho callSignalCall.
+        websiteMessageCall?.cancel()
     }
 
     // ✅ SỬA LỖI: readTimeout cũ (45s) khiến 2 kênh SSE dài hạn (/stream/{token} và
@@ -228,6 +236,10 @@ class WebhookGatewayService : Service() {
         // máy vừa gọi đi cũng nhận lại tín hiệu của chính mình. Kênh riêng theo
         // deviceCode loại bỏ hoàn toàn vấn đề đó.
         startCallSignalSSE()
+        // ✅ MỚI: kênh SSE riêng biệt cho tin nhắn chat của khách Website, kết nối tới
+        // /widget/inbox/{widget_key}/{token} — tách hẳn khỏi /stream/{token} dùng chung
+        // cho facebook/instagram/telegram. Cùng lý do với startCallSignalSSE() ở trên.
+        startWebsiteMessageSSE()
         startTelegramLongPolling()   
         startHeartbeatLoop()         
         startScheduleLoop()
@@ -556,6 +568,51 @@ class WebhookGatewayService : Service() {
                                     logger.i("CloudGateway", "📥 Nhận dữ liệu Webhook mới từ Cloud: $rawData")
                                     
                                     serviceScope.launch {
+                                        handleIncomingWebhookEvent(rawData, gatewayUrl, gatewayToken)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("CloudGateway", "❌ Mất đường ống SSE: ${e.message}. Đang thử kết nối lại sau 5 giây...")
+                    updateNotification("Mất kết nối Gateway, đang kết nối lại...")
+                    // ✅ SỬA LỖI (root cause "câm/mù cho tới khi restart Render"): trước đây
+                    // khi CHỈ kênh này (CloudGateway) tự đứt do timeout/lỗi mạng đơn thuần
+                    // (không phải do configUpdatedEvent), kênh CallSignalSSE bên dưới KHÔNG
+                    // hề bị ảnh hưởng — nó tiếp tục giữ nguyên kết nối SSE cũ với deviceCode
+                    // CŨ (đọc 1 lần lúc vòng lặp của NÓ khởi động), dù CloudGateway sắp
+                    // reconnect và đăng ký deviceCode MỚI NHẤT qua registerDeviceCode().
+                    // Kết quả: server nhận đúng deviceCode mới, nhưng máy vẫn đang LẮNG NGHE
+                    // tín hiệu cuộc gọi ở kênh SSE của deviceCode CŨ — 2 kênh lệch pha nhau.
+                    // Signaling (offer/answer/ICE) qua /call_signal vẫn "gửi thành công" vì
+                    // route chỉ dựa vào targetDeviceCode do máy GỌI ĐI cung cấp, nhưng máy
+                    // NHẬN không nhận đúng luồng tín hiệu mới nhất qua kênh SSE cũ của nó ->
+                    // WebRTC negotiation không hoàn tất -> kết nối "được" (UI hiện đổ
+                    // chuông/nghe máy) nhưng audio/video không bao giờ thiết lập (câm/mù).
+                    // Trước đây chỉ restart Render mới sửa được vì restart ép TCP của CẢ 2
+                    // kênh cùng đứt đồng thời -> cả 2 cùng resync deviceCode nhất quán.
+                    //
+                    // Cách sửa: chủ động ngắt cả 2 Call reference ngay tại đây (không chỉ
+                    // riêng cancelAll() vốn không đủ mạnh với kênh giữ bền bằng ping) để ép
+                    // kênh CallSignalSSE cũng đứt và tự resync deviceCode mới nhất, không
+                    // cần đợi restart Render.
+                    forceResyncBothChannels()
+                    delay(5000)
+                }
+            }
+        }
+    }
+
+    // ✅ MỚI: Tách từ khối xử lý vốn nằm trực tiếp trong serviceScope.launch { } bên trong
+    // startCloudGatewaySSE() — giữ NGUYÊN Y HỆT toàn bộ logic bên trong (dedup, houseManager
+    // quyết định auto-reply, mutex theo unifiedUsername, xử lý ảnh, gửi phản hồi facebook/
+    // website...), chỉ đổi return@launch -> return vì giờ đây là thân hàm chứ không còn nằm
+    // trong launch { } nữa. Đây là hàm xử lý DÙNG CHUNG cho cả 2 nguồn SSE: facebook/telegram-
+    // token-chung (gọi từ startCloudGatewaySSE(), phía trên) và website-per-widget (sẽ gọi từ
+    // startWebsiteMessageSSE() sắp thêm bên dưới) — tránh phải chép tay/nhân đôi khối logic dài
+    // và dễ lệch pha khi có 2 nguồn nhận sự kiện khác nhau.
+    private suspend fun handleIncomingWebhookEvent(rawData: String, gatewayUrl: String, gatewayToken: String) {
                                         try {
                                             val jsonObj = org.json.JSONObject(rawData)
                                             val event = jsonObj.optString("event", "")
@@ -590,24 +647,16 @@ class WebhookGatewayService : Service() {
                                                 val incomingPageId = jsonObj.optString("pageId", "")
                                                 val incomingImageUrl = jsonObj.optString("imageUrl", "").takeIf { it.isNotBlank() }
                                                 val incomingImageBase64Raw = jsonObj.optString("imageBase64", "").takeIf { it.isNotBlank() }
-                                                val incomingWidgetKey = jsonObj.optString("widgetKey", "").takeIf { it.isNotBlank() }
-
-                                                // ✅ MỚI: nhiều máy Android có thể dùng CHUNG 1 gatewayToken (thiết kế
-                                                // bắt buộc phía server — token là mật khẩu xác thực, không phải ID máy),
-                                                // nên server broadcast MỌI tin nhắn website tới TẤT CẢ máy cùng token
-                                                // qua /stream/{token}. Trước đây không có cách phân biệt "khách này
-                                                // thuộc web nào" nên máy nào cũng xử lý — gây loạn xạ, trả lời trùng.
-                                                // Server giờ đã kèm widgetKey gốc của khách vào payload; máy nào không
-                                                // đúng widgetKey (mã nhúng) mà máy đó đang phụ trách thì bỏ qua ngay,
-                                                // không chờ tới bước xử lý/trả lời.
-                                                if (platform == "website" && incomingWidgetKey != null) {
-                                                    val myWidgetKey = getOrCreateMyWidgetKey()
-                                                    if (incomingWidgetKey != myWidgetKey) {
-                                                        logger.i("CloudGateway", "⏭️ Bỏ qua tin nhắn website của widgetKey khác (không thuộc máy này): $incomingWidgetKey")
-                                                        return@launch
-                                                    }
-                                                }
-
+                                                // ✅ ĐÃ BỎ bộ lọc incomingWidgetKey cũ: trước đây /stream/{token} broadcast MỌI
+                                                // tin nhắn website tới TẤT CẢ máy dùng chung token, nên mỗi máy phải tự so
+                                                // widgetKey trong payload với widgetKey của chính nó để loại bỏ tin không
+                                                // thuộc mình. Giờ tin nhắn website không còn đi qua /stream/{token} nữa — nó
+                                                // đến qua kênh riêng /widget/inbox/{widget_key}/{token} (xem
+                                                // startWebsiteMessageSSE()), nơi SERVER đã đảm bảo chỉ đẩy đúng tin của đúng
+                                                // widget_key tới đúng máy. Hàm này giờ chỉ còn nhận: (a) facebook/instagram từ
+                                                // /stream/{token}, không bao giờ là platform=="website" nữa, hoặc (b) website
+                                                // từ /widget/inbox/..., vốn đã chắc chắn thuộc đúng máy — nên không cần lọc gì
+                                                // thêm ở đây nữa.
                                                 if (text.isNotBlank() || incomingImageUrl != null || incomingImageBase64Raw != null) {
                                                     val unifiedUsername = "${platform}_$senderId"
 
@@ -621,7 +670,7 @@ class WebhookGatewayService : Service() {
                                                     val dedupKey = "$platform|$senderId|$text|${incomingImageUrl ?: ""}"
                                                     if (isDuplicateWebhookEvent(dedupKey)) {
                                                         logger.w("CloudGateway", "⚠️ Bỏ qua sự kiện webhook trùng lặp (trong ${WEBHOOK_DEDUP_WINDOW_MS}ms): $unifiedUsername")
-                                                        return@launch
+                                                        return
                                                     }
 
                                                     if (platform == "facebook" && incomingPageId.isNotBlank()) {
@@ -712,39 +761,6 @@ class WebhookGatewayService : Service() {
                                         } catch (e: Exception) {
                                             logger.e("CloudGateway", "Lỗi giải mã gói tin webhook: ${e.message}")
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    logger.e("CloudGateway", "❌ Mất đường ống SSE: ${e.message}. Đang thử kết nối lại sau 5 giây...")
-                    updateNotification("Mất kết nối Gateway, đang kết nối lại...")
-                    // ✅ SỬA LỖI (root cause "câm/mù cho tới khi restart Render"): trước đây
-                    // khi CHỈ kênh này (CloudGateway) tự đứt do timeout/lỗi mạng đơn thuần
-                    // (không phải do configUpdatedEvent), kênh CallSignalSSE bên dưới KHÔNG
-                    // hề bị ảnh hưởng — nó tiếp tục giữ nguyên kết nối SSE cũ với deviceCode
-                    // CŨ (đọc 1 lần lúc vòng lặp của NÓ khởi động), dù CloudGateway sắp
-                    // reconnect và đăng ký deviceCode MỚI NHẤT qua registerDeviceCode().
-                    // Kết quả: server nhận đúng deviceCode mới, nhưng máy vẫn đang LẮNG NGHE
-                    // tín hiệu cuộc gọi ở kênh SSE của deviceCode CŨ — 2 kênh lệch pha nhau.
-                    // Signaling (offer/answer/ICE) qua /call_signal vẫn "gửi thành công" vì
-                    // route chỉ dựa vào targetDeviceCode do máy GỌI ĐI cung cấp, nhưng máy
-                    // NHẬN không nhận đúng luồng tín hiệu mới nhất qua kênh SSE cũ của nó ->
-                    // WebRTC negotiation không hoàn tất -> kết nối "được" (UI hiện đổ
-                    // chuông/nghe máy) nhưng audio/video không bao giờ thiết lập (câm/mù).
-                    // Trước đây chỉ restart Render mới sửa được vì restart ép TCP của CẢ 2
-                    // kênh cùng đứt đồng thời -> cả 2 cùng resync deviceCode nhất quán.
-                    //
-                    // Cách sửa: chủ động ngắt cả 2 Call reference ngay tại đây (không chỉ
-                    // riêng cancelAll() vốn không đủ mạnh với kênh giữ bền bằng ping) để ép
-                    // kênh CallSignalSSE cũng đứt và tự resync deviceCode mới nhất, không
-                    // cần đợi restart Render.
-                    forceResyncBothChannels()
-                    delay(5000)
-                }
-            }
-        }
     }
 
     // ✅ SỬA LỖI: Vòng lặp SSE riêng biệt, độc lập hoàn toàn với startCloudGatewaySSE(),
@@ -832,6 +848,99 @@ class WebhookGatewayService : Service() {
                     // chủ động ngắt cả 2 Call reference để ép kênh CloudGateway đứt theo và
                     // cả 2 cùng resync deviceCode/token mới nhất đồng thời, tránh lệch pha
                     // deviceCode giữa 2 kênh (xem giải thích đầy đủ trong startCloudGatewaySSE()).
+                    forceResyncBothChannels()
+                    delay(5000)
+                }
+            }
+        }
+    }
+
+    // ✅ MỚI: Vòng lặp SSE riêng biệt cho TIN NHẮN CHAT của khách Website, độc lập hoàn
+    // toàn với startCloudGatewaySSE() (facebook/instagram/telegram-token-chung) — kết nối
+    // tới /widget/inbox/{widget_key}/{token} trên gateway. Cùng lý do và cùng mẫu với
+    // startCallSignalSSE() ở trên: widget_key là mã riêng của TỪNG MÁY (khác với
+    // gatewayToken vốn dùng chung cho mọi máy của 1 người dùng), nên tin nhắn website
+    // nhận qua kênh này chỉ có thể là của đúng máy hiện tại — không còn khả năng broadcast
+    // nhầm sang máy khác dùng chung token như trước (/stream/{token} không còn nhận tin
+    // website nữa, xem app.py: /webhook giờ push qua push_message_to_widget()).
+    //
+    // Dữ liệu SSE nhận được ở đây đã đúng NGUYÊN VẸN định dạng JSON mà
+    // handleIncomingWebhookEvent() mong đợi (platform/senderId/text/imageUrl/imageBase64 —
+    // xem unified_payload trong app.py /webhook), nên gọi thẳng vào hàm xử lý DÙNG CHUNG đó
+    // — không cần chép tay/nhân đôi logic dedup, houseManager, mutex, xử lý ảnh... vốn đã
+    // nằm sẵn trong handleIncomingWebhookEvent().
+    private fun startWebsiteMessageSSE() {
+        serviceScope.launch(Dispatchers.IO) {
+            var isOfflineLogged = false
+
+            while (isActive) {
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
+                    if (!isOfflineLogged) {
+                        logger.w("WidgetInboxSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh inbox website.")
+                        isOfflineLogged = true
+                    }
+                    delay(5000)
+                    continue
+                }
+
+                if (!isNetworkAvailable()) {
+                    delay(5000)
+                    continue
+                }
+
+                // ✅ SỬA LỖI: gọi qua getOrCreateMyWidgetKey() (Mutex-safe, cùng nguồn với
+                // registerWidgetKey()) thay vì tự đọc trực tiếp từ config — đảm bảo kênh SSE
+                // này LUÔN mở đúng bằng widget_key đã đăng ký với gateway, dù vòng lặp này
+                // khởi động trước hay sau registerWidgetKey().
+                val widgetKey = getOrCreateMyWidgetKey()
+
+                isOfflineLogged = false
+
+                try {
+                    logger.i("WidgetInboxSSE", "🔌 Đang thiết lập đường ống SSE inbox riêng cho widget_key=$widgetKey...")
+
+                    val request = Request.Builder()
+                        .url("$gatewayUrl/widget/inbox/$widgetKey/$gatewayToken")
+                        .header("Accept", "text/event-stream")
+                        .build()
+
+                    val call = okHttpClient.newCall(request)
+                    websiteMessageCall = call
+                    call.execute().use { response ->
+                        if (!response.isSuccessful) {
+                            logger.w("WidgetInboxSSE", "⚠️ Kết nối SSE inbox website thất bại, mã lỗi HTTP: ${response.code}")
+                            delay(5000)
+                            return@use
+                        }
+
+                        val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
+                        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                        var line: String? = null
+
+                        logger.i("WidgetInboxSSE", "🟢 Đường ống SSE inbox website đã mở, sẵn sàng nhận tin nhắn khách.")
+
+                        while (isActive && reader.readLine().also { line = it } != null) {
+                            val trimmedLine = line?.trim() ?: ""
+                            if (trimmedLine.startsWith("data:")) {
+                                val rawData = trimmedLine.substring(5).trim()
+                                if (rawData.isNotEmpty()) {
+                                    logger.i("WidgetInboxSSE", "📥 Nhận tin nhắn Website mới: $rawData")
+                                    serviceScope.launch {
+                                        handleIncomingWebhookEvent(rawData, gatewayUrl, gatewayToken)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("WidgetInboxSSE", "❌ Mất đường ống SSE inbox website: ${e.message}. Đang thử kết nối lại sau 5 giây...")
+                    // ✅ Đồng bộ với 2 kênh còn lại — nếu CHÍNH kênh này tự đứt trước, cũng
+                    // chủ động ngắt cả 3 Call reference để cùng resync widget_key/deviceCode/
+                    // token mới nhất đồng thời, tránh lệch pha giữa các kênh (xem giải thích
+                    // đầy đủ trong startCloudGatewaySSE()/startCallSignalSSE()).
                     forceResyncBothChannels()
                     delay(5000)
                 }
