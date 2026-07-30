@@ -158,6 +158,9 @@ class WebhookGatewayService : Service() {
     // (/widget/inbox/{widget_key}/{token}) — cùng lý do với 2 tham chiếu ở trên: cần
     // .cancel() trực tiếp để đảm bảo đóng chắc chắn, không dựa vào cancelAll() gián tiếp.
     @Volatile private var websiteMessageCall: okhttp3.Call? = null
+    // ✅ MỚI: tham chiếu Call riêng cho kênh SSE tin nhắn Facebook/Instagram theo
+    // device_code (/page/inbox/{device_code}/{token}) — cùng lý do với 2 tham chiếu ở trên.
+    @Volatile private var pageMessageCall: okhttp3.Call? = null
 
     // ✅ SỬA LỖI: gọi .cancel() trực tiếp lên từng Call reference thay vì
     // okHttpClient.dispatcher.cancelAll() — đảm bảo đóng chắc chắn CẢ HAI kênh SSE
@@ -170,6 +173,9 @@ class WebhookGatewayService : Service() {
         // widget_key/token mới nhất đồng thời với 2 kênh còn lại — tránh lệch pha
         // giống hệt lý do đã áp dụng cho callSignalCall.
         websiteMessageCall?.cancel()
+        // ✅ MỚI: cùng lý do — ngắt luôn kênh SSE tin nhắn Facebook/Instagram riêng để
+        // resync device_code/token mới nhất đồng thời với các kênh còn lại.
+        pageMessageCall?.cancel()
     }
 
     // ✅ SỬA LỖI: readTimeout cũ (45s) khiến 2 kênh SSE dài hạn (/stream/{token} và
@@ -240,6 +246,10 @@ class WebhookGatewayService : Service() {
         // /widget/inbox/{widget_key}/{token} — tách hẳn khỏi /stream/{token} dùng chung
         // cho facebook/instagram/telegram. Cùng lý do với startCallSignalSSE() ở trên.
         startWebsiteMessageSSE()
+        // ✅ MỚI: kênh SSE riêng biệt cho tin nhắn chat Facebook/Instagram, kết nối tới
+        // /page/inbox/{device_code}/{token} — tách hẳn khỏi /stream/{token} dùng chung.
+        // Cùng lý do với startWebsiteMessageSSE() ở trên.
+        startPageMessageSSE()
         startTelegramLongPolling()   
         startHeartbeatLoop()         
         startScheduleLoop()
@@ -385,10 +395,18 @@ class WebhookGatewayService : Service() {
 
                 if (pageIds.isEmpty()) return@launch
 
+                // ✅ MỚI: kèm deviceCode của chính máy này — để server biết đúng máy nào
+                // (trong số nhiều máy có thể dùng CHUNG 1 token) thực sự phụ trách các
+                // Page này, phục vụ kênh riêng /page/inbox/{device_code}/{token} (xem
+                // startPageMessageSSE()). Dùng chung nguồn duy nhất với registerDeviceCode()
+                // (Mutex-safe qua callSkill.getOrCreateMyDeviceCode()).
+                val deviceCode = callSkill.getOrCreateMyDeviceCode()
+
                 val jsonArray = org.json.JSONArray(pageIds)
                 val bodyJson = org.json.JSONObject().apply {
                     put("token", gatewayToken)
                     put("pageIds", jsonArray)
+                    put("deviceCode", deviceCode)
                 }
 
                 val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -941,6 +959,96 @@ class WebhookGatewayService : Service() {
                     // chủ động ngắt cả 3 Call reference để cùng resync widget_key/deviceCode/
                     // token mới nhất đồng thời, tránh lệch pha giữa các kênh (xem giải thích
                     // đầy đủ trong startCloudGatewaySSE()/startCallSignalSSE()).
+                    forceResyncBothChannels()
+                    delay(5000)
+                }
+            }
+        }
+    }
+
+    // ✅ MỚI: Vòng lặp SSE riêng biệt cho TIN NHẮN Facebook/Instagram, độc lập hoàn
+    // toàn với startCloudGatewaySSE() (giờ chỉ còn nhận token_sync + fallback broadcast
+    // khi server chưa kịp biết deviceCode phụ trách Page nào) — kết nối tới
+    // /page/inbox/{device_code}/{token}. Cùng lý do và cùng mẫu với
+    // startWebsiteMessageSSE() ở trên: tái sử dụng deviceCode (đã có sẵn cho Cuộc gọi
+    // P2P, xem callSkill.getOrCreateMyDeviceCode()) làm ID ổn định của máy — không cần
+    // sinh thêm 1 loại mã mới cho Facebook, vì mỗi máy vốn đã có deviceCode riêng.
+    //
+    // Dữ liệu SSE nhận được ở đây đã đúng NGUYÊN VẸN định dạng JSON mà
+    // handleIncomingWebhookEvent() mong đợi (platform/senderId/text/pageId/imageUrl —
+    // xem unified_payload trong app.py /webhook), nên gọi thẳng vào hàm xử lý DÙNG CHUNG
+    // đó — không cần chép tay/nhân đôi logic dedup, houseManager, mutex, xử lý ảnh...
+    private fun startPageMessageSSE() {
+        serviceScope.launch(Dispatchers.IO) {
+            var isOfflineLogged = false
+
+            while (isActive) {
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
+                    if (!isOfflineLogged) {
+                        logger.w("PageInboxSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh inbox Facebook/Instagram.")
+                        isOfflineLogged = true
+                    }
+                    delay(5000)
+                    continue
+                }
+
+                if (!isNetworkAvailable()) {
+                    delay(5000)
+                    continue
+                }
+
+                // ✅ SỬA LỖI: gọi qua callSkill.getOrCreateMyDeviceCode() (Mutex-safe, cùng
+                // nguồn với registerDeviceCode()/registerPageMappings()) thay vì tự đọc trực
+                // tiếp từ config — đảm bảo kênh SSE này LUÔN mở đúng bằng deviceCode đã đăng
+                // ký các Page của mình với gateway.
+                val deviceCode = callSkill.getOrCreateMyDeviceCode()
+
+                isOfflineLogged = false
+
+                try {
+                    logger.i("PageInboxSSE", "🔌 Đang thiết lập đường ống SSE inbox riêng cho Facebook/Instagram, deviceCode=$deviceCode...")
+
+                    val request = Request.Builder()
+                        .url("$gatewayUrl/page/inbox/$deviceCode/$gatewayToken")
+                        .header("Accept", "text/event-stream")
+                        .build()
+
+                    val call = okHttpClient.newCall(request)
+                    pageMessageCall = call
+                    call.execute().use { response ->
+                        if (!response.isSuccessful) {
+                            logger.w("PageInboxSSE", "⚠️ Kết nối SSE inbox Facebook/Instagram thất bại, mã lỗi HTTP: ${response.code}")
+                            delay(5000)
+                            return@use
+                        }
+
+                        val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
+                        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                        var line: String? = null
+
+                        logger.i("PageInboxSSE", "🟢 Đường ống SSE inbox Facebook/Instagram đã mở, sẵn sàng nhận tin nhắn khách.")
+
+                        while (isActive && reader.readLine().also { line = it } != null) {
+                            val trimmedLine = line?.trim() ?: ""
+                            if (trimmedLine.startsWith("data:")) {
+                                val rawData = trimmedLine.substring(5).trim()
+                                if (rawData.isNotEmpty()) {
+                                    logger.i("PageInboxSSE", "📥 Nhận tin nhắn Facebook/Instagram mới: $rawData")
+                                    serviceScope.launch {
+                                        handleIncomingWebhookEvent(rawData, gatewayUrl, gatewayToken)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("PageInboxSSE", "❌ Mất đường ống SSE inbox Facebook/Instagram: ${e.message}. Đang thử kết nối lại sau 5 giây...")
+                    // ✅ Đồng bộ với các kênh còn lại — nếu CHÍNH kênh này tự đứt trước, cũng
+                    // chủ động ngắt cả 4 Call reference để cùng resync deviceCode/widget_key/
+                    // token mới nhất đồng thời, tránh lệch pha giữa các kênh.
                     forceResyncBothChannels()
                     delay(5000)
                 }
