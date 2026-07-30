@@ -164,9 +164,19 @@ class WebhookGatewayService : Service() {
         callSignalCall?.cancel()
     }
 
+    // ✅ SỬA LỖI: readTimeout cũ (45s) khiến 2 kênh SSE dài hạn (/stream/{token} và
+    // /call/stream/{deviceCode}) bị OkHttp tự ngắt mỗi khi server "im lặng" quá 45s
+    // (không có tin nhắn/tín hiệu mới) — dù kết nối vẫn hoàn toàn khỏe mạnh về mặt
+    // TCP. Bản chất SSE là giữ 1 kết nối mở hàng giờ/hàng ngày, dữ liệu chỉ đến khi
+    // có sự kiện, nên readTimeout hữu hạn là sai mô hình cho luồng này — nó gây ra
+    // đúng chu kỳ log "Mất đường ống SSE -> Đang thiết lập lại" lặp liên tục mỗi ~45s.
+    // Đặt về 0 (vô hạn) để chỉ dựa vào ping/heartbeat của server (EventSourceResponse
+    // ping=15 ở /call/stream, offline_buffers ở /stream) và việc client tự cancel khi
+    // cần resync (forceResyncBothChannels) để đóng kết nối, thay vì để timeout đọc
+    // ngắt ngang.
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
@@ -558,6 +568,23 @@ class WebhookGatewayService : Service() {
                                                 val incomingPageId = jsonObj.optString("pageId", "")
                                                 val incomingImageUrl = jsonObj.optString("imageUrl", "").takeIf { it.isNotBlank() }
                                                 val incomingImageBase64Raw = jsonObj.optString("imageBase64", "").takeIf { it.isNotBlank() }
+                                                val incomingWidgetKey = jsonObj.optString("widgetKey", "").takeIf { it.isNotBlank() }
+
+                                                // ✅ MỚI: nhiều máy Android có thể dùng CHUNG 1 gatewayToken (thiết kế
+                                                // bắt buộc phía server — token là mật khẩu xác thực, không phải ID máy),
+                                                // nên server broadcast MỌI tin nhắn website tới TẤT CẢ máy cùng token
+                                                // qua /stream/{token}. Trước đây không có cách phân biệt "khách này
+                                                // thuộc web nào" nên máy nào cũng xử lý — gây loạn xạ, trả lời trùng.
+                                                // Server giờ đã kèm widgetKey gốc của khách vào payload; máy nào không
+                                                // đúng widgetKey (mã nhúng) mà máy đó đang phụ trách thì bỏ qua ngay,
+                                                // không chờ tới bước xử lý/trả lời.
+                                                if (platform == "website" && incomingWidgetKey != null) {
+                                                    val myWidgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
+                                                    if (myWidgetKey.isNotEmpty() && incomingWidgetKey != myWidgetKey) {
+                                                        logger.i("CloudGateway", "⏭️ Bỏ qua tin nhắn website của widgetKey khác (không thuộc máy này): $incomingWidgetKey")
+                                                        return@launch
+                                                    }
+                                                }
 
                                                 if (text.isNotBlank() || incomingImageUrl != null || incomingImageBase64Raw != null) {
                                                     val unifiedUsername = "${platform}_$senderId"
@@ -901,10 +928,17 @@ class WebhookGatewayService : Service() {
     private suspend fun sendWebsiteReply(gatewayUrl: String, gatewayToken: String, senderId: String, message: String, imageBase64: String? = null) {
         withContext(Dispatchers.IO) {
             try {
+                // ✅ SỬA LỖI: server giờ bắt buộc widgetKey trong payload /send để xác
+                // định đúng khách website (nhiều máy có thể chung 1 gatewayToken, nên
+                // token thôi không đủ để phân biệt khách của widget nào). Luôn dùng
+                // widgetKey của chính máy này — máy chỉ nên trả lời khách thuộc widget
+                // của mình (đã được lọc đúng từ bước nhận, xem incomingWidgetKey ở trên).
+                val myWidgetKey = configProvider.getString(AppConfigDefaults.WEBSITE_WIDGET_KEY).trim()
                 val payload = org.json.JSONObject().apply {
                     put("platform", "website")
                     put("recipientId", senderId)
                     put("message", message)
+                    put("widgetKey", myWidgetKey)
                     if (!imageBase64.isNullOrEmpty()) {
                         put("imageBase64", imageBase64)
                     }
