@@ -1080,8 +1080,16 @@ fun translateTriggerToFriendlyVietnamese(
             "false" -> "bị TẮT đi"
             else -> "thay đổi trạng thái sang '${condition.expected}'"
         }
-        "urgency" -> {
-            if (condition.expected == "high") "phát hiện tin nhắn chứa nội dung KHẨN CẤP" else "nhận tin nhắn thường"
+        // ✅ ĐÃ SỬA: trước đây chỉ có 1 nhãn cứng "KHẨN CẤP" ẩn danh sách từ code cứng phía sau.
+        // Nay hiển thị ĐÚNG danh sách từ khoá chủ nhà đã tự nhập, để họ nhìn vào là biết ngay
+        // kịch bản này phản ứng với những từ gì mà không cần đoán.
+        "keyword" -> {
+            val keywords = condition.expected.split(",").map { it.trim() }.filter { it.isNotBlank() }
+            if (keywords.isNotEmpty()) {
+                "phát hiện tin nhắn chứa từ khoá: ${keywords.joinToString(", ") { "\"$it\"" }}"
+            } else {
+                "nhận tin nhắn (chưa cấu hình từ khoá)"
+            }
         }
         else -> "thay đổi giá trị '${condition.attrKey}' thành '${condition.expected}'"
     }
@@ -1139,7 +1147,9 @@ fun VisualTriggerBuilderDialog(
         selectedExpectedValue = when (selectedSource) {
             "camera" -> "suspicious"
             "tuya" -> "true"
-            "chat" -> "high"
+            // ✅ ĐÃ SỬA: không còn giá trị "high" cứng — chủ nhà sẽ tự gõ từ khoá của mình vào ô
+            // nhập bên dưới (xem nhánh "chat" ở Bước 3), nên khởi tạo rỗng để bắt buộc họ nhập.
+            "chat" -> ""
             else -> ""
         }
     }
@@ -1208,32 +1218,63 @@ fun VisualTriggerBuilderDialog(
                 }
 
                 Text("Bước 3: Chọn điều kiện kích hoạt", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val conditions = when (selectedSource) {
-                        "camera" -> listOf("suspicious" to "Phát hiện có trộm/nghi vấn")
-                        "tuya" -> listOf("true" to "Bị BẬT công tắc", "false" to "Bị TẮT công tắc")
-                        "chat" -> listOf("high" to "Khách gửi tin nhắn khẩn cấp")
-                        else -> emptyList()
-                    }
-                    conditions.forEach { (value, label) ->
-                        FilterChip(
-                            selected = selectedExpectedValue == value,
-                            onClick = { selectedExpectedValue = value },
-                            label = { Text(label, fontSize = 11.sp) },
-                            modifier = Modifier.weight(1f)
+                when (selectedSource) {
+                    "chat" -> {
+                        // ✅ ĐÃ SỬA (Từ khoá khẩn cấp tự chọn): trước đây chỉ có 1 chip cứng "Khách
+                        // gửi tin nhắn khẩn cấp" (giá trị ẩn "high", do 1 danh sách từ code cứng
+                        // quyết định) — chủ nhà không biết "khẩn cấp" là gì. Nay chủ nhà TỰ NHẬP
+                        // danh sách từ khoá của riêng mình: nếu tin nhắn đến chứa BẤT KỲ từ khoá nào
+                        // trong danh sách này, kịch bản sẽ được kích hoạt.
+                        Text(
+                            "Kịch bản sẽ chạy khi tin nhắn khách chứa BẤT KỲ từ khoá nào dưới đây.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        OutlinedTextField(
+                            value = selectedExpectedValue,
+                            // ⚠️ Chặn ký tự '.' và '=' vì chúng là ký tự phân tách trong cú pháp nội
+                            // bộ "chat.*.keyword=..." — nếu lọt vào sẽ làm sai lệch cách tách chuỗi
+                            // khi lưu/đọc lại triggerSource.
+                            onValueChange = { selectedExpectedValue = it.replace(".", "").replace("=", "") },
+                            label = { Text("Từ khoá kích hoạt") },
+                            placeholder = { Text("Ví dụ: số điện thoại, đặt hàng, mua, giao hàng") },
+                            supportingText = { Text("Cách nhau bởi dấu phẩy. Không phân biệt hoa/thường, không phân biệt dấu.", fontSize = 11.sp) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    else -> {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val conditions = when (selectedSource) {
+                                "camera" -> listOf("suspicious" to "Phát hiện có trộm/nghi vấn")
+                                "tuya" -> listOf("true" to "Bị BẬT công tắc", "false" to "Bị TẮT công tắc")
+                                else -> emptyList()
+                            }
+                            conditions.forEach { (value, label) ->
+                                FilterChip(
+                                    selected = selectedExpectedValue == value,
+                                    onClick = { selectedExpectedValue = value },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
                 }
             }
         },
         confirmButton = {
+            // ✅ MỚI: với ngòi nổ "chat", bắt buộc phải nhập ít nhất 1 từ khoá — nếu không, nhóm
+            // kịch bản sẽ được tạo ra nhưng KHÔNG BAO GIỜ kích hoạt được (vì điều kiện keyword rỗng
+            // không khớp với gì cả), khiến chủ nhà tưởng đã bật mà thực chất vô tác dụng.
+            val isValid = groupName.isNotBlank() && selectedEntityId.isNotBlank() &&
+                    (selectedSource != "chat" || selectedExpectedValue.isNotBlank())
             Button(
                 onClick = {
-                    if (groupName.isNotBlank() && selectedEntityId.isNotBlank()) {
-                        onConfirm(groupName.trim(), selectedSource, selectedEntityId, selectedExpectedValue)
+                    if (isValid) {
+                        onConfirm(groupName.trim(), selectedSource, selectedEntityId, selectedExpectedValue.trim())
                     }
                 },
-                enabled = groupName.isNotBlank() && selectedEntityId.isNotBlank()
+                enabled = isValid
             ) {
                 Text("Xác nhận tạo")
             }

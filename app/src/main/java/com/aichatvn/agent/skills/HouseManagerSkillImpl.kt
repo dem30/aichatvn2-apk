@@ -498,10 +498,34 @@ PluginAction(
                 // không — nếu ai đó sửa tay JSON triggerSource với hoa/thường khác (vd "SUSPICIOUS"),
                 // ngòi nổ sẽ không bao giờ khớp mà không có dấu hiệu lỗi nào. Nay đồng nhất: cả hai
                 // đều so khớp không phân biệt hoa/thường.
-                val isTriggerMatched = source == condition.source &&
-                        (condition.sourceId == "*" || sourceId.trim().equals(condition.sourceId.trim(), ignoreCase = true)) &&
-                        key == condition.attrKey &&
-                        value.trim().equals(condition.expected.trim(), ignoreCase = true)
+                //
+                // ✅ MỚI (Từ khoá khẩn cấp tự chọn): với ngòi nổ chat (attrKey="keyword"), "expected"
+                // không còn là 1 giá trị cố định (vd "high") mà là danh sách từ khoá do CHÍNH chủ nhà
+                // tự nhập lúc tạo kịch bản (vd "số điện thoại,đặt hàng,mua"), cách nhau bởi dấu phẩy.
+                // "value" lúc này là chuỗi các từ khoá đã khớp được ghi vào world_state bởi
+                // handleChatEventDecision() (xem hàm đó) — nên so khớp kiểu "có chứa ít nhất 1 từ
+                // khoá nhóm này cần" thay vì so khớp tuyệt đối như camera/tuya.
+                val isTriggerMatched = if (key == "keyword") {
+                    source == condition.source &&
+                            (condition.sourceId == "*" || sourceId.trim().equals(condition.sourceId.trim(), ignoreCase = true)) &&
+                            key == condition.attrKey &&
+                            run {
+                                val groupKeywords = condition.expected.split(",")
+                                    .map { normalizeKeyword(it) }
+                                    .filter { it.isNotBlank() }
+                                // Bỏ phần "@<timestamp>" được gắn thêm ở handleChatEventDecision()
+                                // để chống bị observer delta-change bỏ lỡ tin nhắn trùng từ khoá liên tiếp.
+                                val matchedKeywords = value.substringBefore("@").split(",")
+                                    .map { normalizeKeyword(it) }
+                                    .filter { it.isNotBlank() }
+                                groupKeywords.isNotEmpty() && matchedKeywords.any { m -> groupKeywords.contains(m) }
+                            }
+                } else {
+                    source == condition.source &&
+                            (condition.sourceId == "*" || sourceId.trim().equals(condition.sourceId.trim(), ignoreCase = true)) &&
+                            key == condition.attrKey &&
+                            value.trim().equals(condition.expected.trim(), ignoreCase = true)
+                }
 
                 if (isTriggerMatched) {
                     logger.i("HouseManager", "🔥 Nhóm kịch bản '${group.label}' được kích hoạt từ ngòi nổ: $source.$sourceId.$key=$value")
@@ -686,8 +710,28 @@ override suspend fun sendDefaultCameraAlerts(
             else -> "general"
         }
 
-        val isUrgent = normMsg.contains("gap") || normMsg.contains("ngay") || normMsg.contains("khan") ||
-                       normMsg.contains("trom") || normMsg.contains("chay") || normMsg.contains("nguy hiem")
+        // ✅ ĐÃ SỬA (Từ khoá khẩn cấp tự chọn): trước đây "khẩn cấp" bị code cứng 1 danh sách từ
+        // (gap/ngay/khan/trom/chay/nguy hiem) mà chủ nhà không biết, không xem/sửa được từ UI. Nay
+        // ngòi nổ khẩn cấp KHÔNG còn nằm ở đây nữa — mỗi Nhóm kịch bản chat (WorkflowGroup có
+        // source="chat") tự mang theo danh sách từ khoá riêng do chính chủ nhà nhập lúc tạo kịch
+        // bản (vd "số điện thoại,đặt hàng,mua"). Hàm này chỉ có nhiệm vụ: gom từ khoá của TẤT CẢ
+        // nhóm chat đang bật, so khớp (bỏ dấu, không phân biệt hoa/thường) với tin nhắn đến, rồi
+        // ghi ra world_state để onWorldStateChanged() (xem hàm đó, nhánh attrKey="keyword") tự
+        // quyết định nhóm nào được kích hoạt — không cần biết trước "khẩn cấp" nghĩa là gì.
+        val normalizedMsg = normalizeKeyword(message)
+        val chatKeywordGroups = workflowGroupsFromJson(
+            configProvider.getString(AppConfigDefaults.HOUSE_MANAGER_WORKFLOWS, "[]").trim()
+        ).filter { it.enabled && it.triggerSource.startsWith("chat.") && it.triggerSource.contains(".keyword=") }
+
+        val matchedKeywords = chatKeywordGroups
+            .flatMap { group ->
+                val rawExpected = group.triggerSource.substringAfter(".keyword=", "")
+                rawExpected.split(",").map { it.trim() }.filter { it.isNotBlank() }
+            }
+            .distinct()
+            .filter { keyword -> normalizedMsg.contains(normalizeKeyword(keyword)) }
+
+        val isUrgent = matchedKeywords.isNotEmpty()
         val urgency = if (isUrgent) "high" else "normal"
 
         val existingState = database.worldStateDao().getState("chat", unifiedUsername)
@@ -702,6 +746,16 @@ override suspend fun sendDefaultCameraAlerts(
             put("session_status", "waiting_agent")
             put("customer_intent", intent)
             put("urgency", urgency)
+            // ✅ MỚI: ghi lại CHÍNH XÁC những từ khoá nào đã khớp (nối bằng dấu phẩy) — đây là
+            // "value" mà onWorldStateChanged() sẽ so khớp theo kiểu "chứa ít nhất 1 từ khoá nhóm
+            // cần" với "keyword" là attrKey riêng cho ngòi nổ chat tự chọn.
+            // ⚠️ Gắn thêm "@<timestamp>" phía sau: startWorldStateReactiveObserver() chỉ phát tín
+            // hiệu khi "value" THỰC SỰ đổi so với lần trước (delta) — nếu 2 tin nhắn liên tiếp
+            // trùng đúng 1 từ khoá đã khớp (vd khách nhắn "cho xin số điện thoại" 2 lần liền), value
+            // sẽ giống hệt lần trước và kịch bản sẽ không được kích hoạt lại lần 2. Timestamp đảm
+            // bảo mỗi tin nhắn luôn là 1 giá trị mới; onWorldStateChanged() cắt bỏ phần "@..." này
+            // trước khi tách theo dấu phẩy để so khớp.
+            put("keyword", if (matchedKeywords.isNotEmpty()) "${matchedKeywords.joinToString(",")}@$timestamp" else "")
             put("unread_count", newUnread)
             put("last_message", message.take(80))
         }.toString()
@@ -1086,6 +1140,17 @@ override suspend fun sendDefaultCameraAlerts(
             </body>
             </html>
         """.trimIndent()
+    }
+
+    // ✅ MỚI: Chuẩn hoá từ khoá để so khớp linh hoạt — bỏ dấu tiếng Việt + hạ chữ thường + trim,
+    // để "Số ĐT" (chủ nhà nhập lúc tạo kịch bản) khớp được với "cho em xin sđt với" hay
+    // "SO DT lien he" (khách gõ không dấu) trong tin nhắn thực tế đến từ nhiều nguồn khác nhau.
+    private fun normalizeKeyword(raw: String): String {
+        val noAccent = java.text.Normalizer.normalize(raw, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        return noAccent.replace('đ', 'd').replace('Đ', 'D')
+            .lowercase()
+            .trim()
     }
 
     private fun getAttr(entity: WorldStateEntity, key: String): String? {

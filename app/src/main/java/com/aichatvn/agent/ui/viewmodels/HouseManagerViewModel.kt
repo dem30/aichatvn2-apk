@@ -275,11 +275,16 @@ class HouseManagerViewModel @Inject constructor(
     }
 
     // Tạo mới một nhóm kịch bản — người dùng chọn qua VisualTriggerBuilderDialog, không cần biết JSON.
+    // ✅ ĐÃ SỬA (Từ khoá khẩn cấp tự chọn): trước đây ngòi nổ "chat" chỉ có 1 điều kiện cứng
+    // "urgency=high" (khẩn cấp = danh sách từ khoá code cứng mà chủ nhà không thấy). Nay chủ nhà
+    // tự nhập danh sách từ khoá của riêng mình (vd "số điện thoại,đặt hàng,mua") ngay trong dialog
+    // tạo kịch bản — "expectedValue" với sourceType="chat" giờ CHÍNH LÀ chuỗi từ khoá đó (cách nhau
+    // bởi dấu phẩy), được biên dịch thành "chat.*.keyword=<từ khoá>" thay vì "urgency=high".
     fun createWorkflowGroup(label: String, sourceType: String, entityId: String, expectedValue: String) {
         val compiledTrigger = when (sourceType) {
             "camera" -> "camera.$entityId.state=$expectedValue"
             "tuya" -> "tuya.$entityId.state=$expectedValue"
-            "chat" -> "chat.$entityId.urgency=$expectedValue"
+            "chat" -> "chat.$entityId.keyword=$expectedValue"
             else -> "system.brain.state=normal"
         }
 
