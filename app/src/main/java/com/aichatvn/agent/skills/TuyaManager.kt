@@ -57,6 +57,16 @@ class TuyaManager @Inject constructor(
         )
         
         private const val DEFAULT_REGION = "sg"
+
+        // Số lần thử lại tối đa và khoảng nghỉ giữa các lần, chỉ áp dụng cho thiết bị MỚI THÊM
+        // (chưa từng có bản ghi trong DB trước lần scan này) khi Tuya Cloud báo online=false.
+        private const val NEW_DEVICE_ONLINE_RETRY_COUNT = 4
+        private const val NEW_DEVICE_ONLINE_RETRY_DELAY_MS = 3000L
+
+        // Số lần thử lại và khoảng nghỉ khi xác minh thiết bị có thực sự đổi trạng thái switch
+        // sau khi gửi lệnh bật/tắt hay không (có độ trễ lan truyền DP giữa Cloud và thiết bị).
+        private const val VERIFY_STATE_RETRY_COUNT = 3
+        private const val VERIFY_STATE_RETRY_DELAY_MS = 1000L
     }
 
     // Cache mã lệnh bật/tắt (DP code) thực tế của từng thiết bị, vì mỗi loại/model Tuya
@@ -130,49 +140,20 @@ class TuyaManager @Inject constructor(
             throw Exception("Chưa nhập Tuya UID trong Cài đặt. Vào 'Manage Devices' trên Tuya console, bấm vào tài khoản đã link để lấy UID (dạng ay...) rồi nhập vào Settings.")
         }
 
-        // Với kiểu link "App Account / Automatic Link" (QR Smart Life), phải dùng endpoint theo UID.
-        // /v1.0/iot-01/associated-users/devices KHÔNG áp dụng cho kiểu link này nên luôn trả về rỗng.
+        // ✅ MỚI: chụp lại tập id ĐÃ CÓ trong DB trước khi scan ghi đè — dùng để phân biệt
+        // "thiết bị mới thêm" (chưa từng xuất hiện ở lần scan trước) với thiết bị cũ đã từng
+        // online. Thiết bị vừa link vào Tuya Cloud thường cần vài giây-phút để Cloud nhận
+        // heartbeat đầu tiên từ chip Wi-Fi thật; nếu bấm Refresh ngay lúc đó, API Tuya trả
+        // online=false dù thiết bị vật lý đã bật — không phải app lỗi, mà Cloud chưa kịp đồng
+        // bộ. Trước đây app tin thẳng giá trị này, khiến thiết bị mới cài luôn báo "Mất kết
+        // nối" cho tới khi người dùng vào bật/tắt tay (lúc đó Cloud đã kịp đồng bộ nên gọi
+        // lệnh thành công, và setDeviceState() tự ép online=true).
+        val existingIds = tuyaDeviceDao.getAllDevices().map { it.id }.toSet()
+
         val urlPath = "/v1.0/users/$uid/devices"
-        val timestamp = System.currentTimeMillis()
-        val nonce = UUID.randomUUID().toString()
-        
-        // Tạo chữ ký cho API nghiệp vụ (Business API)
-        val sign = calculateSignature(
-            clientId = clientId,
-            accessToken = token,
-            timestamp = timestamp,
-            nonce = nonce,
-            secret = clientSecret,
-            method = "GET",
-            urlPathAndQuery = urlPath,
-            bodyStr = ""
-        )
-        
-        val url = "$baseUrl$urlPath"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("client_id", clientId)
-            .addHeader("access_token", token)
-            .addHeader("sign", sign)
-            .addHeader("t", timestamp.toString())
-            .addHeader("nonce", nonce)
-            .addHeader("sign_method", "HMAC-SHA256")
-            .get()
-            .build()
-        
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw Exception("Quét thiết bị thất bại: ${response.code}")
-        }
-        
-        val json = JSONObject(response.body?.string() ?: "")
-        val success = json.optBoolean("success")
-        if (!success) {
-            val msg = json.optString("msg", "Unknown error")
-            throw Exception("Scan API error: $msg")
-        }
-        
-        val result = json.optJSONArray("result")
+
+        val result = fetchDevicesRaw(clientId, clientSecret, token, baseUrl, urlPath)
+
         deviceCache.clear()
         val deviceList = mutableListOf<TuyaDeviceEntity>()
         // ✅ SỬA: map riêng để TRẢ VỀ cho caller, khoá theo `id` thật (duy nhất trên Tuya
@@ -189,16 +170,29 @@ class TuyaManager @Inject constructor(
                 val device = result.getJSONObject(i)
                 val name = device.optString("name")
                 val id = device.optString("id")
-                val online = device.optBoolean("online", false)
+                var online = device.optBoolean("online", false)
                 val category = device.optString("category", "")
                 val productName = device.optString("product_name", "")
-                
+
+                // ✅ MỚI: thiết bị mới (chưa có trong DB trước lần scan này) mà báo offline →
+                // thử lại vài lần trước khi chấp nhận là offline thật, vì rất có thể chỉ là
+                // Cloud Tuya chưa kịp đồng bộ heartbeat đầu tiên. Thiết bị đã tồn tại từ trước
+                // thì KHÔNG áp dụng retry này — offline thật cần báo ngay, không trì hoãn.
+                if (!online && id.isNotBlank() && id !in existingIds) {
+                    online = retryFetchOnlineForNewDevice(
+                        deviceId = id,
+                        clientId = clientId,
+                        clientSecret = clientSecret,
+                        baseUrl = baseUrl
+                    )
+                }
+
                 if (name.isNotBlank() && id.isNotBlank()) {
                     val info = DeviceInfo(id, name, online, category, productName)
                     deviceCache[name] = info
                     devicesById[id] = info
                     logger.i("TuyaManager", "📱 $name → $id (online: $online)")
-                    
+
                     deviceList.add(
                         TuyaDeviceEntity(
                             id = id,
@@ -212,14 +206,142 @@ class TuyaManager @Inject constructor(
                 }
             }
         }
-        
+
         if (deviceList.isNotEmpty()) {
             tuyaDeviceDao.insertAllDevices(deviceList)
             logger.i("TuyaManager", "💾 Saved ${deviceList.size} devices to DB")
         }
-        
+
         logger.i("TuyaManager", "✅ Tìm thấy ${devicesById.size} thiết bị")
         devicesById
+    }
+
+    // Gọi API /v1.0/users/{uid}/devices, tách riêng để scanDevices() gọn hơn và để
+    // retryFetchOnlineForNewDevice() có thể tái sử dụng cùng cơ chế ký request.
+    private suspend fun fetchDevicesRaw(
+        clientId: String,
+        clientSecret: String,
+        token: String,
+        baseUrl: String,
+        urlPath: String
+    ): JSONArray? = withContext(Dispatchers.IO) {
+        val timestamp = System.currentTimeMillis()
+        val nonce = UUID.randomUUID().toString()
+
+        val sign = calculateSignature(
+            clientId = clientId,
+            accessToken = token,
+            timestamp = timestamp,
+            nonce = nonce,
+            secret = clientSecret,
+            method = "GET",
+            urlPathAndQuery = urlPath,
+            bodyStr = ""
+        )
+
+        val url = "$baseUrl$urlPath"
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("client_id", clientId)
+            .addHeader("access_token", token)
+            .addHeader("sign", sign)
+            .addHeader("t", timestamp.toString())
+            .addHeader("nonce", nonce)
+            .addHeader("sign_method", "HMAC-SHA256")
+            .get()
+            .build()
+
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw Exception("Quét thiết bị thất bại: ${response.code}")
+        }
+
+        val json = JSONObject(response.body?.string() ?: "")
+        val success = json.optBoolean("success")
+        if (!success) {
+            val msg = json.optString("msg", "Unknown error")
+            throw Exception("Scan API error: $msg")
+        }
+
+        json.optJSONArray("result")
+    }
+
+    // ✅ MỚI: dò lại trạng thái online của MỘT thiết bị mới thêm bằng cách gọi thẳng
+    // /v1.0/devices/{id}/status (không phải API scan danh sách) vài lần với khoảng nghỉ, vì
+    // Cloud Tuya có thể mất vài giây-phút để nhận heartbeat đầu tiên từ thiết bị vừa link.
+    // Dừng thử ngay khi thấy online=true; nếu hết lượt vẫn false thì trả về false (offline
+    // thật, không phải do thiếu thời gian đồng bộ).
+    private suspend fun retryFetchOnlineForNewDevice(
+        deviceId: String,
+        clientId: String,
+        clientSecret: String,
+        baseUrl: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        repeat(NEW_DEVICE_ONLINE_RETRY_COUNT) { attempt ->
+            kotlinx.coroutines.delay(NEW_DEVICE_ONLINE_RETRY_DELAY_MS)
+            try {
+                val online = fetchSingleDeviceOnline(deviceId, clientId, clientSecret, baseUrl)
+                logger.i(
+                    "TuyaManager",
+                    "🔄 Retry đồng bộ trạng thái thiết bị mới $deviceId (lần ${attempt + 1}): online=$online"
+                )
+                if (online) return@withContext true
+            } catch (e: Exception) {
+                logger.e("TuyaManager", "Retry đồng bộ trạng thái $deviceId lỗi: ${e.message}", e)
+            }
+        }
+        false
+    }
+
+    // Gọi /v1.0/devices/{id} (chi tiết 1 thiết bị, có field "online") — nhẹ hơn gọi lại toàn
+    // bộ danh sách scanDevices() chỉ để lấy trạng thái của 1 thiết bị.
+    private suspend fun fetchSingleDeviceOnline(
+        deviceId: String,
+        clientId: String,
+        clientSecret: String,
+        baseUrl: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val token = getAccessToken()
+        val urlPath = "/v1.0/devices/$deviceId"
+        val timestamp = System.currentTimeMillis()
+        val nonce = UUID.randomUUID().toString()
+
+        val sign = calculateSignature(
+            clientId = clientId,
+            accessToken = token,
+            timestamp = timestamp,
+            nonce = nonce,
+            secret = clientSecret,
+            method = "GET",
+            urlPathAndQuery = urlPath,
+            bodyStr = ""
+        )
+
+        val url = "$baseUrl$urlPath"
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("client_id", clientId)
+            .addHeader("access_token", token)
+            .addHeader("sign", sign)
+            .addHeader("t", timestamp.toString())
+            .addHeader("nonce", nonce)
+            .addHeader("sign_method", "HMAC-SHA256")
+            .get()
+            .build()
+
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw Exception("Lấy chi tiết thiết bị thất bại: ${response.code}")
+        }
+
+        val json = JSONObject(response.body?.string() ?: "")
+        val success = json.optBoolean("success")
+        if (!success) {
+            val msg = json.optString("msg", "Unknown error")
+            throw Exception("Device detail API error: $msg")
+        }
+
+        json.optJSONObject("result")?.optBoolean("online", false) ?: false
     }
 
     // ✅ SỬA: nhận cả ID lẫn tên (deviceKey). Ưu tiên tra theo ID trước vì ID là duy nhất
@@ -504,6 +626,17 @@ class TuyaManager @Inject constructor(
         statusResult
     }
 
+    // ✅ SỬA: trước đây hàm này luôn kết thúc bằng updateDeviceStatus(device.id, true) — tức
+    // là chỉ cần API POST /commands trả success=true (nghĩa là Tuya Cloud ĐÃ NHẬN lệnh) là app
+    // coi như thiết bị đã online VÀ đã đổi trạng thái theo đúng ý muốn. Hai điều đó không đảm
+    // bảo nhau: Cloud nhận lệnh không có nghĩa thiết bị vật lý đã thực thi (mất Wi-Fi cục bộ,
+    // relay kẹt, điện áp yếu...). Kết quả: app báo "Đã bật" nhưng ổ cắm thực tế vẫn tắt.
+    //
+    // Giờ sau khi gửi lệnh, đợi một nhịp ngắn rồi gọi lại API status thật (fetchDeviceStatusList)
+    // để xác minh switch code đã đổi đúng giá trị `state` mong muốn chưa — đây mới là nguồn sự
+    // thật, không phải việc Cloud có nhận lệnh hay không. Nếu xác minh khớp: coi là thành công
+    // thật và cập nhật online=true (thiết bị chắc chắn đang phản hồi được). Nếu không khớp: ném
+    // lỗi rõ ràng cho người dùng biết lệnh KHÔNG có tác dụng, thay vì báo thành công giả.
     private suspend fun setDeviceState(device: DeviceInfo, state: Boolean) = withContext(Dispatchers.IO) {
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
@@ -562,7 +695,56 @@ class TuyaManager @Inject constructor(
             val msg = json.optString("msg", "Unknown error")
             throw Exception("Control API error: $msg")
         }
-        
+
+        // ✅ MỚI: Cloud nhận lệnh (success=true) KHÔNG đồng nghĩa thiết bị đã thực thi — xác
+        // minh lại bằng trạng thái thật, thử vài lần vì có độ trễ lan truyền giữa lúc Cloud
+        // nhận lệnh và lúc thiết bị report lại DP mới.
+        val actualState = verifyDeviceStateApplied(device.id, switchCode, expectedState = state)
+
+        if (!actualState) {
+            // Lệnh đã gửi nhưng thiết bị không đổi trạng thái thật — báo lỗi rõ ràng thay vì
+            // im lặng coi là thành công. online vẫn có thể true (Cloud vẫn thấy thiết bị kết
+            // nối) nên chỉ cập nhật cột online theo thực tế, không đụng vào phần thất bại này.
+            updateDeviceStatus(device.id, true)
+            throw Exception("Lệnh đã gửi tới Tuya Cloud nhưng thiết bị không phản hồi đổi trạng thái thật. Có thể thiết bị mất kết nối cục bộ hoặc phần cứng không phản hồi.")
+        }
+
         updateDeviceStatus(device.id, true)
+    }
+
+    // Đợi một nhịp ngắn rồi gọi lại status thật từ Tuya Cloud để xác minh thiết bị đã đổi đúng
+    // giá trị mong muốn chưa. Thử vài lần vì độ trễ lan truyền DP giữa lệnh POST /commands và
+    // lúc GET /status phản ánh đúng giá trị mới có thể mất 1-2 giây.
+    private suspend fun verifyDeviceStateApplied(
+        deviceId: String,
+        switchCode: String,
+        expectedState: Boolean
+    ): Boolean = withContext(Dispatchers.IO) {
+        repeat(VERIFY_STATE_RETRY_COUNT) { attempt ->
+            kotlinx.coroutines.delay(VERIFY_STATE_RETRY_DELAY_MS)
+            try {
+                val statusList = fetchDeviceStatusList(deviceId)
+                for (i in 0 until statusList.length()) {
+                    val status = statusList.getJSONObject(i)
+                    if (status.optString("code") == switchCode) {
+                        val value = status.opt("value")
+                        val current = when (value) {
+                            is Boolean -> value
+                            is Int -> value == 1
+                            is String -> value == "true" || value == "1"
+                            else -> false
+                        }
+                        logger.i(
+                            "TuyaManager",
+                            "🔍 Xác minh trạng thái $deviceId (lần ${attempt + 1}): thực tế=$current, mong muốn=$expectedState"
+                        )
+                        if (current == expectedState) return@withContext true
+                    }
+                }
+            } catch (e: Exception) {
+                logger.e("TuyaManager", "Xác minh trạng thái $deviceId lỗi: ${e.message}", e)
+            }
+        }
+        false
     }
 }
