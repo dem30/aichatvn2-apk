@@ -612,31 +612,11 @@ PluginAction(
     override suspend fun onEvent(event: EventLogEntity) {}
 
     override suspend fun buildSystemContext(): String {
-        val sit = cachedSituation ?: evaluateSituation()
-
-        // ✅ MỚI: báo cho AI biết có cuộc gọi nhỡ chưa xem không — cùng cách tính "nhỡ" như
-        // DatabaseSearchHelper (đếm incoming_call trừ call_answered trong 24h gần nhất), để
-        // câu trả lời nhất quán dù người dùng hỏi trực tiếp ("có cuộc gọi nhỡ nào không") hay
-        // chỉ đơn thuần trò chuyện chung (AI tự biết mà nhắc, giống cách nó biết "3 tin nhắn
-        // chưa đọc" qua pendingChatsCount).
-        val missedCallsCount = try {
-            val since = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
-            val now = System.currentTimeMillis()
-            databaseSearchHelper.countMissedCalls(since, now)
-        } catch (e: Exception) {
-            0
-        }
-
-        return """
-            <SYSTEM_CONTEXT>
-            Báo cáo trạng thái vận hành của Quản gia thông minh:
-            - Chế độ hoạt động (HouseMood): ${sit.currentMood}
-            - Mức độ cảnh báo an ninh: Cấp độ ${sit.securityLevel} (0: Bình thường, 2: Nguy cơ xâm nhập)
-            - Số lượng thiết bị thông minh Tuya đang hoạt động: ${sit.activeDevicesCount}
-            - Tin nhắn chưa đọc cần hỗ trợ từ đa kênh: ${sit.pendingChatsCount}
-            - Cuộc gọi nhỡ trong 24 giờ qua: $missedCallsCount
-            </SYSTEM_CONTEXT>
-        """.trimIndent()
+        // ✅ SỬA: bỏ hẳn báo cáo "Quản gia" (<SYSTEM_CONTEXT>) tiêm sẵn vào MỌI lượt chat —
+        // HouseMood/security level/số thiết bị/tin nhắn chưa đọc/cuộc gọi nhỡ giờ đây AI có thể
+        // tự tra bằng công cụ (db_search, house_manager query...) khi câu hỏi thực sự cần, thay
+        // vì nhồi sẵn mỗi lượt gây tốn token dù phần lớn câu hỏi không liên quan.
+        return ""
     }
 
 

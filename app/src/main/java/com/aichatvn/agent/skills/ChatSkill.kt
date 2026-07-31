@@ -216,7 +216,11 @@ class ChatSkill @Inject constructor(
                 matchedCallQuery -> rawLogs.filter { it.source == "call" }
                 normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> rawLogs.filter { it.source == "camera" }
                 normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> rawLogs.filter { it.source == "tuya" }
-                else -> rawLogs.filter { it.eventType in setOf("person_detected", "state_change") }
+                // ✅ SỬA: không còn suy diễn ra log camera/state_change khi câu hỏi không rõ domain
+                // (vd "có tin nhắn đặt hàng không") — nhồi log camera không liên quan từng khiến
+                // model nghĩ đã có đủ context nên bỏ qua db_search. Để rỗng, bắt AI tự gọi
+                // db_search với category phù hợp (chat/qa) khi cần.
+                else -> emptyList()
             }
 
             val dateFmt = java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.getDefault())
@@ -261,20 +265,9 @@ class ChatSkill @Inject constructor(
                 .take(maxLogs)
                 .map { log -> "${dateFmt.format(java.util.Date(log.timestamp))}: ${log.summary}" }
 
-            val unreadLines = try {
-                database.chatMessageDao().getAllMessagesRaw(500)
-                    .filter { it.role == "user" && !it.isRead && it.username != "default_user" }
-                    .filter { matchedPlatform == null || it.username.substringBefore("_") == matchedPlatform }
-                    .sortedByDescending { it.timestamp }
-                    .take(10)
-                    .map { msg ->
-                        val platform = msg.username.substringBefore("_")
-                        val rawId = msg.username.substringAfter("_")
-                        "${dateFmt.format(java.util.Date(msg.timestamp))}: [$platform] $rawId nhắn: \"${msg.content.take(80)}\""
-                    }
-            } catch (e: Exception) {
-                emptyList()
-            }
+            // ✅ SỬA: bỏ hẳn khối "Tin nhắn khách hàng chưa đọc" khỏi context bị động — tốn token
+            // mỗi lượt chat dù không liên quan tới câu hỏi. AI đã có công cụ db_search (category
+            // "chat"/"telegram"/"facebook"/"website") để tự tra khi cần, không cần nhồi sẵn nữa.
 
             val worldState = when {
                 matchedCamera != null -> database.worldStateDao().getState("camera", matchedCamera.id)
@@ -282,7 +275,7 @@ class ChatSkill @Inject constructor(
                 else -> null
             }
 
-            if (activityLines.isEmpty() && unreadLines.isEmpty() && worldState == null) return@withContext ""
+            if (activityLines.isEmpty() && worldState == null) return@withContext ""
 
             buildString {
                 append("<SYSTEM_MEMORY>\n") 
@@ -297,9 +290,9 @@ class ChatSkill @Inject constructor(
                     append("--- Nhật ký hoạt động kênh $matchedPlatform ($rangeLabel) ---\n")
                 } else if (matchedCallQuery) {
                     append("--- Nhật ký cuộc gọi ($rangeLabel) ---\n")
-                } else {
-                    append("--- Nhật ký hoạt động tổng hợp ($rangeLabel) ---\n")
                 }
+                // ✅ SỬA: bỏ nhánh "tổng hợp" — activityLines giờ luôn rỗng ở case fallback nên
+                // nhánh này không còn được dùng tới; xoá để tránh gây hiểu nhầm cho người đọc sau.
                 if (worldState != null) {
                     append("--- Trạng thái SỐNG hiện tại (Bản sao số, cập nhật lúc ${dateFmt.format(java.util.Date(worldState.updatedAt))}) ---\n")
                     append(worldState.attributesJson)
@@ -307,12 +300,6 @@ class ChatSkill @Inject constructor(
                 }
                 if (activityLines.isNotEmpty()) {
                     append(activityLines.joinToString("\n"))
-                    append("\n")
-                }
-                if (unreadLines.isNotEmpty()) {
-                    // ✅ SỬA: đổi tiêu đề rõ ràng để không bị nhầm với nhật ký quá khứ ở trên
-                    append("--- Tin nhắn khách hàng chưa đọc (HIỆN TẠI) ---\n")
-                    append(unreadLines.joinToString("\n"))
                     append("\n")
                 }
                 append("Hãy sử dụng dữ liệu chính xác này để trả lời câu hỏi của người dùng. Tuyệt đối không tự bịa đặt thông tin không có trong nhật ký.\n")
