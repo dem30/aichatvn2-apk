@@ -2,7 +2,6 @@ package com.aichatvn.agent.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.stringPreferencesKey
-import com.aichatvn.agent.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
@@ -11,11 +10,11 @@ import javax.inject.Singleton
 /**
  * Cung cấp Groq API key, đọc lazy ngay trước mỗi request (KHÔNG đọc lúc init).
  *
- * Thứ tự ưu tiên:
- * 1. Key user nhập trong Settings UI → lưu trong DataStore ("groq_api_key")
- * 2. Key build-time từ GitHub Actions secret → BuildConfig.GROQ_API_KEY
+ * ✅ SỬA: đã bỏ fallback BuildConfig.GROQ_API_KEY (GitHub Actions secret) — server không còn
+ * giữ key build-time nào nữa, chỉ còn duy nhất 1 nguồn: key user tự nhập trong Settings UI →
+ * lưu trong DataStore ("groq_api_key").
  *
- * Trả về null nếu cả 2 đều trống → GroqClientTool sẽ hiện cảnh báo cho user.
+ * Trả về null nếu key trống → GroqClientTool sẽ hiện cảnh báo cho user.
  */
 @Singleton
 class GroqApiKeyProvider @Inject constructor(
@@ -27,9 +26,6 @@ class GroqApiKeyProvider @Inject constructor(
 
     suspend fun getKey(): String? {
         val userKey = context.dataStore.data.first()[GROQ_API_KEY]?.trim()
-        if (!userKey.isNullOrBlank()) return userKey
-
-        val buildKey = BuildConfig.GROQ_API_KEY.trim()
-        return buildKey.takeIf { it.isNotBlank() }
+        return userKey.takeIf { !it.isNullOrBlank() }
     }
 }

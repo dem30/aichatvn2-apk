@@ -1,7 +1,6 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
-import com.aichatvn.agent.BuildConfig
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.plugin.PluginAction
@@ -67,23 +66,24 @@ class EmailSkill @Inject constructor(
         private const val RESEND_API_URL = "https://api.resend.com/emails"
     }
 
+    // ✅ SỬA: không còn BuildConfig.RESEND_API_KEY/RESEND_SENDER làm fallback — server không
+    // còn giữ secret nào nữa, người dùng bắt buộc phải tự nhập trong Settings. Nếu chưa nhập,
+    // trả về rỗng và để các hàm gọi (initialize()/sendEmail()) tự báo lỗi hướng dẫn vào Settings.
     private suspend fun loadApiKey(): String = withContext(Dispatchers.IO) {
         try {
             val prefs = context.dataStore.data.first()
-            val key = prefs[stringPreferencesKey("resend_api_key")] ?: ""
-            if (key.isNotBlank()) key else BuildConfig.RESEND_API_KEY
+            prefs[stringPreferencesKey("resend_api_key")] ?: ""
         } catch (e: Exception) {
-            BuildConfig.RESEND_API_KEY
+            ""
         }
     }
 
     private suspend fun loadSenderEmail(): String = withContext(Dispatchers.IO) {
         try {
             val prefs = context.dataStore.data.first()
-            val sender = prefs[stringPreferencesKey("resend_sender")] ?: ""
-            if (sender.isNotBlank()) sender else BuildConfig.RESEND_SENDER
+            prefs[stringPreferencesKey("resend_sender")] ?: ""
         } catch (e: Exception) {
-            BuildConfig.RESEND_SENDER
+            ""
         }
     }
 
