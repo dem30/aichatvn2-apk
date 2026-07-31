@@ -150,33 +150,45 @@ fun ChatScreen(
                 actions = {
                     GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
-                    IconButton(onClick = {
-                        navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
-                    }) {
-                        if (unreadInboxCount > 0) {
-                            BadgedBox(
-                                badge = {
-                                    Badge {
-                                        Text(if (unreadInboxCount > 99) "99+" else unreadInboxCount.toString())
-                                    }
+                    // ✅ MỚI (UX): Trước đây AppBar có 4 icon cùng lúc (Hộp thư, Log hệ thống,
+                    // Xóa lịch sử, Chọn chế độ) — người mới không biết bấm đâu. Gộp "Hộp thư" và
+                    // "Xóa lịch sử" vào 1 menu 3 chấm; bỏ hẳn nút Log hệ thống khỏi Chat (chỉ còn
+                    // truy cập qua "Chế độ nhà phát triển" trong Cài đặt). Giữ nguyên nút "Chọn
+                    // chế độ AI" riêng vì đây là hành động chính, dùng thường xuyên.
+                    var expandedOverflowMenu by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { expandedOverflowMenu = true }) {
+                            if (unreadInboxCount > 0) {
+                                BadgedBox(badge = { Badge { Text(if (unreadInboxCount > 99) "99+" else unreadInboxCount.toString()) } }) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "Thêm")
                                 }
-                            ) {
-                                Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
+                            } else {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Thêm")
                             }
-                        } else {
-                            Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
+                        }
+                        DropdownMenu(
+                            expanded = expandedOverflowMenu,
+                            onDismissRequest = { expandedOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Hộp thư đa kênh" + if (unreadInboxCount > 0) " (${if (unreadInboxCount > 99) "99+" else unreadInboxCount})" else "") },
+                                leadingIcon = { Icon(Icons.Default.Forum, contentDescription = null) },
+                                onClick = {
+                                    expandedOverflowMenu = false
+                                    navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Xóa lịch sử trò chuyện") },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                onClick = {
+                                    expandedOverflowMenu = false
+                                    viewModel.clearHistory()
+                                }
+                            )
                         }
                     }
 
-                    IconButton(onClick = {
-                        navController.navigate("logs") { launchSingleTop = true }
-                    }) {
-                        Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
-                    }
-                    IconButton(onClick = { viewModel.clearHistory() }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Xóa lịch sử")
-                    }
-                    
                     Box {
                         IconButton(onClick = { expandedMenu = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Chọn chế độ")

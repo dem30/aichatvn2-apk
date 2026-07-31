@@ -10,6 +10,9 @@
     <string name="tab_house_manager">Quản gia</string>
     <string name="tab_settings">Cài đặt</string>
     <string name="tab_logs">Logs</string>
+    <!-- ✅ MỚI: 2 tab gộp cho bottom nav rút gọn (7 → 4 mục) -->
+    <string name="tab_automation">Thiết bị</string>
+    <string name="tab_more">Khác</string>
     <string name="save">Lưu</string>
     <string name="cancel">Hủy</string>
     <string name="delete">Xóa</string>

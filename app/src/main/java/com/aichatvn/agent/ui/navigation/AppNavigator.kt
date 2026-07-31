@@ -43,6 +43,15 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
 
     object HouseManager : Screen("house_manager", R.string.tab_house_manager, Icons.Default.SmartToy)
 
+    // ✅ MỚI: Tab gộp "Thiết bị & Tự động hóa" — container chứa HouseManager/Tuya/Schedule/Customer
+    // dưới dạng sub-tab nội bộ, để bottom nav chỉ còn 4 mục thay vì 7. Các route con (house_manager,
+    // tuya, schedule, customer) VẪN giữ nguyên và có thể điều hướng trực tiếp tới như trước — màn
+    // hình gốc của chúng không đổi, chỉ đổi cách chúng được truy cập từ bottom nav.
+    object Automation   : Screen("automation", R.string.tab_automation, Icons.Default.SmartToy)
+
+    // ✅ MỚI: Tab gộp "Khác" — chứa Cài đặt, Huấn luyện AI, và (khi bật Chế độ nhà phát triển) Nhật ký
+    object More         : Screen("more", R.string.tab_more, Icons.Default.MoreHoriz)
+
     companion object {
         const val INBOX_ROUTE = "inbox"
         const val DIAGNOSTICS_ROUTE = "diagnostics"
@@ -83,14 +92,14 @@ fun AppNavigator(
         }
     }
 
+    // ✅ Bottom nav rút gọn từ 7 mục xuống 4: người mới chỉ thấy "Nhà của tôi / Trò chuyện /
+    // Thiết bị & Tự động hóa / Khác" — các khái niệm kỹ thuật (Quản gia AI, Tuya, Lịch, Camera
+    // theo khách, Huấn luyện, Cài đặt, Log) được gom bên trong 2 tab container thay vì bày hết ra.
     val screens = listOf(
         Screen.Dashboard,
         Screen.Chat,
-        Screen.HouseManager,
-        Screen.Customer,
-        Screen.Training,
-        Screen.Schedule,
-        Screen.Settings
+        Screen.Automation,
+        Screen.More
     )
 
     // Bọc toàn bộ Scaffold trong một Box để vẽ Overlay UI (Floating Call Bubble)
@@ -144,6 +153,18 @@ fun AppNavigator(
                 composable(Screen.HouseManager.route) {
                     val houseViewModel: HouseManagerViewModel = hiltViewModel()
                     HouseManagerScreen(viewModel = houseViewModel, navController = navController)
+                }
+
+                // ✅ MỚI: Container "Thiết bị & Tự động hóa" — TabRow nội bộ chuyển giữa 4 màn hình
+                // gốc, không đổi logic bên trong bất kỳ màn nào trong số đó.
+                composable(Screen.Automation.route) {
+                    AutomationHubScreen(navController = navController)
+                }
+
+                // ✅ MỚI: Container "Khác" — chứa Cài đặt + Huấn luyện AI; Nhật ký/Diagnostics/
+                // Pipeline chỉ xuất hiện khi bật "Chế độ nhà phát triển" trong Settings.
+                composable(Screen.More.route) {
+                    MoreHubScreen(navController = navController)
                 }
 
                 composable(Screen.Chat.route) { ChatScreen(navController, unreadInboxCount = totalUnreadCount) }

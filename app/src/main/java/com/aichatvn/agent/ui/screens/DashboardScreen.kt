@@ -277,6 +277,37 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            // ✅ MỚI (UX): Khối tóm tắt đầu trang — trước đây mở app lên là thấy ngay sơ đồ
+            // thiết bị dày đặc, không có điểm nhấn "AI đang lo cho bạn". Khối này tính trực
+            // tiếp từ deviceNodes đã có sẵn (không cần dữ liệu ViewModel mới) để cho cảm giác
+            // "một AI quản gia" thay vì "một bộ công cụ".
+            if (deviceNodes.isNotEmpty()) {
+                val onlineCount = deviceNodes.count { it.online }
+                val cameraCount = deviceNodes.count { it.type == DeviceType.CAMERA && it.online }
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "🏠 Nhà đang an toàn",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "• $onlineCount thiết bị online\n• $cameraCount camera đang giám sát",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                        )
+                    }
+                }
+            }
+
             if (aiRecommendations.isNotEmpty()) {
                 // ✅ SỬA: trước đây chỉ lấy aiRecommendations.first() — nếu có ≥2 thói quen
                 // đang chờ duyệt cùng lúc, các cái còn lại bị "giấu" hoàn toàn khỏi người dùng

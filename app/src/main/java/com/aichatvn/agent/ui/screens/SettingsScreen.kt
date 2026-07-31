@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.data.model.FacebookPageEntity 
@@ -92,6 +93,15 @@ fun SettingsScreen(
     var errorMessage      by remember { mutableStateOf<String?>(null) }
     var testEmailResult   by remember { mutableStateOf<String?>(null) }
     var tuyaTestResult    by remember { mutableStateOf<String?>(null) }
+
+    // ✅ MỚI (UX): "Chế độ nhà phát triển" — công tắc duy nhất kiểm soát việc hiển thị các màn
+    // debug (Nhật ký hệ thống, Diagnostics, Pipeline Graph) tới người dùng thường. Mặc định TẮT.
+    // Dùng SharedPreferences trực tiếp (độc lập với SettingsViewModel) để không phải đoán cấu
+    // trúc ViewModel hiện có.
+    val devModePrefs = context.getSharedPreferences("app_ux_prefs", android.content.Context.MODE_PRIVATE)
+    var devModeEnabled by remember {
+        mutableStateOf(devModePrefs.getBoolean("dev_mode_enabled", false))
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
@@ -298,6 +308,50 @@ fun SettingsScreen(
                     delay(2000)
                     showSaved = false
                 }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            // ✅ MỚI (UX): Chế độ nhà phát triển — ẩn hoàn toàn các công cụ debug khỏi người
+            // dùng thường, chỉ hiện khi bật công tắc này. Đây là điểm truy cập DUY NHẤT tới
+            // Nhật ký hệ thống / Diagnostics / Pipeline Graph sau khi gỡ chúng khỏi các màn khác.
+            Text("🛠️ Nâng cao", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Chế độ nhà phát triển", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Hiện các công cụ kỹ thuật: Nhật ký hệ thống, Diagnostics, Pipeline Graph",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = devModeEnabled,
+                    onCheckedChange = {
+                        devModeEnabled = it
+                        devModePrefs.edit().putBoolean("dev_mode_enabled", it).apply()
+                    }
+                )
+            }
+
+            if (devModeEnabled) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { navController.navigate(Screen.Logs.route) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("📋 Nhật ký hệ thống") }
+                OutlinedButton(
+                    onClick = { navController.navigate(Screen.DIAGNOSTICS_ROUTE) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("🔍 Diagnostics") }
+                OutlinedButton(
+                    onClick = { navController.navigate(Screen.PIPELINE_GRAPH_ROUTE) },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("🧩 Pipeline Graph") }
             }
 
             Spacer(Modifier.height(32.dp))

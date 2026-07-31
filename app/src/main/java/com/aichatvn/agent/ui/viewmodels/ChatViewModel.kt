@@ -45,6 +45,19 @@ import javax.inject.Inject
 data class QuickCommand(val label: String, val text: String)
 data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
 
+// ✅ MỚI (UX): action.name trong plugin manifest là tên kỹ thuật (vd. "set", "status", "scan")
+// dùng để định danh lệnh — không đổi được vì nhiều nơi khác dựa vào giá trị này. Bảng này CHỈ
+// đổi NHÃN HIỂN THỊ cho người dùng thân thiện hơn; giá trị gửi đi (action.name thật) không đổi.
+// Tên không có trong bảng thì giữ nguyên như cũ.
+private val friendlyActionLabels: Map<String, String> = mapOf(
+    "scan" to "📷 Quét ngay",
+    "status" to "📊 Xem trạng thái",
+    "set" to "⚙️ Cài đặt"
+)
+
+private fun friendlyLabelFor(actionName: String): String =
+    friendlyActionLabels[actionName.lowercase()] ?: actionName
+
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
@@ -103,7 +116,7 @@ class ChatViewModel @Inject constructor(
                 val requiredParams = action.parameters.filter { it.required }
                 val text = if (requiredParams.isEmpty()) action.description
                 else action.description + " (" + requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
-                QuickCommand(label = action.name, text = text)
+                QuickCommand(label = friendlyLabelFor(action.name), text = text)
             }
         )
     }
