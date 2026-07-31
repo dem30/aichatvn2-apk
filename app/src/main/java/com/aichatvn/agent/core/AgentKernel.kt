@@ -1716,4 +1716,128 @@ class AgentKernel @Inject constructor(
     }
 
     // ✅ MỚI: Domain của LƯỢT NÀY ưu tiên trước — nếu câu hỏi không tự nêu domain nào (vd câu hỏi
-    // đào sâu "họ mặc áo màu gì" không chứa từ khoá camera/tuya/chat/call nào), fall
+    // đào sâu "họ mặc áo màu gì" không chứa từ khoá camera/tuya/chat/call nào), fallback sang
+    // SearchFocus đã ghi ở lần search DB thật gần nhất — TÁI DÙNG đúng
+    // chatHistoryManager.getLastSearchFocus() mà shouldAttachToolGuard() bên dưới đã dùng, không
+    // thêm nguồn dữ liệu mới. Nếu vẫn không xác định được → trả set rỗng, gọi nơi dùng tự hiểu là
+    // "gửi đủ catalog như cũ", không đoán bừa.
+    private suspend fun resolveActiveDomains(message: String, username: String): Set<String> {
+        val currentTurnDomains = matchedDomainsInMessage(message)
+        if (currentTurnDomains.isNotEmpty()) return currentTurnDomains
+
+        return when (chatHistoryManager.getLastSearchFocus(username)?.sourceCategory) {
+            "camera" -> setOf("camera")
+            "tuya" -> setOf("tuya")
+            "call" -> setOf("call")
+            "facebook", "telegram", "website", "chat" -> setOf("chat")
+            else -> emptySet()
+        }
+    }
+
+    private suspend fun isExitLockPhrase(msg: String): Boolean {
+        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
+        val exitPhrases = configProvider.getString(
+            AppConfigDefaults.GLOBAL_EXIT_LOCK_PHRASES,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_EXIT_LOCK_PHRASES)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        return norm in exitPhrases
+    }
+
+    private suspend fun parseYesNo(msg: String): Boolean? {
+        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
+
+        val yesKeywords = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CONFIRM_YES_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CONFIRM_YES_KEYWORDS)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+        val noKeywords = configProvider.getString(
+            AppConfigDefaults.GLOBAL_CONFIRM_NO_KEYWORDS,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CONFIRM_NO_KEYWORDS)
+        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
+
+        val isYes = yesKeywords.any { kw -> 
+            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
+        }
+        val isNo = noKeywords.any { kw -> 
+            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
+        }
+        
+        return when {
+            isYes && !isNo -> true
+            isNo && !isYes -> false
+            else -> null
+        }
+    }
+
+    private fun detectLockTrigger(userMessage: String): String? {
+        val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
+        val m = Regex("^(dieu khien|khoa dieu khien)\\s+(thiet bi\\s+)?(.+)$").find(norm) ?: return null
+        val target = m.groupValues[3].trim()
+        if (target.isBlank()) return null
+
+        val matched = plugins.firstOrNull { p ->
+            p.manifest.routable && (
+                target.contains(p.manifest.id, ignoreCase = true) ||
+                StringSimilarityUtil.normalizeVietnamese(p.manifest.name).contains(target, ignoreCase = true)
+            )
+        }
+        return matched?.manifest?.id
+    }
+
+    private suspend fun handleLockConfirmation(userMessage: String, username: String, pluginId: String): RouterOutcome {
+        val matchedPlugin = plugins.find { it.manifest.id == pluginId }
+        val displayName = matchedPlugin?.manifest?.name ?: pluginId
+        return when (parseYesNo(userMessage)) {
+            true -> {
+                chatHistoryManager.lockPlugin(username, pluginId)
+                chatHistoryManager.clearLockRequest(username)
+                RouterOutcome.Matched(
+                    DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
+                )
+            }
+            false -> {
+                chatHistoryManager.clearLockRequest(username)
+                RouterOutcome.Matched(
+                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
+                )
+            }
+            null -> RouterOutcome.Matched(
+                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Xác nhận vào chế độ điều khiển riêng cho \"$displayName\" chứ? (có/không)")))
+            )
+        }
+    }
+
+    fun getLockedPluginId(username: String = "default_user"): String? = chatHistoryManager.getLockedPlugin(username)
+
+    fun getLockedPluginName(username: String = "default_user"): String? {
+        val id = getLockedPluginId(username) ?: return null
+        return plugins.find { it.manifest.id == id }?.manifest?.name ?: id
+    }
+
+    data class Intent(
+        val pluginId: String,
+        val action: String,
+        val params: Map<String, Any> = emptyMap()
+    )
+
+    data class DeviceCommandResult(
+        val pluginId: String,
+        val result: PluginResult
+    )
+
+    sealed class RouterOutcome {
+        data class Matched(val result: DeviceCommandResult) : RouterOutcome()
+        object NotACommand : RouterOutcome()
+        data class RouterFailed(val reason: String) : RouterOutcome()
+    }
+
+    sealed class PluginResult {
+        data class Success(val data: Any) : PluginResult()
+        data class Failure(val error: String) : PluginResult()
+        data class NeedMoreInfo(
+            val missingParams: List<String>, 
+            val question: String,
+            val options: Map<String, String> = emptyMap()
+        ) : PluginResult()
+    }
+}
