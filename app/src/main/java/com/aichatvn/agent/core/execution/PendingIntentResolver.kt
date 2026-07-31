@@ -13,7 +13,6 @@ import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.DateTimeParser
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
-import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,6 +25,9 @@ class PendingIntentResolver @Inject constructor(
     private val plugins: Set<@JvmSuppressWildcards Plugin>,
     private val database: AppDatabase,
     private val configProvider: AppConfigProvider,
+    // ⚠️ groqClient không còn được dùng trong file này (đã bỏ cuộc gọi LLM phụ ở fill-parameter
+    // flow) — giữ lại tham số constructor để không đổi chữ ký DI, Vinh có thể xoá nếu xác nhận
+    // không nơi nào khác cần.
     private val groqClient: GroqClientTool,
     private val trainingSkill: TrainingSkill,
     private val chatHistoryManager: ChatHistoryManager,
@@ -211,53 +213,26 @@ class PendingIntentResolver @Inject constructor(
             logger.d("PendingIntentResolver", "[$traceId] Heuristic tự xử lý thành công tham số '$currentAskedParam'. Bypass LLM.")
             heuristicFilled
         } else {
+            logger.d("PendingIntentResolver", "[$traceId] Heuristic không khớp tự động được '$currentAskedParam'.")
+
             if (mode == PipelineMode.DIAGNOSTIC) {
-                logger.d("PendingIntentResolver", "[$traceId] 🔵 [DIAGNOSTIC] Chặn gọi Groq thực tế cho Tầng 1 dở dang.")
+                logger.d("PendingIntentResolver", "[$traceId] 🔵 [DIAGNOSTIC] Tầng 1 dở dang, chưa khớp heuristic.")
                 return DeviceCommandResult(
                     pluginId = pending.pluginId,
                     result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
                 )
             }
 
-            logger.d("PendingIntentResolver", "[$traceId] Heuristic không khớp tự động được '$currentAskedParam'. Gọi LLM.")
-            val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
-            val foundAliasesContext = matchResult.aliasMatches
-                .filter { it.second >= configAliasThreshold }
-                .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang ID thực tế: \"${it.first.answer}\"" }
-
-            val fillPrompt = buildString {
-                append("<system>Output ONLY raw JSON, NO explanation.\n")
-                append("Determine if user's input fills the missing parameter:\n")
-                append("{\"params\": {${pending.missingParams.joinToString(",") { "\"$it\": \"value\"" }}}}\n")
-                append("If the user wants to cancel or starts another task, output: {\"unrelated\": true}</system>\n")
-                if (foundAliasesContext.isNotBlank()) {
-                    append("<aliases_context>\n$foundAliasesContext\n</aliases_context>\n")
-                }
-                append("<missing>${pending.missingParams.joinToString(", ")}</missing>\n")
-                append("<question>${pending.askedQuestion}</question>\n")
-                append("<user_reply>$userMessage</user_reply>\n")
-                append("<output>")
-            }
-
-            val parsedJson = try {
-                withTimeout(10_000L) {
-                    val rawJson = groqClient.routeIntent(fillPrompt)
-                    val cleaned = rawJson.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-                    JSONObject(cleaned)
-                }
-            } catch (e: Exception) {
-                null
-            } ?: return DeviceCommandResult(
-                pluginId = pending.pluginId,
-                result = PluginResult.NeedMoreInfo(pending.missingParams, pending.askedQuestion)
-            )
-
-            if (parsedJson.optBoolean("unrelated", false)) {
-                chatHistoryManager.clearPendingIntent(pending.username)
-                return null
-            } else {
-                parsedJson.optJSONObject("params")?.toMap() ?: emptyMap()
-            }
+            // ✅ SỬA: bỏ hẳn cuộc gọi Groq phụ (model nhỏ, KHÔNG có tool db_search) từng dùng để
+            // đoán xem câu trả lời có điền được tham số hay là user đổi chủ đề — cuộc gọi này vừa
+            // tốn thêm 1 lượt LLM + latency, vừa không giải quyết được vấn đề gốc nếu câu trả lời
+            // thực ra là 1 câu hỏi cần tra dữ liệu thật (model này không search được). Heuristic đã
+            // không khớp được tham số đang hỏi → coi thẳng là user đổi chủ đề, huỷ pending ngay, để
+            // tin nhắn rơi xuống pipeline chat chính (đã có Two-Pass db_search xử lý đúng và đầy đủ
+            // hơn nhiều so với cuộc gọi phụ này).
+            logger.d("PendingIntentResolver", "[$traceId] Coi là đổi chủ đề, huỷ pending (bỏ gọi LLM phụ để tiết kiệm token/latency).")
+            chatHistoryManager.clearPendingIntent(pending.username)
+            return null
         }
 
         val finalFilled = fill + heuristicFilled

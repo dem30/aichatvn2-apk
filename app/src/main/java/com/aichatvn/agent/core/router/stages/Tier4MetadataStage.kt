@@ -53,27 +53,32 @@ class Tier4MetadataStage @Inject constructor(
         }
 
         for (clause in context.clauses) {
-            val clauseNormalized = StringSimilarityUtil.normalizeVietnamese(clause)
+            // ✅ SỬA: so khớp lệnh điều khiển thiết bị bằng bản GIỮ NGUYÊN dấu tiếng Việt (chỉ
+            // lowercase), không dùng clauseNormalized (đã bỏ dấu) nữa — bỏ dấu khiến câu hỏi đào
+            // sâu không liên quan (vd "Vậy còn báo giá") dễ trùng substring với mô tả/ví dụ action
+            // (nhiều từ khác nghĩa hoàn toàn trở thành cùng 1 chuỗi ký tự sau khi bỏ dấu) rồi bị
+            // Tier 4 hốt nhầm thành lệnh thiết bị. Giữ dấu giúp so khớp chính xác hơn nhiều.
+            val clauseKeepAccent = clause.lowercase().trim()
 
             val matchedAliases = context.globalMatchResult.aliasMatches.filter { 
-                val aliasNorm = StringSimilarityUtil.normalizeVietnamese(it.first.question)
-                clauseNormalized.contains(aliasNorm) 
+                val aliasKeepAccent = it.first.question.lowercase().trim()
+                clauseKeepAccent.contains(aliasKeepAccent) 
             }
 
             val matchedMetadata = mutableListOf<NormalizedActionMetadata>()
-            var tempClause = clauseNormalized
+            var tempClause = clauseKeepAccent
             val sortedMetadata = pipeline.normalizedActionMetadataList
                 .filter { it.plugin.manifest.routable && it.action.enabled }
                 .sortedByDescending { it.action.description.length }
 
             for (meta in sortedMetadata) {
-                val descNorm = meta.normalizedDescription
-                if (descNorm.isBlank()) continue
-                if (tempClause.contains(descNorm)) {
+                val descKeepAccent = meta.descriptionKeepAccent
+                if (descKeepAccent.isBlank()) continue
+                if (tempClause.contains(descKeepAccent)) {
                     matchedMetadata.add(meta)
-                    tempClause = tempClause.replace(descNorm, " ".repeat(descNorm.length))
+                    tempClause = tempClause.replace(descKeepAccent, " ".repeat(descKeepAccent.length))
                 } else {
-                    val matchedEx = meta.normalizedExamples.find { ex -> ex.isNotBlank() && tempClause.contains(ex) }
+                    val matchedEx = meta.examplesKeepAccent.find { ex -> ex.isNotBlank() && tempClause.contains(ex) }
                     if (matchedEx != null) {
                         matchedMetadata.add(meta)
                         tempClause = tempClause.replace(matchedEx, " ".repeat(matchedEx.length))
@@ -81,7 +86,7 @@ class Tier4MetadataStage @Inject constructor(
                 }
             }
 
-            val totalMatchedLength = matchedMetadata.sumOf { it.normalizedDescription.length } + 
+            val totalMatchedLength = matchedMetadata.sumOf { it.descriptionKeepAccent.length } + 
                                      matchedAliases.sumOf { it.first.question.length }
             
             if (clause.isEmpty()) continue

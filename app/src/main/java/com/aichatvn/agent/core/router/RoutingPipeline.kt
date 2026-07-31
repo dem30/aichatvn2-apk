@@ -161,7 +161,10 @@ class RoutingPipeline @Inject constructor(
                     action = action,
                     normalizedDescription = StringSimilarityUtil.normalizeVietnamese(action.description),
                     normalizedExamples = action.examples.map { StringSimilarityUtil.normalizeVietnamese(it) },
-                    normalizedTags = action.tags.map { StringSimilarityUtil.normalizeVietnamese(it) }
+                    normalizedTags = action.tags.map { StringSimilarityUtil.normalizeVietnamese(it) },
+                    // ✅ MỚI: chỉ lowercase, GIỮ NGUYÊN dấu — cho Tier 4 so khớp chính xác.
+                    descriptionKeepAccent = action.description.lowercase().trim(),
+                    examplesKeepAccent = action.examples.map { it.lowercase().trim() }
                 )
             }
         }
