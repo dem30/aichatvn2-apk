@@ -1578,22 +1578,21 @@ class AgentKernel @Inject constructor(
         // với bản trước, chỉ nén câu chữ. Vẫn giữ nguyên: (1) JSON schema + đủ enum category kể
         // cả khi đang lọc theo 1 domain (model có thể đổi domain giữa chừng lượt sau), (2)
         // catalogue tên thật theo domain phía dưới, (3) rule "thiết bị lạ" + "không bịa data".
-        return "🚨 db_search khi cần dữ liệu thật:\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên khớp danh sách dưới nếu camera/tuya\",\"keyword\":\"\",\"granularity\":\"summary|detail\"}\n" +
-            "- Camera → luôn db_search, không suy diễn.\n" +
-            "- object=1 trong 6 giá trị, không khớp dùng all.\n" +
-            "- keyword=copy nguyên từ khóa người dùng.\n" +
-            "- category=qa nếu câu hỏi chung; category=chat nếu chưa rõ kênh; không rõ nguồn thì bỏ category.\n" +
-            "- facebook/telegram/website: target=tên kênh, keyword=nội dung.\n" +
-            "- Thiết bị ngoài danh sách (camera/tuya) → báo chưa lắp, không gọi tool. Call/chat/qa luôn hợp lệ.\n" +
-            "- Không có data → không bịa; hỏi sâu → db_search lại.\n" +
+
+      
+        return "🚨 db_search khi cần data thật (camera/thiết bị/chat/call) hoặc câu hỏi qa chưa có info:\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"từ khóa lọc, copy sát câu hỏi, để trống nếu ko cần\",\"granularity\":\"summary|detail\"}\n" +
+            "- Camera/vật thể/màu sắc/có-không → luôn db_search trước, ko tự suy diễn.\n" +
+            "- object=1 trong 6 giá trị hoặc \"all\" nếu ko khớp; ko ép. keyword=luôn copy vật thể/màu/chi tiết câu hỏi, kể cả khi đã có object.\n" +
+            "- category=qa: câu hỏi chung. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
+            "- chat/facebook/telegram/website: target=tên kênh only; nội dung tin nhắn luôn vào keyword, ko vào target.\n" +
+            "- Thiết bị ko có trong danh sách dưới → trả lời ko lắp đặt, ko gọi tool. (call/chat/qa luôn hợp lệ)\n" +
+            "- Chưa có data thật lượt này → ko bịa nội dung/giờ/chi tiết. Hỏi đào sâu (vd \"tin nhắn nói gì\") mà chưa có data → db_search lại.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
             (if (showChatLine) "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") else "") +
             (if (callKeywordSample.isNotEmpty()) "\n📞 call còn hiểu: ${callKeywordSample.joinToString("/")}" else "")
-    }
-
 
     /**
      * ✅ MỚI: Quyết định có đính kèm buildToolCallingGuard() hay không, KHÔNG chỉ dựa vào
