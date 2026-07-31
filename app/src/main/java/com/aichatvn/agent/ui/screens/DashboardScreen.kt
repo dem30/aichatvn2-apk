@@ -30,7 +30,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
@@ -202,8 +204,16 @@ fun DashboardScreen(
 
     Scaffold(
         topBar = {
+            // ✅ MỚI (UX v2): gradient rất nhẹ #FFFFFF → #F6F0FF thay vì nền trắng phẳng, cho
+            // cảm giác hiện đại hơn mà không đổi bất kỳ hành vi/icon nào của AppBar.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color(0xFFFFFFFF), Color(0xFFF6F0FF))))
+            ) {
             TopAppBar(
                 title = { Text("Sơ đồ thiết bị") },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 actions = {
                     Box {
                         IconButton(onClick = {
@@ -269,6 +279,7 @@ fun DashboardScreen(
                     }
                 }
             )
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
@@ -277,33 +288,65 @@ fun DashboardScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // ✅ MỚI (UX): Khối tóm tắt đầu trang — trước đây mở app lên là thấy ngay sơ đồ
-            // thiết bị dày đặc, không có điểm nhấn "AI đang lo cho bạn". Khối này tính trực
-            // tiếp từ deviceNodes đã có sẵn (không cần dữ liệu ViewModel mới) để cho cảm giác
-            // "một AI quản gia" thay vì "một bộ công cụ".
+            // ✅ NÂNG CẤP (UX v2): thêm gradient nhẹ, màu theo trạng thái THẬT (dựa trên số
+            // thiết bị offline có sẵn trong deviceNodes — không bịa mức "nguy hiểm" vì không có
+            // nguồn dữ liệu đáng tin cho việc đó ở tầng Dashboard), câu chào đầu ngày, và
+            // bo góc/shadow đậm hơn cho cảm giác Material 3 hiện đại hơn.
             if (deviceNodes.isNotEmpty()) {
                 val onlineCount = deviceNodes.count { it.online }
+                val offlineCount = deviceNodes.size - onlineCount
                 val cameraCount = deviceNodes.count { it.type == DeviceType.CAMERA && it.online }
+                val isAllOnline = offlineCount == 0
+
+                val statusColor = if (isAllOnline) Color(0xFF2E7D32) else Color(0xFFEF6C00) // 🟢 / 🟠
+                val gradientTop = if (isAllOnline) Color(0xFFF6F0FF) else Color(0xFFFFF3E0)
+                val gradientBottom = MaterialTheme.colorScheme.surface
+
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .shadow(elevation = 4.dp, shape = RoundedCornerShape(20.dp), clip = false),
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Transparent
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "🏠 Nhà đang an toàn",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "• $onlineCount thiết bị online\n• $cameraCount camera đang giám sát",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                        )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                brush = Brush.verticalGradient(listOf(gradientTop, gradientBottom)),
+                                shape = RoundedCornerShape(20.dp)
+                            )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .background(statusColor, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (isAllOnline) "Nhà đang an toàn" else "Có $offlineCount thiết bị mất kết nối",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isAllOnline) "😊 Chào mừng trở về. Mọi thứ đang hoạt động bình thường."
+                                       else "AI đang theo dõi và sẽ báo khi thiết bị kết nối lại.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "• $onlineCount thiết bị online\n• $cameraCount camera đang giám sát",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                            )
+                        }
                     }
                 }
             }

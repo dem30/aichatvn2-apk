@@ -139,7 +139,10 @@ fun AppNavigator(
         ) { paddingValues ->
             NavHost(
                 navController = navController,
-                startDestination = Screen.Chat.route,
+                // ✅ SỬA (UX): trước đây mở app vào thẳng Chat — người mới thấy khung chat trống,
+                // không có cảm giác "AI đang lo cho nhà mình". Đổi sang Dashboard làm màn khởi
+                // động để khối tóm tắt "🏠 Nhà đang an toàn" là thứ đầu tiên họ thấy.
+                startDestination = Screen.Dashboard.route,
                 modifier = Modifier.padding(paddingValues)
             ) {
                 composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
