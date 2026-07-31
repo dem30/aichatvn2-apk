@@ -61,6 +61,16 @@ class DashboardViewModel @Inject constructor(
     private val _viewportPanY = MutableStateFlow(0f)
     val viewportPanY: StateFlow<Float> = _viewportPanY.asStateFlow()
 
+    // ✅ MỚI: tín hiệu riêng báo "đã đọc xong DB", TÁCH BIỆT khỏi bản thân zoom/pan — vì
+    // _viewportZoom/_viewportPanX/_viewportPanY khởi tạo sẵn bằng giá trị mặc định (1f/0f/0f)
+    // ngay từ dòng khai báo, còn loadViewportState() chỉ cập nhật giá trị thật sau đó BẤT ĐỒNG
+    // BỘ (viewModelScope.launch, không chờ ở init). Nếu DashboardScreen chỉ dựa vào việc "giá
+    // trị zoom/pan đổi" để biết đã load xong, nó sẽ không phân biệt được giữa "chưa load nên
+    // đang là mặc định" và "đã load xong và giá trị thật đúng là mặc định" — dẫn tới việc áp
+    // dụng nhầm mặc định vào UI trước khi DB kịp trả lời, rồi bỏ lỡ vĩnh viễn giá trị thật.
+    private val _viewportLoaded = MutableStateFlow(false)
+    val viewportLoaded: StateFlow<Boolean> = _viewportLoaded.asStateFlow()
+
     private val _aiRecommendations = MutableStateFlow<List<QAEntity>>(emptyList())
     val aiRecommendations: StateFlow<List<QAEntity>> = _aiRecommendations.asStateFlow()
 
@@ -279,6 +289,7 @@ class DashboardViewModel @Inject constructor(
                 .coerceIn(0.5f, 3.0f)
             _viewportPanX.value = configProvider.getString(VIEWPORT_PAN_X_KEY, "0.0").toFloatOrNull() ?: 0f
             _viewportPanY.value = configProvider.getString(VIEWPORT_PAN_Y_KEY, "0.0").toFloatOrNull() ?: 0f
+            _viewportLoaded.value = true
         }
     }
 

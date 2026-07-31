@@ -153,16 +153,22 @@ fun DashboardScreen(
     val savedViewportZoom by viewModel.viewportZoom.collectAsState()
     val savedViewportPanX by viewModel.viewportPanX.collectAsState()
     val savedViewportPanY by viewModel.viewportPanY.collectAsState()
+    val viewportLoaded by viewModel.viewportLoaded.collectAsState()
 
     var zoomScale by remember { mutableStateOf(savedViewportZoom) }
     var panOffset by remember { mutableStateOf(Offset(savedViewportPanX, savedViewportPanY)) }
 
-    // ViewModel đọc DB bất đồng bộ nên lần emit đầu có thể vẫn là giá trị mặc định; áp dụng
-    // giá trị thật ngay khi nó về tới, nhưng CHỈ 1 LẦN — tránh việc tự ghi đè lại lúc người
-    // dùng đang pinch/pan dở tay (mỗi lần saveViewportState() chạy, StateFlow này cũng đổi).
+    // ✅ SỬA: dùng viewModel.viewportLoaded (Boolean) làm key thay vì chính 3 giá trị
+    // zoom/panX/panY — trước đây key theo giá trị khiến effect này chạy NGAY LẬP TỨC với bộ
+    // giá trị mặc định 1f/0f/0f (lúc Room chưa kịp trả DB), đặt viewportRestored = true quá
+    // sớm; khi dữ liệu thật về sau đó, effect tuy chạy lại nhưng bị chính guard này chặn —
+    // giá trị thật KHÔNG BAO GIỜ được áp dụng lên UI nữa. viewportLoaded chỉ chuyển
+    // false → true đúng 1 lần, ngay khi loadViewportState() trong ViewModel đọc DB xong, nên
+    // là tín hiệu đáng tin cậy duy nhất để biết "giá trị hiện tại là thật", bất kể giá trị đó
+    // tình cờ có trùng với mặc định hay không.
     var viewportRestored by remember { mutableStateOf(false) }
-    LaunchedEffect(savedViewportZoom, savedViewportPanX, savedViewportPanY) {
-        if (!viewportRestored) {
+    LaunchedEffect(viewportLoaded) {
+        if (viewportLoaded && !viewportRestored) {
             zoomScale = savedViewportZoom
             panOffset = Offset(savedViewportPanX, savedViewportPanY)
             viewportRestored = true
