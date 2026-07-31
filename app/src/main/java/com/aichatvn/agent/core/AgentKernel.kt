@@ -1323,7 +1323,14 @@ class AgentKernel @Inject constructor(
     }
 
     private fun stripDbSearchInvite(guardText: String): String {
-        val marker = "🚨 db_search khi cần dữ liệu thật:"
+        // ✅ SỬA BUG: marker cũ "🚨 db_search khi cần dữ liệu thật:" không còn khớp với câu chữ
+        // hiện tại của buildToolCallingGuard() ("🚨 db_search khi cần data thật (...)" — đổi
+        // wording ở 1 lần nâng cấp trước nhưng quên đồng bộ marker ở đây), khiến indexOf() luôn
+        // trả -1 → toàn bộ khối hướng dẫn gọi tool (schema JSON + rule + catalogue) bị gửi lại
+        // NGUYÊN VẸN ở Pass 2, dù model đã gọi tool xong không cần gọi lại — tốn token vô ích
+        // mỗi lượt đào sâu. Chỉ neo theo tiền tố ổn định "🚨 db_search" (không phụ thuộc câu chữ
+        // phía sau) để lần sửa wording tiếp theo không lặp lại lỗi tương tự.
+        val marker = "🚨 db_search"
         val idx = guardText.indexOf(marker)
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
