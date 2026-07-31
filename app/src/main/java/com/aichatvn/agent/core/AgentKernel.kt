@@ -1481,10 +1481,18 @@ class AgentKernel @Inject constructor(
     }
 
     private suspend fun buildMinimalGuard(): String {
-        return configProvider.getString(
+        val configuredPrompt = configProvider.getString(
             AppConfigDefaults.GLOBAL_CHAT_SYSTEM_PROMPT,
             AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_SYSTEM_PROMPT)
         )
+        // ✅ MỚI: khách ngoại kênh là nhóm dễ hỏi "đặt hàng/hẹn lịch/thanh toán" nhất sau khi hỏi
+        // sản phẩm — nhưng hệ thống thực tế CHỈ ghi nhận tin nhắn (đánh dấu chưa đọc) để nhân
+        // viên tự xem và phản hồi sau, không hề tự động xử lý/xác nhận/hẹn lịch gì cả. Không có
+        // dòng này, model dễ tự bịa ra khả năng "xử lý giúp", "đã đặt lịch", hứa hẹn thời gian cụ
+        // thể mà hệ thống không làm được — gây hiểu lầm cho khách hàng thật.
+        val overreachGuard = "⚠️ Khi khách muốn đặt hàng/hẹn lịch/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý/xác nhận đơn hàng/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể."
+
+        return if (configuredPrompt.isNotBlank()) "$configuredPrompt\n\n$overreachGuard" else overreachGuard
     }
 
     private suspend fun buildFullGuard(
@@ -1495,7 +1503,8 @@ class AgentKernel @Inject constructor(
         val antiHallucinationGuard =
             "⚠️ Không tự nhận đã điều khiển thiết bị thật (bật/tắt/mở/đóng/đặt lịch...) — " +
             "nếu chưa chắc đã thực hiện, hỏi lại rõ hơn hoặc báo chưa làm được.\n" +
-            "⚠️ Trả lời tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ."
+            "⚠️ Trả lời tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ.\n" +
+            "⚠️ Hệ thống CHỈ tra cứu/báo cáo dữ liệu đã ghi nhận (camera/thiết bị/tin nhắn/cuộc gọi) — KHÔNG có khả năng xử lý đơn hàng, phản hồi/trả lời khách hộ, hay thực hiện thêm bất kỳ hành động nào. Không tự đề nghị \"xử lý đơn hàng\", \"liên hệ giúp\" hay hứa hẹn hỗ trợ nằm ngoài phạm vi tra cứu này."
 
         val houseManagerContext = try {
             houseManagerProvider.get().buildSystemContext()
