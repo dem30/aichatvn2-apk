@@ -1572,21 +1572,21 @@ class AgentKernel @Inject constructor(
         // này LUÔN xuất hiện (kể cả khi hỏi thuần về camera), tốn token không cần thiết.
         val showChatLine = includeAll || "chat" in activeDomains
 
-        // ✅ RÚT GỌN (theo yêu cầu): trước đây mỗi field (timeframe/granularity/category/keyword)
-        // có 1 dòng giải thích + ví dụ riêng — đúng nội dung cần nhắc AI mỗi lượt (vì Groq không
-        // có trí nhớ giữa các lần gọi), nhưng dài hơn mức cần thiết. Giữ lại đúng 3 thứ bắt buộc
-        // AI phải biết: (1) JSON schema + enum hợp lệ, (2) catalogue tên thật (camera/thiết bị/
-        // danh bạ/kênh chat) để copy đúng vào target, (3) rule "không tự bịa thiết bị lạ". Bỏ các
-        // câu ví dụ minh hoạ và diễn giải lặp ý đã nằm sẵn trong tên field.
-        return "🚨 TRUY VẤN DỮ LIỆU THỰC TẾ (db_search):\n" +
-            "Cần tra hoạt động camera/thiết bị/chat/cuộc gọi, hoặc câu hỏi chung/FAQ chưa có info → trả DUY NHẤT 1 JSON thô:\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên thiết bị/camera đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"tóm tắt ngắn nội dung cần lọc trong log, copy sát câu hỏi; để trống nếu không cần\",\"granularity\":\"summary|detail\"}\n" +
-            "- NẾU câu hỏi đề cập hoặc liên quan tới Camera, sự kiện, nhận diện vật thể (mèo, chó, người, màu sắc...) hay kiểm tra có/không trên camera (dù câu hỏi kỳ lạ như 'mèo xanh', 'người áo đỏ') → BẮT BUỘC trả DUY NHẤT 1 JSON db_search để kiểm tra dữ liệu thực tế trước. TUYỆT ĐỐI KHÔNG tự bịa hay giải thích lý thuyết tính năng khi chưa check DB.\n" +
-            "- \"object\" chỉ là gợi ý thô, KHÔNG dùng để lọc cứng — nếu vật thể/con vật trong câu hỏi không khớp đúng 1 trong 6 giá trị liệt kê (vd 'con bò', 'con gà'), CỨ để object gần đúng nhất hoặc \"all\", đừng cố ép. Việc lọc nội dung thật sự nằm ở \"keyword\": BẮT BUỘC luôn copy nguyên từ chỉ vật thể/con vật/màu sắc/chi tiết cụ thể mà câu hỏi nhắc tới (vd 'con bò', 'áo đỏ') vào \"keyword\", dù đã điền \"object\" hay chưa.\n" +
-            "- category=qa cho câu hỏi chung không thuộc camera/thiết bị/cuộc gọi/tin nhắn cụ thể. category=chat khi hỏi tin nhắn nhưng không rõ kênh nào. Không rõ nguồn → bỏ hẳn field category.\n" +
-            "- Với category=chat/facebook/telegram/website: \"target\" CHỈ dùng cho tên kênh (facebook/telegram/website) nếu biết rõ, TUYỆT ĐỐI không đặt nội dung câu hỏi (vd \"báo giá\", \"đặt hàng\") vào \"target\" — mọi nội dung/từ khoá tin nhắn cần tìm PHẢI đặt trong \"keyword\", nếu không kết quả sẽ bị lọc sai và trả về rỗng.\n" +
-            "- Chỉ gọi tool cho thiết bị khớp danh sách dưới (cuộc gọi/chat/qa luôn hợp lệ). Thiết bị lạ không có trong danh sách → trả lời KHÔNG lắp đặt, không gọi tool.\n" +
-            "- TUYỆT ĐỐI không tự bịa nội dung/ngày giờ/chi tiết cụ thể của log, tin nhắn hay cuộc gọi khi chưa nhận được dữ liệu thật từ tool trong lượt này. Nếu câu hỏi đào sâu vào nội dung cụ thể của điều vừa được nhắc tới (vd \"tin nhắn nói gì\", \"lúc mấy giờ\") mà bạn CHƯA có dữ liệu đó → PHẢI trả JSON db_search để lấy lại, không tự suy diễn hay đoán.\n" +
+        // ✅ RÚT GỌN LẦN 2 (theo yêu cầu): rule text trước đây viết như giải thích cho người
+        // (mệnh đề phụ, lý do "vì sao", ví dụ minh hoạ lặp) — giờ nén thành gạch đầu dòng
+        // dạng "if X → Y" cho model, bỏ hết câu nối/lý do/ví dụ thứ 2. Không bớt rule nào so
+        // với bản trước, chỉ nén câu chữ. Vẫn giữ nguyên: (1) JSON schema + đủ enum category kể
+        // cả khi đang lọc theo 1 domain (model có thể đổi domain giữa chừng lượt sau), (2)
+        // catalogue tên thật theo domain phía dưới, (3) rule "thiết bị lạ" + "không bịa data".
+        return "🚨 db_search khi cần dữ liệu thật:\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên khớp danh sách dưới nếu camera/tuya\",\"keyword\":\"\",\"granularity\":\"summary|detail\"}\n" +
+            "- Camera → luôn db_search, không suy diễn.\n" +
+            "- object=1 trong 6 giá trị, không khớp dùng all.\n" +
+            "- keyword=copy nguyên từ khóa người dùng.\n" +
+            "- category=qa nếu câu hỏi chung; category=chat nếu chưa rõ kênh; không rõ nguồn thì bỏ category.\n" +
+            "- facebook/telegram/website: target=tên kênh, keyword=nội dung.\n" +
+            "- Thiết bị ngoài danh sách (camera/tuya) → báo chưa lắp, không gọi tool. Call/chat/qa luôn hợp lệ.\n" +
+            "- Không có data → không bịa; hỏi sâu → db_search lại.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
@@ -1716,128 +1716,4 @@ class AgentKernel @Inject constructor(
     }
 
     // ✅ MỚI: Domain của LƯỢT NÀY ưu tiên trước — nếu câu hỏi không tự nêu domain nào (vd câu hỏi
-    // đào sâu "họ mặc áo màu gì" không chứa từ khoá camera/tuya/chat/call nào), fallback sang
-    // SearchFocus đã ghi ở lần search DB thật gần nhất — TÁI DÙNG đúng
-    // chatHistoryManager.getLastSearchFocus() mà shouldAttachToolGuard() bên dưới đã dùng, không
-    // thêm nguồn dữ liệu mới. Nếu vẫn không xác định được → trả set rỗng, gọi nơi dùng tự hiểu là
-    // "gửi đủ catalog như cũ", không đoán bừa.
-    private suspend fun resolveActiveDomains(message: String, username: String): Set<String> {
-        val currentTurnDomains = matchedDomainsInMessage(message)
-        if (currentTurnDomains.isNotEmpty()) return currentTurnDomains
-
-        return when (chatHistoryManager.getLastSearchFocus(username)?.sourceCategory) {
-            "camera" -> setOf("camera")
-            "tuya" -> setOf("tuya")
-            "call" -> setOf("call")
-            "facebook", "telegram", "website", "chat" -> setOf("chat")
-            else -> emptySet()
-        }
-    }
-
-    private suspend fun isExitLockPhrase(msg: String): Boolean {
-        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
-        val exitPhrases = configProvider.getString(
-            AppConfigDefaults.GLOBAL_EXIT_LOCK_PHRASES,
-            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_EXIT_LOCK_PHRASES)
-        ).split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
-        return norm in exitPhrases
-    }
-
-    private suspend fun parseYesNo(msg: String): Boolean? {
-        val norm = StringSimilarityUtil.normalizeVietnamese(msg.trim())
-
-        val yesKeywords = configProvider.getString(
-            AppConfigDefaults.GLOBAL_CONFIRM_YES_KEYWORDS,
-            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CONFIRM_YES_KEYWORDS)
-        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
-        val noKeywords = configProvider.getString(
-            AppConfigDefaults.GLOBAL_CONFIRM_NO_KEYWORDS,
-            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CONFIRM_NO_KEYWORDS)
-        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
-
-        val isYes = yesKeywords.any { kw -> 
-            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
-        }
-        val isNo = noKeywords.any { kw -> 
-            norm == kw || Regex("(?<!\\p{L})$kw(?!\\p{L})").containsMatchIn(norm)
-        }
-        
-        return when {
-            isYes && !isNo -> true
-            isNo && !isYes -> false
-            else -> null
-        }
-    }
-
-    private fun detectLockTrigger(userMessage: String): String? {
-        val norm = StringSimilarityUtil.normalizeVietnamese(userMessage.trim())
-        val m = Regex("^(dieu khien|khoa dieu khien)\\s+(thiet bi\\s+)?(.+)$").find(norm) ?: return null
-        val target = m.groupValues[3].trim()
-        if (target.isBlank()) return null
-
-        val matched = plugins.firstOrNull { p ->
-            p.manifest.routable && (
-                target.contains(p.manifest.id, ignoreCase = true) ||
-                StringSimilarityUtil.normalizeVietnamese(p.manifest.name).contains(target, ignoreCase = true)
-            )
-        }
-        return matched?.manifest?.id
-    }
-
-    private suspend fun handleLockConfirmation(userMessage: String, username: String, pluginId: String): RouterOutcome {
-        val matchedPlugin = plugins.find { it.manifest.id == pluginId }
-        val displayName = matchedPlugin?.manifest?.name ?: pluginId
-        return when (parseYesNo(userMessage)) {
-            true -> {
-                chatHistoryManager.lockPlugin(username, pluginId)
-                chatHistoryManager.clearLockRequest(username)
-                RouterOutcome.Matched(
-                    DeviceCommandResult(pluginId, PluginResult.Success(mapOf("message" to "🔒 Đã vào chế độ điều khiển riêng biệt cho \"$displayName\". Tất cả hội thoại thông thường sẽ bị chặn cho đến khi bạn yêu cầu \"thoát\".")))
-                )
-            }
-            false -> {
-                chatHistoryManager.clearLockRequest(username)
-                RouterOutcome.Matched(
-                    DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Đã hủy yêu cầu điều khiển riêng.")))
-                )
-            }
-            null -> RouterOutcome.Matched(
-                DeviceCommandResult("__system__", PluginResult.Success(mapOf("message" to "Xác nhận vào chế độ điều khiển riêng cho \"$displayName\" chứ? (có/không)")))
-            )
-        }
-    }
-
-    fun getLockedPluginId(username: String = "default_user"): String? = chatHistoryManager.getLockedPlugin(username)
-
-    fun getLockedPluginName(username: String = "default_user"): String? {
-        val id = getLockedPluginId(username) ?: return null
-        return plugins.find { it.manifest.id == id }?.manifest?.name ?: id
-    }
-
-    data class Intent(
-        val pluginId: String,
-        val action: String,
-        val params: Map<String, Any> = emptyMap()
-    )
-
-    data class DeviceCommandResult(
-        val pluginId: String,
-        val result: PluginResult
-    )
-
-    sealed class RouterOutcome {
-        data class Matched(val result: DeviceCommandResult) : RouterOutcome()
-        object NotACommand : RouterOutcome()
-        data class RouterFailed(val reason: String) : RouterOutcome()
-    }
-
-    sealed class PluginResult {
-        data class Success(val data: Any) : PluginResult()
-        data class Failure(val error: String) : PluginResult()
-        data class NeedMoreInfo(
-            val missingParams: List<String>, 
-            val question: String,
-            val options: Map<String, String> = emptyMap()
-        ) : PluginResult()
-    }
-}
+    // đào sâu "họ mặc áo màu gì" không chứa từ khoá camera/tuya/chat/call nào), fall
