@@ -122,6 +122,7 @@ fun AppNavigator(
                             label = { Text(stringResource(screen.titleRes)) },
                             selected = currentRoute == screen.route,
                             onClick = {
+                                android.util.Log.d("NavDebug", "Bấm tab=${screen.route} | currentRoute trước khi xử lý=$currentRoute")
                                 if (screen == Screen.Chat) {
                                     if (currentRoute != Screen.Chat.route) {
                                         navController.navigate(Screen.Chat.route) {
