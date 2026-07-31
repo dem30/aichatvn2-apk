@@ -29,6 +29,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.debounce
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -145,8 +148,36 @@ fun DashboardScreen(
     var showFloorplanScaleDialog by remember { mutableStateOf(false) }
 
     // Quản lý trạng thái Canvas vô cực (Zoom & Pan)
-    var zoomScale by remember { mutableStateOf(1f) }
-    var panOffset by remember { mutableStateOf(Offset.Zero) }
+    // ✅ SỬA: khởi tạo từ giá trị đã lưu trong ViewModel/DB thay vì luôn về mặc định 1f/Offset.Zero
+    // — trước đây zoomScale/panOffset chỉ là remember cục bộ nên rời màn hình là mất.
+    val savedViewportZoom by viewModel.viewportZoom.collectAsState()
+    val savedViewportPanX by viewModel.viewportPanX.collectAsState()
+    val savedViewportPanY by viewModel.viewportPanY.collectAsState()
+
+    var zoomScale by remember { mutableStateOf(savedViewportZoom) }
+    var panOffset by remember { mutableStateOf(Offset(savedViewportPanX, savedViewportPanY)) }
+
+    // ViewModel đọc DB bất đồng bộ nên lần emit đầu có thể vẫn là giá trị mặc định; áp dụng
+    // giá trị thật ngay khi nó về tới, nhưng CHỈ 1 LẦN — tránh việc tự ghi đè lại lúc người
+    // dùng đang pinch/pan dở tay (mỗi lần saveViewportState() chạy, StateFlow này cũng đổi).
+    var viewportRestored by remember { mutableStateOf(false) }
+    LaunchedEffect(savedViewportZoom, savedViewportPanX, savedViewportPanY) {
+        if (!viewportRestored) {
+            zoomScale = savedViewportZoom
+            panOffset = Offset(savedViewportPanX, savedViewportPanY)
+            viewportRestored = true
+        }
+    }
+
+    // Lưu lại zoom/pan ~500ms sau lần chỉnh cuối cùng (debounce) thay vì ghi DB liên tục
+    // trong lúc đang kéo, để lần sau mở Dashboard sẽ về đúng góc nhìn đã chỉnh.
+    LaunchedEffect(Unit) {
+        snapshotFlow { zoomScale to panOffset }
+            .debounce(500)
+            .collect { (zoom, pan) ->
+                viewModel.saveViewportState(zoom, pan.x, pan.y)
+            }
+    }
 
     val snapGridSize = 20f
     fun snapToGrid(value: Float): Float {
@@ -448,6 +479,12 @@ fun DashboardScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        // ✅ SỬA (fix đè text): graphicsLayer(scaleX/scaleY) bên trong không tự
+                        // clip theo bounds — khi zoomScale lớn, nội dung được vẽ tràn ra ngoài
+                        // vùng BoxWithConstraints này (đè lên thẻ trạng thái "Nhà đang an toàn"
+                        // / "Có N thiết bị mất kết nối" nằm phía trên trong Column). clipToBounds()
+                        // giữ mọi thứ được vẽ bên trong đúng khung của sơ đồ thiết bị.
+                        .clipToBounds()
                         .pointerInput(Unit) {
                             detectTransformGestures { _, pan, zoom, _ ->
                                 zoomScale = (zoomScale * zoom).coerceIn(0.5f, 3.0f)

@@ -137,6 +137,48 @@ class SmartSwitchSkill @Inject constructor(
                     false
                 }
 
+                // ✅ MỚI: Dashboard vừa hỏi trạng thái BẬT/TẮT thật từ Tuya Cloud ở trên (miễn phí,
+                // không tốn thêm request nào) — tranh thủ ghi luôn vào world_state ngay tại đây,
+                // thay vì chỉ trông chờ vòng lặp nền WebhookGatewayService.syncTuyaDeviceStates()
+                // (10 phút/lần) mới cập nhật. Nhờ vậy HouseManagerSkillImpl.startWorldStateReactiveObserver()
+                // (đang lắng nghe world_state đổi để kích hoạt Nhóm kịch bản) phản ứng gần như NGAY
+                // khi người dùng mở app/bấm 🔄 làm mới Dashboard, thay vì phải đợi tới 10 phút.
+                // Chỉ ghi khi thực sự đổi (so với world_state hiện có) — tránh kích hoạt observer
+                // 2 lần thừa cho cùng 1 lần thiết bị đổi trạng thái (vòng lặp nền vẫn sẽ tự no-op
+                // vì lúc đó world_state đã khớp rồi).
+                if (isOnline) {
+                    try {
+                        val existingState = database.worldStateDao().getState("tuya", dev.id)
+                        val oldState = existingState?.let {
+                            try {
+                                org.json.JSONObject(it.attributesJson).optString("state", "false")
+                            } catch (e: Exception) {
+                                "false"
+                            }
+                        }?.toBooleanStrictOrNull() ?: false
+
+                        if (isDeviceOn != oldState) {
+                            com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                                database.worldStateDao(), "tuya", dev.id, "state", isDeviceOn.toString()
+                            )
+                            database.eventLogDao().insertLog(
+                                com.aichatvn.agent.data.model.EventLogEntity(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    timestamp = System.currentTimeMillis(),
+                                    source = "tuya",
+                                    sourceId = dev.id,
+                                    eventType = "state_change",
+                                    value = isDeviceOn.toString(),
+                                    summary = "Thiết bị Tuya ${dev.name} đổi trạng thái ngoài ý muốn của app: ${if (isDeviceOn) "Bật" else "Tắt"} (phát hiện qua Dashboard)."
+                                )
+                            )
+                            logger.i("SmartSwitchSkill", "🔁 Dashboard phát hiện biến động vật lý bên ngoài: ${dev.name} đổi trạng thái $oldState ➔ $isDeviceOn")
+                        }
+                    } catch (e: Exception) {
+                        logger.e("SmartSwitchSkill", "Lỗi đồng bộ world_state từ Dashboard cho ${dev.name}: ${e.message}")
+                    }
+                }
+
                 val (deviceIcon, deviceLabel, deviceType) = resolveDeviceVisual(dev)
 
                 DeviceNode(

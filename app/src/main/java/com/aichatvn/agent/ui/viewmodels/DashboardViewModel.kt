@@ -48,6 +48,19 @@ class DashboardViewModel @Inject constructor(
     private val _floorplanScale = MutableStateFlow(1f)
     val floorplanScale: StateFlow<Float> = _floorplanScale.asStateFlow()
 
+    // ✅ MỚI: Lưu lại mức zoom/pan (kéo-thả bằng 2 ngón tay) mà người dùng tự chỉnh trên sơ đồ
+    // thiết bị — KHÁC với floorplanScale (tỷ lệ thiết kế ảnh, chỉnh qua dialog "Tỷ lệ hiện tại").
+    // Trước đây zoomScale/panOffset chỉ là biến remember cục bộ trong DashboardScreen nên mất
+    // ngay khi rời màn hình rồi quay lại — không có nơi nào ghi giá trị này xuống DB cả.
+    private val _viewportZoom = MutableStateFlow(1f)
+    val viewportZoom: StateFlow<Float> = _viewportZoom.asStateFlow()
+
+    private val _viewportPanX = MutableStateFlow(0f)
+    val viewportPanX: StateFlow<Float> = _viewportPanX.asStateFlow()
+
+    private val _viewportPanY = MutableStateFlow(0f)
+    val viewportPanY: StateFlow<Float> = _viewportPanY.asStateFlow()
+
     private val _aiRecommendations = MutableStateFlow<List<QAEntity>>(emptyList())
     val aiRecommendations: StateFlow<List<QAEntity>> = _aiRecommendations.asStateFlow()
 
@@ -55,6 +68,7 @@ class DashboardViewModel @Inject constructor(
         refreshDashboardNodes()
         loadFloorplanPath()
         loadFloorplanScale()
+        loadViewportState()
         observePendingPatterns() 
     }
 
@@ -259,6 +273,29 @@ class DashboardViewModel @Inject constructor(
         }
     }
 
+    private fun loadViewportState() {
+        viewModelScope.launch {
+            _viewportZoom.value = (configProvider.getString(VIEWPORT_ZOOM_KEY, "1.0").toFloatOrNull() ?: 1f)
+                .coerceIn(0.5f, 3.0f)
+            _viewportPanX.value = configProvider.getString(VIEWPORT_PAN_X_KEY, "0.0").toFloatOrNull() ?: 0f
+            _viewportPanY.value = configProvider.getString(VIEWPORT_PAN_Y_KEY, "0.0").toFloatOrNull() ?: 0f
+        }
+    }
+
+    // ✅ MỚI: Gọi hàm này (debounce ~500ms) từ DashboardScreen mỗi khi người dùng ngừng
+    // pinch/pan sơ đồ, để lần sau mở lại Dashboard sẽ khôi phục đúng góc nhìn đã chỉnh.
+    fun saveViewportState(zoom: Float, panX: Float, panY: Float) {
+        viewModelScope.launch {
+            val clampedZoom = zoom.coerceIn(0.5f, 3.0f)
+            configProvider.set(VIEWPORT_ZOOM_KEY, clampedZoom.toString())
+            configProvider.set(VIEWPORT_PAN_X_KEY, panX.toString())
+            configProvider.set(VIEWPORT_PAN_Y_KEY, panY.toString())
+            _viewportZoom.value = clampedZoom
+            _viewportPanX.value = panX
+            _viewportPanY.value = panY
+        }
+    }
+
     fun setFloorplanPath(path: String) {
         viewModelScope.launch {
             val oldPath = _floorplanPath.value
@@ -374,5 +411,8 @@ class DashboardViewModel @Inject constructor(
     companion object {
         private const val FLOORPLAN_PATH_KEY = "dashboard_floorplan_path"
         private const val FLOORPLAN_SCALE_KEY = "dashboard_floorplan_scale"
+        private const val VIEWPORT_ZOOM_KEY = "dashboard_viewport_zoom"
+        private const val VIEWPORT_PAN_X_KEY = "dashboard_viewport_pan_x"
+        private const val VIEWPORT_PAN_Y_KEY = "dashboard_viewport_pan_y"
     }
 }
