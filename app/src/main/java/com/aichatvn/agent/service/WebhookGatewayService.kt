@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import com.aichatvn.agent.R
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.utils.Logger
@@ -348,7 +349,15 @@ class WebhookGatewayService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("AIChatVN2 Omnichannel")
             .setContentText(contentText)
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            // ✅ SỬA: trước đây dùng icon hệ thống chung android.R.drawable.ic_menu_info_details
+            // (hình "i" generic, không phải logo app) — khiến notification "trạng thái kết nối
+            // Cloud Gateway" của service này không đồng bộ icon với các notification khác trong
+            // app (vốn dùng ic_notification_small + ic_launcher qua NotificationSkill.kt). Đổi
+            // sang đúng 2 icon đó cho nhất quán.
+            .setSmallIcon(R.drawable.ic_notification_small)
+            .setLargeIcon(
+                android.graphics.BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
+            )
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
