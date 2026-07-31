@@ -123,14 +123,19 @@ fun AppNavigator(
                             selected = currentRoute == screen.route,
                             onClick = {
                                 android.util.Log.d("NavDebug", "Bấm tab=${screen.route} | currentRoute trước khi xử lý=$currentRoute")
-                                if (screen == Screen.Chat) {
-                                    if (currentRoute != Screen.Chat.route) {
-                                        navController.navigate(Screen.Chat.route) {
-                                            popUpTo(Screen.Chat.route) { inclusive = true }
-                                            launchSingleTop = true
-                                        }
-                                    }
-                                } else if (currentRoute == screen.route) {
+                                // ✅ SỬA (fix kẹt tab): trước đây tab Chat dùng riêng
+                                // popUpTo(Screen.Chat.route){inclusive=true} KHÔNG có saveState/
+                                // restoreState, khác hẳn pattern popUpTo(startDestination){saveState=true}
+                                // + restoreState=true mà 3 tab kia dùng. Vì cả 4 tab là "peer
+                                // destination" chia sẻ chung back-stack map của NavController, việc
+                                // Chat đi con đường khác làm map trạng thái lưu/khôi phục bị lệch —
+                                // sau khi vào Chat, các navigate() gọi tiếp theo từ tab khác không còn
+                                // hiệu lực (kẹt), dù onClick vẫn chạy (log NavDebug vẫn in ra).
+                                // Chat không cần popUpTo(chính nó) để "làm mới" — 2 LaunchedEffect(Unit)
+                                // trong ChatScreen (updateLockedPluginStatus(), activateThread()) đã tự
+                                // chạy lại mỗi lần composable Chat được đưa vào composition, kể cả khi
+                                // dùng saveState/restoreState như các tab khác.
+                                if (currentRoute == screen.route) {
                                     navController.popBackStack(screen.route, inclusive = false)
                                 } else {
                                     navController.navigate(screen.route) {
