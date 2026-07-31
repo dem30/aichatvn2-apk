@@ -35,11 +35,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "GROQ_API_KEY", "\"${project.findProperty("GROQ_API_KEY") ?: ""}\"")
-        buildConfigField("String", "RESEND_API_KEY", "\"${System.getenv("RESEND_API_KEY") ?: ""}\"")
-        buildConfigField("String", "RESEND_SENDER", "\"${System.getenv("RESEND_SENDER") ?: ""}\"")
-
-        manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
+        // ❌ ĐÃ GỠ: GROQ_API_KEY / RESEND_API_KEY / RESEND_SENDER buildConfigField — các key này
+        // giờ nhập tay qua màn Settings (SettingsViewModel.saveGroqApiKey/...) và lưu trong DB
+        // qua AppConfigProvider, không còn cần inject lúc build/CI nữa.
+        // ❌ ĐÃ GỠ: manifestPlaceholders["MAPS_API_KEY"] — app chưa từng có key Maps thật, chỉ
+        // dùng play-services-location để lấy vị trí điện thoại, không hiển thị bản đồ.
     }
 
     // ✅ MỚI (FIX): trước đây KHÔNG khai báo signingConfigs.debug — Gradle tự dùng
@@ -152,8 +152,7 @@ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     // Permissions
     implementation("com.google.accompanist:accompanist-permissions:0.32.0")
 
-    // Google Maps
-    implementation("com.google.android.gms:play-services-maps:18.2.0")
+    // Location (lấy vị trí điện thoại — không dùng Google Maps SDK nên không cần key)
     implementation("com.google.android.gms:play-services-location:21.0.1")
 
     // MQTT
