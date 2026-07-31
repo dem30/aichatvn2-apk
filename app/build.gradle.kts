@@ -27,6 +27,9 @@ android {
         applicationId = "com.aichatvn.agent"
         minSdk = 26
         targetSdk = 34
+        // ⚠️ LƯU Ý: tăng versionCode mỗi khi phát hành bản mới cho khách đã cài (vd 1 → 2 → 3).
+        // Cùng chữ ký (đã cố định ở signingConfigs.debug bên dưới) thì Android vẫn cho phép cài
+        // đè dù versionCode không đổi, nhưng tăng đều để dễ theo dõi bản nào khách đang chạy.
         versionCode = 1
         versionName = "1.0"
 
@@ -39,6 +42,22 @@ android {
         manifestPlaceholders["MAPS_API_KEY"] = project.findProperty("MAPS_API_KEY") ?: ""
     }
 
+    // ✅ MỚI (FIX): trước đây KHÔNG khai báo signingConfigs.debug — Gradle tự dùng
+    // debug.keystore mặc định. Trên GitHub Actions, mỗi lần build là 1 máy ảo MỚI hoàn toàn,
+    // không có sẵn ~/.android/debug.keystore từ lần trước → Gradle tự SINH RA 1 keystore debug
+    // MỚI, NGẪU NHIÊN mỗi lần chạy. Android từ chối cài đè APK có chữ ký khác bản đã cài trên
+    // máy → bắt buộc gỡ cài mới cài lại được. Khai báo keystore CỐ ĐỊNH (lấy từ file bí mật
+    // debug.keystore đã checked-in dạng base64 trong CI, xem README/workflow) để mọi lần build
+    // dùng chung 1 chữ ký → cài đè cập nhật bình thường, không cần gỡ cài nữa.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file(project.findProperty("DEBUG_KEYSTORE_PATH") as? String ?: "debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -46,6 +65,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
