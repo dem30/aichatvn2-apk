@@ -113,6 +113,28 @@ class SmartSwitchSkill @Inject constructor(
     }
 
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
+        // ✅ SỬA (bug "Refresh vẫn báo Mất kết nối"): trước đây hàm này chỉ đọc thẳng
+        // dev.online từ Room — là giá trị cache được ghi lần cuối bởi scanDevices() (nền,
+        // 10 phút/lần) hoặc bởi setDeviceState() khi bật/tắt. Bấm nút 🔄 Refresh trên
+        // Dashboard KHÔNG hề gọi Tuya Cloud, chỉ đọc lại y nguyên cache đó — nên nếu cache
+        // đang là false (mới mở app, chưa tới chu kỳ sync nền) thì Refresh mãi vẫn báo
+        // "Mất kết nối" dù thiết bị vật lý đang online thật. Chỉ khi người dùng bật/tắt tay
+        // (gọi API thật qua setDeviceState) thì cache mới được cập nhật đúng.
+        //
+        // Giờ chủ động sync cache trước khi build node, nhưng chỉ khi có ít nhất 1 thiết bị
+        // đang bị đánh dấu offline trong cache — tránh tốn thêm 1 API call Tuya mỗi lần mở
+        // Dashboard/chuyển tab khi mọi thứ đã online sẵn (trường hợp phổ biến nhất).
+        try {
+            val hasOfflineCached = database.tuyaDeviceDao().getAllDevices().any { !it.online }
+            if (hasOfflineCached) {
+                tuyaManager.scanDevices()
+            }
+        } catch (e: Exception) {
+            // Không có UID/credentials, mất mạng, v.v. — bỏ qua, vẫn hiển thị Dashboard
+            // với dữ liệu cache hiện có thay vì làm crash/treo màn hình.
+            logger.e("SmartSwitchSkill", "Không sync được trạng thái online từ Tuya Cloud khi làm mới Dashboard: ${e.message}")
+        }
+
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
         
         val deferredNodes = tuyaDevices.mapIndexed { index, dev ->

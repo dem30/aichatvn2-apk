@@ -171,7 +171,12 @@ fun DashboardScreen(
 
     // Lưu lại zoom/pan ~500ms sau lần chỉnh cuối cùng (debounce) thay vì ghi DB liên tục
     // trong lúc đang kéo, để lần sau mở Dashboard sẽ về đúng góc nhìn đã chỉnh.
-    LaunchedEffect(Unit) {
+    // ✅ SỬA: chỉ bắt đầu lắng nghe sau khi viewportRestored == true — tránh việc effect này
+    // chạy ngay từ lúc compose (khi zoomScale/panOffset vẫn còn là giá trị mặc định 1f/0f/0f
+    // vì Room/Hilt chưa kịp trả kết quả), rồi debounce(500) tự bắn ghi đè giá trị mặc định
+    // đó xuống app_config trước khi giá trị thật từ DB kịp về.
+    LaunchedEffect(viewportRestored) {
+        if (!viewportRestored) return@LaunchedEffect
         snapshotFlow { zoomScale to panOffset }
             .debounce(500)
             .collect { (zoom, pan) ->
