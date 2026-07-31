@@ -1315,7 +1315,7 @@ class AgentKernel @Inject constructor(
     }
 
     private fun stripDbSearchInvite(guardText: String): String {
-        val marker = "🚨 TRUY VẤN DỮ LIỆU THỰC TẾ (db_search):"
+        val marker = "🚨 db_search khi cần dữ liệu thật:"
         val idx = guardText.indexOf(marker)
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
