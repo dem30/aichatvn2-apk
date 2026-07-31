@@ -128,7 +128,16 @@ fun InboxScreen(
                             unreadCount = unreadByUsername[thread.username] ?: 0
                         ) {
                             // Khi bấm chọn, chuyển hướng sang khung chat của ID khách tương ứng
-                            navController.navigate("chat_screen?username=${thread.username}")
+                            // ✅ SỬA (fix back-stack chồng chất): thêm launchSingleTop + popUpTo
+                            // để nếu admin đang đứng ở chat của khách A rồi bấm sang khách B, entry
+                            // chat-khách A trên back stack sẽ được THAY THẾ bởi entry chat-khách B,
+                            // thay vì bị đẩy chồng thêm. Nhờ đó back stack luôn chỉ có tối đa 1 entry
+                            // "chat_screen?username=..." tại một thời điểm, và nút back trong ChatScreen
+                            // sẽ về thẳng Inbox trong 1 lần bấm thay vì phải lùi qua từng khách đã xem.
+                            navController.navigate("chat_screen?username=${thread.username}") {
+                                launchSingleTop = true
+                                popUpTo("chat_screen?username={username}") { inclusive = true }
+                            }
                         }
                     }
                 }
