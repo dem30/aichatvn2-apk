@@ -1593,7 +1593,7 @@ class AgentKernel @Inject constructor(
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
             (if (showChatLine) "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") else "") +
             (if (callKeywordSample.isNotEmpty()) "\n📞 call còn hiểu: ${callKeywordSample.joinToString("/")}" else "")
-
+    }
     /**
      * ✅ MỚI: Quyết định có đính kèm buildToolCallingGuard() hay không, KHÔNG chỉ dựa vào
      * từ khoá cứng của câu hỏi hiện tại (mentionsAppDomain) mà còn dựa vào việc câu hỏi này
