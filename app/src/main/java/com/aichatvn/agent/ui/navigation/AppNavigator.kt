@@ -72,9 +72,18 @@ fun AppNavigator(
     val currentRoute = navBackStackEntry?.destination?.route
 
     // Điều hướng Deep Link
+    // ✅ SỬA: chỉ navigate khi pendingDeepLinkRoute khác currentRoute hiện tại.
+    // Trước đây, nếu pendingDeepLinkRoute vô tình được set lại (ví dụ do
+    // onNewIntent nhận lại cùng extra cũ "chat_screen"), effect này sẽ chạy
+    // navigate("chat_screen") NGAY CẢ KHI người dùng vừa mới tự tay bấm sang
+    // tab Dashboard — vì currentRoute lúc đó có thể trùng thời điểm recomposition.
+    // Thêm điều kiện so currentRoute chặn được trường hợp deep link "bắn" người
+    // dùng ra khỏi tab họ vừa chọn.
     LaunchedEffect(pendingDeepLinkRoute) {
-        if (pendingDeepLinkRoute != null) {
+        if (pendingDeepLinkRoute != null && pendingDeepLinkRoute != currentRoute) {
             navController.navigate(pendingDeepLinkRoute) { launchSingleTop = true }
+        }
+        if (pendingDeepLinkRoute != null) {
             onDeepLinkConsumed()
         }
     }

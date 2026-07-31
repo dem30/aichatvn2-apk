@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         logger.i("MainActivity", "🚀 App khởi động - v3")
 
-        pendingDeepLinkRoute = intent?.getStringExtra(NotificationSkill.DEEP_LINK_EXTRA)
+        pendingDeepLinkRoute = consumeDeepLinkExtra(intent)
 
         setContent {
             // Giữ lại quyền RECORD_AUDIO để SpeechRecognizer có thể sử dụng khi chạm nói
@@ -88,6 +88,32 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        pendingDeepLinkRoute = intent.getStringExtra(NotificationSkill.DEEP_LINK_EXTRA)
+        val newRoute = consumeDeepLinkExtra(intent)
+        // Chỉ cập nhật khi thực sự có route mới trong Intent này.
+        // Trước đây dòng này luôn gán lại (kể cả null), nhưng vì Intent gốc
+        // của Activity (do Android launchMode singleTask/singleTop giữ lại)
+        // có thể được redeliver mà KHÔNG mang extra deep-link, getStringExtra()
+        // trả về null — nhưng nếu SAU ĐÓ có bất kỳ nguồn nào (service nền, FCM,
+        // notification cũ) gọi lại onNewIntent với Intent vẫn còn extra cũ
+        // "chat_screen" chưa bị xóa, pendingDeepLinkRoute sẽ bị set lại và
+        // AppNavigator sẽ điều hướng ngược về Chat ngay sau khi người dùng
+        // vừa bấm sang tab khác (Dashboard). consumeDeepLinkExtra() xóa extra
+        // khỏi Intent ngay khi đọc, nên nó chỉ có thể kích hoạt navigate đúng 1 lần.
+        if (newRoute != null) {
+            pendingDeepLinkRoute = newRoute
+        }
+    }
+
+    /**
+     * Đọc DEEP_LINK_EXTRA từ Intent rồi xóa ngay lập tức khỏi Intent.
+     * Điều này đảm bảo extra không thể bị đọc lại (và vô tình kích hoạt
+     * navigate về Chat) ở một lần gọi onNewIntent/onCreate sau đó với
+     * cùng một Intent instance (Android tái sử dụng Intent trong nhiều
+     * trường hợp singleTask/singleTop).
+     */
+    private fun consumeDeepLinkExtra(intent: Intent?): String? {
+        val route = intent?.getStringExtra(NotificationSkill.DEEP_LINK_EXTRA)
+        intent?.removeExtra(NotificationSkill.DEEP_LINK_EXTRA)
+        return route
     }
 }

@@ -137,7 +137,18 @@ fun ChatScreen(
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            val canGoBack = navController.previousBackStackEntry != null
+            // ✅ SỬA: trước đây dùng `canGoBack = navController.previousBackStackEntry != null`.
+            // Vì bottom-nav điều hướng bằng popUpTo(startDestination){saveState=true} +
+            // restoreState, backstack thực tế luôn rút gọn về [Dashboard, <tab hiện tại>] —
+            // nghĩa là previousBackStackEntry của Chat GẦN NHƯ LUÔN LÀ Dashboard, bất kể
+            // trước đó người dùng đang ở tab nào. Do đó nút back trước đây luôn đưa về
+            // Dashboard một cách "giả", vì canGoBack hầu như luôn true khi Chat là 1 tab
+            // của bottom-nav. Nút back chỉ thực sự có ý nghĩa khi Chat được mở KHÔNG PHẢI
+            // từ bottom-nav mà từ nơi khác (ví dụ danh sách khách hàng) để chat riêng cho
+            // 1 khách — trường hợp đó username != "default_user". Khi Chat là tab chính
+            // (username == "default_user"), không hiện nút back — người dùng chuyển tab
+            // bằng thanh dưới, không cần nút back giả.
+            val canGoBack = username != "default_user"
             TopAppBar(
                 title = { Text(chatScreenTitle(username)) },
                 navigationIcon = {
