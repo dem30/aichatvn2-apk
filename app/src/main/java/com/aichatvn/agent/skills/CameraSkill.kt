@@ -450,10 +450,23 @@ PluginAction(
     
     private suspend fun handleScan(params: Map<String, Any>): PluginResult {
         val cameraId = (params["cameraId"] as? String)?.trim()
-        val force = params["force"] as? Boolean
-            ?: (params["force"] as? String)?.lowercase()?.let { it == "true" }
-            ?: false
         val scheduleId = (params["scheduleId"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        // ✅ SỬA: trước đây "" (kết quả resolveAliasOrFallback khi NLU không khớp gì cho semanticType
+        // "boolean" — RoutingPipeline không có resolver riêng cho boolean) luôn rơi về false, khiến
+        // lệnh chat "quét camera" không bao giờ ép buộc AI thật — chỉ so-diff im lặng, sai với ý đồ
+        // gốc: gõ lệnh quét tay phải luôn gửi ảnh cho AI phân tích thật (nếu camera đang bật AI/smart
+        // mode), không phải chỉ so pixel như quét nền tự động. Ngược lại, khi chạy từ 1 SCHEDULE
+        // (scheduleId khác null, do ScheduleSkill gọi thẳng, không qua NLU) — force LUÔN là Boolean
+        // true/false tường minh từ ScheduleDraft đã lưu, không bao giờ là chuỗi rỗng — nên nhánh
+        // Boolean/String tường minh dưới đây vẫn ưu tiên xử lý đúng, default "true" chỉ áp dụng cho
+        // đúng trường hợp lệnh chat thủ công (scheduleId rỗng) và force không được NLU xác định rõ.
+        val forceParam = params["force"]
+        val force = when {
+            forceParam is Boolean -> forceParam
+            forceParam is String && forceParam.isNotBlank() -> forceParam.equals("true", ignoreCase = true)
+            scheduleId.isNullOrBlank() -> true
+            else -> false
+        }
         val overrideAlertActions = (params["alertActions"] as? String)
             ?.trim()
             ?.takeIf { it.isNotEmpty() && it != "[]" }
@@ -1421,7 +1434,13 @@ PluginAction(
                         }?.toString()
                     }
 
-                } else if (!isSmartMode && (isSuddenChange || forceAi)) {
+                } else if (!isSmartMode && isSuddenChange) {
+                    // ✅ SỬA: bỏ "|| forceAi" — trước đây ép buộc quét (forceAi=true) khi camera đang
+                    // TẮT AI/smart mode sẽ luôn báo "biến động" dù thực tế không hề có sai khác pixel
+                    // nào, vì điều kiện cũ chấp nhận forceAi thay cho isSuddenChange. Theo đúng ý đồ:
+                    // khi AI tắt, quét tay (hay tự động) đều phải THUẦN so sánh diff như hiện tại —
+                    // forceAi chỉ có ý nghĩa "ép AI phân tích thật" khi AI đang bật, không phải "luôn
+                    // báo động" khi AI tắt.
                     isSuspicious = true
                     aiComment = "Phát hiện biến động chuyển động (Chế độ AI tắt)"
                     visionObjects = listOf("chuyển động")
@@ -1503,7 +1522,18 @@ PluginAction(
                     withContext(Dispatchers.IO) {
                         val normalComment = aiComment ?: "Bình thường"
                         val objectsSuffix = if (visionObjects.isNotEmpty()) " [objects: ${visionObjects.joinToString(",")}]" else ""
-                        
+
+                        // ✅ MỚI: trước đây optimizedBytes ở nhánh "Bình thường" luôn bị bỏ qua, dù
+                        // AI đã thật sự phân tích ảnh (ảnh chỉ được lưu ở nhánh alert). Nhưng người
+                        // dùng còn có chế độ quét liên tục ép buộc camera phân tích (forceAi=true,
+                        // qua handleScan()/lệnh "quét camera") — phần lớn các lần quét ép buộc đó sẽ
+                        // được AI gán nhãn "Bình thường" (không phải mọi lần ép buộc đều bắt được bất
+                        // thường), nên ảnh không chỉ nên gắn với alert. Chỉ lưu khi forceAi=true để
+                        // tránh vòng quét nền tự động (không ép buộc) tích luỹ ảnh "Bình thường" liên
+                        // tục, gây phình dung lượng — quét ép buộc do người dùng chủ động yêu cầu nên
+                        // tần suất thấp hơn hẳn, chấp nhận được.
+                        val resolvedNormalImagePath = if (forceAi) saveChatImage(optimizedBytes) else null
+
                         database.eventLogDao().insertLog(
                             EventLogEntity(
                                 id = UUID.randomUUID().toString(),
@@ -1512,7 +1542,8 @@ PluginAction(
                                 sourceId = tid,
                                 eventType = "state_change",
                                 value = "Bình thường",
-                                summary = "Camera ${camera.customername} ($tid): $normalComment$objectsSuffix"
+                                summary = "Camera ${camera.customername} ($tid): $normalComment$objectsSuffix",
+                                imagePath = resolvedNormalImagePath
                             )
                         )
                         WorldStateHelper.setAttribute(
