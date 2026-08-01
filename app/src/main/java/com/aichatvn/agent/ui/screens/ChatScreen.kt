@@ -137,23 +137,26 @@ fun ChatScreen(
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            // ✅ SỬA: trước đây dùng `canGoBack = navController.previousBackStackEntry != null`.
-            // Vì bottom-nav điều hướng bằng popUpTo(startDestination){saveState=true} +
-            // restoreState, backstack thực tế luôn rút gọn về [Dashboard, <tab hiện tại>] —
-            // nghĩa là previousBackStackEntry của Chat GẦN NHƯ LUÔN LÀ Dashboard, bất kể
-            // trước đó người dùng đang ở tab nào. Do đó nút back trước đây luôn đưa về
-            // Dashboard một cách "giả", vì canGoBack hầu như luôn true khi Chat là 1 tab
-            // của bottom-nav. Nút back chỉ thực sự có ý nghĩa khi Chat được mở KHÔNG PHẢI
-            // từ bottom-nav mà từ nơi khác (ví dụ danh sách khách hàng) để chat riêng cho
-            // 1 khách — trường hợp đó username != "default_user". Khi Chat là tab chính
-            // (username == "default_user"), không hiện nút back — người dùng chuyển tab
-            // bằng thanh dưới, không cần nút back giả.
-            val canGoBack = username != "default_user"
+            val canGoBack = navController.previousBackStackEntry != null
             TopAppBar(
                 title = { Text(chatScreenTitle(username)) },
                 navigationIcon = {
                     if (canGoBack) {
-                        IconButton(onClick = { navController.popBackStack() }) {
+                        IconButton(onClick = {
+                            if (username != "default_user") {
+                                // Đang chat với 1 khách cụ thể (mở từ Inbox) → back phải
+                                // luôn quay về màn Chat mặc định của admin, không dựa vào
+                                // popBackStack() vì back stack có thể đã bị bottom-nav
+                                // "dọn dẹp" (popUpTo + saveState) mất entry Chat gốc,
+                                // khiến back nhảy thẳng ra Dashboard.
+                                navController.navigate(Screen.Chat.route) {
+                                    popUpTo(Screen.Chat.route) { inclusive = true }
+                                    launchSingleTop = true
+                                }
+                            } else {
+                                navController.popBackStack()
+                            }
+                        }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
                         }
                     }
@@ -161,45 +164,33 @@ fun ChatScreen(
                 actions = {
                     GroqRateLimitLabel(chatInfo = groqRateLimit, routerInfo = groqRouterRateLimit)
 
-                    // ✅ MỚI (UX): Trước đây AppBar có 4 icon cùng lúc (Hộp thư, Log hệ thống,
-                    // Xóa lịch sử, Chọn chế độ) — người mới không biết bấm đâu. Gộp "Hộp thư" và
-                    // "Xóa lịch sử" vào 1 menu 3 chấm; bỏ hẳn nút Log hệ thống khỏi Chat (chỉ còn
-                    // truy cập qua "Chế độ nhà phát triển" trong Cài đặt). Giữ nguyên nút "Chọn
-                    // chế độ AI" riêng vì đây là hành động chính, dùng thường xuyên.
-                    var expandedOverflowMenu by remember { mutableStateOf(false) }
-                    Box {
-                        IconButton(onClick = { expandedOverflowMenu = true }) {
-                            if (unreadInboxCount > 0) {
-                                BadgedBox(badge = { Badge { Text(if (unreadInboxCount > 99) "99+" else unreadInboxCount.toString()) } }) {
-                                    Icon(Icons.Default.MoreVert, contentDescription = "Thêm")
+                    IconButton(onClick = {
+                        navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
+                    }) {
+                        if (unreadInboxCount > 0) {
+                            BadgedBox(
+                                badge = {
+                                    Badge {
+                                        Text(if (unreadInboxCount > 99) "99+" else unreadInboxCount.toString())
+                                    }
                                 }
-                            } else {
-                                Icon(Icons.Default.MoreVert, contentDescription = "Thêm")
+                            ) {
+                                Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
                             }
-                        }
-                        DropdownMenu(
-                            expanded = expandedOverflowMenu,
-                            onDismissRequest = { expandedOverflowMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Hộp thư đa kênh" + if (unreadInboxCount > 0) " (${if (unreadInboxCount > 99) "99+" else unreadInboxCount})" else "") },
-                                leadingIcon = { Icon(Icons.Default.Forum, contentDescription = null) },
-                                onClick = {
-                                    expandedOverflowMenu = false
-                                    navController.navigate(Screen.INBOX_ROUTE) { launchSingleTop = true }
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Xóa lịch sử trò chuyện") },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = {
-                                    expandedOverflowMenu = false
-                                    viewModel.clearHistory()
-                                }
-                            )
+                        } else {
+                            Icon(Icons.Default.Forum, contentDescription = "Hộp thư đa kênh")
                         }
                     }
 
+                    IconButton(onClick = {
+                        navController.navigate("logs") { launchSingleTop = true }
+                    }) {
+                        Icon(Icons.Default.BugReport, contentDescription = "Xem log hệ thống")
+                    }
+                    IconButton(onClick = { viewModel.clearHistory() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Xóa lịch sử")
+                    }
+                    
                     Box {
                         IconButton(onClick = { expandedMenu = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Chọn chế độ")

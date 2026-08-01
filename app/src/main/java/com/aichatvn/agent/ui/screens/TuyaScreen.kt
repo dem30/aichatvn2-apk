@@ -298,11 +298,9 @@ fun TuyaScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Thiết bị Tuya") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
-                    }
-                },
+                // Tuya là 1 tab gốc trong bottom-nav (ngang hàng Dashboard/Chat/...),
+                // không có màn hình cha, nên không cần nút back ở đây.
+                navigationIcon = {},
                 actions = {
                     IconButton(onClick = { viewModel.scanDevices() }, enabled = !isScanning) {
                         if (isScanning) {
