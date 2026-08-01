@@ -412,7 +412,7 @@ class AgentKernel @Inject constructor(
 
                         val responsePass1 = withTimeout(15_000L) {
                             groqClient.chat(
-                                message = message,
+                                message = withAntiMimicryReminder(message, historySnapshot),
                                 extraContext = fullContext,
                                 history = historySnapshot,
                                 imageUrl = null
@@ -1331,6 +1331,37 @@ class AgentKernel @Inject constructor(
         val lastSpace = cut.lastIndexOf(' ')
         val safeCut = if (lastSpace >= (maxLen * 0.6).toInt()) cut.substring(0, lastSpace) else cut
         return "$safeCut…"
+    }
+
+    // ✅ MỚI: chống hiệu ứng "bắt chước mẫu xấu" — khi các câu trả lời assistant gần nhất trong
+    // lịch sử đều là dạng "chưa tìm thấy/không có dữ liệu" (mà lời gọi tool phía sau nó không hề
+    // xuất hiện trong lịch sử, vì chỉ câu trả lời cuối được lưu), model có xu hướng bắt chước
+    // ngay MẪU GẦN NHẤT (recency bias) thay vì tuân theo chỉ thị "LUÔN gọi db_search" nằm xa hơn
+    // ở đầu system prompt — dẫn tới im lặng bỏ qua tool ở mọi câu hỏi sau đó, càng lặp càng chắc
+    // (xem log thực tế 22:18 01/08: 3 lượt liên tiếp assistant trả lời thẳng không search).
+    private fun looksLikeNoSearchFallback(text: String): Boolean {
+        val t = text.lowercase()
+        val markers = listOf(
+            "chưa tìm thấy", "không có dữ liệu", "chưa có thông tin chính xác",
+            "không hỗ trợ", "chưa có data", "vui lòng cung cấp"
+        )
+        return markers.any { t.contains(it) }
+    }
+
+    private fun hasRecentNoSearchPattern(historySnapshot: List<Map<String, String>>): Boolean {
+        val recentAssistantMsgs = historySnapshot.filter { it["role"] == "assistant" }.takeLast(2)
+        return recentAssistantMsgs.isNotEmpty() && recentAssistantMsgs.all { looksLikeNoSearchFallback(it["content"] ?: "") }
+    }
+
+    // Chèn nhắc nhở NGAY SÁT câu hỏi hiện tại (vị trí gần vị trí sinh token nhất) để thắng được
+    // recency bias từ các câu trả lời "chưa tìm thấy" đứng liền trước trong lịch sử. Chỉ dùng cho
+    // nội dung GỬI CHO MODEL — biến `message` gốc dùng để lưu lịch sử/xử lý tool vẫn giữ nguyên.
+    private fun withAntiMimicryReminder(message: String, historySnapshot: List<Map<String, String>>): String {
+        return if (hasRecentNoSearchPattern(historySnapshot)) {
+            "$message\n\n[⚠️ Nhắc: đây là câu hỏi MỚI, các câu trả lời 'chưa tìm thấy' trước đó không phải lý do để trả lời thẳng lượt này — BẮT BUỘC gọi db_search cho câu hỏi này trước khi kết luận.]"
+        } else {
+            message
+        }
     }
 
     private suspend fun buildHistorySnapshot(username: String): List<Map<String, String>> {
