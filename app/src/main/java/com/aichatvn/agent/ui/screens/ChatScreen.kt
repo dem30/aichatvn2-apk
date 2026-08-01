@@ -42,7 +42,6 @@ import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.data.model.ChatMessageEntity
 import com.aichatvn.agent.skills.ChatMode
 import com.aichatvn.agent.ui.viewmodels.ChatViewModel
-import com.aichatvn.agent.ui.viewmodels.QuickCommandGroup
 import com.aichatvn.agent.tools.ai.GroqRateLimitInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -91,7 +90,6 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var expandedMenu by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedChipTab by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
     
     var isTyping by remember { mutableStateOf(false) }
@@ -284,49 +282,61 @@ fun ChatScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "Locked Control",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "🔒 Đang điều khiển riêng: \"$lockedPluginName\"",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Locked Control",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
                         Text(
-                            text = "Gõ \"thoát\" để dừng",
+                            text = "Điều khiển riêng: \"$lockedPluginName\" — gõ \"thoát\" để dừng",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1
                         )
                     }
                 }
             }
 
-            LazyColumn(
-                state = listState,
+            Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(vertical = 12.dp)
             ) {
-                items(messages, key = { it.id }) { message ->
-                    ChatBubble(message = message)
+                if (messages.isEmpty() && !isTyping) {
+                    Text(
+                        text = if (lockedPluginName != null) {
+                            "Đang điều khiển riêng \"$lockedPluginName\". Gõ lệnh, hoặc \"thoát\" để quay lại chat thường."
+                        } else {
+                            "Chưa có tin nhắn nào. Gõ gì đó để bắt đầu."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 32.dp)
+                    )
                 }
-                
-                if (isTyping) {
+
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    items(messages, key = { it.id }) { message ->
+                        ChatBubble(message = message)
+                    }
+
+                    if (isTyping) {
                     item {
                         Box(
                             modifier = Modifier
@@ -357,15 +367,9 @@ fun ChatScreen(
                             }
                         }
                     }
+                    }
                 }
             }
-            
-            QuickCommandBar(
-                groups = viewModel.quickCommandGroups,
-                selectedTab = selectedChipTab,
-                onTabChange = { selectedChipTab = it },
-                onChipClick = { inputText = it }
-            )
 
             if (selectedImageUri != null) {
                 Card(
@@ -701,55 +705,6 @@ private fun GroqRateLimitLabel(
         color = if (cooling || requestsLow || tokensLow) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.onSurfaceVariant
     )
-}
-
-@Composable
-private fun QuickCommandBar(
-    groups: List<QuickCommandGroup>,
-    selectedTab: Int,
-    onTabChange: (Int) -> Unit,
-    onChipClick: (String) -> Unit
-) {
-    if (groups.isEmpty()) return
-    val safeTab = selectedTab.coerceIn(0, groups.size - 1)
-
-    val tabScrollState = rememberScrollState()
-    val chipScrollState = rememberScrollState()
-
-    Column {
-        HorizontalDivider()
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(tabScrollState)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            groups.forEachIndexed { index, group ->
-                FilterChip(
-                    selected = safeTab == index,
-                    onClick = { onTabChange(index) },
-                    label = { Text(group.tabLabel, style = MaterialTheme.typography.labelSmall) }
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(chipScrollState)
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            groups[safeTab].commands.forEach { cmd ->
-                SuggestionChip(
-                    onClick = { onChipClick(cmd.text) },
-                    label = { Text(cmd.label, style = MaterialTheme.typography.labelSmall) }
-                )
-            }
-        }
-    }
 }
 
 private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin) {

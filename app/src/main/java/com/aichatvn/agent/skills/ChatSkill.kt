@@ -85,18 +85,6 @@ class ChatSkill @Inject constructor(
     private val chatMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
 
     companion object {
-        private const val DEFAULT_MEMORY_LOOKBACK_DAYS = 3
-
-        // ✅ MỚI: cửa sổ thời gian coi SearchFocus (AgentKernel.ChatHistoryManager) là "còn nóng"
-        // — nếu Two-Pass vừa search thật cho user này trong khoảng này, buildMemoryContext() sẽ
-        // không tự nhồi thêm nữa (xem chỗ dùng bên dưới). 5 phút đủ phủ hầu hết chuỗi hỏi liên
-        // tiếp trong 1 phiên chat, nhưng không quá dài để chặn buildMemoryContext() ở phiên mới.
-        private const val SEARCH_FOCUS_FRESH_MS = 5 * 60 * 1000L
-
-        private val QUANTITY_KEYWORDS = setOf(
-            "bao nhieu", "may lan", "so luong", "tong cong", "duoc may"
-        )
-
         // ✅ MỚI: chặn tin nhắn khách ngoại kênh gửi tới quá dài trước khi nó đi vào cả 3 nơi:
         // DB lưu trữ, event_log summary, và context gửi lên LLM (tốn token trực tiếp, và
         // không kiểm soát được vì khách hàng bên ngoài là nguồn không tin cậy).
@@ -110,206 +98,6 @@ class ChatSkill @Inject constructor(
             "\n\n[...tin nhắn đã bị cắt bớt, tổng gốc ${raw.length} ký tự, vượt giới hạn xử lý]"
     }
 
-    private fun isQuantityQuery(normalizedMsg: String): Boolean =
-        QUANTITY_KEYWORDS.any { normalizedMsg.contains(it) }
-
-    private fun extractStateKeyword(originalMessage: String, normalizedMsg: String): List<String>? = when {
-        originalMessage.contains("tắt", ignoreCase = true) || containsAnyWord(normalizedMsg, "off") ->
-            listOf("tắt", "off", "Tắt", "OFF")
-        originalMessage.contains("bật", ignoreCase = true) || containsAnyWord(normalizedMsg, "on") ->
-            listOf("bật", "on", "Bật", "ON")
-        else -> null
-    }
-
-    private fun containsAnyWord(text: String, vararg words: String) =
-        words.any { com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(text, it) }
-
-    private val OBJECT_LABEL_KEYWORDS = mapOf(
-    "person" to listOf("nguoi la", "co nguoi", "nguoi dot nhap", "xam nhap", "trom"),
-    "car" to listOf("oto", "xe hoi", "xe oto"),
-    "motorbike" to listOf("xe may"),
-    "dog" to listOf("con cho", "cho "),
-    "cat" to listOf("con meo", "meo "),
-    "package" to listOf("goi hang", "buu kien", "shipper")   // ← thêm lại dòng này
-)
-
-    private fun extractObjectLabel(normalizedMsg: String): String? =
-        OBJECT_LABEL_KEYWORDS.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
-
-    private fun logHasObject(summary: String, label: String): Boolean =
-        summary.contains("[objects:", ignoreCase = true) && summary.contains(label, ignoreCase = true)
-
-    private suspend fun isPastMemoryQuery(message: String): Boolean {
-        val norm = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(message)
-        val keywords = configProvider.getString(
-            AppConfigDefaults.GLOBAL_MEMORY_QUERY_KEYWORDS,
-            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_MEMORY_QUERY_KEYWORDS)
-        ).split(",").map { it.trim() }.filter { it.isNotBlank() }
-
-        return keywords.any { keyword ->
-            norm.contains(com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(keyword))
-        }
-    }
-
-    // ✅ SỬA: trước đây hàm này chặn CỨNG mọi username khác "default_user", hoàn toàn không đọc
-    // GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL — nghĩa là khách ngoại kênh (telegram_xxx,
-    // facebook_xxx...) KHÔNG BAO GIỜ có SYSTEM_MEMORY (log camera/thiết bị/cuộc gọi) dù admin đã
-    // tắt switch khoá. Giờ nhận thêm allowExternalAccess (= !blockExternalDeviceControl, tính
-    // tại nơi gọi) để tôn trọng đúng switch admin đã cấu hình, thay vì hardcode theo username.
-    private suspend fun buildMemoryContext(username: String, userMessage: String, allowExternalAccess: Boolean): String = withContext(Dispatchers.IO) {
-        if (username != "default_user" && !allowExternalAccess) return@withContext ""
-
-        try {
-            val now = System.currentTimeMillis()
-            val maxLogs = configProvider.getInt(AppConfigDefaults.GLOBAL_MAX_MEMORY_LOGS, 30)
-
-            val activeCameras = database.cameraDao().getActiveCameras()
-            val activeDevices = database.tuyaDeviceDao().getAllDevices()
-            val normalizedMsg = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userMessage.lowercase())
-
-            val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedMsg, now)
-            val since = parsedRange?.since
-                ?: (now - DEFAULT_MEMORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000L)
-            val rangeLabel = parsedRange?.label ?: "$DEFAULT_MEMORY_LOOKBACK_DAYS ngày gần nhất"
-
-            val matchedCamera = activeCameras.find { cam ->
-                val normCamName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(cam.customername.lowercase())
-                normalizedMsg.contains(normCamName) || normalizedMsg.contains(cam.id.lowercase())
-            }
-            val matchedDevice = activeDevices.find { dev ->
-                val normDevName = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(dev.name.lowercase())
-                normalizedMsg.contains(normDevName) || normalizedMsg.contains(dev.id.lowercase())
-            }
-
-            val platformKeywords = mapOf(
-                "facebook" to listOf("facebook", "fb", "fanpage"),
-                "telegram" to listOf("telegram"),
-                "website" to listOf("website", "trang web", "widget web")
-            )
-            val matchedPlatform = if (matchedCamera == null && matchedDevice == null) {
-                platformKeywords.entries.find { (_, kws) -> kws.any { normalizedMsg.contains(it) } }?.key
-            } else null
-
-            // ✅ MỚI: nhận diện câu hỏi thuộc miền "cuộc gọi" bằng GLOBAL_CALL_KEYWORDS (config,
-            // không hardcode) — trước đây không có nhánh này nên câu hỏi kiểu "có cuộc gọi nào
-            // không" rơi vào nhánh else mặc định và bị nhồi nguyên nhật ký camera không liên quan.
-            val callKeywords = configProvider.getString(
-                AppConfigDefaults.GLOBAL_CALL_KEYWORDS,
-                AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CALL_KEYWORDS)
-            ).split(",").map { it.trim() }.filter { it.isNotBlank() }
-            val matchedCallQuery = matchedCamera == null && matchedDevice == null && matchedPlatform == null &&
-                callKeywords.any { kw ->
-                    normalizedMsg.contains(com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(kw))
-                }
-
-            val until = parsedRange?.until ?: now
-            val rawLogs = database.eventLogDao().getLogsInTimeframe(since, until)
-            
-            val filteredLogs = when {
-                matchedCamera != null -> rawLogs.filter {
-                    it.sourceId == matchedCamera.id || it.summary.contains(matchedCamera.customername, ignoreCase = true)
-                }
-                matchedDevice != null -> rawLogs.filter {
-                    it.sourceId == matchedDevice.id || it.summary.contains(matchedDevice.name, ignoreCase = true)
-                }
-                matchedPlatform != null -> rawLogs.filter { it.source == matchedPlatform }
-                matchedCallQuery -> rawLogs.filter { it.source == "call" }
-                normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> rawLogs.filter { it.source == "camera" }
-                normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> rawLogs.filter { it.source == "tuya" }
-                // ✅ SỬA: không còn suy diễn ra log camera/state_change khi câu hỏi không rõ domain
-                // (vd "có tin nhắn đặt hàng không") — nhồi log camera không liên quan từng khiến
-                // model nghĩ đã có đủ context nên bỏ qua db_search. Để rỗng, bắt AI tự gọi
-                // db_search với category phù hợp (chat/qa) khi cần.
-                else -> emptyList()
-            }
-
-            val dateFmt = java.text.SimpleDateFormat("HH:mm dd/MM/yyyy", java.util.Locale.getDefault())
-            // ✅ MỚI: mốc "bây giờ" tường minh để tiêm vào cả 2 khối SYSTEM_MEMORY bên dưới — nếu
-            // không có dòng này, model chỉ thấy các dòng log dạng HH:mm dd/MM/yyyy mà không biết
-            // "hiện tại" là lúc nào, dễ nhầm log hôm qua/hôm kia thành đang diễn ra bây giờ.
-            val currentTimeStr = dateFmt.format(java.util.Date(now))
-
-            val objectLabel = extractObjectLabel(normalizedMsg)
-            val objectFilteredLogs = if (objectLabel != null) {
-                filteredLogs.filter { logHasObject(it.summary, objectLabel) }
-            } else filteredLogs
-
-            if (isQuantityQuery(normalizedMsg) && objectFilteredLogs.isNotEmpty()) {
-                val subjectLabel = when {
-                    matchedCamera != null -> "camera ${matchedCamera.customername}"
-                    matchedDevice != null -> "thiết bị ${matchedDevice.name}"
-                    matchedPlatform != null -> "kênh $matchedPlatform"
-                    matchedCallQuery -> "nhật ký cuộc gọi"
-                    normalizedMsg.contains("camera") || normalizedMsg.contains("cam") -> "các camera"
-                    normalizedMsg.contains("den") || normalizedMsg.contains("quat") || normalizedMsg.contains("thiet bi") -> "các thiết bị đóng ngắt"
-                    else -> "hệ thống"
-                }
-                val stateKeyword = extractStateKeyword(userMessage, normalizedMsg)
-                val countedLogs = if (stateKeyword != null) {
-                    objectFilteredLogs.filter { log -> stateKeyword.any { log.summary.contains(it, ignoreCase = true) } }
-                } else objectFilteredLogs
-                val stateNote = if (stateKeyword != null) " (trạng thái: ${stateKeyword.first()})" else ""
-                val objectNote = if (objectLabel != null) " (đối tượng: $objectLabel)" else ""
-                return@withContext buildString {
-                    append("<SYSTEM_MEMORY>\n") 
-                    append("🕒 THỜI GIAN HỆ THỐNG HIỆN TẠI: $currentTimeStr\n\n")
-                    append("Trong khoảng $rangeLabel, $subjectLabel ghi nhận ${countedLogs.size} sự kiện$stateNote$objectNote.\n")
-                    append("Hãy trả lời trực tiếp con số này, không cần liệt kê chi tiết trừ khi người dùng hỏi thêm.\n")
-                    append("</SYSTEM_MEMORY>") 
-                }
-            }
-
-            val activityLines = objectFilteredLogs
-                .sortedBy { it.timestamp }
-                .filter { matchedPlatform != null || it.eventType != "incoming_message" }
-                .take(maxLogs)
-                .map { log -> "${dateFmt.format(java.util.Date(log.timestamp))}: ${log.summary}" }
-
-            // ✅ SỬA: bỏ hẳn khối "Tin nhắn khách hàng chưa đọc" khỏi context bị động — tốn token
-            // mỗi lượt chat dù không liên quan tới câu hỏi. AI đã có công cụ db_search (category
-            // "chat"/"telegram"/"facebook"/"website") để tự tra khi cần, không cần nhồi sẵn nữa.
-
-            val worldState = when {
-                matchedCamera != null -> database.worldStateDao().getState("camera", matchedCamera.id)
-                matchedDevice != null -> database.worldStateDao().getState("tuya", matchedDevice.id)
-                else -> null
-            }
-
-            if (activityLines.isEmpty() && worldState == null) return@withContext ""
-
-            buildString {
-                append("<SYSTEM_MEMORY>\n") 
-                // ✅ MỚI: khẳng định mốc thời gian thực tại của hệ thống, để AI không nhầm ngày
-                // giờ trong các dòng nhật ký (quá khứ) với thời điểm đang trả lời (hiện tại).
-                append("🕒 THỜI GIAN HỆ THỐNG HIỆN TẠI: $currentTimeStr\n\n")
-                if (matchedCamera != null) {
-                    append("--- Nhật ký hoạt động Camera ${matchedCamera.customername} ($rangeLabel) ---\n")
-                } else if (matchedDevice != null) {
-                    append("--- Nhật ký hoạt động Thiết bị ${matchedDevice.name} ($rangeLabel) ---\n")
-                } else if (matchedPlatform != null) {
-                    append("--- Nhật ký hoạt động kênh $matchedPlatform ($rangeLabel) ---\n")
-                } else if (matchedCallQuery) {
-                    append("--- Nhật ký cuộc gọi ($rangeLabel) ---\n")
-                }
-                // ✅ SỬA: bỏ nhánh "tổng hợp" — activityLines giờ luôn rỗng ở case fallback nên
-                // nhánh này không còn được dùng tới; xoá để tránh gây hiểu nhầm cho người đọc sau.
-                if (worldState != null) {
-                    append("--- Trạng thái SỐNG hiện tại (Bản sao số, cập nhật lúc ${dateFmt.format(java.util.Date(worldState.updatedAt))}) ---\n")
-                    append(worldState.attributesJson)
-                    append("\n")
-                }
-                if (activityLines.isNotEmpty()) {
-                    append(activityLines.joinToString("\n"))
-                    append("\n")
-                }
-                append("Hãy sử dụng dữ liệu chính xác này để trả lời câu hỏi của người dùng. Tuyệt đối không tự bịa đặt thông tin không có trong nhật ký.\n")
-                append("</SYSTEM_MEMORY>") 
-            }
-        } catch (e: Exception) {
-            logger.e("ChatSkill", "buildMemoryContext error: ${e.message}", e)
-            ""
-        }
-    }
 
     override suspend fun initialize() {
         reloadMessages(currentUsername)
@@ -649,35 +437,15 @@ class ChatSkill @Inject constructor(
                     false
                 )
 
-                // ✅ MỚI (theo yêu cầu: "tắt luôn"): buildMemoryContext() từng chạy song song,
-                // độc lập với Two-Pass db_search của AgentKernel — cả 2 đường cùng tự đoán domain
-                // và tự nhồi log riêng, dẫn tới 2 khối <SYSTEM_MEMORY> chồng nhau trong cùng 1
-                // request (đã thấy trong log build thật: 1 khối tự đây, 1 khối từ
-                // interceptAndExecuteToolCall sau khi model gọi db_search) — tốn token gấp đôi mà
-                // Two-Pass mới hơn (có category=chat/qa, keyword lọc nội dung, KEYWORD_MATCH_LIMIT)
-                // luôn chính xác và gọn hơn bản nhồi sẵn ở đây. Nếu AgentKernel vừa/đang tự search
-                // cho user này (SearchFocus còn "nóng" — set trong khoảng SEARCH_FOCUS_FRESH_MS gần
-                // đây), coi như Two-Pass đã/sẽ phụ trách domain này → không cần buildMemoryContext()
-                // nhồi thêm nữa, để nó tự search lại theo đúng câu hỏi + keyword hiện tại.
-                val hasFreshSearchFocus = chatHistoryManager.getLastSearchFocus(username)
-                    ?.let { (System.currentTimeMillis() - it.setAt) <= SEARCH_FOCUS_FRESH_MS } == true
-
-                val memoryContext = if (!hasFreshSearchFocus &&
-                    _chatMode.value != ChatMode.QA && imageBase64.isNullOrEmpty() && fileUrl.isNullOrEmpty() && isPastMemoryQuery(safeMessage)) {
-                    // ✅ SỬA: truyền đúng cờ admin đã cấu hình (!blockExternalDeviceControl) thay
-                    // vì để buildMemoryContext() tự hardcode chặn theo username như trước — đây
-                    // chính là chỗ khiến khách ngoại kênh (VD Telegram) không bao giờ có
-                    // SYSTEM_MEMORY dù switch khoá đã tắt.
-                    buildMemoryContext(username, safeMessage, allowExternalAccess = !blockExternalDeviceControl)
-                } else {
-                    ""
-                }
-                
-                val finalExtraContext = if (memoryContext.isNotBlank()) {
-                    if (extraContext.isNotBlank()) "$extraContext\n\n$memoryContext" else memoryContext
-                } else {
-                    extraContext
-                }
+                // ✅ SỬA (theo yêu cầu: bỏ hẳn nhồi SYSTEM_MEMORY chủ động trước lượt gọi model):
+                // buildMemoryContext() từng tự đoán domain + query DB + nhồi log vào system prompt
+                // TRƯỚC KHI model kịp quyết định có cần data hay không — chạy song song, độc lập
+                // với Two-Pass db_search của AgentKernel. Hệ quả đúng như log build thật cho thấy:
+                // model vẫn cứ tự phát db_search bất kể đã có SYSTEM_MEMORY nhồi sẵn hay chưa, nên
+                // phần nhồi trước chỉ tốn token gấp đôi mà không đổi được hành vi của model. Two-Pass
+                // (category=chat/qa, keyword lọc nội dung, KEYWORD_MATCH_LIMIT) đã đủ để model tự
+                // tra đúng lúc cần — không cần bước lọc-trước-rồi-gửi-kèm này nữa.
+                val finalExtraContext = extraContext
 
                 val response = agentKernel.chat(
                     com.aichatvn.agent.core.ChatRequest(

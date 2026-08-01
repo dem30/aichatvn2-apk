@@ -42,9 +42,6 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
-data class QuickCommand(val label: String, val text: String)
-data class QuickCommandGroup(val tabLabel: String, val commands: List<QuickCommand>)
-
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val chatSkill: ChatSkill,
@@ -95,18 +92,6 @@ class ChatViewModel @Inject constructor(
 
     private val _isBotEnabled = MutableStateFlow(true)
     val isBotEnabled: StateFlow<Boolean> = _isBotEnabled.asStateFlow()
-
-    val quickCommandGroups: List<QuickCommandGroup> = agentKernel.getAvailablePluginsForUI().map { plugin ->
-        QuickCommandGroup(
-            tabLabel = plugin.manifest.name,
-            commands = plugin.manifest.actions.map { action ->
-                val requiredParams = action.parameters.filter { it.required }
-                val text = if (requiredParams.isEmpty()) action.description
-                else action.description + " (" + requiredParams.joinToString(", ") { "<${it.name}>" } + ")"
-                QuickCommand(label = action.name, text = text)
-            }
-        )
-    }
 
     init {
         activateThread()
