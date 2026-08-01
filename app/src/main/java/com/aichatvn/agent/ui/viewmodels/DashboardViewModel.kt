@@ -278,7 +278,10 @@ class DashboardViewModel @Inject constructor(
     fun setFloorplanScale(scale: Float) {
         viewModelScope.launch {
             val clampedScale = scale.coerceIn(0.5f, 4.0f)
-            configProvider.set(FLOORPLAN_SCALE_KEY, clampedScale.toString())
+            // ✅ SỬA LỖI: key cục bộ thuần UI (tỉ lệ sơ đồ nhà), không liên quan Gateway —
+            // affectsConnection = false để không làm WebhookGatewayService ngắt-nối lại SSE
+            // oan (xem giải thích đầy đủ ở AppConfigProvider.set()).
+            configProvider.set(FLOORPLAN_SCALE_KEY, clampedScale.toString(), affectsConnection = false)
             _floorplanScale.value = clampedScale
         }
     }
@@ -298,9 +301,12 @@ class DashboardViewModel @Inject constructor(
     fun saveViewportState(zoom: Float, panX: Float, panY: Float) {
         viewModelScope.launch {
             val clampedZoom = zoom.coerceIn(0.5f, 3.0f)
-            configProvider.set(VIEWPORT_ZOOM_KEY, clampedZoom.toString())
-            configProvider.set(VIEWPORT_PAN_X_KEY, panX.toString())
-            configProvider.set(VIEWPORT_PAN_Y_KEY, panY.toString())
+            // ✅ SỬA LỖI: 3 key cục bộ thuần UI (zoom/pan Dashboard), không liên quan Gateway
+            // — affectsConnection = false để không làm ngắt-nối lại SSE oan mỗi lần người
+            // dùng pan/zoom sơ đồ nhà (xem giải thích đầy đủ ở AppConfigProvider.set()).
+            configProvider.set(VIEWPORT_ZOOM_KEY, clampedZoom.toString(), affectsConnection = false)
+            configProvider.set(VIEWPORT_PAN_X_KEY, panX.toString(), affectsConnection = false)
+            configProvider.set(VIEWPORT_PAN_Y_KEY, panY.toString(), affectsConnection = false)
             _viewportZoom.value = clampedZoom
             _viewportPanX.value = panX
             _viewportPanY.value = panY
@@ -310,7 +316,9 @@ class DashboardViewModel @Inject constructor(
     fun setFloorplanPath(path: String) {
         viewModelScope.launch {
             val oldPath = _floorplanPath.value
-            configProvider.set(FLOORPLAN_PATH_KEY, path)
+            // ✅ SỬA LỖI: key cục bộ thuần UI (đường dẫn ảnh sơ đồ nhà), không liên quan
+            // Gateway — affectsConnection = false (xem giải thích đầy đủ ở AppConfigProvider.set()).
+            configProvider.set(FLOORPLAN_PATH_KEY, path, affectsConnection = false)
             _floorplanPath.value = path
             if (!oldPath.isNullOrBlank() && oldPath != path) {
                 withContext(Dispatchers.IO) {

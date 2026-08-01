@@ -133,18 +133,33 @@ class AppConfigProvider @Inject constructor(
 
     // ─────────────────────────── WRITE ───────────────────────────
 
-    suspend fun set(key: String, value: String) = withContext(Dispatchers.IO) {
+    // ✅ SỬA LỖI (root cause "gửi tin nhắn Website im lặng, không phản hồi"): set()/upsert()
+    // trước đây LUÔN bắn _configUpdatedEvent bất kể key gì, kể cả các key cục bộ thuần UI
+    // (dashboard_viewport_pan_x/y, dashboard_viewport_zoom, floorplan_scale, floorplan_path
+    // — xem DashboardViewModel.saveViewportState()/setFloorplanScale()/setFloorplanPath()),
+    // dù comment khai báo _configUpdatedEvent ở trên đã ghi rõ Ý ĐỊNH là chỉ báo hiệu cho
+    // deviceCode/gateway URL/token/TURN. Hệ quả: mỗi lần người dùng pan/zoom sơ đồ nhà trong
+    // Dashboard, WebhookGatewayService.forceResyncBothChannels() bị gọi oan, ngắt-nối lại cả
+    // 4 kênh SSE (CloudGateway/CallSignalSSE/WidgetInboxSSE/PageInboxSSE) mất ~5-10 giây —
+    // nếu đúng lúc đó khách gửi tin qua Website widget, tin nhắn bị rơi vào hộp thư đệm phía
+    // server và không tới được app cho tới khi kênh ổn định lại.
+    //
+    // Thêm tham số affectsConnection (mặc định true để KHÔNG phá vỡ các nơi gọi hiện có như
+    // SettingsScreen.saveConfig()/resetConfig() — nơi người dùng thực sự sửa cấu hình Gateway
+    // và ĐÚNG là cần resync ngay). Các nơi ghi key cục bộ thuần UI cần tự truyền
+    // affectsConnection = false.
+    suspend fun set(key: String, value: String, affectsConnection: Boolean = true) = withContext(Dispatchers.IO) {
         val existing = dao.getConfig(key)
         val entity = existing?.copy(value = value, updatedAt = System.currentTimeMillis())
             ?: AppConfigEntity(key = key, value = value, updatedAt = System.currentTimeMillis())
         dao.upsert(entity)
         logger.d("AppConfigProvider", "set $key = $value")
-        _configUpdatedEvent.tryEmit(Unit)
+        if (affectsConnection) _configUpdatedEvent.tryEmit(Unit)
     }
 
-    suspend fun upsert(entity: AppConfigEntity) = withContext(Dispatchers.IO) {
+    suspend fun upsert(entity: AppConfigEntity, affectsConnection: Boolean = true) = withContext(Dispatchers.IO) {
         dao.upsert(entity.copy(updatedAt = System.currentTimeMillis()))
-        _configUpdatedEvent.tryEmit(Unit)
+        if (affectsConnection) _configUpdatedEvent.tryEmit(Unit)
     }
 
     suspend fun delete(key: String) = withContext(Dispatchers.IO) {
