@@ -6,10 +6,12 @@ import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.AlertEntity
 import com.aichatvn.agent.skills.CameraSkill
+import com.aichatvn.agent.skills.HouseManagerSkill
 import com.aichatvn.agent.skills.NotificationSkill
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -19,7 +21,11 @@ class AlertHistoryViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val database: AppDatabase,
     private val notificationSkill: NotificationSkill,
-    private val cameraSkill: CameraSkill // ✅ MỚI: Inject CameraSkill để nạp mẫu học phản hồi
+    private val cameraSkill: CameraSkill, // ✅ MỚI: Inject CameraSkill để nạp mẫu học phản hồi
+    // ✅ MỚI: Inject HouseManagerSkill để reset world_state của camera khi cảnh báo đã được
+    // xử lý hết — sửa lỗi "Chỉ số Ma" (thẻ "Bất thường" ở HouseManagerScreen không tự trừ
+    // về 0 khi xoá/đọc hết cảnh báo trong màn này).
+    private val houseManagerSkill: HouseManagerSkill
 ) : ViewModel() {
 
     val cameraId: String = savedStateHandle.get<String>("cameraId")?.takeIf { it.isNotBlank() } ?: ""
@@ -42,10 +48,29 @@ class AlertHistoryViewModel @Inject constructor(
             initialValue = 0
         )
 
+    // ✅ SỬA: Reset world_state chỉ khi camera KHÔNG CÒN alert nào isSuspicious=1 — không
+    // còn xét isRead nữa. Trước đây coi "đã đọc" = "đã xử lý", nhưng chủ nhà xác nhận: chỉ
+    // xem cảnh báo (markAsRead tự động khi mở alert) hoặc chỉ xoá KHÔNG được coi là đã xử lý
+    // xong về mặt an ninh — chỉ có 2 hành động này mới hạ isSuspicious/xoá hẳn record:
+    //   1. Bấm "Báo động giả" -> isSuspicious=0
+    //   2. Xoá alert (deleteAlert/deleteAll) -> record biến mất khỏi bảng `alert`
+    // "Đọc" (markAsRead/markAllAsRead) KHÔNG được gọi hàm này nữa — xem xong không có nghĩa
+    // là đã xác nhận an toàn, tránh việc badge "Bất thường" tự tắt chỉ vì chủ nhà mở app xem.
+    private suspend fun resetCameraStateIfNoUnresolvedAlerts(cameraId: String) {
+        if (cameraId.isBlank()) return
+        val remaining = database.alertDao().getAlertsByCameraFlow(cameraId).first()
+        val stillUnresolved = remaining.any { it.isSuspicious == 1 }
+        if (!stillUnresolved) {
+            houseManagerSkill.resetCameraSuspiciousState(cameraId)
+        }
+    }
+
     fun markAsRead(alertId: String) {
         viewModelScope.launch {
             database.alertDao().markAsRead(alertId)
             notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alertId))
+            // ⚠️ Không gọi resetCameraStateIfNoUnresolvedAlerts ở đây: đọc alert không phải
+            // là xử lý xong — chủ nhà chỉ muốn "Báo giả" hoặc xoá mới hạ badge "Bất thường".
         }
     }
 
@@ -78,6 +103,7 @@ class AlertHistoryViewModel @Inject constructor(
             )
             // Hủy thông báo đẩy tương ứng
             notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alert.id))
+            resetCameraStateIfNoUnresolvedAlerts(alert.cameraId)
         }
     }
 
@@ -88,6 +114,7 @@ class AlertHistoryViewModel @Inject constructor(
             }
             if (isFiltered) database.alertDao().markAllAsReadForCamera(cameraId)
             else database.alertDao().markAllAsRead()
+            // ⚠️ Không reset world_state ở đây — cùng lý do như markAsRead().
         }
     }
 
@@ -99,17 +126,20 @@ class AlertHistoryViewModel @Inject constructor(
             }
             database.alertDao().deleteAlert(alertId)
             notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alertId))
+            alert?.cameraId?.let { resetCameraStateIfNoUnresolvedAlerts(it) }
         }
     }
 
     fun deleteAll() {
         viewModelScope.launch {
+            val affectedCameraIds = alerts.value.map { it.cameraId }.distinct()
             alerts.value.forEach { alert ->
                 alert.imagePath?.let { path -> runCatching { java.io.File(path).delete() } }
                 notificationSkill.cancelNotification(NotificationSkill.notificationIdForAlert(alert.id))
             }
             if (isFiltered) database.alertDao().deleteAlertsByCamera(cameraId)
             else database.alertDao().deleteAllAlerts()
+            affectedCameraIds.forEach { resetCameraStateIfNoUnresolvedAlerts(it) }
         }
     }
 }

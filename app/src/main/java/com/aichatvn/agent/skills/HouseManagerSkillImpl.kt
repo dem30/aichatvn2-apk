@@ -1142,6 +1142,30 @@ override suspend fun sendDefaultCameraAlerts(
         }
     }
 
+    // ✅ MỚI: Sửa lỗi "Chỉ số Ma" ở thẻ "Bất thường" (World State Index) — cùng nguyên nhân
+    // với vụ unread_count từng bị lệch ở evaluateSituation() (xem đoạn "Tự động dọn Chỉ số
+    // Ma" phía trên), nhưng lần này là ở chiều ngược lại: người dùng xoá/đọc hết cảnh báo
+    // trong bảng `alert` (AlertHistoryViewModel) nhưng world_state của camera đó vẫn giữ
+    // nguyên state="suspicious" mãi mãi vì không có gì reset nó — evaluateSituation() vẫn
+    // đếm ra suspiciousCount=1 dù màn Lịch sử cảnh báo đã trống rỗng.
+    //
+    // Gọi hàm này SAU KHI đã xác nhận (ở tầng gọi, thường là AlertHistoryViewModel) rằng
+    // camera này không còn cảnh báo isSuspicious=1 nào chưa xử lý trong bảng `alert`. Việc
+    // ghi state="normal" ở đây sẽ tự kích hoạt startWorldStateReactiveObserver() ->
+    // onWorldStateChanged() -> evaluateSituation() chạy lại và tự hội tụ, không cần gọi
+    // evaluateSituation() thủ công lại ở đây.
+    //
+    // ⚠️ Cần thêm vào interface HouseManagerSkill (không có trong các file đã tải lên):
+    //     suspend fun resetCameraSuspiciousState(cameraId: String)
+    override suspend fun resetCameraSuspiciousState(cameraId: String) {
+        withContext(Dispatchers.IO) {
+            val currentState = WorldStateHelper.getAttribute(database.worldStateDao(), "camera", cameraId, "state")
+            if (currentState == "suspicious") {
+                WorldStateHelper.setAttribute(database.worldStateDao(), "camera", cameraId, "state", "normal")
+            }
+        }
+    }
+
     // ✅ ĐÃ SỬA: Trước đây khung giờ "ban đêm" bị code cứng (22h-6h), chủ nhà không xem/sửa
     // được từ UI. Nay đọc từ AppConfig (HouseManagerScreen -> SleepScheduleCard cho phép chỉnh
     // trực tiếp). Vẫn giữ nguyên mặc định 22h-6h nếu chủ nhà chưa từng cấu hình.

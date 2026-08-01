@@ -72,4 +72,5 @@ interface HouseManagerSkill : Plugin {
 
     suspend fun checkPolicy(pluginId: String, action: String, params: Map<String, Any>): PolicyResult
     suspend fun mineUserHabits()
+    suspend fun resetCameraSuspiciousState(cameraId: String)
 }
