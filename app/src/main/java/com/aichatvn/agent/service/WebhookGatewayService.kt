@@ -218,6 +218,24 @@ class WebhookGatewayService : Service() {
         .dispatcher(Dispatcher())
         .build()
 
+    // ✅ MỚI: Sửa lỗi "chat Website timeout ở đúng 15s, trong khi Telegram/Facebook chat
+    // bình thường" — sendWebsiteReply() trước đây dùng CHUNG apiClient (readTimeout=15s),
+    // vốn chỉ được thiết kế cho các request đăng ký ngắn hạn (registerDeviceCode/
+    // registerWidgetKey/registerPageMappings, xem comment ở apiClient phía trên). Nhưng
+    // sendWebsiteReply() gửi phản hồi VỀ Render Gateway sau khi Groq đã trả lời xong — nếu
+    // Render đang chậm/cold-start, 15s không đủ, và exception bị bắt nhầm bởi catch-all của
+    // handleIncomingWebhookEvent() rồi log sai thành "Lỗi giải mã gói tin webhook". Facebook/
+    // Telegram không bị lỗi này vì chúng gửi phản hồi thẳng tới Graph API/Telegram API, không
+    // đi qua Render. Dùng Dispatcher RIÊNG (không share với okHttpClient/apiClient) — cùng lý
+    // do đã áp dụng cho apiClient — để cancelAll() của các kênh khác không vô tình hủy ngang
+    // request gửi phản hồi đang chờ Render.
+    private val replyClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(45, TimeUnit.SECONDS)
+        .dispatcher(Dispatcher())
+        .build()
+
     private val pollingClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
@@ -1199,7 +1217,7 @@ class WebhookGatewayService : Service() {
                     .post(requestBody)
                     .build()
 
-                apiClient.newCall(request).execute().use { response ->
+                replyClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
                         logger.w("CloudGateway", "⚠️ Gửi phản hồi website thất bại, HTTP: ${response.code}")
                     }
