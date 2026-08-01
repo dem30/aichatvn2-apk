@@ -1195,8 +1195,22 @@ class AgentKernel @Inject constructor(
                 }
             }
 
+            // ✅ SỬA BUG (điểm cắt sai ở nhánh admin): hàm này được gọi từ 2 nguồn khác nhau —
+            // (1) model gọi thẳng tool "catalog_search" (chat khách, baseContext chứa
+            // CATALOG_SEARCH_TOOL_INSTRUCTION), và (2) model gọi "db_search(category=qa)" ở chat
+            // admin, được interceptAndExecuteToolCall() định tuyến sang đây (baseContext chứa
+            // buildToolCallingGuard() — hướng dẫn db_search, KHÔNG phải catalog_search). Trước đây
+            // chỉ gọi stripCatalogSearchInvite() — đúng cho nguồn (1) nhưng SAI marker với nguồn
+            // (2), khiến toàn bộ khối "🚨 LUÔN gọi db_search..." + schema JSON + danh sách camera/
+            // thiết bị bị gửi lại NGUYÊN VẸN vào Pass 2 (xem log thực tế: model vẫn gọi lại tool dù
+            // đã có <SYSTEM_MEMORY> bảo không gọi nữa). Giờ dọn cả 2 loại hướng dẫn (hàm nào không
+            // khớp marker sẽ tự no-op, không hại nhau) + dọn luôn <SYSTEM_MEMORY> cũ của Pass 1.
+            val cleanBaseContext = stripOldSystemMemory(
+                stripCatalogSearchInvite(stripDbSearchInvite(baseContext))
+            )
+
             val enrichedContext = buildString {
-                append(stripCatalogSearchInvite(baseContext))
+                append(cleanBaseContext)
                 append("\n\n")
                 append(wrapCatalogSearchResult(resultText))
             }
@@ -1359,21 +1373,30 @@ class AgentKernel @Inject constructor(
         // vào cùng kết quả đó, dù câu hỏi không chứa từ khoá domain nào (camera/tuya/chat...).
         private const val FOLLOWUP_TURN_WINDOW = 2
 
-        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = """🚨 TÌM KIẾM THÔNG TIN (catalog_search):
+        // ✅ MỚI: marker cố định (không phải câu chữ tiếng Việt tự nhiên) đặt NGAY ĐẦU 2 khối
+        // hướng dẫn gọi tool bên dưới — để stripDbSearchInvite()/stripCatalogSearchInvite() không
+        // bao giờ lệch theo các lần đổi wording sau này (đã hỏng 2 lần vì neo theo câu chữ, xem
+        // comment cũ ở stripDbSearchInvite()). Model không hiểu marker này (không phải JSON/lệnh)
+        // nên vô hại nếu lỡ sót lại trong context.
+        private const val DB_SEARCH_GUARD_MARKER = "<!--DB_SEARCH_GUARD-->"
+        private const val CATALOG_SEARCH_GUARD_MARKER = "<!--CATALOG_SEARCH_GUARD-->"
+
+        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = CATALOG_SEARCH_GUARD_MARKER + """🚨 TÌM KIẾM THÔNG TIN (catalog_search):
 - Thiếu info trong <SYSTEM_MEMORY> để trả lời → trả DUY NHẤT 1 JSON thô (không markdown, không giải thích): {"tool": "catalog_search", "query": "từ khóa tìm kiếm"}
 - Đã đủ info từ <SYSTEM_MEMORY> → trả lời tự nhiên bằng Tiếng Việt, KHÔNG gọi lại tool."""
     }
 
     private fun stripDbSearchInvite(guardText: String): String {
-        // ✅ SỬA BUG: marker cũ "🚨 db_search khi cần dữ liệu thật:" không còn khớp với câu chữ
-        // hiện tại của buildToolCallingGuard() ("🚨 db_search khi cần data thật (...)" — đổi
-        // wording ở 1 lần nâng cấp trước nhưng quên đồng bộ marker ở đây), khiến indexOf() luôn
-        // trả -1 → toàn bộ khối hướng dẫn gọi tool (schema JSON + rule + catalogue) bị gửi lại
-        // NGUYÊN VẸN ở Pass 2, dù model đã gọi tool xong không cần gọi lại — tốn token vô ích
-        // mỗi lượt đào sâu. Chỉ neo theo tiền tố ổn định "🚨 db_search" (không phụ thuộc câu chữ
-        // phía sau) để lần sửa wording tiếp theo không lặp lại lỗi tương tự.
-        val marker = "🚨 db_search"
-        val idx = guardText.indexOf(marker)
+        // ✅ SỬA BUG (lần 2): marker cũ neo theo câu chữ "🚨 db_search" đã LẠI không khớp sau 1
+        // lần đổi wording khác của buildToolCallingGuard() (giờ câu mở đầu là "🚨 LUÔN gọi
+        // db_search trước khi trả lời..."), khiến hàm này im lặng trả nguyên guardText không cắt
+        // gì — toàn bộ khối hướng dẫn gọi tool (schema JSON + rule + danh sách camera/thiết bị)
+        // vẫn bị gửi lại NGUYÊN VẸN ở Pass 2 (xem log thực tế 19:19:38 01/08: model vẫn thấy chỉ
+        // thị "LUÔN gọi db_search" nên gọi tool lần nữa dù <SYSTEM_MEMORY> đã bảo "Không gọi lại
+        // tool"). Giờ neo theo DB_SEARCH_GUARD_MARKER (chuỗi cố định, không phải câu chữ tiếng
+        // Việt) được chèn ngay đầu buildToolCallingGuard() — các lần đổi wording sau này không
+        // còn làm marker lệch được nữa.
+        val idx = guardText.indexOf(DB_SEARCH_GUARD_MARKER)
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
 
@@ -1387,8 +1410,7 @@ class AgentKernel @Inject constructor(
     }
 
     private fun stripCatalogSearchInvite(guardText: String): String {
-        val marker = "🚨 TÌM KIẾM THÔNG TIN (catalog_search):"
-        val idx = guardText.indexOf(marker)
+        val idx = guardText.indexOf(CATALOG_SEARCH_GUARD_MARKER)
         return if (idx == -1) guardText else guardText.substring(0, idx).trimEnd()
     }
 
@@ -1654,7 +1676,8 @@ class AgentKernel @Inject constructor(
         // hỏi kiểu "quần jeans"/"giá bao nhiêu" cũng phải gọi tool. Sửa: đưa mệnh lệnh "LUÔN gọi
         // trước khi từ chối" lên đầu tuyệt đối, và đưa category=qa lên bullet ĐẦU TIÊN (thay vì
         // nằm giữa danh sách) vì đây chính là category hay bị bỏ sót nhất trong thực tế.
-        return "🚨 LUÔN gọi db_search trước khi trả lời \"không có\"/\"không hỗ trợ\" — kể cả câu hỏi chung/sản phẩm/giá/chính sách (category=qa), không chỉ riêng camera/thiết bị/chat/call:\n" +
+        return DB_SEARCH_GUARD_MARKER +
+            "🚨 LUÔN gọi db_search trước khi trả lời \"không có\"/\"không hỗ trợ\" — kể cả câu hỏi chung/sản phẩm/giá/chính sách (category=qa), không chỉ riêng camera/thiết bị/chat/call:\n" +
             "{\"tool\":\"db_search\",\"timeframe\":\"copy cụm thời gian trong câu hỏi (vd 'hôm qua','hôm kia','3 tiếng trước','5 ngày trước','tuần trước','tháng trước','ngày 15/5'...), hoặc today|yesterday|last_3_days|last_7_days nếu câu hỏi ko nêu mốc thời gian\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"BẮT BUỘC ở mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi\",\"granularity\":\"summary|detail\"}\n" +
             "- category=qa: MẶC ĐỊNH cho câu hỏi chung/sản phẩm/giá/chính sách/kiến thức đã train — kể cả khi chưa chắc có data, cứ gọi trước. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
             "- keyword bắt buộc mọi category: thiếu = ko lọc được nội dung, kết quả ko chính xác. Luôn copy sát từ/cụm quan trọng nhất trong câu hỏi.\n" +
