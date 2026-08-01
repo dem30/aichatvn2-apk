@@ -1542,11 +1542,20 @@ class AgentKernel @Inject constructor(
         outcome: RouterOutcome?,
         maxSentences: Int
     ): String {
+        // ✅ SỬA (theo log thực tế): bản trước gộp "2 nguồn trả lời" + "KHÔNG xử lý đơn hàng..."
+        // vào 1 câu dài — model chỉ bắt được phần phủ định (KHÔNG có khả năng...), tự suy diễn
+        // câu hỏi kiểu "quần jeans"/"sản phẩm" thuộc nhóm bị từ chối, KHÔNG hề thử gọi
+        // db_search(category=qa) trước khi kết luận "không có dữ liệu". Tách lại thành 2 rule
+        // riêng: (1) mệnh lệnh dứt khoát PHẢI thử tool trước khi từ chối — đặt lên đầu, không
+        // pha lẫn câu phủ định nào; (2) giới hạn hẹp CHỈ về hành động (đơn hàng/thanh toán/hẹn
+        // lịch), không đụng đến phạm vi trả lời thông tin.
         val antiHallucinationGuard =
             "⚠️ Không tự nhận đã điều khiển thiết bị thật (bật/tắt/mở/đóng/đặt lịch...) — " +
             "nếu chưa chắc đã thực hiện, hỏi lại rõ hơn hoặc báo chưa làm được.\n" +
             "⚠️ Trả lời tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ.\n" +
-            "⚠️ Hệ thống trả lời dựa trên 2 nguồn: (1) dữ liệu thực tế đã ghi nhận (camera/thiết bị/tin nhắn/cuộc gọi) tra qua db_search, và (2) kiến thức QA đã được huấn luyện sẵn (câu hỏi thường gặp/catalog, category=qa). Ngoài 2 nguồn này, hệ thống KHÔNG có khả năng xử lý đơn hàng, phản hồi/trả lời khách hộ, hay thực hiện thêm bất kỳ hành động nào. Không tự đề nghị \"xử lý đơn hàng\", \"liên hệ giúp\" hay hứa hẹn hỗ trợ nằm ngoài phạm vi tra cứu/kiến thức đã có."
+            "⚠️ Câu hỏi cần dữ liệu thật (camera/thiết bị/tin nhắn/cuộc gọi) HOẶC thông tin chung chưa chắc (sản phẩm/giá/chính sách/FAQ...) → LUÔN gọi db_search trước. TUYỆT ĐỐI không tự kết luận \"không có dữ liệu\"/\"không hỗ trợ\" khi CHƯA gọi tool.\n" +
+            "⚠️ Hệ thống KHÔNG tự xử lý đơn hàng/thanh toán/hẹn lịch hay thực hiện hành động thay khách — chỉ tra cứu thông tin và ghi nhận yêu cầu để nhân viên xử lý."
+
 
         val houseManagerContext = try {
             houseManagerProvider.get().buildSystemContext()
@@ -1638,34 +1647,20 @@ class AgentKernel @Inject constructor(
         // này LUÔN xuất hiện (kể cả khi hỏi thuần về camera), tốn token không cần thiết.
         val showChatLine = includeAll || "chat" in activeDomains
 
-        // ✅ RÚT GỌN LẦN 2 (theo yêu cầu): rule text trước đây viết như giải thích cho người
-        // (mệnh đề phụ, lý do "vì sao", ví dụ minh hoạ lặp) — giờ nén thành gạch đầu dòng
-        // dạng "if X → Y" cho model, bỏ hết câu nối/lý do/ví dụ thứ 2. Không bớt rule nào so
-        // với bản trước, chỉ nén câu chữ. Vẫn giữ nguyên: (1) JSON schema + đủ enum category kể
-        // cả khi đang lọc theo 1 domain (model có thể đổi domain giữa chừng lượt sau), (2)
-        // catalogue tên thật theo domain phía dưới, (3) rule "thiết bị lạ" + "không bịa data".
-
-      
-        // ✅ SỬA (theo yêu cầu): 3 điểm sửa trong schema/rule dưới đây —
-        // (1) timeframe: trước đây mô tả CHỈ 4 giá trị enum (today|yesterday|last_3_days|
-        // last_7_days), khiến model tưởng đó là toàn bộ khả năng, dù interceptAndExecuteToolCall()
-        // đã tự parse THẲNG câu hỏi gốc bằng VietnameseTimeRangeParser (cùng bộ parser mà QA cục
-        // bộ dùng — hiểu "hôm kia", "X tiếng trước", "X ngày trước", "tuần trước", "tháng trước",
-        // ngày tuyệt đối...) và chỉ rơi về enum khi parser không nhận ra cụm nào. Sửa mô tả field
-        // để model biết cứ COPY nguyên cụm thời gian trong câu hỏi, enum chỉ là phương án dự phòng.
-        // (2) keyword: trước đây mô tả "để trống nếu ko cần" — nhưng DatabaseSearchHelper chỉ lọc
-        // theo NỘI DUNG khi detailsKeywords (= field keyword) khác rỗng; để trống nghĩa là ko lọc
-        // gì theo nội dung câu hỏi, kết quả trả về rất rộng. Nâng thành field quan trọng nhất,
-        // gần như bắt buộc cho MỌI category chứ ko chỉ riêng khi có object.
-        // (3) "call còn hiểu": câu cũ dễ hiểu lầm (đọc như thể "call" nghĩa là gì khác) — sửa lại
-        // nêu rõ đây là các từ khoá NGOÀI chữ "cuộc gọi" mà vẫn nên map sang category=call.
-        return "🚨 db_search khi cần data thật (camera/thiết bị/chat/call) hoặc câu hỏi qa chưa có info:\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"copy cụm thời gian trong câu hỏi (vd 'hôm qua','hôm kia','3 tiếng trước','5 ngày trước','tuần trước','tháng trước','ngày 15/5'...), hoặc today|yesterday|last_3_days|last_7_days nếu câu hỏi ko nêu mốc thời gian\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"BẮT BUỘC ở mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi, quyết định độ chính xác kết quả\",\"granularity\":\"summary|detail\"}\n" +
+        // ✅ SỬA (theo log thực tế — model trả lời "không có dữ liệu sản phẩm" mà CHƯA từng gọi
+        // tool 1 lần nào): câu mở đầu cũ "khi cần data thật (camera/thiết bị/chat/call) hoặc câu
+        // hỏi qa chưa có info" liệt kê camera/thiết bị/chat/call TRƯỚC, qa chỉ nhắc lướt cuối câu
+        // — model đọc xong phần đầu đã hiểu tool này "chủ yếu để tra log", không liên tưởng câu
+        // hỏi kiểu "quần jeans"/"giá bao nhiêu" cũng phải gọi tool. Sửa: đưa mệnh lệnh "LUÔN gọi
+        // trước khi từ chối" lên đầu tuyệt đối, và đưa category=qa lên bullet ĐẦU TIÊN (thay vì
+        // nằm giữa danh sách) vì đây chính là category hay bị bỏ sót nhất trong thực tế.
+        return "🚨 LUÔN gọi db_search trước khi trả lời \"không có\"/\"không hỗ trợ\" — kể cả câu hỏi chung/sản phẩm/giá/chính sách (category=qa), không chỉ riêng camera/thiết bị/chat/call:\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"copy cụm thời gian trong câu hỏi (vd 'hôm qua','hôm kia','3 tiếng trước','5 ngày trước','tuần trước','tháng trước','ngày 15/5'...), hoặc today|yesterday|last_3_days|last_7_days nếu câu hỏi ko nêu mốc thời gian\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"BẮT BUỘC ở mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi\",\"granularity\":\"summary|detail\"}\n" +
+            "- category=qa: MẶC ĐỊNH cho câu hỏi chung/sản phẩm/giá/chính sách/kiến thức đã train — kể cả khi chưa chắc có data, cứ gọi trước. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
+            "- keyword bắt buộc mọi category: thiếu = ko lọc được nội dung, kết quả ko chính xác. Luôn copy sát từ/cụm quan trọng nhất trong câu hỏi.\n" +
             "- Camera/vật thể/màu sắc/có-không → luôn db_search trước, ko tự suy diễn.\n" +
-            "- keyword là field quan trọng nhất: thiếu keyword = ko lọc được theo nội dung, kết quả trả về rất rộng/ko chính xác. LUÔN copy sát từ/cụm từ trong câu hỏi (vật thể, màu sắc, nội dung tin nhắn, tên người...) cho MỌI category, kể cả khi đã có object/target.\n" +
-            "- timeframe: hệ thống hiểu chi tiết như \"hôm kia\", \"X tiếng trước\", \"X ngày/tháng trước\", \"tuần trước\", ngày cụ thể (vd 15/5, ngày 20 tháng 3) — cứ copy nguyên cụm thời gian trong câu hỏi, KHÔNG ép về 1 trong 4 giá trị enum; enum chỉ dùng khi câu hỏi ko nêu mốc thời gian nào.\n" +
+            "- timeframe: hệ thống hiểu chi tiết (hôm kia, X tiếng/ngày/tháng trước, ngày cụ thể...) — copy nguyên cụm trong câu hỏi; enum 4 giá trị chỉ dùng khi câu hỏi ko nêu mốc thời gian.\n" +
             "- object=1 trong 6 giá trị hoặc \"all\" nếu ko khớp; ko ép.\n" +
-            "- category=qa: câu hỏi chung/kiến thức đã huấn luyện sẵn. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
             "- chat/facebook/telegram/website: target=tên kênh only; nội dung tin nhắn luôn vào keyword, ko vào target.\n" +
             "- Thiết bị ko có trong danh sách dưới → trả lời ko lắp đặt, ko gọi tool. (call/chat/qa luôn hợp lệ)\n" +
             "- Chưa có data thật lượt này → ko bịa nội dung/giờ/chi tiết. Hỏi đào sâu (vd \"tin nhắn nói gì\") mà chưa có data → db_search lại.\n" +
