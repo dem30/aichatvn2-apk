@@ -118,6 +118,14 @@ object AppModule {
     @Singleton
     fun provideFacebookSkill(skill: FacebookSkill): Plugin = skill
 
+    // ✅ MỚI: bổ sung binding còn thiếu cho CallSkill — trước đây CallSkill không nằm
+    // trong Set<Plugin> nên dù manifest.routable=true, nó vẫn không xuất hiện trong
+    // danh sách plugins của SmartActionFormSheet (dropdown "Thêm hành động tự động").
+    @Provides
+    @IntoSet
+    @Singleton
+    fun provideCallSkill(skill: CallSkill): Plugin = skill
+
     // ✅ ĐÃ SỬA LỖI 6: Cung cấp binding Singleton chính xác cho HouseManagerSkill để tránh lỗi Dagger Missing Binding
     @Provides
     @Singleton

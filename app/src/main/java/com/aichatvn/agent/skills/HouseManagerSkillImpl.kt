@@ -185,15 +185,21 @@ PluginAction(
         PluginParameter("source", "string", "Chọn nguồn dữ liệu", true, "precondition_source"),
         
         // 🌟 Tự động ẨN trừ khi source == "tuya"
-        PluginParameter("device", "string", "Chọn thiết bị Tuya", false, "device", 
+        // ✅ SỬA: required=true (trước là false) — khi field này ĐANG HIỂN THỊ (source="tuya"),
+        // bắt buộc phải chọn thiết bị. Trước đây form cho phép bấm "Lưu" khi để trống, khiến
+        // execute() nhận device="" -> condition=null -> check_precondition LUÔN PASS âm thầm,
+        // vô hiệu hoá bước kiểm duyệt điều kiện mà không có cảnh báo nào cho người dùng.
+        PluginParameter("device", "string", "Chọn thiết bị Tuya", true, "device", 
             dependsOn = "source", visibleWhen = listOf("tuya")),
             
         // 🌟 Tự động ẨN trừ khi source == "camera"
-        PluginParameter("camera", "string", "Chọn camera", false, "camera", 
+        // ✅ SỬA: required=true — cùng lý do với "device" ở trên.
+        PluginParameter("camera", "string", "Chọn camera", true, "camera", 
             dependsOn = "source", visibleWhen = listOf("camera")),
             
         // 🌟 Tự động ẨN trừ khi source == "chat"
-        PluginParameter("chatSession", "string", "Chọn thớt chat", false, "chatSession", 
+        // ✅ SỬA: required=true — cùng lý do với "device" ở trên.
+        PluginParameter("chatSession", "string", "Chọn thớt chat", true, "chatSession", 
             dependsOn = "source", visibleWhen = listOf("chat")),
             
         // 🌟 Hiện khi source đã được chọn
