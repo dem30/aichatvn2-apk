@@ -381,33 +381,33 @@ class AgentKernel @Inject constructor(
                 }
 
                 else -> {
-                    val matches = search(message, username)
-                    val perfectMatch = matches.firstOrNull()?.qa
-
-                    if (perfectMatch != null) {
-                        perfectMatch.answer
-                    } else {
+                    if (request.allowDeviceControl) {
+                        // ✅ SỬA (theo yêu cầu): Admin (COMBINED, không bị chặn điều khiển thiết bị)
+                        // KHÔNG còn pre-search catalog QA trước lượt gọi AI nữa (bỏ hẳn nhánh
+                        // "matches = search(...)" / "perfectMatch" cũ — đó chính là khối "system
+                        // search QA trước" nhồi sẵn kết quả mà admin không muốn nữa). Mọi tin nhắn
+                        // KHÔNG phải lệnh điều khiển thiết bị (đã được tryDeviceCommand() xử lý và
+                        // return sớm phía trên) đều phải đi thẳng tới AI kèm LỜI MỜI GỌI TOOL
+                        // db_search — LUÔN đính kèm, không còn điều kiện qua shouldAttachToolGuard()
+                        // nữa (trước đây có thể rơi vào toolGuard rỗng nếu câu hỏi không khớp từ
+                        // khoá domain nào). AI tự quyết định có cần gọi db_search hay không, và nếu
+                        // cần thì tự chọn đúng category phù hợp với ý định người dùng: qa (QA cục
+                        // bộ/catalog chung), chat (facebook/telegram/website), call, camera, tuya —
+                        // hoàn toàn tương tự tinh thần Two-Pass mà khách ngoại kênh đang dùng với
+                        // catalog_search, chỉ khác tool là db_search (đã gộp luôn category=qa →
+                        // catalog, xem interceptAndExecuteToolCall()).
                         val historySnapshot = buildHistorySnapshot(username)
 
-                        // ✅ SỬA: Admin chỉ dùng db_search — không còn tra catalog QA thụ động ở
-                        // đây nữa (trước đây qaContext build vô điều kiện, lẫn cho cả admin).
-                        // Khách ngoại bị chặn cũng không còn qaContext thụ động song song với
-                        // CATALOG_SEARCH_TOOL_INSTRUCTION bên dưới — tránh 2 lần search catalog
-                        // trùng lặp trong cùng 1 request; khách ngoại chỉ tra catalog CHỦ ĐỘNG
-                        // qua tool catalog_search khi model tự thấy cần (2-pass).
-                        val toolGuard = if (request.allowDeviceControl) {
-                            if (shouldAttachToolGuard(message, username, currentTurn)) {
-                                // ✅ MỚI: cùng cơ chế lọc theo domain như nhánh "groq" ở trên.
-                                buildToolCallingGuard(resolveActiveDomains(message, username))
-                            } else ""
-                        } else {
-                            CATALOG_SEARCH_TOOL_INSTRUCTION
-                        }
+                        // ✅ MỚI: vẫn giữ lọc catalog gửi kèm theo đúng domain câu hỏi/lịch sử gần
+                        // nhất (resolveActiveDomains) để tiết kiệm token — nhưng CHÍNH KHỐI LỜI MỜI
+                        // GỌI TOOL (buildToolCallingGuard) không còn bị bỏ qua trong bất kỳ trường
+                        // hợp nào của nhánh admin nữa.
+                        val toolGuard = buildToolCallingGuard(resolveActiveDomains(message, username))
 
                         val fullContext = buildString {
                             append(baseGuard)
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
-                            if (toolGuard.isNotEmpty()) append("\n\n$toolGuard")
+                            append("\n\n$toolGuard")
                         }
 
                         val responsePass1 = withTimeout(15_000L) {
@@ -425,11 +425,53 @@ class AgentKernel @Inject constructor(
                             username = username,
                             baseContext = fullContext,
                             historySnapshot = historySnapshot,
-                            allowDeviceControl = request.allowDeviceControl,
-                            allowCatalogSearch = !request.allowDeviceControl
+                            allowDeviceControl = true,
+                            // Admin không còn đường catalog_search riêng — category=qa của db_search
+                            // đã tự định tuyến sang catalog (xem handler "db_search category=qa").
+                            allowCatalogSearch = false
                         )
                         searchImagePath = outcome.imagePath
                         outcome.text
+                    } else {
+                        // ⚠️ KHÔNG ĐỘNG: giữ nguyên 100% khối Two-Pass catalog_search cho khách
+                        // ngoại kênh (facebook/telegram/website bị chặn điều khiển thiết bị) —
+                        // pre-search catalog + CATALOG_SEARCH_TOOL_INSTRUCTION như cũ.
+                        val matches = search(message, username)
+                        val perfectMatch = matches.firstOrNull()?.qa
+
+                        if (perfectMatch != null) {
+                            perfectMatch.answer
+                        } else {
+                            val historySnapshot = buildHistorySnapshot(username)
+                            val toolGuard = CATALOG_SEARCH_TOOL_INSTRUCTION
+
+                            val fullContext = buildString {
+                                append(baseGuard)
+                                if (extraContext.isNotEmpty()) append("\n\n$extraContext")
+                                append("\n\n$toolGuard")
+                            }
+
+                            val responsePass1 = withTimeout(15_000L) {
+                                groqClient.chat(
+                                    message = message,
+                                    extraContext = fullContext,
+                                    history = historySnapshot,
+                                    imageUrl = null
+                                )
+                            }
+
+                            val outcome = interceptAndExecuteToolCall(
+                                originalMessage = message,
+                                responseRaw = responsePass1,
+                                username = username,
+                                baseContext = fullContext,
+                                historySnapshot = historySnapshot,
+                                allowDeviceControl = false,
+                                allowCatalogSearch = true
+                            )
+                            searchImagePath = outcome.imagePath
+                            outcome.text
+                        }
                     }
                 }
             }
@@ -1504,7 +1546,7 @@ class AgentKernel @Inject constructor(
             "⚠️ Không tự nhận đã điều khiển thiết bị thật (bật/tắt/mở/đóng/đặt lịch...) — " +
             "nếu chưa chắc đã thực hiện, hỏi lại rõ hơn hoặc báo chưa làm được.\n" +
             "⚠️ Trả lời tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ.\n" +
-            "⚠️ Hệ thống CHỈ tra cứu/báo cáo dữ liệu đã ghi nhận (camera/thiết bị/tin nhắn/cuộc gọi) — KHÔNG có khả năng xử lý đơn hàng, phản hồi/trả lời khách hộ, hay thực hiện thêm bất kỳ hành động nào. Không tự đề nghị \"xử lý đơn hàng\", \"liên hệ giúp\" hay hứa hẹn hỗ trợ nằm ngoài phạm vi tra cứu này."
+            "⚠️ Hệ thống trả lời dựa trên 2 nguồn: (1) dữ liệu thực tế đã ghi nhận (camera/thiết bị/tin nhắn/cuộc gọi) tra qua db_search, và (2) kiến thức QA đã được huấn luyện sẵn (câu hỏi thường gặp/catalog, category=qa). Ngoài 2 nguồn này, hệ thống KHÔNG có khả năng xử lý đơn hàng, phản hồi/trả lời khách hộ, hay thực hiện thêm bất kỳ hành động nào. Không tự đề nghị \"xử lý đơn hàng\", \"liên hệ giúp\" hay hứa hẹn hỗ trợ nằm ngoài phạm vi tra cứu/kiến thức đã có."
 
         val houseManagerContext = try {
             houseManagerProvider.get().buildSystemContext()
@@ -1604,11 +1646,26 @@ class AgentKernel @Inject constructor(
         // catalogue tên thật theo domain phía dưới, (3) rule "thiết bị lạ" + "không bịa data".
 
       
+        // ✅ SỬA (theo yêu cầu): 3 điểm sửa trong schema/rule dưới đây —
+        // (1) timeframe: trước đây mô tả CHỈ 4 giá trị enum (today|yesterday|last_3_days|
+        // last_7_days), khiến model tưởng đó là toàn bộ khả năng, dù interceptAndExecuteToolCall()
+        // đã tự parse THẲNG câu hỏi gốc bằng VietnameseTimeRangeParser (cùng bộ parser mà QA cục
+        // bộ dùng — hiểu "hôm kia", "X tiếng trước", "X ngày trước", "tuần trước", "tháng trước",
+        // ngày tuyệt đối...) và chỉ rơi về enum khi parser không nhận ra cụm nào. Sửa mô tả field
+        // để model biết cứ COPY nguyên cụm thời gian trong câu hỏi, enum chỉ là phương án dự phòng.
+        // (2) keyword: trước đây mô tả "để trống nếu ko cần" — nhưng DatabaseSearchHelper chỉ lọc
+        // theo NỘI DUNG khi detailsKeywords (= field keyword) khác rỗng; để trống nghĩa là ko lọc
+        // gì theo nội dung câu hỏi, kết quả trả về rất rộng. Nâng thành field quan trọng nhất,
+        // gần như bắt buộc cho MỌI category chứ ko chỉ riêng khi có object.
+        // (3) "call còn hiểu": câu cũ dễ hiểu lầm (đọc như thể "call" nghĩa là gì khác) — sửa lại
+        // nêu rõ đây là các từ khoá NGOÀI chữ "cuộc gọi" mà vẫn nên map sang category=call.
         return "🚨 db_search khi cần data thật (camera/thiết bị/chat/call) hoặc câu hỏi qa chưa có info:\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"today|yesterday|last_3_days|last_7_days\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"từ khóa lọc, copy sát câu hỏi, để trống nếu ko cần\",\"granularity\":\"summary|detail\"}\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"copy cụm thời gian trong câu hỏi (vd 'hôm qua','hôm kia','3 tiếng trước','5 ngày trước','tuần trước','tháng trước','ngày 15/5'...), hoặc today|yesterday|last_3_days|last_7_days nếu câu hỏi ko nêu mốc thời gian\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"BẮT BUỘC ở mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi, quyết định độ chính xác kết quả\",\"granularity\":\"summary|detail\"}\n" +
             "- Camera/vật thể/màu sắc/có-không → luôn db_search trước, ko tự suy diễn.\n" +
-            "- object=1 trong 6 giá trị hoặc \"all\" nếu ko khớp; ko ép. keyword=luôn copy vật thể/màu/chi tiết câu hỏi, kể cả khi đã có object.\n" +
-            "- category=qa: câu hỏi chung. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
+            "- keyword là field quan trọng nhất: thiếu keyword = ko lọc được theo nội dung, kết quả trả về rất rộng/ko chính xác. LUÔN copy sát từ/cụm từ trong câu hỏi (vật thể, màu sắc, nội dung tin nhắn, tên người...) cho MỌI category, kể cả khi đã có object/target.\n" +
+            "- timeframe: hệ thống hiểu chi tiết như \"hôm kia\", \"X tiếng trước\", \"X ngày/tháng trước\", \"tuần trước\", ngày cụ thể (vd 15/5, ngày 20 tháng 3) — cứ copy nguyên cụm thời gian trong câu hỏi, KHÔNG ép về 1 trong 4 giá trị enum; enum chỉ dùng khi câu hỏi ko nêu mốc thời gian nào.\n" +
+            "- object=1 trong 6 giá trị hoặc \"all\" nếu ko khớp; ko ép.\n" +
+            "- category=qa: câu hỏi chung/kiến thức đã huấn luyện sẵn. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
             "- chat/facebook/telegram/website: target=tên kênh only; nội dung tin nhắn luôn vào keyword, ko vào target.\n" +
             "- Thiết bị ko có trong danh sách dưới → trả lời ko lắp đặt, ko gọi tool. (call/chat/qa luôn hợp lệ)\n" +
             "- Chưa có data thật lượt này → ko bịa nội dung/giờ/chi tiết. Hỏi đào sâu (vd \"tin nhắn nói gì\") mà chưa có data → db_search lại.\n" +
@@ -1616,7 +1673,7 @@ class AgentKernel @Inject constructor(
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
             (if (showChatLine) "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") else "") +
-            (if (callKeywordSample.isNotEmpty()) "\n📞 call còn hiểu: ${callKeywordSample.joinToString("/")}" else "")
+            (if (callKeywordSample.isNotEmpty()) "\n📞 category=call còn được hỏi qua các từ khác \"cuộc gọi\": ${callKeywordSample.joinToString("/")}" else "")
     }
     /**
      * ✅ MỚI: Quyết định có đính kèm buildToolCallingGuard() hay không, KHÔNG chỉ dựa vào
