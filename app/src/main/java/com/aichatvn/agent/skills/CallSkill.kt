@@ -95,6 +95,12 @@ class CallSkill @Inject constructor(
         id = id,
         name = name,
         capabilities = PluginCapabilities(dashboard = true),
+        // ✅ MỚI (theo yêu cầu): trước đây thiếu hẳn dòng này — mặc định plugin KHÔNG routable,
+        // nên bị loại khỏi getAvailablePluginsForUI() (danh sách Plugin cho SmartActionFormSheet
+        // dùng khi "Thêm hành động tự động"/lên lịch/kịch bản) dù đã có đủ actions + đã được
+        // DynamicOptionRegistry hỗ trợ semanticType="call" (dropdown chọn danh bạ) từ trước. Thêm
+        // routable=true để CallSkill hiện diện trong form giống HouseManagerSkillImpl/ScheduleSkill.
+        routable = true,
         visibleOnDashboard = true,
         autoGenerateQA = false,
         actions = listOf(
@@ -111,13 +117,13 @@ class CallSkill @Inject constructor(
                 name = "answer_call",
                 description = "Nhận cuộc gọi đang đổ chuông",
                 examples = listOf("nhận cuộc gọi", "nghe máy"),
-                parameters = listOf(PluginParameter("callId", "string", "ID cuộc gọi đang đổ chuông", true, "call"))
+                parameters = listOf(PluginParameter("callId", "string", "ID cuộc gọi đang đổ chuông", true, "string"))
             ),
             PluginAction(
                 name = "reject_call",
                 description = "Từ chối cuộc gọi đang đổ chuông",
                 examples = listOf("từ chối cuộc gọi", "bắt máy"),
-                parameters = listOf(PluginParameter("callId", "string", "ID cuộc gọi đang đổ chuông", true, "call"))
+                parameters = listOf(PluginParameter("callId", "string", "ID cuộc gọi đang đổ chuông", true, "string"))
             ),
             PluginAction(
                 name = "end_call",
@@ -138,7 +144,7 @@ class CallSkill @Inject constructor(
                 examples = listOf("lưu số A1B2C3D4 tên là Mẹ"),
                 parameters = listOf(
                     PluginParameter("deviceCode", "string", "Mã máy cần lưu", true, "call"),
-                    PluginParameter("displayName", "string", "Tên gợi nhớ", true, "call")
+                    PluginParameter("displayName", "string", "Tên gợi nhớ", true, "string")
                 )
             )
         )
