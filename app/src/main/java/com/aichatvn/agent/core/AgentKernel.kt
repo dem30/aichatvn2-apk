@@ -193,6 +193,15 @@ class AgentKernel @Inject constructor(
 
         val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(username, plugins)
 
+        // ✅ MỚI: nếu lượt trước hệ thống đã dừng lại hỏi khoảng ngày cụ thể (timeframe mơ hồ
+        // hoặc > 7 ngày, xem Time Range Guard trong interceptAndExecuteToolCall()), ưu tiên xử lý
+        // NGAY tại đây — TRƯỚC prefix-command/vision/tryDeviceCommand — vì nếu không, tin nhắn
+        // dạng "25/07/26 - 01/08/26" rất dễ bị các nhánh khác hiểu nhầm thành thứ khác trước khi
+        // tới được đây.
+        chatHistoryManager.getPendingSearchTimeRange(username)?.let { pending ->
+            return tryResumeSearchWithDateRange(pending, message, username, expiredNotification)
+        }
+
         if (request.allowDeviceControl) {
             val lockedPluginId = chatHistoryManager.getLockedPlugin(username)
             
@@ -765,6 +774,96 @@ class AgentKernel @Inject constructor(
         "camera", "thiet", "bi", "tin", "nhan", "cuoc", "goi"
     )
 
+    // ✅ MỚI: xử lý lượt kế tiếp SAU KHI hệ thống đã dừng lại hỏi khoảng ngày cụ thể (Time Range
+    // Guard trong interceptAndExecuteToolCall() bên dưới). Đọc userMessage theo đúng mẫu
+    // "dd/mm/yy - dd/mm/yy", validate <= 7 ngày, rồi "resume" thẳng lần db_search dở dang bằng
+    // params đã lưu từ lượt hỏi gốc (pending.originalToolParams) — KHÔNG gọi lại AI để đoán lại
+    // category/object/keyword... từ đầu (đã tự chọn đúng ở lượt gốc, chỉ thiếu mỗi khoảng ngày).
+    //
+    // LƯU Ý: MatchResult.destructured của Kotlin chỉ hỗ trợ tối đa 5 thành phần — mẫu ngày có 6
+    // nhóm (d/m/y x2) nên phải đọc qua groupValues[index], không thể destructure.
+    private suspend fun tryResumeSearchWithDateRange(
+        pending: PendingSearchTimeRange,
+        userMessage: String,
+        username: String,
+        expiredNotification: String?
+    ): ChatResponse {
+        fun wrapWithExpired(text: String): String =
+            if (expiredNotification != null) "$expiredNotification\n\n$text" else text
+
+        fun askAgain(reason: String, keepPending: Boolean): ChatResponse {
+            if (!keepPending) chatHistoryManager.clearPendingSearchTimeRange(username)
+            val msg = "$reason Bạn nhập lại giúp mình khoảng ngày cụ thể theo mẫu dd/mm/yy - dd/mm/yy nhé (tối đa 7 ngày, ví dụ: 25/07/26 - 01/08/26)."
+            return ChatResponse(wrapWithExpired(msg), "search_time_range_pending", null)
+        }
+
+        val m = Regex("(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})\\s*-\\s*(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})")
+            .find(userMessage.trim())
+
+        // Không đọc được định dạng ngày -> huỷ pending ngay, tránh lặp vô hạn nếu người dùng
+        // liên tục nhập sai hoặc thực ra đã đổi chủ đề khác hẳn.
+        if (m == null) {
+            return askAgain("Mình chưa đọc được khoảng ngày trong tin nhắn vừa rồi.", keepPending = false)
+        }
+
+        val d1 = m.groupValues[1]; val mo1 = m.groupValues[2]; val y1 = m.groupValues[3]
+        val d2 = m.groupValues[4]; val mo2 = m.groupValues[5]; val y2 = m.groupValues[6]
+
+        fun toMillis(d: String, mo: String, y: String): Long? = try {
+            val yr = y.toInt().let { if (it < 100) it + 2000 else it }
+            val cal = java.util.Calendar.getInstance().apply {
+                isLenient = false
+                set(yr, mo.toInt() - 1, d.toInt(), 0, 0, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+                timeInMillis // ép kích hoạt validation ngày (isLenient=false), cùng cách parseAbsoluteDate() đang dùng
+            }
+            cal.timeInMillis
+        } catch (e: Exception) { null }
+
+        val since = toMillis(d1, mo1, y1)
+        val untilStart = toMillis(d2, mo2, y2)
+
+        if (since == null || untilStart == null) {
+            return askAgain("Ngày bạn nhập không hợp lệ.", keepPending = false)
+        }
+        val until = untilStart + 24 * 60 * 60 * 1000L - 1
+
+        if (until <= since) {
+            return askAgain("Ngày kết thúc phải sau ngày bắt đầu.", keepPending = false)
+        }
+        if (until - since > 7L * 24 * 60 * 60 * 1000L) {
+            // Giữ nguyên pending (KHÔNG xoá) để người dùng thử lại đúng khoảng ngay ở lượt kế
+            // tiếp, không phải trả lời cả câu hỏi gốc lại từ đầu.
+            return askAgain("Khoảng bạn nhập dài hơn 7 ngày.", keepPending = true)
+        }
+
+        chatHistoryManager.clearPendingSearchTimeRange(username)
+
+        val historySnapshot = buildHistorySnapshot(username)
+        val maxSentences = configProvider.getInt(
+            AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_MAX_SENTENCES).toInt()
+        )
+        // Tái tạo lại baseGuard tương đương nhánh admin/Combined trong chat() (buildFullGuard),
+        // vì đây là 1 lượt resume KHÔNG đi qua nhánh mode gốc đó nữa.
+        val baseGuard = buildFullGuard(routerFailed = false, outcome = null, maxSentences = maxSentences)
+        val label = "$d1/$mo1/$y1 - $d2/$mo2/$y2"
+
+        val outcome = interceptAndExecuteToolCall(
+            originalMessage = pending.originalQuestion,
+            responseRaw = "",
+            username = username,
+            baseContext = baseGuard,
+            historySnapshot = historySnapshot,
+            allowDeviceControl = true,
+            allowCatalogSearch = false,
+            forcedToolCall = ToolCall("db_search", pending.originalToolParams),
+            forcedTimeRange = com.aichatvn.agent.utils.TimeRange(since, until, label)
+        )
+
+        return ChatResponse(wrapWithExpired(outcome.text), "search_time_range_resumed", null, outcome.imagePath)
+    }
+
     private suspend fun interceptAndExecuteToolCall(
         originalMessage: String,
         responseRaw: String,
@@ -774,9 +873,15 @@ class AgentKernel @Inject constructor(
         allowDeviceControl: Boolean,
         allowCatalogSearch: Boolean = false,
         toolDepth: Int = 0,
-        lastSearchResultText: String? = null
+        lastSearchResultText: String? = null,
+        // ✅ MỚI: 2 tham số optional (mặc định null) để "resume" 1 lần db_search đã bị hỏi lại
+        // khoảng ngày ở lượt trước (xem tryResumeSearchWithDateRange()/PendingSearchTimeRange) —
+        // bỏ qua bước gọi AI lại từ đầu + bỏ qua bước parseToolCall(responseRaw). Mặc định null
+        // nên 4 lời gọi hiện có của hàm này (dòng ~402, 443, 1162, 1244) KHÔNG cần sửa gì.
+        forcedToolCall: ToolCall? = null,
+        forcedTimeRange: com.aichatvn.agent.utils.TimeRange? = null
     ): ToolCallOutcome {
-        val toolCall = parseToolCall(responseRaw) ?: return ToolCallOutcome(responseRaw)
+        val toolCall = forcedToolCall ?: (parseToolCall(responseRaw) ?: return ToolCallOutcome(responseRaw))
 
         if (toolDepth >= 1) {
             logger.w("AgentKernel", "⚠️ [Tool Loop Guard] Model bỏ qua chỉ thị, vẫn gọi tool lần nữa (depth=$toolDepth). Tự trả lời từ dữ liệu đã tra được thay vì lặp lại.")
@@ -978,21 +1083,33 @@ class AgentKernel @Inject constructor(
             val normalizedForTime = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(originalMessage.lowercase()) ?: originalMessage.lowercase()
             val vnParsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedForTime, nowMs)
 
-            var timeRange = if (vnParsedRange != null) {
-                com.aichatvn.agent.utils.TimeRange(vnParsedRange.since, vnParsedRange.until, vnParsedRange.label)
-            } else {
-                timeRangeResolver.resolve(rawTimeframe)
+            // ✅ ĐÃ SỬA (thay thế Cost Guard cũ): trước đây Cost Guard chỉ chặn khi
+            // object=all && resolvedSourceCategory==null && khoảng > 24h, ép âm thầm về "today"
+            // — lọt lưới ngay khi có category cụ thể (vd "năm ngoái CAMERA có gì không") và trả
+            // lời SAI Ý người dùng mà không ai biết (xem phân tích chi tiết trong hội thoại thiết
+            // kế). Giờ thay bằng nguyên tắc thống nhất: timeframe chỉ được coi là "an toàn để tự
+            // search" khi (a) VietnameseTimeRangeParser nhận diện được VÀ đã tự đảm bảo <= 7 ngày
+            // (capOrAskAgain() trong chính parser đó), hoặc (b) rawTimeframe là 1 trong 4 enum an
+            // toàn cố định (today/yesterday/last_3_days/last_7_days, TimeRangeResolver chỉ hiểu
+            // đúng 4 giá trị này, tất cả đều <= 7 ngày). Mọi trường hợp khác (parser trả null vì
+            // không nhận diện được HOẶC vì khoảng vượt quá 7 ngày, VÀ rawTimeframe cũng không phải
+            // 1 trong 4 enum) -> KHÔNG tự đoán/cắt nữa, dừng lại lưu PendingSearchTimeRange và hỏi
+            // lại người dùng khoảng ngày cụ thể (dd/mm/yy - dd/mm/yy, tối đa 7 ngày).
+            val knownSafeEnum = rawTimeframe.lowercase().trim() in
+                setOf("today", "yesterday", "last_3_days", "last_7_days")
+
+            var timeRange: com.aichatvn.agent.utils.TimeRange? = forcedTimeRange ?: when {
+                vnParsedRange != null -> com.aichatvn.agent.utils.TimeRange(vnParsedRange.since, vnParsedRange.until, vnParsedRange.label)
+                knownSafeEnum -> timeRangeResolver.resolve(rawTimeframe)
+                else -> null
             }
 
-            // ✅ SỬA: Cost Guard trước đây chỉ chặn dựa trên ENUM thô (rawTimeframe in
-            // last_3_days/last_7_days) — nên bị "lọt lưới" ngay khi timeRange thực tế đến từ
-            // VietnameseTimeRangeParser ở trên (vd "tháng trước"/"7 ngày trước" có thể dài đúng
-            // bằng hoặc hơn last_7_days nhưng không mang tên enum đó). Chuyển điều kiện chặn sang
-            // đúng ĐỘ DÀI khoảng thời gian đã resolve (>24h), áp dụng nhất quán cho cả 2 nguồn.
-            if (objectLabel == "all" && resolvedSourceCategory == null && (timeRange.until - timeRange.since) > 24 * 60 * 60 * 1000L) {
-                logger.w("AgentKernel", "⚠️ [Cost Guard] Chặn combo tốn kém object=all + khoảng '${timeRange.label}' (không có source thu hẹp), ép về 'today'")
-                timeRange = timeRangeResolver.resolve("today")
+            if (timeRange == null) {
+                logger.w("AgentKernel", "⚠️ [Time Range Guard] Khoảng thời gian '$rawTimeframe' không xác định được hoặc vượt quá 7 ngày -> dừng lại hỏi người dùng khoảng ngày cụ thể thay vì tự đoán/cắt bớt.")
+                chatHistoryManager.setPendingSearchTimeRange(username, originalMessage, toolCall.params)
+                return ToolCallOutcome("Khoảng thời gian \"$rawTimeframe\" hơi rộng hoặc mình chưa nhận diện được — mỗi lần mình chỉ tìm được tối đa 7 ngày thôi. Bạn cho mình khoảng ngày cụ thể theo mẫu dd/mm/yy - dd/mm/yy nhé (ví dụ: 25/07/26 - 01/08/26), hoặc nói kiểu \"tuần 1 tháng 3\" cũng được.")
             }
+            val resolvedTimeRange: com.aichatvn.agent.utils.TimeRange = timeRange
 
             // ✅ MỚI: "keyword" (chuỗi tự do model chép từ câu hỏi user) → detailsKeywords.
             // Trước đây field này tồn tại sẵn trong SearchContract và ĐÃ được
@@ -1042,7 +1159,25 @@ class AgentKernel @Inject constructor(
                 currentTurnOrStaleHint?.takeIf { it.isNotBlank() }
             } else null
 
-            val effectiveKeyword = keywordParam ?: objectFallbackKeyword ?: unresolvedHintAsKeyword
+            // ✅ MỚI: cùng vấn đề với tuya (xem comment "state" ở SearchContract bên dưới) —
+            // log.summary của call cũng là văn bản CỐ ĐỊNH do CallSkill.finalizeCallLog() sinh ra:
+            // "Cuộc gọi đến/đi với X bị nhỡ/bị từ chối/thất bại/đã kết thúc (Ns)" — model tự diễn
+            // giải câu hỏi ("kết quả cuộc gọi", "trạng thái cuộc gọi") thành keyword gần như KHÔNG
+            // BAO GIỜ khớp literal, y hệt lỗi "trạng thái thiết bị" ở tuya. Field "call_status" cho
+            // model chọn đúng 1 trong 4 enum, ánh xạ CỐ ĐỊNH sang đúng cụm chữ CallSkill dùng —
+            // đảm bảo luôn khớp bất kể model paraphrase thế nào. Ưu tiên hơn keyword tự do (nếu model
+            // lỡ điền cả 2) vì đây là nguồn đáng tin cậy hơn.
+            val callStatusKeyword = if (resolvedSourceCategory == "call") {
+                when (toolCall.params["call_status"]?.trim()?.lowercase()) {
+                    "missed" -> "bị nhỡ"
+                    "rejected" -> "bị từ chối"
+                    "answered" -> "đã kết thúc"
+                    "failed" -> "thất bại"
+                    else -> null
+                }
+            } else null
+
+            val effectiveKeyword = callStatusKeyword ?: keywordParam ?: objectFallbackKeyword ?: unresolvedHintAsKeyword
 
             // ✅ MỚI: nhánh isCallCategory + granularity="summary" trong DatabaseSearchHelper đọc
             // THẲNG call_logs thô theo mốc thời gian (xem comment ở đó) — hoàn toàn KHÔNG đi qua
@@ -1058,9 +1193,9 @@ class AgentKernel @Inject constructor(
 
             val contract = SearchContract(
                 questionType = QuestionType.OTHER,
-                sinceMs = timeRange.since,
-                untilMs = timeRange.until,
-                timeframeLabel = timeRange.label,
+                sinceMs = resolvedTimeRange.since,
+                untilMs = resolvedTimeRange.until,
+                timeframeLabel = resolvedTimeRange.label,
                 sourceCategory = resolvedSourceCategory,
                 // 🐛 Cùng fix ở trên: nếu gợi ý chỉ đến từ leftover xuyên lượt (không phải chính lượt
                 // này) VÀ model đã chọn category khác domain với gợi ý đó (bị chặn ghi đè ở khối
@@ -1072,6 +1207,24 @@ class AgentKernel @Inject constructor(
                 // ✅ SỬA: không còn lọc cứng theo "object" nữa (xem comment objectFallbackKeyword ở
                 // trên) — khớp đúng nguyên tắc "tìm kiếm chủ yếu trên từ khoá" mà QA local đã dùng.
                 targetObject = null,
+                // ✅ MỚI (theo phát hiện thực tế: log.summary của tuya là văn bản NGẮN/CỐ ĐỊNH kiểu
+                // "Đã bật Ổ cắm thông minh", KHÔNG phải mô tả tự do như camera hay nội dung tin nhắn
+                // thật như chat — nên "keyword" dạng model tự diễn giải câu hỏi (vd "trạng thái thiết
+                // bị") gần như KHÔNG BAO GIỜ khớp literal, khiến filtered rỗng sai dù có dữ liệu thật.
+                // Route riêng: model điền field "state" (on/off) khi câu hỏi rõ ràng hỏi bật/tắt, ánh
+                // xạ sang deviceState — cùng cơ chế bật/tắt mà hàm search() cục bộ (QA mode) đã dùng
+                // (xem `val deviceState = when { normalized.contains("bat")...}` phía trên) nhưng
+                // Two-Pass trước đây CHƯA BAO GIỜ set field này (luôn null). Khi câu hỏi KHÔNG rõ
+                // bật/tắt (chỉ hỏi chung "trạng thái"/"tình trạng"), để deviceState=null — không ép
+                // filter theo state, dựa vào sourceIdOrName (đã lọc đúng tên thiết bị) + thời gian là
+                // đủ, tránh lọc sai.
+                deviceState = toolCall.params["state"]?.trim()?.lowercase()?.let {
+                    when (it) {
+                        "on", "bật", "bat" -> "true"
+                        "off", "tắt", "tat" -> "false"
+                        else -> null
+                    }
+                },
                 aggregation = if (originalMessage.contains("mấy lần") || originalMessage.contains("bao nhiêu")) AggregationType.COUNT else AggregationType.NONE,
                 granularity = resolvedGranularity,
                 detailsKeywords = effectiveKeyword?.let { listOf(it) } ?: emptyList()
@@ -1263,17 +1416,41 @@ class AgentKernel @Inject constructor(
     // ✅ SỬA: rút gọn — logic chuẩn hoá field (category/target/granularity/keyword/...) chuyển
     // sang buildToolCallFromJson() dùng chung với parseToolCallXml(), tránh 2 bản when-block
     // trùng lặp dễ lệch nhau khi có field mới sau này. Hàm này giờ chỉ còn phần trích xuất JSON
-    // thô từ text tự do (không đổi behavior: vẫn lấy '{' đầu tới '}' cuối).
+    // thô từ text tự do (đã ĐỔI cách trích xuất — xem comment bug fix ngay bên dưới).
+    // ✅ SỬA BUG (log thực tế: model trả về 2 tool call liền nhau khi câu hỏi chạm nhiều kênh,
+    // vd `[{"tool":...,"target":"facebook"}]\n[{"tool":...,"target":"telegram"}]` — dù đã thêm
+    // chỉ thị "CHỈ 1 object JSON" ở buildToolCallingGuard(), model vẫn có thể tái phạm ở tình
+    // huống khác). indexOf('{')..lastIndexOf('}') CŨ sẽ gộp luôn phần rác `]\n[` nằm GIỮA 2 object
+    // vào chuỗi JSON, khiến JSONObject() luôn throw → toàn bộ bị coi null, model không gọi được
+    // tool nào, raw text 2 dòng JSON lộ thẳng ra người dùng. Giờ quét đếm ngoặc cân bằng, chỉ lấy
+    // ĐÚNG object JSON ĐẦU TIÊN hợp lệ (bỏ qua phần còn lại phía sau, kể cả nếu là 1 object thứ 2)
+    // — nhất quán với chủ đích "chỉ 1 tool call/lượt" đã áp ở Tool Loop Guard.
     private fun parseToolCallJson(trimmed: String): ToolCall? {
         val jsonStartIndex = trimmed.indexOf('{')
-        val jsonEndIndex = trimmed.lastIndexOf('}')
-        
-        if (jsonStartIndex == -1 || jsonEndIndex == -1 || jsonStartIndex >= jsonEndIndex) {
-            return null
+        if (jsonStartIndex == -1) return null
+
+        var depth = 0
+        var jsonEndIndex = -1
+        var insideString = false
+        var escapeNext = false
+        for (i in jsonStartIndex until trimmed.length) {
+            val c = trimmed[i]
+            if (escapeNext) { escapeNext = false; continue }
+            when {
+                c == '\\' && insideString -> escapeNext = true
+                c == '"' -> insideString = !insideString
+                insideString -> { /* bỏ qua ký tự trong chuỗi, không đếm ngoặc */ }
+                c == '{' -> depth++
+                c == '}' -> {
+                    depth--
+                    if (depth == 0) { jsonEndIndex = i; break }
+                }
+            }
         }
+        if (jsonEndIndex == -1) return null
 
         val potentialJson = trimmed.substring(jsonStartIndex, jsonEndIndex + 1).trim()
-        
+
         return try {
             buildToolCallFromJson(org.json.JSONObject(potentialJson))
         } catch (e: Exception) {
@@ -1332,11 +1509,28 @@ class AgentKernel @Inject constructor(
                 val timeframe = json.optString("timeframe", "today")
                 val objectLabel = json.optString("object", "all")
                 val category = json.optString("category", "").trim()
+                // ✅ MỚI: "all" là giá trị hợp lệ model dùng để nói "không chọn kênh cụ thể, tìm
+                // mọi kênh" (schema đã prompt rõ ở buildToolCallingGuard) — coi như KHÔNG có target,
+                // nếu không thì "all" sẽ lọt xuống làm sourceIdOrName/keyword thật ở
+                // interceptAndExecuteToolCall(), khiến hệ thống đi lọc log chứa chữ "all" (sai hoàn
+                // toàn ý định model), thay vì tìm trên mọi kênh như prompt đã hứa.
                 val target = json.optString("target", "").trim()
+                    .takeIf { !it.equals("all", ignoreCase = true) } ?: ""
                 val legacySource = json.optString("source", "").trim()
                 val granularity = json.optString("granularity", "detail").trim().lowercase()
                     .takeIf { it == "summary" } ?: "detail"
                 val keyword = json.optString("keyword", "").trim()
+                // ✅ MỚI: field riêng cho câu hỏi bật/tắt thiết bị (category=tuya) — xem comment ở
+                // nơi dùng (interceptAndExecuteToolCall, ánh xạ sang SearchContract.deviceState).
+                // Chỉ nhận đúng 1 trong các giá trị hợp lệ, còn lại coi như không có (model điền rác
+                // thì bỏ qua, không lỗi).
+                val state = json.optString("state", "").trim().lowercase()
+                    .takeIf { it in setOf("on", "off", "bật", "tắt", "bat", "tat") } ?: ""
+                // ✅ MỚI: cùng vấn đề với "state" ở tuya — category=call cũng cần 1 enum cố định
+                // thay vì để model tự diễn giải trạng thái cuộc gọi thành keyword tự do (xem comment
+                // đầy đủ ở nơi dùng, interceptAndExecuteToolCall).
+                val callStatus = json.optString("call_status", "").trim().lowercase()
+                    .takeIf { it in setOf("missed", "rejected", "answered", "failed") } ?: ""
                 ToolCall(tool, buildMap {
                     put("timeframe", timeframe)
                     put("object", objectLabel)
@@ -1345,6 +1539,8 @@ class AgentKernel @Inject constructor(
                     if (legacySource.isNotBlank()) put("source", legacySource)
                     put("granularity", granularity)
                     if (keyword.isNotBlank()) put("keyword", keyword)
+                    if (state.isNotBlank()) put("state", state)
+                    if (callStatus.isNotBlank()) put("call_status", callStatus)
                 })
             }
             "catalog_search" -> {
@@ -1757,12 +1953,14 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         // giải thích thêm ngay tại dòng dẫn — đây là chỉ thị MỚI, giải quyết đúng lỗi model tự
         // chèn câu dẫn ("Đang kiểm tra...", "Thiết bị đã lắp đặt...") trước khi gọi tool.
         return DB_SEARCH_GUARD_MARKER +
-            "Phân tích ý định của người dùng và trả về JSON hoàn chỉnh theo cấu trúc sau, không kèm giải thích thêm làm sai định dạng:\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"...\",\"object\":\"...\",\"category\":\"...\",\"target\":\"...\",\"keyword\":\"...\",\"granularity\":\"...\"}\n" +
+            "Phân tích ý định của người dùng và trả về JSON hoàn chỉnh theo cấu trúc sau, không kèm giải thích thêm làm sai định dạng. CHỈ trả về DUY NHẤT 1 object JSON — không lặp lại/gọi nhiều lần trong cùng 1 lượt kể cả khi câu hỏi chạm nhiều loại dữ liệu, chọn category bao quát nhất hoặc quan trọng nhất trước, hỏi thêm loại còn lại sẽ được xử lý ở lượt sau:\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"...\",\"object\":\"...\",\"category\":\"...\",\"target\":\"...\",\"keyword\":\"...\",\"state\":\"...\",\"call_status\":\"...\",\"granularity\":\"...\"}\n" +
             "Field:\n" +
             "- category: camera|tuya|call|facebook|telegram|website|chat|qa — không rõ loại, hoặc câu hỏi chung/sản phẩm/giá/chính sách → \"qa\"\n" +
-            "- target: tên/ID đúng theo danh sách dưới (chat/facebook/telegram/website chỉ điền tên kênh, không điền nội dung tin nhắn)\n" +
-            "- keyword: bắt buộc mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi (nội dung tin nhắn vào đây)\n" +
+            "- target: tên/ID đúng theo danh sách dưới (chat/facebook/telegram/website chỉ điền tên kênh, không điền nội dung tin nhắn). Riêng category=\"chat\": ĐIỀN \"all\" nếu người dùng không nêu rõ đúng 1 kênh cụ thể — hệ thống tự tìm trên MỌI kênh (facebook+telegram+website) cùng lúc trong 1 lần gọi, KHÔNG gọi tool nhiều lần cho từng kênh riêng. Chỉ điền đúng 1 tên kênh khi người dùng nêu rõ (vd \"tin nhắn Facebook\").\n" +
+            "- keyword: dùng để LỌC NỘI DUNG THẬT có trong log (mô tả camera, tin nhắn). RIÊNG category=\"tuya\" mà câu hỏi CHỈ hỏi trạng thái chung chung (\"thế nào\", \"tình trạng\", \"đang ra sao\") không kèm chi tiết cụ thể → ĐỂ TRỐNG keyword (đừng tự diễn giải thành cụm như \"trạng thái thiết bị\" — cụm đó không có thật trong log nên sẽ lọc rỗng sai), dùng \"state\" thay thế. RIÊNG category=\"call\" hỏi về KẾT QUẢ cuộc gọi (nhỡ/từ chối/thất bại/thành công) → dùng \"call_status\" thay vì keyword (cùng lý do); keyword cho call chỉ nên dùng khi hỏi về TÊN/SỐ người gọi cụ thể chưa có trong danh bạ.\n" +
+            "- state: CHỈ dùng cho category=\"tuya\" khi câu hỏi rõ ràng hỏi bật/tắt (vd \"đang bật không\", \"tắt chưa\") → \"on\" hoặc \"off\". Không rõ bật/tắt → để trống.\n" +
+            "- call_status: CHỈ dùng cho category=\"call\" khi câu hỏi hỏi về kết quả cuộc gọi → \"missed\"(nhỡ)|\"rejected\"(từ chối)|\"answered\"(đã kết nối/thành công)|\"failed\"(thất bại kỹ thuật). Không rõ kết quả (chỉ hỏi chung chung số lượng/thời gian) → để trống.\n" +
             "- timeframe: copy nguyên cụm thời gian trong câu hỏi, hoặc today|yesterday|last_3_days|last_7_days nếu không nêu mốc\n" +
             "- object: person|car|motorbike|dog|cat|package|all\n" +
             "- granularity: summary|detail\n" +

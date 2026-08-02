@@ -33,6 +33,27 @@ data class PendingIntent(
 )
 
 /**
+ * ✅ MỚI: Trạng thái chờ người dùng cung cấp khoảng ngày cụ thể cho 1 truy vấn db_search có
+ * khoảng thời gian mơ hồ hoặc quá rộng (>7 ngày, xem VietnameseTimeRangeParser.capOrAskAgain()).
+ *
+ * CỐ Ý TÁCH RIÊNG khỏi PendingIntent — KHÔNG tái sử dụng PendingIntent/PendingIntentResolver:
+ * cơ chế đó được thiết kế chỉ cho lệnh điều khiển 1 Plugin có manifest.actions thật sự
+ * (ParameterResolver.getUnresolvedParams() tra theo PluginParameter/semanticType). db_search
+ * không phải Plugin — nếu nhét vào PendingIntent (vd đặt pluginId="__db_search__"),
+ * PendingIntentResolver.tryResolvePendingIntent() sẽ tự hủy pending ngay ở bước đầu tiên
+ * (devicePlugins.find { it.manifest.id == pending.pluginId } luôn ra null -> clearPendingIntent()
+ * rồi return null, xem PendingIntentResolver.kt dòng 52-55) — không bao giờ tới được bước hỏi
+ * lại/điền tham số. Dùng 1 hàng đợi tối giản riêng, chỉ lưu lại params AI đã điền ở lượt hỏi gốc
+ * (trừ timeframe) để lượt sau ghép thêm khoảng ngày người dùng cung cấp rồi search lại.
+ */
+data class PendingSearchTimeRange(
+    val username: String,
+    val originalToolParams: Map<String, String>, // toàn bộ params AI đã điền ở lượt gốc, TRỪ "timeframe"
+    val originalQuestion: String,
+    val askedAt: Long = System.currentTimeMillis()
+)
+
+/**
  * ✅ MỚI: Trọng tâm tra cứu dữ liệu thực (SearchContract) gần nhất của 1 user —
  * KHÔNG phân biệt domain (camera/tuya/đa kênh chat). Trước đây việc quyết định có
  * đính kèm chỉ thị "gọi tool db_search" hay không chỉ dựa vào từ khoá cứng khớp
@@ -63,6 +84,9 @@ class ChatHistoryManager @Inject constructor() {
     companion object {
         private const val PENDING_INTENT_TTL_MS = 3 * 60 * 1000L // 3 phút
         private const val MAX_HISTORY_TURNS = 2
+        // ✅ MỚI: TTL riêng cho PendingSearchTimeRange — cùng 3 phút với PENDING_INTENT_TTL_MS
+        // để nhất quán trải nghiệm chờ, nhưng tách hằng số riêng vì 2 cơ chế độc lập nhau.
+        private const val TIME_RANGE_PENDING_TTL_MS = 3 * 60 * 1000L
     }
 
     private val historyByUser = mutableMapOf<String, MutableList<Pair<String, String>>>() // User to AI, theo username
@@ -71,6 +95,9 @@ class ChatHistoryManager @Inject constructor() {
     // ✅ MỚI: trọng tâm search gần nhất + bộ đếm lượt hỏi, theo từng user — xem SearchFocus ở trên
     private val searchFocusByUser = mutableMapOf<String, SearchFocus>()
     private val turnCounterByUser = mutableMapOf<String, Int>()
+
+    // ✅ MỚI: hàng đợi chờ người dùng nhập khoảng ngày cụ thể cho db_search — xem PendingSearchTimeRange
+    private val pendingTimeRangeByUser = mutableMapOf<String, PendingSearchTimeRange>()
 
     // Bộ đệm danh sách đa lệnh dở dang song song, của TẤT CẢ user — lọc theo pending.username khi truy vấn
     private val pendingIntents = mutableListOf<PendingIntent>()
@@ -152,6 +179,32 @@ class ChatHistoryManager @Inject constructor() {
 
     @Synchronized
     fun getLastSearchFocus(username: String): SearchFocus? = searchFocusByUser[username]
+
+    // ✅ MỚI: 3 hàm quản lý PendingSearchTimeRange — xem giải thích lý do tách riêng khỏi
+    // PendingIntent ở comment của data class PendingSearchTimeRange phía trên.
+    @Synchronized
+    fun setPendingSearchTimeRange(username: String, originalQuestion: String, params: Map<String, String>) {
+        pendingTimeRangeByUser[username] = PendingSearchTimeRange(
+            username = username,
+            originalToolParams = params.filterKeys { it != "timeframe" },
+            originalQuestion = originalQuestion
+        )
+    }
+
+    @Synchronized
+    fun getPendingSearchTimeRange(username: String): PendingSearchTimeRange? {
+        val p = pendingTimeRangeByUser[username] ?: return null
+        if (System.currentTimeMillis() - p.askedAt > TIME_RANGE_PENDING_TTL_MS) {
+            pendingTimeRangeByUser.remove(username)
+            return null
+        }
+        return p
+    }
+
+    @Synchronized
+    fun clearPendingSearchTimeRange(username: String) {
+        pendingTimeRangeByUser.remove(username)
+    }
 
     @Synchronized
     fun getRecentTurnsAsText(username: String): String {
@@ -276,6 +329,7 @@ class ChatHistoryManager @Inject constructor() {
         pendingLockRequestByUser.remove(username)
         searchFocusByUser.remove(username)   // MỚI
         turnCounterByUser.remove(username)   // MỚI
+        pendingTimeRangeByUser.remove(username)   // MỚI
     }
 
     // Xóa TOÀN BỘ trạng thái của TẤT CẢ user — chỉ dùng cho reset toàn hệ thống (vd factory reset app)
@@ -289,5 +343,6 @@ class ChatHistoryManager @Inject constructor() {
         expiredIntents.clear()
         searchFocusByUser.clear()   // MỚI
         turnCounterByUser.clear()   // MỚI
+        pendingTimeRangeByUser.clear()   // MỚI
     }
 }
