@@ -1962,7 +1962,7 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
             "keyword: từ khoá lọc nội dung log/tin nhắn. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status.\n" +
             "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
             "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
-            "timeframe: copy nguyên cụm thời gian trong câu hỏi, hoặc today|yesterday|last_3_days|last_7_days.\n" +
+            "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → today|yesterday|last_3_days|last_7_days.\n" +
             "object: person|car|motorbike|dog|cat|package|all.\n" +
             "granularity: summary|detail.\n" +
             "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +

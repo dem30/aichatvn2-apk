@@ -95,7 +95,10 @@ object VietnameseTimeRangeParser {
         // 0.5. MỚI: "Tuần N tháng M" — chấp nhận cả số và chữ ("tuần 1 tháng 3" / "tuần một
         // tháng ba"), tối đa 2 từ mỗi phần số (vd "mười một") để bắt được tháng 11/12 bằng chữ.
         // Đặt TRƯỚC các rule "tuần trước"/"tháng trước" chung chung để không bị nuốt mất.
-        Regex("tuan\\s+(\\d+|[a-z]+(?:\\s+[a-z]+)?)\\s+thang\\s+(\\d+|[a-z]+(?:\\s+[a-z]+)?)(?:\\s+nam\\s+(\\d{4}))?")
+        // ✅ MỚI: chấp nhận thêm biến thể "tuần THỨ N ... CỦA/TRONG tháng M" (vd "tuần thứ 2 của
+        // tháng 5") — trước đây chỉ khớp đúng "tuần N tháng M", các cách nói tự nhiên khác của
+        // cùng ý nghĩa bị rơi hết xuống nhánh chung/hỏi lại dù thực ra hoàn toàn xác định được.
+        Regex("tuan\\s+(?:thu\\s+)?(\\d+|[a-z]+(?:\\s+[a-z]+)?)\\s+(?:cua\\s+|trong\\s+)?thang\\s+(\\d+|[a-z]+(?:\\s+[a-z]+)?)(?:\\s+nam\\s+(\\d{4}))?")
             .find(normalizedMsg)?.let { m ->
                 val week = parseVnNumber(m.groupValues[1])
                 val month = parseVnNumber(m.groupValues[2])
@@ -129,6 +132,29 @@ object VietnameseTimeRangeParser {
         }
         if (containsAny(normalizedMsg, "hom nay")) {
             return TimeRange(startToday, now, "hôm nay")
+        }
+
+        // 2.5. MỚI: "đầu tháng này/trước", "cuối tháng này/trước" — PHẢI đặt trước rule "tháng
+        // trước"/"tháng này" chung chung ngay bên dưới, vì vd "dau thang nay" (sau normalize) đã
+        // chứa sẵn substring "thang nay" -> nếu để rule chung chạy trước sẽ nuốt mất, trả về
+        // NGUYÊN THÁNG thay vì đúng ý "chỉ 7 ngày đầu/cuối tháng" mà người dùng hỏi.
+        if (containsAny(normalizedMsg, "dau thang nay")) {
+            val start = startOfMonth(now)
+            val weekEnd = start + 6 * DAY_MS + DAY_MS - 1
+            return TimeRange(start, minOf(now, weekEnd), "đầu tháng này")
+        }
+        if (containsAny(normalizedMsg, "dau thang truoc", "dau thang qua")) {
+            val prevMonthCal = Calendar.getInstance().apply { timeInMillis = now; add(Calendar.MONTH, -1) }
+            val start = startOfMonth(prevMonthCal.timeInMillis)
+            return TimeRange(start, start + 6 * DAY_MS + DAY_MS - 1, "đầu tháng trước")
+        }
+        if (containsAny(normalizedMsg, "cuoi thang nay")) {
+            val start = startOfMonth(now)
+            return TimeRange(maxOf(start, now - 6 * DAY_MS), now, "cuối tháng này")
+        }
+        if (containsAny(normalizedMsg, "cuoi thang truoc", "cuoi thang qua")) {
+            val until = startOfMonth(now) // = 00:00 ngày 1 tháng này = mốc kết thúc tháng trước
+            return TimeRange(until - 7 * DAY_MS, until, "cuối tháng trước")
         }
 
         // 3. Tuần / Tháng tương đối
@@ -165,8 +191,10 @@ object VietnameseTimeRangeParser {
             }
         }
 
-        // 5. Parse động "X ngày" - ✅ Yêu cầu bắt buộc có từ chỉ định quá khứ/khoảng thời gian
-        Regex("(\\d+)\\s*ngay\\s*(?:truoc|qua|gan day|do lai)").find(normalizedMsg)?.let { m ->
+        // 5. Parse động "X ngày/hôm" - ✅ Yêu cầu bắt buộc có từ chỉ định quá khứ/khoảng thời gian
+        // ✅ MỚI: thêm "hom" làm từ đồng nghĩa với "ngay" (vd "3 hôm trước" cũng phổ biến không
+        // kém "3 ngày trước" trong tiếng Việt, trước đây chỉ "ngay" mới khớp được rule này).
+        Regex("(\\d+)\\s*(?:ngay|hom)\\s*(?:truoc|qua|gan day|do lai)").find(normalizedMsg)?.let { m ->
             val d = m.groupValues[1].toIntOrNull()
             if (d != null && d in 1..MAX_DAYS_BACK) {
                 return TimeRange(now - d * DAY_MS, now, "$d ngày gần nhất")
