@@ -1260,8 +1260,31 @@ class AgentKernel @Inject constructor(
         return resultText
     }
 
+    // ✅ MỚI: model (đặc biệt các model reasoning như qwen3.x) đôi khi bỏ qua schema JSON đã
+    // prompt và tự sinh cú pháp tool-call XML kiểu chat-template gốc của nó:
+    // <tool_calls><invoke name="db_search"><parameter name="x">y</parameter></invoke></tool_calls>
+    // — xem log thực tế call #1 (07:36:39 02/08). parseToolCall() cũ chỉ tìm '{'..'}' nên bỏ lỡ
+    // hoàn toàn dạng này (không có dấu ngoặc nhọn mở nào trong response) → toàn bộ raw text (kể cả khối
+    // <tool_calls> thô) bị coi là câu trả lời thường và lộ thẳng ra người dùng.
+    // Vì model sinh ra request sẽ đổi qua lại (27b/120b/model khác) — không cố định 1 chuẩn tool-
+    // calling nào — nên KHÔNG chuyển sang dùng `tools`/`tool_choice` param thật của Groq (mỗi
+    // model vẫn có thể lệch native template khác nhau, không tránh được việc phải theo dõi/vá
+    // riêng từng model). Thay vào đó chuẩn hoá tại 1 điểm duy nhất ở tầng ứng dụng: thử JSON
+    // trước (đúng schema đã prompt), fail thì thử XML (phòng khi model phản xạ theo template gốc
+    // của nó). Cả 2 nhánh đều chỉ trả ToolCall hoặc null — không có nhánh nào trả lại phần text
+    // dẫn trước/sau khối tool call, nên hành vi hiện tại (phát hiện được tool call → discard toàn
+    // bộ responseRaw, không hiển thị câu "tôi sẽ kiểm tra..." của model vì nó chưa có data thật
+    // lúc phát ngôn) được giữ nguyên cho cả 2 format.
     private fun parseToolCall(response: String): ToolCall? {
         val trimmed = response.trim()
+        return parseToolCallJson(trimmed) ?: parseToolCallXml(trimmed)
+    }
+
+    // ✅ SỬA: rút gọn — logic chuẩn hoá field (category/target/granularity/keyword/...) chuyển
+    // sang buildToolCallFromJson() dùng chung với parseToolCallXml(), tránh 2 bản when-block
+    // trùng lặp dễ lệch nhau khi có field mới sau này. Hàm này giờ chỉ còn phần trích xuất JSON
+    // thô từ text tự do (không đổi behavior: vẫn lấy '{' đầu tới '}' cuối).
+    private fun parseToolCallJson(trimmed: String): ToolCall? {
         val jsonStartIndex = trimmed.indexOf('{')
         val jsonEndIndex = trimmed.lastIndexOf('}')
         
@@ -1272,56 +1295,85 @@ class AgentKernel @Inject constructor(
         val potentialJson = trimmed.substring(jsonStartIndex, jsonEndIndex + 1).trim()
         
         return try {
-            val json = org.json.JSONObject(potentialJson)
-            val tool = json.optString("tool", "")
-            
-            when (tool) {
-                "db_search" -> {
-                    val timeframe = json.optString("timeframe", "today")
-                    val objectLabel = json.optString("object", "all")
-                    // ✅ MỚI: schema JSON đổi từ 1 field "source" tự do (gộp chung tên thiết bị /
-                    // literal "cuộc gọi" / tên kênh chat, khiến model phải tự đoán ngữ nghĩa và hay
-                    // trả sai — xem log thực tế: câu hỏi về thiết bị Tuya nhưng model trả
-                    // source="all" hoặc source="telegram") sang 2 field tách biệt:
-                    // "category" (enum cố định camera/tuya/call/facebook/telegram/website) và
-                    // "target" (tên cụ thể, chỉ cần khi category=camera/tuya). Model chỉ cần chọn
-                    // đúng 1 trong 6 giá trị enum thay vì tự do diễn giải cả cụm string.
-                    // Vẫn đọc "source" (schema cũ) làm fallback để không vỡ nếu model/cache prompt
-                    // cũ còn trả theo format cũ trong lúc chuyển đổi.
-                    val category = json.optString("category", "").trim()
-                    val target = json.optString("target", "").trim()
-                    val legacySource = json.optString("source", "").trim()
-                    // ✅ MỚI: "summary | detail" — model tự yêu cầu mức độ chi tiết cần thiết cho
-                    // câu hỏi (xem buildToolCallingGuard()). Validate với 2 giá trị hợp lệ; giá trị
-                    // rác/thiếu -> mặc định "detail" giống hành vi cũ, không vỡ gì với model/cache
-                    // prompt cũ chưa biết field này.
-                    val granularity = json.optString("granularity", "detail").trim().lowercase()
-                        .takeIf { it == "summary" } ?: "detail"
-                    // ✅ MỚI: "keyword" — chuỗi tự do để lọc theo NỘI DUNG log (log.summary),
-                    // đưa thẳng vào SearchContract.detailsKeywords ở interceptAndExecuteToolCall().
-                    // Không tách từ, không chuẩn hoá gì thêm ở đây — DatabaseSearchHelper đã dùng
-                    // contains(ignoreCase=true) nên khớp cả cụm dài nguyên văn.
-                    val keyword = json.optString("keyword", "").trim()
-                    ToolCall(tool, buildMap {
-                        put("timeframe", timeframe)
-                        put("object", objectLabel)
-                        if (category.isNotBlank()) put("category", category)
-                        if (target.isNotBlank()) put("target", target)
-                        if (legacySource.isNotBlank()) put("source", legacySource)
-                        put("granularity", granularity)
-                        if (keyword.isNotBlank()) put("keyword", keyword)
-                    })
-                }
-                "catalog_search" -> {
-                    val query = json.optString("query", "").trim()
-                    ToolCall(tool, buildMap {
-                        put("query", query)
-                    })
-                }
-                else -> null
-            }
+            buildToolCallFromJson(org.json.JSONObject(potentialJson))
         } catch (e: Exception) {
             null
+        }
+    }
+
+    // ✅ MỚI: nhánh XML — nhận diện cú pháp tool-call kiểu chat-template gốc mà một số model
+    // (vd qwen3.x) tự phản xạ sinh ra thay vì theo đúng schema JSON đã prompt:
+    // <tool_calls>
+    //   <invoke name="db_search">
+    //     <parameter name="timeframe">today</parameter>
+    //     ...
+    //   </invoke>
+    // </tool_calls>
+    // Dùng Regex thay vì XML parser đầy đủ vì input không đảm bảo well-formed 100% (model có thể
+    // quên đóng thẻ, thêm text lạ...) — regex khoan dung hơn với rác nhỏ xung quanh. Chỉ lấy
+    // <invoke> ĐẦU TIÊN nếu model trả nhiều lệnh cùng lúc (nhất quán với hành vi JSON hiện tại:
+    // 1 response chỉ xử lý 1 tool call, xem Tool Loop Guard ở interceptAndExecuteToolCall).
+    // Sau khi gom được tool + params dạng String, TÁI DÙNG lại đúng logic chuẩn hoá field
+    // (category/target/legacySource/granularity/keyword mặc định...) bằng cách dựng 1 JSONObject
+    // tương đương rồi gọi thẳng buildToolCallFromJson() — tránh lặp code 2 nơi, đảm bảo XML và
+    // JSON luôn cho ra cùng 1 kết quả với cùng bộ field.
+    private fun parseToolCallXml(text: String): ToolCall? {
+        val invokeRegex = Regex(
+            "<invoke\\s+name=\"([^\"]+)\"\\s*>([\\s\\S]*?)</invoke>",
+            RegexOption.IGNORE_CASE
+        )
+        val invokeMatch = invokeRegex.find(text) ?: return null
+        val toolName = invokeMatch.groupValues[1].trim()
+
+        val paramRegex = Regex(
+            "<parameter\\s+name=\"([^\"]+)\"\\s*>([\\s\\S]*?)</parameter>",
+            RegexOption.IGNORE_CASE
+        )
+        val params = paramRegex.findAll(invokeMatch.groupValues[2])
+            .associate { it.groupValues[1].trim() to it.groupValues[2].trim() }
+
+        if (toolName.isBlank()) return null
+
+        val json = org.json.JSONObject().apply {
+            put("tool", toolName)
+            params.forEach { (k, v) -> put(k, v) }
+        }
+        return buildToolCallFromJson(json)
+    }
+
+    // ✅ MỚI: logic chuẩn hoá field (trước đây nằm trực tiếp trong parseToolCall/parseToolCallJson)
+    // được tách riêng để parseToolCallXml() tái dùng — đảm bảo model dù trả JSON hay XML đều đi
+    // qua ĐÚNG 1 bộ quy tắc validate/default duy nhất (vd granularity mặc định "detail", category
+    // rỗng thì không put field...), không lệch hành vi giữa 2 format.
+    private fun buildToolCallFromJson(json: org.json.JSONObject): ToolCall? {
+        val tool = json.optString("tool", "")
+        return when (tool) {
+            "db_search" -> {
+                val timeframe = json.optString("timeframe", "today")
+                val objectLabel = json.optString("object", "all")
+                val category = json.optString("category", "").trim()
+                val target = json.optString("target", "").trim()
+                val legacySource = json.optString("source", "").trim()
+                val granularity = json.optString("granularity", "detail").trim().lowercase()
+                    .takeIf { it == "summary" } ?: "detail"
+                val keyword = json.optString("keyword", "").trim()
+                ToolCall(tool, buildMap {
+                    put("timeframe", timeframe)
+                    put("object", objectLabel)
+                    if (category.isNotBlank()) put("category", category)
+                    if (target.isNotBlank()) put("target", target)
+                    if (legacySource.isNotBlank()) put("source", legacySource)
+                    put("granularity", granularity)
+                    if (keyword.isNotBlank()) put("keyword", keyword)
+                })
+            }
+            "catalog_search" -> {
+                val query = json.optString("query", "").trim()
+                ToolCall(tool, buildMap {
+                    put("query", query)
+                })
+            }
+            else -> null
         }
     }
 
