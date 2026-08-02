@@ -75,8 +75,18 @@ class ChatSkill @Inject constructor(
     private val _messages = MutableStateFlow<List<ChatMessageEntity>>(emptyList())
     val messages: StateFlow<List<ChatMessageEntity>> = _messages.asStateFlow()
 
-    private val _chatMode = MutableStateFlow(ChatMode.COMBINED)
-    val chatMode: StateFlow<ChatMode> = _chatMode.asStateFlow()
+    // ✅ SỬA (theo yêu cầu): trước đây _chatMode là 1 StateFlow DUY NHẤT cho toàn app —
+    // admin đổi mode để test thread của 1 khách Facebook sẽ vô tình đổi mode của MỌI khách
+    // khác đang chat live cùng lúc (ChatSkill là @Singleton, dùng chung 1 state cho mọi
+    // username). Tách thành 2 state độc lập: admin (default_user) và khách ngoại kênh
+    // (facebook_/telegram_/instagram_/website_ — dùng CHUNG 1 mode cho tất cả khách, không
+    // phải per-khách-hàng, vì user không yêu cầu tách sâu tới mức đó). allowDeviceControl
+    // (blockExternalDeviceControl) giữ nguyên hoàn toàn logic cũ, không đổi gì.
+    private val _adminChatMode = MutableStateFlow(ChatMode.COMBINED)
+    val adminChatMode: StateFlow<ChatMode> = _adminChatMode.asStateFlow()
+
+    private val _externalChatMode = MutableStateFlow(ChatMode.COMBINED)
+    val externalChatMode: StateFlow<ChatMode> = _externalChatMode.asStateFlow()
 
     private val database by lazy { AppDatabase.getDatabase(context) }
     private var currentUsername: String = "default_user"
@@ -264,8 +274,12 @@ class ChatSkill @Inject constructor(
         }
     }
 
-    fun setChatMode(mode: ChatMode) {
-        _chatMode.value = mode
+    fun setAdminChatMode(mode: ChatMode) {
+        _adminChatMode.value = mode
+    }
+
+    fun setExternalChatMode(mode: ChatMode) {
+        _externalChatMode.value = mode
     }
 
     suspend fun openThread(username: String) {
@@ -447,6 +461,10 @@ class ChatSkill @Inject constructor(
                 // tra đúng lúc cần — không cần bước lọc-trước-rồi-gửi-kèm này nữa.
                 val finalExtraContext = extraContext
 
+                // ✅ SỬA: chọn đúng mode theo role thay vì dùng chung 1 state toàn app — xem
+                // comment ở khai báo _adminChatMode/_externalChatMode phía trên.
+                val effectiveChatMode = if (isExternal) _externalChatMode.value else _adminChatMode.value
+
                 val response = agentKernel.chat(
                     com.aichatvn.agent.core.ChatRequest(
                         message = safeMessage,
@@ -454,7 +472,7 @@ class ChatSkill @Inject constructor(
                         imageBase64 = imageBase64,
                         fileUrl = resolvedFileUrl, 
                         extraContext = finalExtraContext,
-                        chatMode = _chatMode.value.name,
+                        chatMode = effectiveChatMode.name,
                         allowDeviceControl = !blockExternalDeviceControl
                     )
                 )

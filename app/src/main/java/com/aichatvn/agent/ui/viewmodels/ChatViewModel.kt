@@ -55,8 +55,14 @@ class ChatViewModel @Inject constructor(
 
     val username: String = savedStateHandle.get<String>("username") ?: "default_user"
 
+    // ✅ MỚI: ChatScreen dùng chung cho cả chat admin (default_user) lẫn từng thread khách
+    // ngoại kênh (facebook_/telegram_/instagram_/website_) — cần biết đang ở role nào để
+    // đọc/ghi đúng state mode (xem ChatSkill.adminChatMode/externalChatMode).
+    private val isExternal = username.startsWith("facebook_") || username.startsWith("telegram_") ||
+        username.startsWith("instagram_") || username.startsWith("website_")
+
     val messages: StateFlow<List<ChatMessageEntity>> = chatSkill.messages
-    val chatMode: StateFlow<ChatMode> = chatSkill.chatMode
+    val chatMode: StateFlow<ChatMode> = if (isExternal) chatSkill.externalChatMode else chatSkill.adminChatMode
     val groqRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.rateLimitInfo
     val groqRouterRateLimit: StateFlow<GroqRateLimitInfo?> = groqClient.routerRateLimitInfo
 
@@ -202,7 +208,11 @@ class ChatViewModel @Inject constructor(
     
 
     fun setChatMode(mode: ChatMode) {
-        chatSkill.setChatMode(mode)
+        if (isExternal) {
+            chatSkill.setExternalChatMode(mode)
+        } else {
+            chatSkill.setAdminChatMode(mode)
+        }
     }
 
     fun openVoiceSearch() {

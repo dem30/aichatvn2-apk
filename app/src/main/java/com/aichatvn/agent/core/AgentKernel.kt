@@ -182,10 +182,14 @@ class AgentKernel @Inject constructor(
             return ChatResponse("", "empty_message_guard", null)
         }
 
-        // ✅ MỚI: tăng bộ đếm lượt hỏi của user — dùng để so sánh với SearchFocus.turnIndex,
-        // quyết định câu hỏi hiện tại có đang "đào sâu" vào 1 lần search DB gần đây không,
-        // KHÔNG phân biệt domain (camera/tuya/đa kênh chat).
-        val currentTurn = chatHistoryManager.bumpTurn(username)
+        // ✅ MỚI: tăng bộ đếm lượt hỏi của user — dùng để so sánh với SearchFocus.turnIndex ở
+        // resolveActiveDomains()/getLastSearchFocus(), quyết định câu hỏi hiện tại có đang "đào
+        // sâu" vào 1 lần search DB gần đây không, KHÔNG phân biệt domain (camera/tuya/đa kênh chat).
+        // ✅ SỬA: không còn giữ kết quả trả về vào biến `currentTurn` nữa — chỗ duy nhất từng đọc
+        // nó (shouldAttachToolGuard()) đã bị xoá. Giữ nguyên LỜI GỌI bumpTurn() vì bản thân nó có
+        // side-effect (tăng bộ đếm lượt trong chatHistoryManager) mà resolveActiveDomains() ở
+        // Combined mode vẫn phụ thuộc gián tiếp qua SearchFocus.turnIndex.
+        chatHistoryManager.bumpTurn(username)
 
         val expiredNotification = chatHistoryManager.popExpiredNotificationMessage(username, plugins)
 
@@ -331,33 +335,22 @@ class AgentKernel @Inject constructor(
                 "groq" -> {
                     val historySnapshot = buildHistorySnapshot(username)
 
-                    // ✅ SỬA: Groq mode = AI kiến thức chung THUẦN TÚY cho khách ngoại bị chặn —
-                    // không còn gán CATALOG_SEARCH_TOOL_INSTRUCTION nữa (trước đây bị lẫn với
-                    // Combined mode, khiến khách ngoại "chỉ chat AI" vẫn lén tra được catalog).
-                    val toolGuard = if (request.allowDeviceControl) {
-                        if (shouldAttachToolGuard(message, username, currentTurn)) {
-                            // ✅ MỚI: lọc catalog gửi kèm theo đúng domain câu hỏi đang hỏi (camera/
-                            // tuya/call/chat) — tiết kiệm token khi nhà có nhiều camera/thiết bị.
-                            // Set rỗng (không xác định được domain) → buildToolCallingGuard() tự
-                            // rơi về hành vi gốc, gửi đủ catalog như trước, không đoán bừa.
-                            buildToolCallingGuard(resolveActiveDomains(message, username))
-                        } else ""
-                    } else {
-                        ""
-                    }
-
-                    // ✅ SỬA: Groq mode KHÔNG còn đường nào chạm catalog QA nữa, dù admin hay
-                    // khách ngoại (trước đây admin bị lén tiêm qaContext ở đây, đá chéo sang
-                    // search nội bộ vốn chỉ dành cho khách ngoại). Admin → chỉ db_search qua
-                    // toolGuard; khách ngoại bị chặn → AI kiến thức chung THUẦN TÚY, không có
-                    // catalog dưới bất kỳ hình thức nào (thụ động lẫn qua tool).
+                    // ✅ SỬA (chốt định nghĩa 3 mode rõ ràng): Groq mode = AI kiến thức chung THUẦN
+                    // TÚY — KHÔNG có lệnh search dưới bất kỳ hình thức nào, bất kể admin hay khách
+                    // ngoại, bất kể câu hỏi có khớp domain hay không. Trước đây vẫn còn nhánh
+                    // toolGuard/shouldAttachToolGuard/buildToolCallingGuard() cho admin (allowDeviceControl
+                    // = true) — mâu thuẫn với chính comment cũ ở đây ("AI kiến thức chung THUẦN
+                    // TÚY") vì thực chất Groq mode vẫn có thể gọi db_search. Xoá hẳn nhánh đó: Groq
+                    // mode giờ chỉ còn baseGuard + extraContext, không tool nào để gọi, không cần
+                    // interceptAndExecuteToolCall() bắt tool call nữa (không có gì để bắt) — response
+                    // của Groq đi thẳng ra người dùng. Muốn có search → dùng Combined mode (nhánh
+                    // else bên dưới), đó là nơi duy nhất "kết hợp QA cục bộ + Groq + search".
                     val cleanContext = buildString {
                         append(baseGuard)
                         if (extraContext.isNotEmpty()) append("\n\n$extraContext")
-                        if (toolGuard.isNotEmpty()) append("\n\n$toolGuard")
                     }
 
-                    val responsePass1 = withTimeout(15_000L) {
+                    withTimeout(15_000L) {
                         groqClient.chat(
                             message = message,
                             extraContext = cleanContext,
@@ -365,19 +358,6 @@ class AgentKernel @Inject constructor(
                             imageUrl = null
                         )
                     }
-
-                    val outcome = interceptAndExecuteToolCall(
-                        originalMessage = message,
-                        responseRaw = responsePass1,
-                        username = username,
-                        baseContext = cleanContext,
-                        historySnapshot = historySnapshot,
-                        allowDeviceControl = request.allowDeviceControl,
-                        // Groq mode không có đường catalog_search nào (xem comment ở trên) — luôn false.
-                        allowCatalogSearch = false
-                    )
-                    searchImagePath = outcome.imagePath
-                    outcome.text
                 }
 
                 else -> {
@@ -1464,9 +1444,26 @@ class AgentKernel @Inject constructor(
         private const val DB_SEARCH_GUARD_MARKER = "<!--DB_SEARCH_GUARD-->"
         private const val CATALOG_SEARCH_GUARD_MARKER = "<!--CATALOG_SEARCH_GUARD-->"
 
-        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = CATALOG_SEARCH_GUARD_MARKER + """🚨 TÌM KIẾM THÔNG TIN (catalog_search):
-- Thiếu info trong <SYSTEM_MEMORY> để trả lời → trả DUY NHẤT 1 JSON thô (không markdown, không giải thích): {"tool": "catalog_search", "query": "từ khóa tìm kiếm"}
-- Đã đủ info từ <SYSTEM_MEMORY> → trả lời tự nhiên bằng Tiếng Việt, KHÔNG gọi lại tool."""
+        // ✅ SỬA (theo yêu cầu — thống nhất tinh thần với buildToolCallingGuard() đã rút gọn cho
+        // Admin, nhưng KHÔNG bê nguyên schema: catalog_search chỉ có 1 field "query", không cần
+        // category/timeframe/object/target/granularity như db_search vì catalog QA không phân
+        // loại theo nguồn/thời gian/vật thể). 2 thay đổi chính:
+        // 1. Câu mở đầu dứt khoát "không kèm giải thích thêm làm sai định dạng" — cùng câu đã
+        //    dùng cho db_search, giải quyết chung 1 vấn đề định dạng (model tự chèn lời dẫn trước
+        //    JSON), không phụ thuộc tool nào.
+        // 2. Bỏ hẳn cụm "<SYSTEM_MEMORY>" — đây là DEAD REFERENCE: ChatSkill.processQuery() đã
+        //    chủ động bỏ bước nhồi SYSTEM_MEMORY trước lượt gọi Pass 1 từ lâu (xem comment tại đó:
+        //    "bỏ hẳn nhồi SYSTEM_MEMORY chủ động... model vẫn cứ tự phát db_search bất kể đã có
+        //    SYSTEM_MEMORY nhồi sẵn hay chưa"), nên thẻ này KHÔNG BAO GIỜ xuất hiện trong context ở
+        //    Pass 1 — model phải tự suy luận về sự tồn tại của 1 thứ nó chưa từng thấy, đúng kiểu
+        //    lỗi "prompt mơ hồ khiến model suy diễn" đã sửa ở db_search. Thay bằng điều kiện dựa
+        //    trên history thật: "đã có kết quả tra cứu ở lượt trước trong cùng hội thoại" — khớp
+        //    đúng cách Pass 2 hoạt động thật (kết quả catalog_search được nhồi vào rồi model trả
+        //    lời tiếp, không có thẻ SYSTEM_MEMORY nào cả — xem stripCatalogSearchInvite()).
+        private const val CATALOG_SEARCH_TOOL_INSTRUCTION = CATALOG_SEARCH_GUARD_MARKER + """Phân tích ý định của người dùng và trả về JSON hoàn chỉnh theo cấu trúc sau, không kèm giải thích thêm làm sai định dạng:
+{"tool":"catalog_search","query":"từ khoá/ý định chính của câu hỏi"}
+
+Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn hội thoại này → trả lời tự nhiên từ kết quả đó, không gọi lại tool."""
     }
 
     private fun stripDbSearchInvite(guardText: String): String {
@@ -1752,43 +1749,38 @@ class AgentKernel @Inject constructor(
         // này LUÔN xuất hiện (kể cả khi hỏi thuần về camera), tốn token không cần thiết.
         val showChatLine = includeAll || "chat" in activeDomains
 
-        // ✅ SỬA (theo log thực tế — model trả lời "không có dữ liệu sản phẩm" mà CHƯA từng gọi
-        // tool 1 lần nào): câu mở đầu cũ "khi cần data thật (camera/thiết bị/chat/call) hoặc câu
-        // hỏi qa chưa có info" liệt kê camera/thiết bị/chat/call TRƯỚC, qa chỉ nhắc lướt cuối câu
-        // — model đọc xong phần đầu đã hiểu tool này "chủ yếu để tra log", không liên tưởng câu
-        // hỏi kiểu "quần jeans"/"giá bao nhiêu" cũng phải gọi tool. Sửa: đưa mệnh lệnh "LUÔN gọi
-        // trước khi từ chối" lên đầu tuyệt đối, và đưa category=qa lên bullet ĐẦU TIÊN (thay vì
-        // nằm giữa danh sách) vì đây chính là category hay bị bỏ sót nhất trong thực tế.
+        // ✅ SỬA (prompt quá dài khiến model 27B đọc lướt, bỏ format bắt buộc — xem log thực tế
+        // 07:38 02/08: câu hỏi "camera có sự kiện gì không" model trả "Đang kiểm tra... ⏳", không
+        // gọi tool, không JSON/XML gì cả): rút gọn từ ~210 từ, 15 chỉ thị dồn 1 khối xuống còn 1
+        // dòng dẫn + schema JSON tách riêng (không nhét mô tả field vào value JSON) + list field
+        // rời. Gộp 2 chỗ từng nói trùng ý "luôn gọi trước khi nói không có" thành 1. Thêm câu cấm
+        // giải thích thêm ngay tại dòng dẫn — đây là chỉ thị MỚI, giải quyết đúng lỗi model tự
+        // chèn câu dẫn ("Đang kiểm tra...", "Thiết bị đã lắp đặt...") trước khi gọi tool.
         return DB_SEARCH_GUARD_MARKER +
-            "🚨 LUÔN gọi db_search trước khi trả lời \"không có\"/\"không hỗ trợ\" — kể cả câu hỏi chung/sản phẩm/giá/chính sách (category=qa), không chỉ riêng camera/thiết bị/chat/call:\n" +
-            "{\"tool\":\"db_search\",\"timeframe\":\"copy cụm thời gian trong câu hỏi (vd 'hôm qua','hôm kia','3 tiếng trước','5 ngày trước','tuần trước','tháng trước','ngày 15/5'...), hoặc today|yesterday|last_3_days|last_7_days nếu câu hỏi ko nêu mốc thời gian\",\"object\":\"person|car|motorbike|dog|cat|package|all\",\"category\":\"camera|tuya|call|facebook|telegram|website|chat|qa\",\"target\":\"tên đúng theo danh sách dưới, hoặc từ khóa nếu qa\",\"keyword\":\"BẮT BUỘC ở mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi\",\"granularity\":\"summary|detail\"}\n" +
-            "- category=qa: MẶC ĐỊNH cho câu hỏi chung/sản phẩm/giá/chính sách/kiến thức đã train — kể cả khi chưa chắc có data, cứ gọi trước. category=chat: hỏi tin nhắn nhưng ko rõ kênh. Ko rõ nguồn → bỏ field category.\n" +
-            "- keyword bắt buộc mọi category: thiếu = ko lọc được nội dung, kết quả ko chính xác. Luôn copy sát từ/cụm quan trọng nhất trong câu hỏi.\n" +
-            "- Camera/vật thể/màu sắc/có-không → luôn db_search trước, ko tự suy diễn.\n" +
-            "- timeframe: hệ thống hiểu chi tiết (hôm kia, X tiếng/ngày/tháng trước, ngày cụ thể...) — copy nguyên cụm trong câu hỏi; enum 4 giá trị chỉ dùng khi câu hỏi ko nêu mốc thời gian.\n" +
-            "- object=1 trong 6 giá trị hoặc \"all\" nếu ko khớp; ko ép.\n" +
-            "- chat/facebook/telegram/website: target=tên kênh only; nội dung tin nhắn luôn vào keyword, ko vào target.\n" +
-            "- Thiết bị ko có trong danh sách dưới → trả lời ko lắp đặt, ko gọi tool. (call/chat/qa luôn hợp lệ)\n" +
-            "- Chưa có data thật lượt này → ko bịa nội dung/giờ/chi tiết. Hỏi đào sâu (vd \"tin nhắn nói gì\") mà chưa có data → db_search lại.\n" +
+            "Phân tích ý định của người dùng và trả về JSON hoàn chỉnh theo cấu trúc sau, không kèm giải thích thêm làm sai định dạng:\n" +
+            "{\"tool\":\"db_search\",\"timeframe\":\"...\",\"object\":\"...\",\"category\":\"...\",\"target\":\"...\",\"keyword\":\"...\",\"granularity\":\"...\"}\n" +
+            "Field:\n" +
+            "- category: camera|tuya|call|facebook|telegram|website|chat|qa — không rõ loại, hoặc câu hỏi chung/sản phẩm/giá/chính sách → \"qa\"\n" +
+            "- target: tên/ID đúng theo danh sách dưới (chat/facebook/telegram/website chỉ điền tên kênh, không điền nội dung tin nhắn)\n" +
+            "- keyword: bắt buộc mọi category — từ khoá/chi tiết quan trọng nhất trong câu hỏi (nội dung tin nhắn vào đây)\n" +
+            "- timeframe: copy nguyên cụm thời gian trong câu hỏi, hoặc today|yesterday|last_3_days|last_7_days nếu không nêu mốc\n" +
+            "- object: person|car|motorbike|dog|cat|package|all\n" +
+            "- granularity: summary|detail\n" +
+            "Thiết bị ko có trong danh sách dưới → trả lời ko lắp đặt, ko gọi tool. (call/chat/qa luôn hợp lệ)\n" +
+            "Chưa có data thật lượt này → ko bịa nội dung/giờ/chi tiết. Hỏi đào sâu mà chưa có data → gọi lại db_search.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
             (if (showChatLine) "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") else "") +
             (if (callKeywordSample.isNotEmpty()) "\n📞 category=call còn được hỏi qua các từ khác \"cuộc gọi\": ${callKeywordSample.joinToString("/")}" else "")
     }
-    /**
-     * ✅ MỚI: Quyết định có đính kèm buildToolCallingGuard() hay không, KHÔNG chỉ dựa vào
-     * từ khoá cứng của câu hỏi hiện tại (mentionsAppDomain) mà còn dựa vào việc câu hỏi này
-     * có đang đào sâu vào 1 lần search DB thật vừa xảy ra hay không — bất kể domain là gì
-     * (camera, tuya, hay đa kênh chat facebook/telegram/website). mentionsAppDomain vẫn được
-     * giữ làm fast-path cho câu hỏi MỞ ĐẦU 1 chủ đề mới.
-     */
-    private suspend fun shouldAttachToolGuard(message: String, username: String, currentTurn: Int): Boolean {
-        if (mentionsAppDomain(message)) return true
-        val focus = chatHistoryManager.getLastSearchFocus(username) ?: return false
-        val turnsSince = currentTurn - focus.turnIndex
-        return turnsSince in 0..FOLLOWUP_TURN_WINDOW
-    }
+
+    // ❌ ĐÃ XOÁ: shouldAttachToolGuard() — chỉ còn dead code sau khi Groq mode (nhánh "groq" ở
+    // chat()) không còn nhánh gọi buildToolCallingGuard() nào nữa (Groq mode giờ là kiến thức
+    // chung thuần túy, không search dưới bất kỳ hình thức nào). Combined mode (nhánh else) đã
+    // LUÔN gắn buildToolCallingGuard() vô điều kiện từ trước, không qua hàm này. Nếu sau này cần
+    // logic "chỉ gắn tool guard khi câu hỏi liên quan/đang đào sâu" cho 1 nhánh nào đó, khôi phục
+    // lại thân hàm cũ (dựa vào mentionsAppDomain() + chatHistoryManager.getLastSearchFocus()).
 
     // ✅ MỚI: từ khoá miền "cuộc gọi" đọc từ AppConfig (GLOBAL_CALL_KEYWORDS) thay vì hardcode,
     // để user tự thêm/sửa qua Settings mà không cần sửa code/build lại app. Dùng chung cho cả

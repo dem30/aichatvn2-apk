@@ -231,11 +231,16 @@ fun ChatScreen(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.primaryContainer
             ) {
+                // ✅ MỚI: mode admin và mode khách ngoại giờ tách riêng (xem ChatViewModel/
+                // ChatSkill) — nhưng mode khách ngoại là 1 state DÙNG CHUNG cho MỌI khách
+                // (facebook/telegram/instagram/website), không phải riêng cho thread đang mở.
+                // Thêm dòng ghi chú để admin không hiểu lầm là chỉ đổi mode cho khách này.
+                val scopeNote = if (username != "default_user") " (áp dụng cho MỌI khách ngoại kênh)" else ""
                 Text(
                     text = when (chatMode) {
-                        ChatMode.GROQ -> "🤖 Đang dùng Groq AI"
-                        ChatMode.QA -> "📚 Đang dùng Q&A Database"
-                        ChatMode.COMBINED -> "🔄 Đang dùng chế độ Kết hợp (QA + AI)"
+                        ChatMode.GROQ -> "🤖 Đang dùng Groq AI$scopeNote"
+                        ChatMode.QA -> "📚 Đang dùng Q&A Database$scopeNote"
+                        ChatMode.COMBINED -> "🔄 Đang dùng chế độ Kết hợp (QA + AI)$scopeNote"
                     },
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
