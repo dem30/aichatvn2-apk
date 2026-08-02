@@ -393,8 +393,13 @@ class AgentKernel @Inject constructor(
                         // hợp nào của nhánh admin nữa.
                         val toolGuard = buildToolCallingGuard(resolveActiveDomains(message, username))
 
+                        val minimalAdminGuard =
+                            "Không tự nhận đã điều khiển thiết bị nếu chưa chắc. Trả lời tối đa $maxSentences câu. " +
+                            "Không tự xử lý đơn hàng/thanh toán/hẹn lịch. " +
+                            "Câu hỏi cần dữ liệu thật hoặc thông tin chung → luôn gọi db_search trước, không tự kết luận không có dữ liệu."
+
                         val fullContext = buildString {
-                            append(baseGuard)
+                            append(minimalAdminGuard)
                             if (extraContext.isNotEmpty()) append("\n\n$extraContext")
                             append("\n\n$toolGuard")
                         }
@@ -1253,10 +1258,7 @@ class AgentKernel @Inject constructor(
                 append("\n\n")
                 append("<SYSTEM_MEMORY>\n")
                 append(searchResult.summaryText)
-                append("\n\n👉 CHỈ THỊ LÂM THỜI (HỆ THỐNG ĐÃ TRUY VẤN XONG):\n")
-                append("- Đây là kết quả tìm kiếm thực tế cuối cùng từ cơ sở dữ liệu SQLite.\n")
-                append("- Nếu kết quả trống hoặc báo 'không ghi nhận sự kiện phù hợp / hoạt động bình thường', nghĩa là thực tế KHÔNG có sự kiện gì diễn ra. Bạn hãy trả lời trực tiếp cho người dùng là không ghi nhận sự kiện nào.\n")
-                append("- TUYỆT ĐỐI KHÔNG ĐƯỢC TRẢ VỀ JSON GỌI TOOL NỮA. Hãy trả lời bằng văn bản tự nhiên Tiếng Việt ngay lập tức.\n")
+                append("\n\nDùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa.\n")
                 append("</SYSTEM_MEMORY>")
             }
 
@@ -1694,7 +1696,7 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         return buildString {
             append("<SYSTEM_MEMORY>\n")
             append(resultText)
-            append("\n\nKết quả tìm kiếm catalogue trên là cuối cùng. Nếu có nội dung liên quan, dùng ngay để trả lời (được phép là thông tin tổng quát). Nếu không, hãy nói chưa có thông tin chính xác và đề nghị liên hệ nhân viên hỗ trợ. Không gọi lại tool. Trả lời bằng văn bản tự nhiên.\n")
+            append("\n\nDùng dữ liệu trên để trả lời. Không có thì nói chưa có thông tin, đề nghị liên hệ nhân viên. Không bịa đặt. Không gọi lại tool.\n")
             append("</SYSTEM_MEMORY>")
         }
     }
@@ -1953,24 +1955,23 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         // giải thích thêm ngay tại dòng dẫn — đây là chỉ thị MỚI, giải quyết đúng lỗi model tự
         // chèn câu dẫn ("Đang kiểm tra...", "Thiết bị đã lắp đặt...") trước khi gọi tool.
         return DB_SEARCH_GUARD_MARKER +
-            "Phân tích ý định của người dùng và trả về JSON hoàn chỉnh theo cấu trúc sau, không kèm giải thích thêm làm sai định dạng. CHỈ trả về DUY NHẤT 1 object JSON — không lặp lại/gọi nhiều lần trong cùng 1 lượt kể cả khi câu hỏi chạm nhiều loại dữ liệu, chọn category bao quát nhất hoặc quan trọng nhất trước, hỏi thêm loại còn lại sẽ được xử lý ở lượt sau:\n" +
+            "Trả về đúng 1 JSON, không giải thích, không gọi tool 2 lần trong 1 lượt:\n" +
             "{\"tool\":\"db_search\",\"timeframe\":\"...\",\"object\":\"...\",\"category\":\"...\",\"target\":\"...\",\"keyword\":\"...\",\"state\":\"...\",\"call_status\":\"...\",\"granularity\":\"...\"}\n" +
-            "Field:\n" +
-            "- category: camera|tuya|call|facebook|telegram|website|chat|qa — không rõ loại, hoặc câu hỏi chung/sản phẩm/giá/chính sách → \"qa\"\n" +
-            "- target: tên/ID đúng theo danh sách dưới (chat/facebook/telegram/website chỉ điền tên kênh, không điền nội dung tin nhắn). Riêng category=\"chat\": ĐIỀN \"all\" nếu người dùng không nêu rõ đúng 1 kênh cụ thể — hệ thống tự tìm trên MỌI kênh (facebook+telegram+website) cùng lúc trong 1 lần gọi, KHÔNG gọi tool nhiều lần cho từng kênh riêng. Chỉ điền đúng 1 tên kênh khi người dùng nêu rõ (vd \"tin nhắn Facebook\").\n" +
-            "- keyword: dùng để LỌC NỘI DUNG THẬT có trong log (mô tả camera, tin nhắn). RIÊNG category=\"tuya\" mà câu hỏi CHỈ hỏi trạng thái chung chung (\"thế nào\", \"tình trạng\", \"đang ra sao\") không kèm chi tiết cụ thể → ĐỂ TRỐNG keyword (đừng tự diễn giải thành cụm như \"trạng thái thiết bị\" — cụm đó không có thật trong log nên sẽ lọc rỗng sai), dùng \"state\" thay thế. RIÊNG category=\"call\" hỏi về KẾT QUẢ cuộc gọi (nhỡ/từ chối/thất bại/thành công) → dùng \"call_status\" thay vì keyword (cùng lý do); keyword cho call chỉ nên dùng khi hỏi về TÊN/SỐ người gọi cụ thể chưa có trong danh bạ.\n" +
-            "- state: CHỈ dùng cho category=\"tuya\" khi câu hỏi rõ ràng hỏi bật/tắt (vd \"đang bật không\", \"tắt chưa\") → \"on\" hoặc \"off\". Không rõ bật/tắt → để trống.\n" +
-            "- call_status: CHỈ dùng cho category=\"call\" khi câu hỏi hỏi về kết quả cuộc gọi → \"missed\"(nhỡ)|\"rejected\"(từ chối)|\"answered\"(đã kết nối/thành công)|\"failed\"(thất bại kỹ thuật). Không rõ kết quả (chỉ hỏi chung chung số lượng/thời gian) → để trống.\n" +
-            "- timeframe: copy nguyên cụm thời gian trong câu hỏi, hoặc today|yesterday|last_3_days|last_7_days nếu không nêu mốc\n" +
-            "- object: person|car|motorbike|dog|cat|package|all\n" +
-            "- granularity: summary|detail\n" +
-            "Thiết bị ko có trong danh sách dưới → trả lời ko lắp đặt, ko gọi tool. (call/chat/qa luôn hợp lệ)\n" +
-            "Chưa có data thật lượt này → ko bịa nội dung/giờ/chi tiết. Hỏi đào sâu mà chưa có data → gọi lại db_search.\n" +
+            "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\n" +
+            "target: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
+            "keyword: từ khoá lọc nội dung log/tin nhắn. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status.\n" +
+            "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
+            "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
+            "timeframe: copy nguyên cụm thời gian trong câu hỏi, hoặc today|yesterday|last_3_days|last_7_days.\n" +
+            "object: person|car|motorbike|dog|cat|package|all.\n" +
+            "granularity: summary|detail.\n" +
+            "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +
+            "Chưa có data thật ở lượt này → không bịa nội dung/giờ/chi tiết.\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +
             (if (showChatLine) "💬 Chat: " + (if (enabledChatChannels.isNotEmpty()) enabledChatChannels.joinToString(", ") else "chưa cấu hình") else "") +
-            (if (callKeywordSample.isNotEmpty()) "\n📞 category=call còn được hỏi qua các từ khác \"cuộc gọi\": ${callKeywordSample.joinToString("/")}" else "")
+            (if (callKeywordSample.isNotEmpty()) "\n📞 call còn gọi là: ${callKeywordSample.joinToString("/")}" else "")
     }
 
     // ❌ ĐÃ XOÁ: shouldAttachToolGuard() — chỉ còn dead code sau khi Groq mode (nhánh "groq" ở

@@ -82,6 +82,13 @@ object VietnameseTimeRangeParser {
     }
 
     fun parse(normalizedMsg: String, now: Long): TimeRange? {
+        // -1. MỚI: KHOẢNG NGÀY dd/mm/yy - dd/mm/yy — chính định dạng hệ thống yêu cầu người dùng
+        // gõ lại khi Cost Guard hỏi lại (xem askAgain() ở AgentKernel). Đặt TRƯỚC parseAbsoluteDate
+        // (ngày đơn): parseAbsoluteDate chỉ bắt 1 mốc, nếu chạy trước sẽ nuốt nhầm mốc đầu và bỏ
+        // sót mốc thứ 2 -> ra sai kết quả (range 1 ngày thay vì cả khoảng). Validate <= 7 ngày ngay
+        // trong parseDateRange(), không qua capOrAskAgain() vì cần thông báo lỗi rõ ràng hơn null.
+        parseDateRange(normalizedMsg, now)?.let { return it }
+
         // 0. NGÀY TUYỆT ĐỐI ("ngay 15 thang 5", "15/5/2026") - Ưu tiên cao nhất
         parseAbsoluteDate(normalizedMsg, now)?.let { return it }
 
@@ -167,6 +174,43 @@ object VietnameseTimeRangeParser {
         }
 
         return null
+    }
+
+    // ✅ MỚI: "dd/mm/yy - dd/mm/yy" (hoặc dd-mm-yy, năm 2 hoặc 4 số) — 2 mốc ngày cách nhau bởi
+    // dấu "-". Đây là đúng mẫu AgentKernel yêu cầu người dùng gõ lại khi Cost Guard hỏi lại
+    // (xem "Bạn cho mình khoảng ngày cụ thể theo mẫu dd/mm/yy - dd/mm/yy"), nên PHẢI được chính
+    // parser này hiểu được — trước đây chỉ tryResumeSearchWithDateRange() ở AgentKernel đọc được
+    // mẫu này, và CHỈ khi đang có PendingSearchTimeRange; ngoài tình huống đó (câu hỏi tự do có
+    // chèn sẵn khoảng ngày, không qua hỏi-lại) chuỗi ngày bị coi là timeframe lạ, Cost Guard chặn
+    // vô hạn dù đúng định dạng. Validate <=7 ngày và ngày hợp lệ ngay tại đây; sai định dạng/ngày
+    // không hợp lệ -> trả null (rơi xuống các rule sau, cuối cùng vào Cost Guard hỏi lại như cũ).
+    private fun parseDateRange(normalizedMsg: String, now: Long): TimeRange? {
+        val m = Regex("(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})\\s*-\\s*(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})")
+            .find(normalizedMsg) ?: return null
+
+        fun toStartOfDayMillis(day: String, month: String, year: String): Long? {
+            val d = day.toIntOrNull() ?: return null
+            val mo = month.toIntOrNull() ?: return null
+            val y = year.toIntOrNull()?.let { if (it < 100) it + 2000 else it } ?: return null
+            return try {
+                Calendar.getInstance().apply {
+                    isLenient = false
+                    set(y, mo - 1, d, 0, 0, 0)
+                    set(Calendar.MILLISECOND, 0)
+                    timeInMillis // kích hoạt validation ngày, cùng convention parseAbsoluteDate()
+                }.timeInMillis
+            } catch (e: Exception) { null }
+        }
+
+        val since = toStartOfDayMillis(m.groupValues[1], m.groupValues[2], m.groupValues[3]) ?: return null
+        val untilStart = toStartOfDayMillis(m.groupValues[4], m.groupValues[5], m.groupValues[6]) ?: return null
+        val until = untilStart + DAY_MS - 1
+
+        if (until <= since) return null
+        if (until - since > MAX_DAYS_BACK * DAY_MS) return null
+
+        val label = "${m.groupValues[1]}/${m.groupValues[2]}/${m.groupValues[3]} - ${m.groupValues[4]}/${m.groupValues[5]}/${m.groupValues[6]}"
+        return TimeRange(since, until, label)
     }
 
     private fun parseAbsoluteDate(normalizedMsg: String, now: Long): TimeRange? {
