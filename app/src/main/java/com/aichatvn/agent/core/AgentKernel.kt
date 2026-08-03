@@ -26,6 +26,10 @@ import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 private data class ToolCall(val tool: String, val params: Map<String, String>)
 
@@ -1263,31 +1267,62 @@ class AgentKernel @Inject constructor(
                 append("<SYSTEM_MEMORY>\n")
                 append(searchResult.summaryText)
                 append("\n\nDùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa.\n")
+                // ✅ MỚI: bắt buộc AI tự khai timestamp của ĐÚNG những dòng nó thực sự nhắc tới
+                // trong câu trả lời — để hệ thống biết chính xác nên đính kèm ảnh của dòng nào,
+                // thay vì đoán mù (lấy tất cả log khớp filter, hoặc lọc thô theo có/không phải
+                // "Bình thường" — cả 2 cách cũ đều sai khi câu hỏi cần trộn cả normal lẫn alert,
+                // ví dụ "hôm nay có phát hiện người mặc áo đỏ không" có thể cần dẫn chứng vài dòng
+                // "Bình thường" để chứng minh KHÔNG có, cùng vài dòng cảnh báo nếu có). Copy đúng
+                // nguyên văn timestamp trong ngoặc [HH:mm:ss dd/MM/yyyy] của TỪNG dòng đã nhắc,
+                // không tự bịa/làm tròn giờ.
+                append(
+                    "\n🚨 BẮT BUỘC: sau khi trả lời xong, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng " +
+                    "định dạng: [REF_TIMESTAMPS: hh:mm:ss dd/MM/yyyy, hh:mm:ss dd/MM/yyyy, ...] — " +
+                    "liệt kê CHÍNH XÁC (copy nguyên văn từ trong ngoặc [...] của SYSTEM_MEMORY, " +
+                    "không tự đổi định dạng/làm tròn) timestamp của MỌI dòng dữ liệu bên trên mà " +
+                    "câu trả lời của bạn có nhắc tới hoặc dựa vào (kể cả dòng \"Bình thường\" nếu " +
+                    "dùng nó để trả lời KHÔNG/không có gì bất thường). Nếu câu trả lời không dựa " +
+                    "vào dòng dữ liệu cụ thể nào (vd chỉ là câu chào hỏi), để trống: [REF_TIMESTAMPS: ]. " +
+                    "Dòng này LUÔN ở cuối cùng, không viết gì sau nó.\n"
+                )
                 append("</SYSTEM_MEMORY>")
             }
 
             logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
 
-            // ✅ SỬA: trước đây chỉ lấy `.lastOrNull { imagePath != null }` — 1 ảnh MỚI NHẤT duy
-            // nhất, dù text trả lời có thể liệt kê 4-9 cảnh báo (mỗi cảnh báo có ảnh riêng). Giờ
-            // lấy TẤT CẢ ảnh khớp filter hiện tại (logs đã sort tăng dần theo timestamp ở
-            // executeSearchContract() → giữ nguyên thứ tự cũ→mới), cắt tối đa MAX_RESULT_IMAGES để
-            // tránh trả về hàng chục ảnh khi filter rộng (vd hỏi chung "camera hôm nay thế nào").
-            // Chỉ log camera có gắn imagePath (EventLogEntity.imagePath, xem CameraSkill.
-            // saveAlertToHistory()); tuya/call/chat luôn null nên tự động không có ảnh đính kèm.
-            val bestImagePaths = searchResult.logs
-                .mapNotNull { it.imagePath }
-                .distinct()
-                .takeLast(MAX_RESULT_IMAGES)
-                .ifEmpty { null }
-
             withTimeout(15_000L) {
-                val responsePass2 = groqClient.chat(
+                val responsePass2Raw = groqClient.chat(
                     message = originalMessage,
                     extraContext = enrichedContext,
                     history = historySnapshot,
                     imageUrl = null
                 )
+
+                // ✅ SỬA (thay thế bestImagePaths cũ dựa trên toàn bộ searchResult.logs): trước đây
+                // lấy ảnh từ TẤT CẢ log khớp filter thời gian/keyword (hoặc lọc thô theo có/không
+                // "phát hiện:") — sai khi câu hỏi cần trộn cả normal lẫn alert làm dẫn chứng (vd
+                // "hôm nay có phát hiện người mặc áo đỏ không" → AI có thể trả lời dựa trên 4 dòng,
+                // gồm cả "Bình thường", nhưng hệ thống vẫn chỉ nên đính kèm ĐÚNG 4 ảnh đó, không
+                // phải toàn bộ log trong khung giờ). Giờ đọc [REF_TIMESTAMPS: ...] mà Pass 2 được
+                // yêu cầu tự khai ở cuối câu trả lời (xem chỉ thị trong enrichedContext bên trên),
+                // match NGƯỢC với searchResult.logs theo đúng chuỗi timestamp đã format sẵn
+                // (DATETIME_FORMATTER "HH:mm:ss dd/MM/yyyy" — DatabaseSearchHelper dùng chung định
+                // dạng này cho mọi nhánh) — chỉ lấy ảnh của đúng những dòng AI đã thực sự nhắc tới.
+                val (responsePass2, refTimestamps) = extractRefTimestamps(responsePass2Raw)
+
+                val bestImagePaths = if (refTimestamps.isNotEmpty()) {
+                    val timestampSet = refTimestamps.toSet()
+                    searchResult.logs
+                        .filter { log -> DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp)) in timestampSet }
+                        .mapNotNull { it.imagePath }
+                        .distinct()
+                        .takeLast(MAX_RESULT_IMAGES)
+                        .ifEmpty { null }
+                } else {
+                    // Model không tuân thủ định dạng REF_TIMESTAMPS (không chèn dòng này, hoặc để
+                    // trống) — không đoán mù nữa, thà không có ảnh còn hơn gắn sai dòng.
+                    null
+                }
                 
                 val outcome = interceptAndExecuteToolCall(
                     originalMessage = originalMessage,
@@ -1647,6 +1682,14 @@ class AgentKernel @Inject constructor(
         // vẫn đủ để UI hiển thị gallery cho các trường hợp thường gặp (vài cảnh báo trong ngày).
         private const val MAX_RESULT_IMAGES = 9
 
+        // ✅ MỚI: PHẢI khớp CHÍNH XÁC định dạng DatabaseSearchHelper dùng để in timestamp vào
+        // summaryText (xem DatabaseSearchHelper.DATETIME_FORMATTER) — vì đó là format Pass 2 nhìn
+        // thấy và được yêu cầu copy nguyên văn vào [REF_TIMESTAMPS: ...]. Lệch định dạng (kể cả
+        // chỉ khác .withZone()) sẽ khiến so khớp luôn thất bại, không đính kèm được ảnh nào.
+        private val DATETIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault())
+                .withZone(ZoneId.systemDefault())
+
         // Số lượt hỏi tiếp theo sau 1 lần search DB thật mà vẫn được coi là "đang đào sâu"
         // vào cùng kết quả đó, dù câu hỏi không chứa từ khoá domain nào (camera/tuya/chat...).
         private const val FOLLOWUP_TURN_WINDOW = 2
@@ -1702,6 +1745,33 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
     // model dễ lẫn lộn dữ liệu cũ/mới. Regex non-greedy + String.replace (thay hết mọi match).
     private fun stripOldSystemMemory(guardText: String): String {
         return guardText.replace(Regex("<SYSTEM_MEMORY>[\\s\\S]*?</SYSTEM_MEMORY>"), "").trim()
+    }
+
+    // ✅ MỚI: tách khối "[REF_TIMESTAMPS: ...]" mà Pass 2 được yêu cầu tự thêm vào cuối câu trả
+    // lời (xem chỉ thị chèn vào enrichedContext ở Two-Pass Second Call) — trả về cặp (text sạch
+    // để hiển thị cho user, danh sách timestamp string đã khai báo). Cắt SỚM, ngay khi
+    // responsePass2 vừa về, TRƯỚC khi đưa vào interceptAndExecuteToolCall() — vì khi model không
+    // gọi tool nữa (đúng như đã dặn), parseToolCall() trả null và toàn bộ responseRaw (bao gồm cả
+    // khối RAW REF_TIMESTAMPS nếu không cắt trước) sẽ rơi thẳng vào ToolCallOutcome(responseRaw)
+    // rồi hiển thị nguyên văn cho user.
+    //
+    // Regex khớp cả trường hợp rỗng "[REF_TIMESTAMPS: ]" lẫn có nội dung, không phân biệt hoa
+    // thường của từ khoá, cho phép có/không có khoảng trắng thừa. Nếu model không tuân thủ định
+    // dạng (không chèn dòng này) → trả về text gốc + danh sách rỗng, không lỗi, không ảnh hưởng
+    // luồng cũ (giống hành vi trước khi có REF_TIMESTAMPS).
+    private data class RefTimestampsResult(val cleanText: String, val timestamps: List<String>)
+
+    private fun extractRefTimestamps(rawText: String): RefTimestampsResult {
+        val regex = Regex("\\[REF_TIMESTAMPS:\\s*(.*?)\\s*\\]", RegexOption.IGNORE_CASE)
+        val match = regex.find(rawText) ?: return RefTimestampsResult(rawText, emptyList())
+
+        val timestamps = match.groupValues[1]
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        val cleanText = rawText.substring(0, match.range.first).trimEnd()
+        return RefTimestampsResult(cleanText, timestamps)
     }
 
     private fun stripCatalogSearchInvite(guardText: String): String {
