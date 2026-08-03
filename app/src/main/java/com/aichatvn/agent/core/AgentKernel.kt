@@ -1261,30 +1261,26 @@ class AgentKernel @Inject constructor(
             // ✅ SỬA: dọn sạch cả đoạn mời gọi Tool lẫn khối <SYSTEM_MEMORY> cũ thụ động của Pass 1
             val cleanBaseContext = stripOldSystemMemory(stripDbSearchInvite(baseContext))
 
+            // ✅ MỚI: chỉ thị chèn vào <SYSTEM_MEMORY> ở Pass 2 (giọng điệu trả lời + yêu cầu khai
+            // REF_TIMESTAMPS cho tính năng đính kèm ảnh) giờ đọc từ AppConfigDefaults thay vì
+            // hardcode cứng — admin tự sửa câu chữ trong Settings (xem mô tả key trong
+            // AppConfigDefaults.kt). CHỈ dùng ở Pass 2 — Pass 1 (buildToolCallingGuard()) không
+            // đụng tới key này. Nếu admin lỡ xoá literal "[REF_TIMESTAMPS: ...]" khỏi câu chữ,
+            // extractRefTimestamps() bên dưới đơn giản không khớp được gì → không lỗi, chỉ mất
+            // khả năng đính kèm ảnh camera, mọi thứ khác vẫn hoạt động bình thường.
+            val pass2MemoryInstruction = configProvider.getString(
+                AppConfigDefaults.GLOBAL_PASS2_MEMORY_INSTRUCTION,
+                AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_PASS2_MEMORY_INSTRUCTION)
+            )
+
             val enrichedContext = buildString {
                 append(cleanBaseContext)
                 append("\n\n")
                 append("<SYSTEM_MEMORY>\n")
                 append(searchResult.summaryText)
-                append("\n\nDùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa.\n")
-                // ✅ MỚI: bắt buộc AI tự khai timestamp của ĐÚNG những dòng nó thực sự nhắc tới
-                // trong câu trả lời — để hệ thống biết chính xác nên đính kèm ảnh của dòng nào,
-                // thay vì đoán mù (lấy tất cả log khớp filter, hoặc lọc thô theo có/không phải
-                // "Bình thường" — cả 2 cách cũ đều sai khi câu hỏi cần trộn cả normal lẫn alert,
-                // ví dụ "hôm nay có phát hiện người mặc áo đỏ không" có thể cần dẫn chứng vài dòng
-                // "Bình thường" để chứng minh KHÔNG có, cùng vài dòng cảnh báo nếu có). Copy đúng
-                // nguyên văn timestamp trong ngoặc [HH:mm:ss dd/MM/yyyy] của TỪNG dòng đã nhắc,
-                // không tự bịa/làm tròn giờ.
-                append(
-                    "\n🚨 BẮT BUỘC: sau khi trả lời xong, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng " +
-                    "định dạng: [REF_TIMESTAMPS: hh:mm:ss dd/MM/yyyy, hh:mm:ss dd/MM/yyyy, ...] — " +
-                    "liệt kê CHÍNH XÁC (copy nguyên văn từ trong ngoặc [...] của SYSTEM_MEMORY, " +
-                    "không tự đổi định dạng/làm tròn) timestamp của MỌI dòng dữ liệu bên trên mà " +
-                    "câu trả lời của bạn có nhắc tới hoặc dựa vào (kể cả dòng \"Bình thường\" nếu " +
-                    "dùng nó để trả lời KHÔNG/không có gì bất thường). Nếu câu trả lời không dựa " +
-                    "vào dòng dữ liệu cụ thể nào (vd chỉ là câu chào hỏi), để trống: [REF_TIMESTAMPS: ]. " +
-                    "Dòng này LUÔN ở cuối cùng, không viết gì sau nó.\n"
-                )
+                append("\n\n")
+                append(pass2MemoryInstruction)
+                append("\n")
                 append("</SYSTEM_MEMORY>")
             }
 

@@ -107,6 +107,19 @@ object AppConfigDefaults {
     // chạy, không đưa ra config vì sẽ mất khả năng tự cập nhật).
     const val GLOBAL_TOOL_GUARD_RULES       = "global.tool_guard_rules"
 
+    // ✅ MỚI: Chỉ thị chèn vào khối <SYSTEM_MEMORY> ở LƯỢT 2 (Two-Pass Second Call trong
+    // AgentKernel.kt) — lúc này db_search đã có dữ liệu thật, model không còn được gọi tool nữa
+    // mà phải trả lời thẳng dựa trên dữ liệu. ADMIN TỰ CHỈNH câu chữ (giọng điệu, độ dài câu trả
+    // lời...) ở đây. CHỈ áp dụng cho Pass 2 — Pass 1 (lượt hỏi model có cần gọi tool hay không)
+    // không dùng key này.
+    // ⚠️ LƯU Ý KỸ THUẬT: muốn giữ tính năng tự động đính kèm ảnh camera đúng dòng dữ liệu AI đã
+    // nhắc tới, PHẢI giữ nguyên literal "[REF_TIMESTAMPS: ...]" trong câu chữ (không đổi tên, có
+    // thể sửa phần mô tả xung quanh) — đây là marker cố định mà extractRefTimestamps() trong
+    // AgentKernel.kt dò tìm bằng regex (không phân biệt hoa/thường) trong CÂU TRẢ LỜI của model.
+    // Nếu bạn xoá hẳn yêu cầu này khỏi chỉ thị, model sẽ không tự khai timestamp nữa → hệ thống
+    // vẫn hoạt động bình thường, chỉ là câu trả lời sẽ không có ảnh camera đính kèm.
+    const val GLOBAL_PASS2_MEMORY_INSTRUCTION = "global.pass2_memory_instruction"
+
     // ✅ MỚI: Từ khoá xác nhận Có/Không khi hệ thống hỏi lại (vd: xác nhận khoá điều khiển thiết bị) —
     // thay cho 2 setOf hardcode cứng trước đây trong AgentKernel.parseYesNo().
     const val GLOBAL_CONFIRM_YES_KEYWORDS   = "global.confirm_yes_keywords"
@@ -573,6 +586,25 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Luật diễn giải ý định (Tool Guard Rules)",
             description = "Quy tắc hướng dẫn AI điền các field category/target/keyword/state/call_status/timeframe/object/granularity khi gọi db_search. Sửa câu chữ ở đây thoải mái. KHÔNG đụng vào tên field JSON ({\"tool\":\"db_search\",...}) — phần đó cố định trong code, sửa sai tên sẽ khiến hệ thống không đọc được kết quả AI trả về. Dòng \"📷 Camera:/🔌 Thiết bị:/...\" không nằm ở đây vì luôn tự lấy danh sách thật mới nhất từ dữ liệu app."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_PASS2_MEMORY_INSTRUCTION,
+            value = "Dùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa. Trả lời ngắn gọn, tự nhiên, đi thẳng vào trọng tâm câu hỏi.\n" +
+                "🚨 BẮT BUỘC: sau khi trả lời xong, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng định dạng: " +
+                "[REF_TIMESTAMPS: hh:mm:ss dd/MM/yyyy, hh:mm:ss dd/MM/yyyy, ...] — liệt kê CHÍNH XÁC (copy nguyên văn " +
+                "từ trong ngoặc [...] của dữ liệu bên trên, không tự đổi định dạng/làm tròn) timestamp của MỌI dòng " +
+                "dữ liệu mà câu trả lời của bạn có nhắc tới hoặc dựa vào (kể cả dòng \"Bình thường\" nếu dùng nó để " +
+                "trả lời KHÔNG/không có gì bất thường). Nếu câu trả lời không dựa vào dòng dữ liệu cụ thể nào (vd chỉ " +
+                "là câu chào hỏi), để trống: [REF_TIMESTAMPS: ]. Dòng này LUÔN ở cuối cùng, không viết gì sau nó.",
+            type = "string",
+            pluginId = "global",
+            label = "Chỉ thị SYSTEM_MEMORY ở Pass 2 (khi đã có dữ liệu thật)",
+            description = "Câu chữ hướng dẫn AI sau khi đã tra được dữ liệu thật (camera/thiết bị/tin nhắn/cuộc gọi) ở lượt " +
+                "gọi thứ 2 — vd đổi giọng điệu, độ dài câu trả lời mong muốn. CHỈ áp dụng Pass 2, không ảnh hưởng Pass 1 " +
+                "(Luật diễn giải ý định ở trên). ⚠️ Muốn giữ tính năng tự động đính kèm ảnh camera đúng dòng dữ liệu đã " +
+                "nhắc tới, PHẢI giữ nguyên literal \"[REF_TIMESTAMPS: ...]\" trong câu chữ — đây là marker cố định hệ " +
+                "thống dò tìm bằng regex trong câu trả lời của AI, đổi tên sẽ làm mất khả năng đính kèm ảnh (không lỗi, " +
+                "chỉ đơn giản là không có ảnh)."
         ),
         AppConfigEntity(
             key = GLOBAL_CONFIRM_YES_KEYWORDS,
