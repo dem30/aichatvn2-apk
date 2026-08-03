@@ -1823,18 +1823,15 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
     }
 
     private suspend fun buildMinimalGuard(): String {
-        val configuredPrompt = configProvider.getString(
+        // ✅ SỬA: overreachGuard (cảnh báo "không tự nhận xử lý đơn hàng/hẹn lịch") không còn bị
+        // code tự động nối cứng sau configuredPrompt nữa — đã gộp thẳng vào GIÁ TRỊ MẶC ĐỊNH của
+        // GLOBAL_CHAT_SYSTEM_PROMPT (xem AppConfigDefaults.kt). Admin thấy dòng ⚠️ này ngay trong
+        // ô nhập ở Settings và có thể tự xoá/sửa nếu chấp nhận rủi ro — thay vì bị code âm thầm
+        // nối thêm 1 đoạn admin không nhìn thấy và không tắt được.
+        return configProvider.getString(
             AppConfigDefaults.GLOBAL_CHAT_SYSTEM_PROMPT,
             AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_CHAT_SYSTEM_PROMPT)
         )
-        // ✅ MỚI: khách ngoại kênh là nhóm dễ hỏi "đặt hàng/hẹn lịch/thanh toán" nhất sau khi hỏi
-        // sản phẩm — nhưng hệ thống thực tế CHỈ ghi nhận tin nhắn (đánh dấu chưa đọc) để nhân
-        // viên tự xem và phản hồi sau, không hề tự động xử lý/xác nhận/hẹn lịch gì cả. Không có
-        // dòng này, model dễ tự bịa ra khả năng "xử lý giúp", "đã đặt lịch", hứa hẹn thời gian cụ
-        // thể mà hệ thống không làm được — gây hiểu lầm cho khách hàng thật.
-        val overreachGuard = "⚠️ Khi khách muốn đặt hàng/hẹn lịch/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý/xác nhận đơn hàng/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể."
-
-        return if (configuredPrompt.isNotBlank()) "$configuredPrompt\n\n$overreachGuard" else overreachGuard
     }
 
     private suspend fun buildFullGuard(
@@ -1954,19 +1951,24 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         // rời. Gộp 2 chỗ từng nói trùng ý "luôn gọi trước khi nói không có" thành 1. Thêm câu cấm
         // giải thích thêm ngay tại dòng dẫn — đây là chỉ thị MỚI, giải quyết đúng lỗi model tự
         // chèn câu dẫn ("Đang kiểm tra...", "Thiết bị đã lắp đặt...") trước khi gọi tool.
+        // ✅ SỬA: phần "luật diễn giải ý định" (category/target/keyword/state/call_status/
+        // timeframe/object/granularity + 2 dòng cảnh báo cuối) giờ đọc từ config
+        // GLOBAL_TOOL_GUARD_RULES thay vì hardcode cứng — admin tự sửa câu chữ trong Settings.
+        // Dòng schema JSON {"tool":"db_search",...} vẫn giữ cố định trong code vì tên field phải
+        // khớp với interceptAndExecuteToolCall() để parse được kết quả AI trả về.
+        val toolGuardRules = try {
+            configProvider.getString(
+                AppConfigDefaults.GLOBAL_TOOL_GUARD_RULES,
+                AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_TOOL_GUARD_RULES)
+            )
+        } catch (e: Exception) {
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_TOOL_GUARD_RULES)
+        }
+
         return DB_SEARCH_GUARD_MARKER +
             "Trả về đúng 1 JSON, không giải thích, không gọi tool 2 lần trong 1 lượt:\n" +
             "{\"tool\":\"db_search\",\"timeframe\":\"...\",\"object\":\"...\",\"category\":\"...\",\"target\":\"...\",\"keyword\":\"...\",\"state\":\"...\",\"call_status\":\"...\",\"granularity\":\"...\"}\n" +
-            "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\n" +
-            "target: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
-            "keyword: từ khoá lọc nội dung log/tin nhắn. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status.\n" +
-            "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
-            "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
-            "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → today|yesterday|last_3_days|last_7_days.\n" +
-            "object: person|car|motorbike|dog|cat|package|all.\n" +
-            "granularity: summary|detail.\n" +
-            "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +
-            "Chưa có data thật ở lượt này → không bịa nội dung/giờ/chi tiết.\n" +
+            toolGuardRules.trimEnd() + "\n" +
             (if (cameraNames.isNotEmpty()) "📷 Camera: ${cameraNames.joinToString(", ")}\n" else "") +
             (if (deviceNames.isNotEmpty()) "🔌 Thiết bị: ${deviceNames.joinToString(", ")}\n" else "") +
             (if (callContactNames.isNotEmpty()) "📞 Danh bạ: ${callContactNames.joinToString(", ")}\n" else "") +

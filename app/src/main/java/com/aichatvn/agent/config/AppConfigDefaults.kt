@@ -98,6 +98,15 @@ object AppConfigDefaults {
     // schema mà interceptAndExecuteToolCall() parse được) — không tự ý thêm persona/quy tắc nào khác.
     const val GLOBAL_CHAT_SYSTEM_PROMPT     = "global.chat_system_prompt"
 
+    // ✅ MỚI: Luật diễn giải ý định người dùng thành JSON tool call (category/target/keyword/
+    // state/call_status/timeframe/object/granularity) do ADMIN TỰ CHỈNH câu chữ — tách khỏi
+    // buildToolCallingGuard() trong AgentKernel.kt. Code vẫn tự giữ cố định: marker nội bộ
+    // (DB_SEARCH_GUARD_MARKER), dòng schema JSON {"tool":"db_search",...} (tên field bắt buộc
+    // đúng để interceptAndExecuteToolCall() parse được — sửa sai tên field ở đây sẽ hỏng tool
+    // call), và khối danh sách camera/thiết bị/danh bạ/kênh chat (luôn lấy động từ DB thật lúc
+    // chạy, không đưa ra config vì sẽ mất khả năng tự cập nhật).
+    const val GLOBAL_TOOL_GUARD_RULES       = "global.tool_guard_rules"
+
     // ✅ MỚI: Từ khoá xác nhận Có/Không khi hệ thống hỏi lại (vd: xác nhận khoá điều khiển thiết bị) —
     // thay cho 2 setOf hardcode cứng trước đây trong AgentKernel.parseYesNo().
     const val GLOBAL_CONFIRM_YES_KEYWORDS   = "global.confirm_yes_keywords"
@@ -541,11 +550,29 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GLOBAL_CHAT_SYSTEM_PROMPT,
-            value = "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.",
+            value = "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.\n\n" +
+                "⚠️ Khi khách muốn đặt hàng/hẹn lịch/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý/xác nhận đơn hàng/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể.",
             type = "string",
             pluginId = "global",
             label = "Prompt hệ thống cho AI chat (khi khách bị khoá điều khiển thiết bị)",
-            description = "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này."
+            description = "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI, bao gồm cả cảnh báo không tự nhận xử lý đơn hàng/hẹn lịch — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Xoá dòng cảnh báo ⚠️ nếu bạn chấp nhận rủi ro AI có thể tự nhận đã xử lý đơn hàng/lịch hẹn dù thực tế không làm được. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_TOOL_GUARD_RULES,
+            value = "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\n" +
+                "target: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
+                "keyword: từ khoá lọc nội dung log/tin nhắn. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status.\n" +
+                "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
+                "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
+                "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → today|yesterday|last_3_days|last_7_days.\n" +
+                "object: person|car|motorbike|dog|cat|package|all.\n" +
+                "granularity: summary|detail.\n" +
+                "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +
+                "Chưa có data thật ở lượt này → không bịa nội dung/giờ/chi tiết.",
+            type = "string",
+            pluginId = "global",
+            label = "Luật diễn giải ý định (Tool Guard Rules)",
+            description = "Quy tắc hướng dẫn AI điền các field category/target/keyword/state/call_status/timeframe/object/granularity khi gọi db_search. Sửa câu chữ ở đây thoải mái. KHÔNG đụng vào tên field JSON ({\"tool\":\"db_search\",...}) — phần đó cố định trong code, sửa sai tên sẽ khiến hệ thống không đọc được kết quả AI trả về. Dòng \"📷 Camera:/🔌 Thiết bị:/...\" không nằm ở đây vì luôn tự lấy danh sách thật mới nhất từ dữ liệu app."
         ),
         AppConfigEntity(
             key = GLOBAL_CONFIRM_YES_KEYWORDS,
