@@ -478,25 +478,51 @@ class ChatSkill @Inject constructor(
                 )
 
                 val assistantMessageId = UUID.randomUUID().toString()
+                // ✅ SỬA: AgentKernel.ChatResponse.imagePath (String? đơn) đã đổi thành imagePaths
+                // (List<String>?) — khi câu hỏi khớp nhiều cảnh báo, response.imagePaths có thể
+                // chứa nhiều ảnh. ChatMessageEntity.fileUrl vẫn là String? đơn (không đổi schema
+                // Room) nên KHÔNG dồn hết vào 1 dòng — thay vào đó: 1 dòng "text" luôn chứa toàn bộ
+                // responseText, cộng thêm 1 dòng "image" riêng cho MỖI ảnh khớp. Mỗi dòng "image"
+                // tái dùng nguyên cơ chế ChatBubble/BitmapFactory.decodeFile() sẵn có (xem
+                // ChatScreen.kt) — không cần đổi UI hay migration DB.
+                val imagePaths = response.imagePaths.orEmpty()
+
                 val assistantMessage = ChatMessageEntity(
                     id = assistantMessageId,
                     sessionToken = "session_$username",
                     username = username,
                     content = response.responseText,
                     role = "assistant",
-                    type = if (response.imagePath != null) "image" else "text",   
-                    fileUrl = response.imagePath,                                  
+                    type = "text",
+                    fileUrl = null,
                     timestamp = System.currentTimeMillis(),
                     sourcePlugin = response.usedPluginId
                 )
 
+                val imageMessages = imagePaths.mapIndexed { index, path ->
+                    ChatMessageEntity(
+                        id = UUID.randomUUID().toString(),
+                        sessionToken = "session_$username",
+                        username = username,
+                        content = "",
+                        role = "assistant",
+                        type = "image",
+                        fileUrl = path,
+                        // ✅ Cộng thêm index*1ms để giữ đúng thứ tự hiển thị (text trước, ảnh sau,
+                        // ảnh theo đúng thứ tự bestImagePaths) khi UI sort theo timestamp.
+                        timestamp = System.currentTimeMillis() + index + 1,
+                        sourcePlugin = response.usedPluginId
+                    )
+                }
+
                 withContext(Dispatchers.IO) {
                     database.chatMessageDao().insertMessage(assistantMessage)
+                    imageMessages.forEach { database.chatMessageDao().insertMessage(it) }
                 }
 
                 messagesMutex.withLock {
                     if (currentUsername == username) {
-                        _messages.value = _messages.value + assistantMessage
+                        _messages.value = _messages.value + assistantMessage + imageMessages
                     }
                 }
 
@@ -505,7 +531,7 @@ class ChatSkill @Inject constructor(
                         "response" to response.responseText,
                         "messageId" to assistantMessageId,
                         "mode" to response.usedMode,
-                        "imagePath" to response.imagePath
+                        "imagePaths" to imagePaths
                     )
                 )
             }

@@ -137,14 +137,18 @@ data class ChatResponse(
     val responseText: String,
     val usedMode: String,
     val usedPluginId: String?,
-    val imagePath: String? = null
+    // ✅ SỬA: trước đây là imagePath: String? đơn — khi câu hỏi khớp nhiều cảnh báo (vd "hôm nay
+    // có cảnh báo gì"), model liệt kê 4-9 mục trong text nhưng chỉ 1 ảnh (dòng cuối/mới nhất)
+    // được đính kèm, khiến UI hiển thị lệch với nội dung trả lời. Đổi sang danh sách để mang
+    // TẤT CẢ ảnh khớp filter hiện tại — UI hiển thị dạng gallery/carousel thay vì 1 ảnh đại diện.
+    val imagePaths: List<String>? = null
 )
 
 // ✅ MỚI: carrier tối thiểu để interceptAndExecuteToolCall()/handleCatalogSearchToolCall()
-// mang thêm imagePath (lấy từ EventLogEntity khớp nhất khi db_search trúng camera) lên tới
-// ChatResponse cuối, mà không phải đổi kiểu String của cả nhánh "qa"/"groq"/"combined" trong
+// mang thêm imagePaths (danh sách EventLogEntity.imagePath khớp khi db_search trúng camera) lên
+// tới ChatResponse cuối, mà không phải đổi kiểu String của cả nhánh "qa"/"groq"/"combined" trong
 // chat() — chỉ 2 hàm này đổi kiểu trả về, còn responseText ở chat() vẫn là String như cũ.
-private data class ToolCallOutcome(val text: String, val imagePath: String? = null)
+private data class ToolCallOutcome(val text: String, val imagePaths: List<String>? = null)
 
 @Singleton
 class AgentKernel @Inject constructor(
@@ -286,7 +290,7 @@ class AgentKernel @Inject constructor(
             val imagePath = (deviceResult as? PluginResult.Success)?.data
                 ?.let { (it as? Map<*, *>)?.get("imagePath") as? String }
             val finalMsg = if (expiredNotification != null) "$expiredNotification\n\n$responseText" else responseText
-            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId, imagePath)
+            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId, imagePath?.let { listOf(it) })
         }
 
         val routerFailed = outcome is RouterOutcome.RouterFailed
@@ -305,9 +309,9 @@ class AgentKernel @Inject constructor(
         }
 
         // ✅ MỚI: ảnh (nếu có) tìm được từ Two-Pass db_search — gán ở nhánh "groq"/"combined"
-        // bên dưới, dùng cho ChatResponse.imagePath cuối hàm. Giữ responseText là String thuần
+        // bên dưới, dùng cho ChatResponse.imagePaths cuối hàm. Giữ responseText là String thuần
         // cho mọi nhánh của when() như cũ, thay vì đổi cả khối sang kiểu ToolCallOutcome.
-        var searchImagePath: String? = null
+        var searchImagePath: List<String>? = null
 
         var responseText = try {
             when (usedMode.lowercase()) {
@@ -424,7 +428,7 @@ class AgentKernel @Inject constructor(
                             // đã tự định tuyến sang catalog (xem handler "db_search category=qa").
                             allowCatalogSearch = false
                         )
-                        searchImagePath = outcome.imagePath
+                        searchImagePath = outcome.imagePaths
                         outcome.text
                     } else {
                         // ⚠️ KHÔNG ĐỘNG: giữ nguyên 100% khối Two-Pass catalog_search cho khách
@@ -463,7 +467,7 @@ class AgentKernel @Inject constructor(
                                 allowDeviceControl = false,
                                 allowCatalogSearch = true
                             )
-                            searchImagePath = outcome.imagePath
+                            searchImagePath = outcome.imagePaths
                             outcome.text
                         }
                     }
@@ -866,7 +870,7 @@ class AgentKernel @Inject constructor(
             forcedTimeRange = com.aichatvn.agent.utils.TimeRange(since, until, label)
         )
 
-        return ChatResponse(wrapWithExpired(outcome.text), "search_time_range_resumed", null, outcome.imagePath)
+        return ChatResponse(wrapWithExpired(outcome.text), "search_time_range_resumed", null, outcome.imagePaths)
     }
 
     private suspend fun interceptAndExecuteToolCall(
@@ -1264,11 +1268,18 @@ class AgentKernel @Inject constructor(
 
             logger.i("AgentKernel", "🚀 [Two-Pass Second Call] Đang gửi lại dữ liệu thực tế lên Groq lượt 2 (Timeout: 15 giây)...")
 
-            // ✅ MỚI: lấy ảnh của dòng log KHỚP GẦN NHẤT trong kết quả search vừa chạy (logs đã
-            // sort tăng dần theo timestamp ở executeSearchContract(), nên phần tử cuối là mới
-            // nhất) — chỉ log camera có gắn imagePath (EventLogEntity.imagePath, xem CameraSkill.
+            // ✅ SỬA: trước đây chỉ lấy `.lastOrNull { imagePath != null }` — 1 ảnh MỚI NHẤT duy
+            // nhất, dù text trả lời có thể liệt kê 4-9 cảnh báo (mỗi cảnh báo có ảnh riêng). Giờ
+            // lấy TẤT CẢ ảnh khớp filter hiện tại (logs đã sort tăng dần theo timestamp ở
+            // executeSearchContract() → giữ nguyên thứ tự cũ→mới), cắt tối đa MAX_RESULT_IMAGES để
+            // tránh trả về hàng chục ảnh khi filter rộng (vd hỏi chung "camera hôm nay thế nào").
+            // Chỉ log camera có gắn imagePath (EventLogEntity.imagePath, xem CameraSkill.
             // saveAlertToHistory()); tuya/call/chat luôn null nên tự động không có ảnh đính kèm.
-            val bestImagePath = searchResult.logs.lastOrNull { it.imagePath != null }?.imagePath
+            val bestImagePaths = searchResult.logs
+                .mapNotNull { it.imagePath }
+                .distinct()
+                .takeLast(MAX_RESULT_IMAGES)
+                .ifEmpty { null }
 
             withTimeout(15_000L) {
                 val responsePass2 = groqClient.chat(
@@ -1289,10 +1300,11 @@ class AgentKernel @Inject constructor(
                     toolDepth = toolDepth + 1,
                     lastSearchResultText = searchResult.summaryText
                 )
-                // ✅ MỚI: ưu tiên ảnh do lượt gọi sâu hơn (nếu có) tự tìm được; nếu không, dùng
-                // ảnh từ chính lượt search này — trường hợp thường gặp nhất vì pass 2 thường trả
-                // thẳng văn bản (không gọi tool nữa) nên outcome.imagePath ở đó luôn null.
-                outcome.copy(imagePath = outcome.imagePath ?: bestImagePath)
+                // ✅ SỬA: ưu tiên danh sách ảnh do lượt gọi sâu hơn (nếu có) tự tìm được; nếu
+                // không, dùng danh sách ảnh từ chính lượt search này — trường hợp thường gặp nhất
+                // vì pass 2 thường trả thẳng văn bản (không gọi tool nữa) nên outcome.imagePaths ở
+                // đó luôn null.
+                outcome.copy(imagePaths = outcome.imagePaths ?: bestImagePaths)
             }
         } catch (e: CancellationException) {
             throw e
@@ -1629,6 +1641,11 @@ class AgentKernel @Inject constructor(
         // về top N dòng khớp gần nhất về thời gian cho AI thay vì mặc định 20 dòng — tương tự
         // tinh thần MAX_QA_MATCHES_IN_CONTEXT bên trên cho catalog_search.
         private const val KEYWORD_MATCH_LIMIT = 5
+
+        // ✅ MỚI: số ảnh tối đa đính kèm cho 1 câu trả lời khi search khớp nhiều cảnh báo cùng
+        // lúc (vd "hôm nay camera có cảnh báo gì") — tránh trả về hàng chục ảnh khi filter rộng,
+        // vẫn đủ để UI hiển thị gallery cho các trường hợp thường gặp (vài cảnh báo trong ngày).
+        private const val MAX_RESULT_IMAGES = 9
 
         // Số lượt hỏi tiếp theo sau 1 lần search DB thật mà vẫn được coi là "đang đào sâu"
         // vào cùng kết quả đó, dù câu hỏi không chứa từ khoá domain nào (camera/tuya/chat...).
