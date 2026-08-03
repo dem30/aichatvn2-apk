@@ -401,10 +401,16 @@ class AgentKernel @Inject constructor(
                         // hợp nào của nhánh admin nữa.
                         val toolGuard = buildToolCallingGuard(resolveActiveDomains(message, username))
 
+                        // ✅ SỬA BUG (log thực tế): dòng "Câu hỏi cần dữ liệu thật... luôn gọi
+                        // db_search trước" trước đây nằm ở ĐÂY (trước DB_SEARCH_GUARD_MARKER trong
+                        // toolGuard) — nên stripDbSearchInvite() ở Pass 2 (interceptAndExecuteToolCall)
+                        // không cắt được, khiến system prompt Pass 2 vẫn chứa lời mời gọi tool dù
+                        // ngay bên dưới đã có "Không trả JSON gọi tool nữa". Dòng này giờ đã dời vào
+                        // buildToolCallingGuard() (ngay sau marker) nên bỏ khỏi đây, tránh lặp lại 2
+                        // lần ở Pass 1 lẫn leak sang Pass 2.
                         val minimalAdminGuard =
                             "Không tự nhận đã điều khiển thiết bị nếu chưa chắc. Trả lời tối đa $maxSentences câu. " +
-                            "Không tự xử lý đơn hàng/thanh toán/hẹn lịch. " +
-                            "Câu hỏi cần dữ liệu thật hoặc thông tin chung → luôn gọi db_search trước, không tự kết luận không có dữ liệu."
+                            "Không tự xử lý đơn hàng/thanh toán/hẹn lịch."
 
                         val fullContext = buildString {
                             append(minimalAdminGuard)
@@ -1929,12 +1935,20 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         // riêng: (1) mệnh lệnh dứt khoát PHẢI thử tool trước khi từ chối — đặt lên đầu, không
         // pha lẫn câu phủ định nào; (2) giới hạn hẹp CHỈ về hành động (đơn hàng/thanh toán/hẹn
         // lịch), không đụng đến phạm vi trả lời thông tin.
+        // ✅ SỬA BUG (phát hiện qua log request thật gửi Groq): dòng "⚠️ ... LUÔN gọi db_search
+        // trước..." trước đây nằm TRONG antiHallucinationGuard — tức nằm TRƯỚC
+        // DB_SEARCH_GUARD_MARKER trong baseContext. stripDbSearchInvite()/stripCatalogSearchInvite()
+        // chỉ cắt phần SAU marker, nên dòng này bị lọt nguyên vẹn vào system prompt của PASS 2 —
+        // mâu thuẫn trực tiếp với chỉ thị "Không trả JSON gọi tool nữa" cũng nằm trong cùng system
+        // prompt đó. Đã dời dòng này xuống buildToolCallingGuard() (ngay sau
+        // DB_SEARCH_GUARD_MARKER) để bị cắt cùng lúc với toàn bộ khối hướng dẫn gọi tool ở Pass 2 —
+        // xem đoạn "🚨 LUÔN gọi db_search trước" trong buildToolCallingGuard().
         val antiHallucinationGuard =
             "⚠️ Không tự nhận đã điều khiển thiết bị thật (bật/tắt/mở/đóng/đặt lịch...) — " +
             "nếu chưa chắc đã thực hiện, hỏi lại rõ hơn hoặc báo chưa làm được.\n" +
             "⚠️ Trả lời tối đa $maxSentences câu, trừ khi người dùng yêu cầu giải thích chi tiết hoặc liệt kê đầy đủ.\n" +
-            "⚠️ Câu hỏi cần dữ liệu thật (camera/thiết bị/tin nhắn/cuộc gọi) HOẶC thông tin chung chưa chắc (sản phẩm/giá/chính sách/FAQ...) → LUÔN gọi db_search trước. TUYỆT ĐỐI không tự kết luận \"không có dữ liệu\"/\"không hỗ trợ\" khi CHƯA gọi tool.\n" +
             "⚠️ Hệ thống KHÔNG tự xử lý đơn hàng/thanh toán/hẹn lịch hay thực hiện hành động thay khách — chỉ tra cứu thông tin và ghi nhận yêu cầu để nhân viên xử lý."
+
 
 
         val houseManagerContext = try {
@@ -2049,6 +2063,7 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         }
 
         return DB_SEARCH_GUARD_MARKER +
+            "🚨 Câu hỏi cần dữ liệu thật (camera/thiết bị/tin nhắn/cuộc gọi) HOẶC thông tin chung chưa chắc (sản phẩm/giá/chính sách/FAQ...) → LUÔN gọi db_search trước. TUYỆT ĐỐI không tự kết luận \"không có dữ liệu\"/\"không hỗ trợ\" khi CHƯA gọi tool.\n" +
             "Trả về đúng 1 JSON, không giải thích, không gọi tool 2 lần trong 1 lượt:\n" +
             "{\"tool\":\"db_search\",\"timeframe\":\"...\",\"object\":\"...\",\"category\":\"...\",\"target\":\"...\",\"keyword\":\"...\",\"state\":\"...\",\"call_status\":\"...\",\"granularity\":\"...\"}\n" +
             toolGuardRules.trimEnd() + "\n" +

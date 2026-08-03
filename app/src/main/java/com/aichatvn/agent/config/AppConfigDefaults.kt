@@ -574,14 +574,14 @@ object AppConfigDefaults {
             key = GLOBAL_TOOL_GUARD_RULES,
             value = "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\n" +
                 "target: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
-                "keyword: từ khoá lọc nội dung log/tin nhắn. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status.\n" +
+                "keyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera hỏi về sự kiện , cảnh báo → \"cảnh báo\".\n" +
                 "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
                 "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
                 "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → today|yesterday|last_3_days|last_7_days.\n" +
                 "object: person|car|motorbike|dog|cat|package|all.\n" +
                 "granularity: summary|detail.\n" +
                 "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +
-                "Chưa có data thật ở lượt này → không bịa nội dung/giờ/chi tiết.",
+                "lưu ý: Chưa có data thật ở lượt này → không bịa nội dung/giờ/chi tiết...",
             type = "string",
             pluginId = "global",
             label = "Luật diễn giải ý định (Tool Guard Rules)",
@@ -590,12 +590,9 @@ object AppConfigDefaults {
         AppConfigEntity(
             key = GLOBAL_PASS2_MEMORY_INSTRUCTION,
             value = "Dùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa. Trả lời ngắn gọn, tự nhiên, đi thẳng vào trọng tâm câu hỏi.\n" +
-                "🚨 BẮT BUỘC: sau khi trả lời xong, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng định dạng: " +
-                "[REF_TIMESTAMPS: hh:mm:ss dd/MM/yyyy, hh:mm:ss dd/MM/yyyy, ...] — liệt kê CHÍNH XÁC (copy nguyên văn " +
-                "từ trong ngoặc [...] của dữ liệu bên trên, không tự đổi định dạng/làm tròn) timestamp của MỌI dòng " +
-                "dữ liệu mà câu trả lời của bạn có nhắc tới hoặc dựa vào (kể cả dòng \"Bình thường\" nếu dùng nó để " +
-                "trả lời KHÔNG/không có gì bất thường). Nếu câu trả lời không dựa vào dòng dữ liệu cụ thể nào (vd chỉ " +
-                "là câu chào hỏi), để trống: [REF_TIMESTAMPS: ]. Dòng này LUÔN ở cuối cùng, không viết gì sau nó.",
+                "🚨 BẮT BUỘC: Sau khi bạn trả lời cho người dùng xong, \n" +
+                "Nếu có dữ liệu  camera, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng định dạng: [REF_TIMESTAMPS: hh:mm:ss dd/MM/yyyy, hh:mm:ss dd/MM/yyyy, ...] — liệt kê CHÍNH XÁC để kiểm chứng dữ liệu cho câu trả lời của bạn.\n" +
+                "[REF_TIMESTAMPS: ]. Dòng này LUÔN ở cuối cùng, không viết gì sau nó.",
             type = "string",
             pluginId = "global",
             label = "Chỉ thị SYSTEM_MEMORY ở Pass 2 (khi đã có dữ liệu thật)",
