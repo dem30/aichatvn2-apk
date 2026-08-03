@@ -16,7 +16,12 @@ data class OptionItem(
 
 @Singleton
 class DynamicOptionRegistry @Inject constructor(
-    private val database: AppDatabase
+    private val database: AppDatabase,
+    // 🌟 MỚI: cần Set<Plugin> để build danh sách "chọn Plugin/Action đích" cho case
+    // plugin_id/action_id bên dưới — dùng lại đúng multibinding Set<Plugin> đã có sẵn qua
+    // các @IntoSet trong AppModule.kt (đã dùng cho AgentKernel), không cần khai báo gì thêm
+    // ở tầng DI.
+    private val plugins: Set<@JvmSuppressWildcards Plugin>
 ) {
     suspend fun getOptions(
         semanticType: String?,
@@ -25,6 +30,24 @@ class DynamicOptionRegistry @Inject constructor(
         if (semanticType.isNullOrBlank()) return@withContext emptyList()
 
         when (semanticType) {
+            // 🌟 MỚI: Nạp danh sách Plugin đích để lên lịch (dùng cho schedule.add/update,
+            // tham số "pluginId" semanticType="plugin_id"). Loại "schedule" khỏi chính nó để
+            // tránh đệ quy (lên lịch cho hành động... lên lịch).
+            "plugin_id" -> {
+                plugins.filter { it.manifest.routable && it.manifest.id != "schedule" }
+                    .map { OptionItem(it.manifest.id, it.manifest.name) }
+            }
+            // 🌟 MỚI: Nạp danh sách Action của Plugin đã chọn ở "pluginId" phía trên — dùng
+            // dependsOn="pluginId" (xem PluginParameter khai báo trong ScheduleSkill.kt), giống
+            // hệt cơ chế precondition_attribute phụ thuộc "source" bên dưới.
+            "action_id" -> {
+                val pluginId = currentValues["pluginId"] ?: currentValues["plugin_id"] ?: ""
+                plugins.find { it.manifest.id == pluginId }
+                    ?.manifest?.actions
+                    ?.filter { it.enabled }
+                    ?.map { OptionItem(it.name, it.description) }
+                    ?: emptyList()
+            }
             "device" -> {
                 database.tuyaDeviceDao().getAllDevices().map { dev ->
                     OptionItem(dev.id.trim(), "${dev.name} (${dev.id.takeLast(4)})")

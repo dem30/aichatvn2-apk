@@ -5,6 +5,7 @@ import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.AgentKernel.Intent
 import com.aichatvn.agent.core.*
 import com.aichatvn.agent.core.plugin.Plugin
+import com.aichatvn.agent.core.plugin.DynamicOptionRegistry // 🌟 MỚI
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.WorldStateHelper
@@ -26,7 +27,11 @@ class IntentExecutor @Inject constructor(
     private val configProvider: AppConfigProvider, 
     private val logger: Logger,
     // ✅ ĐÃ SỬA LỖI 4: Tiêm Provider của Quản gia (đảm bảo không rủi ro phụ thuộc vòng với AppModule)
-    private val houseManagerProvider: javax.inject.Provider<HouseManagerSkill>
+    private val houseManagerProvider: javax.inject.Provider<HouseManagerSkill>,
+    // 🌟 MỚI: Một nguồn duy nhất cho MỌI picker (device/camera/call/customer/house_policy/
+    // plugin_id/action_id/...) — dùng chung với SmartActionFormSheet (form UI), thay cho các
+    // nhánh "if (actualKey == ...)" hardcode riêng lẻ từng loại đã có trước đây.
+    private val optionRegistry: DynamicOptionRegistry
 ) {
 
     suspend fun executeIntent(
@@ -110,7 +115,9 @@ class IntentExecutor @Inject constructor(
         // ✅ ĐÃ SỬA LỖI 4 (Vùng an toàn): lồng Policy Check của Quản gia trực tiếp vào chuỗi gán executionResult
         // Việc này bảo đảm hệ thống không bị return "cụt", giữ nguyên dấu vết trace và turn lịch sử hội thoại đầy đủ.
         val executionResult = if (missing.isNotEmpty()) {
-            val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action)
+            // 🌟 SỬA: truyền thêm normalizedIntent.params làm "knownParams" — để nhánh
+            // action_id trong DynamicOptionRegistry biết pluginId đã chọn là gì (dependsOn).
+            val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action, normalizedIntent.params)
             PluginResult.NeedMoreInfo(missing, question, options)
         } else if (worldStateBlocked) {
             PluginResult.Failure("⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta?.description ?: normalizedIntent.action}\" (Cần trạng thái: ${worldStateCondition?.attrKey} = ${worldStateCondition?.expected}).")
@@ -353,6 +360,10 @@ class IntentExecutor @Inject constructor(
         }
     }
 
+    // ⚠️ Hàm dành cho màn Diagnostics/Pipeline Graph (mô phỏng câu hỏi mà KHÔNG động DB) —
+    // vẫn giữ nguyên nhánh hardcode cũ vì nó chỉ hiển thị TEXT câu hỏi để debug, không cần
+    // danh sách option thật. Không ảnh hưởng UX luồng chat thật (xem getQuestionForMissingParam
+    // bên dưới mới là hàm dùng cho luồng chạy thật).
     fun getQuestionForMissingParamDiagnostic(
         param: String, 
         plugin: Plugin? = null, 
@@ -390,54 +401,49 @@ class IntentExecutor @Inject constructor(
         }
     }
 
+    // 🌟 SỬA (Quy về một mối): trước đây hàm này hardcode riêng từng nhánh if cho
+    // camera/device/schedule-id — mỗi domain mới (call, customer, house_policy, plugin_id...)
+    // phải quay lại sửa file này. Giờ MỌI semanticType đều đi qua chung
+    // DynamicOptionRegistry.getOptions() — đúng nguồn dữ liệu mà SmartActionFormSheet (form UI
+    // thủ công) đã dùng — nên chat NLU và form UI luôn nhất quán, thêm domain mới chỉ cần sửa
+    // đúng 1 chỗ (DynamicOptionRegistry).
     suspend fun getQuestionForMissingParam(
         param: String, 
         plugin: Plugin? = null, 
-        actionName: String? = null
+        actionName: String? = null,
+        // 🌟 MỚI: các tham số ĐÃ BIẾT của intent hiện tại — cần thiết để resolve các case
+        // phân tầng kiểu dependsOn (vd action_id phụ thuộc pluginId đã chọn ở bước trước).
+        knownParams: Map<String, Any> = emptyMap()
     ): Pair<String, Map<String, String>> {
-        val actualKey = if (param.startsWith("params.")) param.removePrefix("params.") else param
-        val targetAction = plugin?.manifest?.actions.orEmpty().find { it.name == actionName }
-        val paramMeta = targetAction?.parameters?.find { it.name == actualKey }
-        val semanticType = paramMeta?.semanticType?.lowercase() ?: ""
+        val isNested = param.startsWith("params.")
+        val actualKey = if (isNested) param.removePrefix("params.") else param
 
-        if (actualKey in setOf("camera", "camera_id", "cameraId")) {
-            val cameras = database.cameraDao().getActiveCameras()
-            if (cameras.isNotEmpty()) {
-                return buildNumberedQuestion(
-                    "Bạn muốn thao tác với camera nào?",
-                    cameras.map { 
-                        val displayName = if (!it.landinfo.isNullOrBlank()) {
-                            "${it.landinfo} (${it.id})"
-                        } else {
-                            it.id
-                        }
-                        displayName to it.id 
-                    }
-                )
-            }
+        // Nếu là tham số LỒNG (vd "params.device" của schedule.add), phải tra đúng action ĐÍCH
+        // (vd smart_switch.set) để lấy semanticType thật — không phải action "add" của chính
+        // schedule — và dùng chính "params" lồng bên trong làm nguồn currentValues cho dependsOn.
+        val (effectiveAction, depsSource) = if (isNested) {
+            val targetPluginId = knownParams["pluginId"]?.toString() ?: knownParams["plugin_id"]?.toString() ?: ""
+            val targetActionName = knownParams["action"]?.toString() ?: knownParams["action_id"]?.toString() ?: ""
+            val tAction = plugins.find { it.manifest.id == targetPluginId }
+                ?.manifest?.actions?.find { it.name == targetActionName }
+            @Suppress("UNCHECKED_CAST")
+            val nested = (knownParams["params"] as? Map<String, Any>) ?: emptyMap()
+            tAction to nested
+        } else {
+            plugin?.manifest?.actions.orEmpty().find { it.name == actionName } to knownParams
         }
 
-        if (actualKey in setOf("device", "device_id", "deviceId")) {
-            val devices = database.tuyaDeviceDao().getAllDevices()
-            if (devices.isNotEmpty()) {
-                val duplicateNames = devices.groupBy { it.name }.filterValues { it.size > 1 }.keys
-                return buildNumberedQuestion(
-                    "Bạn muốn điều khiển thiết bị nào?",
-                    devices.map { d ->
-                        val label = if (d.name in duplicateNames) "${d.name} (${d.id.takeLast(4)})" else d.name
-                        label to d.id
-                    }
-                )
-            }
-        }
-        if (actualKey == "id" && plugin?.manifest?.id == "schedule") {
-            val schedules = database.scheduleDao().getAllSchedules()
-            if (schedules.isNotEmpty()) {
-                return buildNumberedQuestion(
-                    "Bạn muốn thao tác với lịch trình nào?",
-                    schedules.map { "${it.pluginId}.${it.action} (${if (it.cron.isNotEmpty()) it.cron else "${it.intervalMinutes} phút"})" to it.id }
-                )
-            }
+        val paramMeta = effectiveAction?.parameters?.find { it.name == actualKey }
+        val semanticType = paramMeta?.semanticType ?: ""
+        val stringDeps = depsSource.mapValues { it.value.toString() }
+
+        // 🌟 MỘT NGUỒN DUY NHẤT cho MỌI loại picker: device, camera, call, customer,
+        // house_policy, schedule_ref, plugin_id, action_id, chatSession, precondition_*...
+        val options = optionRegistry.getOptions(semanticType, stringDeps)
+        if (options.isNotEmpty()) {
+            val prompt = paramMeta?.description?.takeIf { it.isNotBlank() }
+                ?: "Bạn muốn chọn giá trị nào cho '$actualKey'?"
+            return buildNumberedQuestion(prompt, options.map { it.label to it.value })
         }
 
         val isCronField = semanticType == "time" || actualKey == "cron" || actualKey == "time"
@@ -457,11 +463,11 @@ class IntentExecutor @Inject constructor(
         val text = when (actualKey) {
             "to", "email", "recipient"                 -> "Bạn muốn gửi đến email nào?"
             "subject"                                  -> "Tiêu đề email là gì thế bạn?"
-            "body"                                     -> "Nội dung email bạn muốn viết gì?"
-            "title"                                    -> "Tiêu đề thông báo là gì vậy bạn?"
-            "message"                                  -> "Nội dung thông báo bạn muốn gửi là gì?"
-            "pluginId", "plugin_id"                    -> "Bạn muốn lên lịch cho chức năng nào?"
-            else                                       -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
+            "body"                                      -> "Nội dung email bạn muốn viết gì?"
+            "title"                                     -> "Tiêu đề thông báo là gì vậy bạn?"
+            "message"                                   -> "Nội dung thông báo bạn muốn gửi là gì?"
+            "pluginId", "plugin_id"                     -> "Bạn muốn lên lịch cho chức năng nào?"
+            else                                        -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
         }
         return (text to emptyMap())
     }

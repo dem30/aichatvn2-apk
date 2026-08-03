@@ -278,7 +278,10 @@ class PendingIntentResolver @Inject constructor(
         if (stillMissing.isNotEmpty()) {
             val madeProgress = stillMissing.size < pending.missingParams.size
             val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
-            val (question, options) = intentExecutor.getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action)
+            // 🌟 SỬA: truyền thêm normalizedMergedParams làm "knownParams" — cần thiết để
+            // getQuestionForMissingParam giải quyết đúng các case phân tầng (vd hỏi "action"
+            // sau khi "pluginId" vừa được chọn ở lượt trước).
+            val (question, options) = intentExecutor.getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action, normalizedMergedParams)
 
             // ✅ ĐÃ SỬA: giữ nguyên createdAt gốc (để sắp thứ tự hàng đợi ổn định — xem
             // ChatHistoryManager.getActivePendingIntents()), CHỈ cập nhật lastInteractionAt
@@ -324,10 +327,4 @@ class PendingIntentResolver @Inject constructor(
 
         return DeviceCommandResult(pluginId = targetPlugin.manifest.id, result = executionResult)
     }
-
-    
-
-
-
-    
 }

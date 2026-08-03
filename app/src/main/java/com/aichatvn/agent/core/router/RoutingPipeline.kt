@@ -336,6 +336,12 @@ class RoutingPipeline @Inject constructor(
         inputParams: Map<String, Any>,
         context: RoutingContext,
         excludeIntentId: String? = null,
+        // 🌟 SỬA (fix bug tự-tham-chiếu): loại QA có "plugin" trong JSON answer trùng với chính
+        // plugin đang gọi hàm này — tránh trường hợp schedule.add khớp fuzzy trúng QA tự sinh
+        // của chính schedule.add (vd ví dụ ngắn "lên lịch") rồi tự điền pluginId="schedule",
+        // action="add" cho chính nó, khiến params.device (tham số lồng thật sự cần hỏi) biến
+        // mất khỏi getUnresolvedParams do đệ quy trỏ ngược vào chính action "add".
+        excludePluginId: String? = null,
         depth: Int = 0
     ): Map<String, Any> {
         if (depth > MAX_DEPTH) return emptyMap()
@@ -343,7 +349,27 @@ class RoutingPipeline @Inject constructor(
         val secondaryIntentQA = context.globalMatchResult.intentMatches
             .filter { it.first.type == "intent" }
             .map { it.first }
-            .firstOrNull { it.id != excludeIntentId }
+            .firstOrNull { candidate ->
+                if (candidate.id == excludeIntentId) return@firstOrNull false
+                // 🌟 SỬA (fix bug QA không kiểm soát): QA tự sinh mà tham số required lồng bên
+                // trong chỉ là placeholder rỗng (đánh dấu "auto_init_incomplete" bởi QAInitBuilder)
+                // không đủ tin cậy để auto-fill plugin/action/params cho một intent khác — vì
+                // "params" của chính nó còn thiếu giá trị thật (vd device chưa xác định).
+                if (candidate.category == "auto_init_incomplete") {
+                    logger.d("RoutingPipeline", "⚠️ Bỏ qua QA chưa đầy đủ tham số '${candidate.question}' (category=auto_init_incomplete) khi tìm secondaryIntentQA.")
+                    return@firstOrNull false
+                }
+                if (excludePluginId != null) {
+                    val candidatePluginId = try {
+                        JSONObject(candidate.answer).optString("plugin", "")
+                    } catch (_: Exception) { "" }
+                    if (candidatePluginId == excludePluginId) {
+                        logger.d("RoutingPipeline", "⚠️ Bỏ qua QA tự-tham-chiếu '${candidate.question}' (plugin='$candidatePluginId') khi resolve tham số cho chính plugin '$excludePluginId'.")
+                        return@firstOrNull false
+                    }
+                }
+                true
+            }
 
         val resolved = mutableMapOf<String, Any>()
 
@@ -1090,11 +1116,15 @@ class RoutingPipeline @Inject constructor(
         val finalTargetPlugin = targetPlugin ?: return RouterOutcome.RouterFailed("Không tìm thấy Plugin")
         val targetAction = finalTargetPlugin.manifest.actions.find { it.name == effectiveAction } ?: return RouterOutcome.RouterFailed("Không tìm thấy Action")
         
+        // 🌟 SỬA: áp dụng cùng cơ chế chặn tự-tham-chiếu như Tầng 4 Wrapper — plugin đích ở đây
+        // do LLM xác định (có thể là "schedule"), nên vẫn cần loại QA của chính plugin đó khỏi
+        // việc được chọn làm secondaryIntentQA khi auto-fill tham số.
         val finalParams = resolveParametersWithMeta(
             parameters = targetAction.parameters,
             inputParams = rawIntent.params,
             context = context,
             excludeIntentId = null,
+            excludePluginId = finalTargetPlugin.manifest.id,
             depth = 0
         )
         

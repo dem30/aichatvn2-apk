@@ -49,11 +49,20 @@ class QAInitBuilder @Inject constructor(
                 finalTriggers.forEach { question ->
                     val overrides = action.exampleOverrides[question] ?: emptyMap()
 
+                    // 🌟 SỬA (fix bug QA không kiểm soát): theo dõi xem có tham số REQUIRED nào
+                    // phải rơi về placeholder rỗng (không có override lẫn defaultValue thật) hay
+                    // không. QA kiểu này chỉ đủ tin cậy để NHẬN DIỆN ý định (fuzzy match câu hỏi),
+                    // KHÔNG đủ tin cậy để downstream (resolvePluginIdFromSecondary/
+                    // resolveNestedParams) tự động lấy params của nó gán thẳng cho 1 intent khác —
+                    // vì "params" thực chất vẫn còn thiếu giá trị thật (vd device chưa xác định).
+                    var hasIncompleteRequiredParam = false
                     val schemaParams = JSONObject()
                     action.parameters.forEach { param ->
-                        val value = overrides[param.name]
-                            ?: param.defaultValue
-                            ?: getDefaultPlaceholder(param)
+                        val overrideOrDefault = overrides[param.name] ?: param.defaultValue
+                        if (param.required && overrideOrDefault == null) {
+                            hasIncompleteRequiredParam = true
+                        }
+                        val value = overrideOrDefault ?: getDefaultPlaceholder(param)
                         schemaParams.put(param.name, value)
                     }
 
@@ -68,23 +77,28 @@ class QAInitBuilder @Inject constructor(
 
                     val schemaString = jsonSchema.toString()
                     val existing = existingByQuestion[question]
-                    
+                    // 🌟 SỬA: "auto_init_incomplete" khi thiếu tham số required thật — dùng để
+                    // resolveParametersWithMeta/resolvePluginIdFromSecondary lọc bỏ khi cần một
+                    // secondaryIntentQA đáng tin cậy để auto-fill (xem RoutingPipeline.kt).
+                    val effectiveCategory = if (hasIncompleteRequiredParam) "auto_init_incomplete" else "auto_init"
+
                     if (existing == null) {
                         val qa = QAEntity(
                             id = UUID.randomUUID().toString(),
                             question = question,
                             answer = schemaString,
                             type = "intent",
-                            category = "auto_init",
+                            category = effectiveCategory,
                             createdBy = username,
                             createdAt = System.currentTimeMillis(),
                             timestamp = System.currentTimeMillis()
                         )
                         qaDao.insertQA(qa)
                         intentCount++
-                    } else if (!isJsonStructureIdentical(existing.answer, schemaString)) {
+                    } else if (!isJsonStructureIdentical(existing.answer, schemaString) || existing.category != effectiveCategory) {
                         val updated = existing.copy(
                             answer = schemaString,
+                            category = effectiveCategory,
                             timestamp = System.currentTimeMillis()
                         )
                         qaDao.updateQA(updated)

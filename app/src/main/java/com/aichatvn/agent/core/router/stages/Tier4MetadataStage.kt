@@ -40,11 +40,19 @@ class Tier4MetadataStage @Inject constructor(
                     schemaParams[param.name] = param.defaultValue ?: ""
                 }
                 
+                // 🌟 SỬA (fix bug tự-tham-chiếu): truyền excludePluginId = "schedule" — ví dụ
+                // ("lên lịch", "đặt lịch"...) của chính schedule.add rất ngắn/chung chung, dễ bị
+                // globalMatchResult fuzzy-match trúng khi câu user chỉ nói "lên lịch cho ổ cắm
+                // thông minh" (chưa đủ cụ thể để khớp QA của Tuya). Nếu không loại trừ, hệ thống
+                // sẽ tự điền pluginId="schedule"/action="add" cho CHÍNH intent schedule.add đang
+                // build, khiến bước kiểm tra tham số lồng (params.device) bị trỏ nhầm vào chính
+                // action "add" thay vì action thật của plugin đích — nên không hỏi thiết bị nữa.
                 val resolvedParams = pipeline.resolveParametersWithMeta(
                     parameters = targetAction.parameters,
                     inputParams = schemaParams,
                     context = context,
                     excludeIntentId = null,
+                    excludePluginId = "schedule",
                     depth = 0
                 )
                 

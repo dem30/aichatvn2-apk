@@ -42,8 +42,14 @@ class ScheduleSkill @Inject constructor(
                     "QUAN TRỌNG: param 'params' phải chứa ĐẦY ĐỦ các tham số bắt buộc của action đích.",
                 examples = listOf("đặt lịch", "tạo lịch", "lên lịch", "thêm lịch"),
                 parameters = listOf(
-                    PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", true, "plugin_id"),
-                    PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", true, "action_id"),
+                    // 🌟 SỬA: Trước đây pluginId/action chỉ hỏi tự do bằng text ("Bạn muốn lên
+                    // lịch cho chức năng nào?") vì IntentExecutor không có picker riêng cho
+                    // plugin_id/action_id. Giờ DynamicOptionRegistry đã hỗ trợ 2 semanticType này
+                    // (xem case "plugin_id"/"action_id"), nên "action" chỉ cần khai dependsOn =
+                    // "pluginId" — picker sẽ tự động phân tầng giống hệt cách
+                    // check_precondition.attribute phụ thuộc "source" trong HouseManagerSkillImpl.
+                    PluginParameter("pluginId", "string", "Chọn chức năng muốn lên lịch", true, "plugin_id"),
+                    PluginParameter("action", "string", "Chọn hành động cụ thể", true, "action_id", dependsOn = "pluginId"),
                     PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false, "time"),
                     PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false, "interval"),
                     PluginParameter("params", "object", "Tham số cho action đích theo đúng schema của plugin đó", false, "params"),
@@ -56,8 +62,10 @@ class ScheduleSkill @Inject constructor(
                 examples = listOf("sửa lịch trình", "cập nhật lịch trình", "thay đổi lịch trình", "đặt lại lịch"),
                 parameters = listOf(
                     PluginParameter("id", "string", "ID của lịch trình cần cập nhật", true, "schedule_ref"),
-                    PluginParameter("pluginId", "string", "Tên plugin đích (camera, light, email...)", false, "plugin_id"),
-                    PluginParameter("action", "string", "Hành động của plugin đích (scan, set, send...)", false, "action_id"),
+                    // 🌟 SỬA: đồng bộ dependsOn giống "add" ở trên — nhất quán 1 cơ chế cho cả
+                    // add lẫn update.
+                    PluginParameter("pluginId", "string", "Chọn chức năng muốn lên lịch", false, "plugin_id"),
+                    PluginParameter("action", "string", "Chọn hành động cụ thể", false, "action_id", dependsOn = "pluginId"),
                     PluginParameter("cron", "string", "Cron expression (0 7 * * *)", false, "time"),
                     PluginParameter("intervalMinutes", "number", "Khoảng cách phút", false, "interval"),
                     PluginParameter("params", "object", "Tham số mới cho action đích", false, "params"),
