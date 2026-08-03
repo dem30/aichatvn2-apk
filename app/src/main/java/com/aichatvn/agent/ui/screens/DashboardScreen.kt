@@ -57,6 +57,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+// ✅ MỚI: cho nút "Mời bạn dùng thử"
+import com.aichatvn.agent.ui.invite.InviteShareHelper
+import com.aichatvn.agent.ui.viewmodels.InviteUiState
 import androidx.navigation.NavController
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
@@ -107,6 +110,8 @@ fun DashboardScreen(
     val floorplanScale by viewModel.floorplanScale.collectAsState()
     
     val aiRecommendations by viewModel.aiRecommendations.collectAsState()
+    // ✅ MỚI: trạng thái nút "Mời bạn dùng thử"
+    val inviteUiState by viewModel.inviteUiState.collectAsState()
 
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -207,6 +212,27 @@ fun DashboardScreen(
         }
     }
 
+    // ✅ MỚI: khi tạo mã mời thành công, mở Share Sheet ngay; khi lỗi, hiện Snackbar.
+    // Gọi clearInviteUiState() sau khi xử lý để tránh mở lại Share Sheet oan lúc recompose.
+    LaunchedEffect(inviteUiState) {
+        when (val state = inviteUiState) {
+            is InviteUiState.Success -> {
+                val shareIntent = InviteShareHelper.buildInviteShareIntent(
+                    context = context,
+                    code = state.code,
+                    baseUrl = state.baseUrl
+                )
+                context.startActivity(shareIntent)
+                viewModel.clearInviteUiState()
+            }
+            is InviteUiState.Error -> {
+                snackbarHostState.showSnackbar(state.message)
+                viewModel.clearInviteUiState()
+            }
+            else -> {}
+        }
+    }
+
     if (showFloorplanScaleDialog) {
         var tempScale by remember { mutableStateOf(floorplanScale) }
         AlertDialog(
@@ -298,6 +324,21 @@ fun DashboardScreen(
                                     showFloorplanMenu = false
                                     viewModel.clearFloorplanPath()
                                 }
+                            )
+                        }
+                    }
+                    // ✅ MỚI: Icon "Mời bạn dùng thử" — gọi ViewModel.createInvite(), kết quả xử
+                    // lý ở LaunchedEffect(inviteUiState) phía trên (mở Share Sheet khi thành công).
+                    IconButton(
+                        onClick = { viewModel.createInvite() },
+                        enabled = inviteUiState !is InviteUiState.Loading
+                    ) {
+                        if (inviteUiState is InviteUiState.Loading) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.PersonAdd,
+                                contentDescription = "Mời bạn dùng thử"
                             )
                         }
                     }

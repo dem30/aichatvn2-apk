@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
+import com.aichatvn.agent.data.local.DeviceIdProvider
+import com.aichatvn.agent.data.remote.InviteApiService
+import com.aichatvn.agent.data.remote.InviteResult
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry
@@ -24,6 +27,16 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 
+// ✅ MỚI: Trạng thái riêng cho luồng "Mời bạn dùng thử" — tách khỏi executionMessage (dùng
+// chung cho lệnh thiết bị) vì UI cần biết chính xác lúc nào để mở Share Sheet (chỉ khi Success),
+// khác với executionMessage chỉ cần hiện Snackbar.
+sealed class InviteUiState {
+    object Idle : InviteUiState()
+    object Loading : InviteUiState()
+    data class Success(val code: String, val baseUrl: String) : InviteUiState()
+    data class Error(val message: String) : InviteUiState()
+}
+
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val deviceRegistry: DeviceRegistry,
@@ -31,7 +44,10 @@ class DashboardViewModel @Inject constructor(
     private val configProvider: AppConfigProvider,
     private val database: AppDatabase,               
     private val scheduleSkill: ScheduleSkill,         
-    private val logger: Logger
+    private val logger: Logger,
+    // ✅ MỚI: 2 dependency cho tính năng mời/kích hoạt — xem InviteApiService.kt/DeviceIdProvider.kt
+    private val deviceIdProvider: DeviceIdProvider,
+    private val inviteApiService: InviteApiService
 ) : ViewModel() {
 
     val deviceNodes: StateFlow<List<DeviceNode>> = deviceRegistry.deviceNodes
@@ -73,6 +89,10 @@ class DashboardViewModel @Inject constructor(
 
     private val _aiRecommendations = MutableStateFlow<List<QAEntity>>(emptyList())
     val aiRecommendations: StateFlow<List<QAEntity>> = _aiRecommendations.asStateFlow()
+
+    // ✅ MỚI: expose cho DashboardScreen theo dõi luồng tạo mã mời
+    private val _inviteUiState = MutableStateFlow<InviteUiState>(InviteUiState.Idle)
+    val inviteUiState: StateFlow<InviteUiState> = _inviteUiState.asStateFlow()
 
     init {
         refreshDashboardNodes()
@@ -255,12 +275,6 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
-
-
-
-
-    
-
     private fun loadFloorplanPath() {
         viewModelScope.launch {
             val savedPath = configProvider.getString(FLOORPLAN_PATH_KEY, "")
@@ -425,6 +439,32 @@ class DashboardViewModel @Inject constructor(
 
     fun clearExecutionMessage() {
         _executionMessage.value = null
+    }
+
+    // ✅ MỚI: Gọi khi người dùng bấm nút "Mời bạn dùng thử" trên TopAppBar. Server tự chặn nếu
+    // device_id chưa activate hoặc đã quá 5 mã/24h (xem app.py: create_invite()).
+    fun createInvite() {
+        viewModelScope.launch {
+            _inviteUiState.value = InviteUiState.Loading
+            val deviceId = deviceIdProvider.getOrCreateDeviceId()
+            when (val result = inviteApiService.createInvite(deviceId)) {
+                is InviteResult.Success -> {
+                    val baseUrl = configProvider.getString(
+                        com.aichatvn.agent.config.AppConfigDefaults.GLOBAL_GATEWAY_URL, ""
+                    )
+                    _inviteUiState.value = InviteUiState.Success(result.code, baseUrl)
+                }
+                is InviteResult.Error -> {
+                    _inviteUiState.value = InviteUiState.Error(result.message)
+                }
+            }
+        }
+    }
+
+    // ✅ MỚI: Reset về Idle sau khi DashboardScreen đã xử lý xong (mở Share Sheet / hiện lỗi),
+    // tránh việc mở lại Share Sheet oan khi Compose recompose lại state cũ.
+    fun clearInviteUiState() {
+        _inviteUiState.value = InviteUiState.Idle
     }
 
     companion object {

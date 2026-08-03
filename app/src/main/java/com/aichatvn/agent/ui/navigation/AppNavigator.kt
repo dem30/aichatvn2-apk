@@ -30,6 +30,8 @@ import com.aichatvn.agent.ui.viewmodels.NavBadgeViewModel
 import com.aichatvn.agent.ui.viewmodels.HouseManagerViewModel
 import com.aichatvn.agent.ui.viewmodels.CallViewModel
 import com.aichatvn.agent.skills.CallState
+import com.aichatvn.agent.ui.activation.ActivationGateViewModel
+import com.aichatvn.agent.ui.activation.ActivationScreen
 
 sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector) {
     object Dashboard    : Screen("dashboard",   R.string.tab_dashboard,   Icons.Default.Dashboard)
@@ -58,6 +60,9 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
         const val PIPELINE_GRAPH_ROUTE = "pipeline_graph"
         const val DIAL_ROUTE = "dial"
         const val CALL_ROUTE = "call"
+
+        // ✅ MỚI: Màn chặn đầu tiên trước Dashboard khi thiết bị chưa activation_status.
+        const val ACTIVATION_ROUTE = "activation"
     }
 }
 
@@ -70,6 +75,19 @@ fun AppNavigator(
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
+
+    // ✅ MỚI: Chặn màn đầu tiên bằng activation_status — đọc 1 lần lúc mở app (từ Room qua
+    // DeviceIdProvider). null = đang đọc, để tránh flash sai màn (Dashboard rồi nhảy về
+    // Activation) trước khi biết chắc trạng thái.
+    val activationGateViewModel: ActivationGateViewModel = hiltViewModel()
+    val isActivated by activationGateViewModel.isActivated.collectAsState()
+
+    if (isActivated == null) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
+    }
 
     // Điều hướng Deep Link
     // ✅ SỬA: chỉ navigate khi pendingDeepLinkRoute khác currentRoute hiện tại.
@@ -115,6 +133,9 @@ fun AppNavigator(
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             bottomBar = {
+                // ✅ SỬA: ẩn bottom nav hoàn toàn khi chưa activate — người mới không nên
+                // thấy 4 tab trước khi qua được màn kích hoạt.
+                if (isActivated == true) {
                 NavigationBar {
                     screens.forEach { screen ->
                         NavigationBarItem(
@@ -150,6 +171,7 @@ fun AppNavigator(
                         )
                     }
                 }
+                }
             }
         ) { paddingValues ->
             NavHost(
@@ -157,9 +179,17 @@ fun AppNavigator(
                 // ✅ SỬA (UX): trước đây mở app vào thẳng Chat — người mới thấy khung chat trống,
                 // không có cảm giác "AI đang lo cho nhà mình". Đổi sang Dashboard làm màn khởi
                 // động để khối tóm tắt "🏠 Nhà đang an toàn" là thứ đầu tiên họ thấy.
-                startDestination = Screen.Dashboard.route,
+                startDestination = if (isActivated == true) Screen.Dashboard.route else Screen.ACTIVATION_ROUTE,
                 modifier = Modifier.padding(paddingValues)
             ) {
+                composable(Screen.ACTIVATION_ROUTE) {
+                    ActivationScreen(onActivated = {
+                        navController.navigate(Screen.Dashboard.route) {
+                            popUpTo(Screen.ACTIVATION_ROUTE) { inclusive = true }
+                        }
+                    })
+                }
+
                 composable(Screen.Dashboard.route)   { DashboardScreen(navController) }
                 composable(Screen.Customer.route)    { CustomerScreen(navController) }
                 composable(Screen.Training.route)    { TrainingScreen(navController) }
