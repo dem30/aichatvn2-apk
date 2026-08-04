@@ -433,7 +433,13 @@ class CameraDetailViewModel @Inject constructor(
             // tiếp theo (init{} block), nên sau khi gạt tắt switch, người dùng vẫn thấy badge
             // cũ trong tối đa 5s dù DB đã cập nhật. Ép refresh diagnostics ngay sau khi ghi DB
             // để UI phản hồi tức thì.
+            // ✅ SỬA LẦN 2: gọi cameraSkill.getDiagnostics() ngay sau đây chỉ đọc cache
+            // _diagnostics.value cũ (chưa tính lại), vì updateDiagnostics() thật là private và
+            // chỉ chạy trong luồng quét ảnh — nên badge vẫn không đổi cho tới lượt quét kế tiếp.
+            // Gọi refreshDiagnostics() (public, mới thêm trong CameraSkill) để ép tính lại ngay
+            // với enableCooldown vừa ghi DB, thay vì chỉ đọc lại giá trị cũ.
             withContext(Dispatchers.IO) {
+                cameraSkill.refreshDiagnostics()
                 val diagMap = cameraSkill.getDiagnostics()
                 _diagnostics.value = diagMap[cameraId] as? Map<String, Any>
             }

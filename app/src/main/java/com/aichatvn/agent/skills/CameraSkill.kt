@@ -1972,7 +1972,15 @@ PluginAction(
     }
 
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
-    
+
+    // ✅ MỚI: getDiagnostics() chỉ đọc cache _diagnostics.value, được tính lần gần nhất lúc
+    // quét ảnh (updateDiagnostics() private, chỉ gọi trong luồng scan). Khi người dùng đổi
+    // config (vd tắt enableCooldown) từ UI, cache cũ vẫn còn nguyên tới lượt quét kế tiếp nên
+    // badge "Đang cooldown" không phản hồi tức thì. Hàm public này cho phép ép tính lại ngay.
+    suspend fun refreshDiagnostics() {
+        updateDiagnostics()
+    }
+
     private suspend fun updateDiagnostics() {
         // ✅ MỚI (day/night split): mỗi camera giờ báo cáo 2 bộ chỉ số (day/night) thay vì 1.
         val stats = learningStates.mapValues { (cameraId, state) ->
