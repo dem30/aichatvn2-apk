@@ -89,6 +89,23 @@ class DynamicOptionRegistry @Inject constructor(
                     OptionItem("vacation_safety", "🏖️ An toàn vắng nhà (vacation_safety)")
                 )
             }
+            // 🌟 MỚI: Nạp danh sách cảnh báo gần đây của camera đã chọn — dùng cho
+            // action mark_false_positive (tham số "alertId"), dependsOn="cameraId" giống
+            // hệt cơ chế "action_id" phụ thuộc "pluginId" ở trên. Chỉ lấy 1 lần (first())
+            // và giới hạn 10 bản ghi gần nhất để tránh danh sách quá dài khi camera có
+            // nhiều lịch sử cảnh báo.
+            "alert_id" -> {
+                val cameraId = currentValues["cameraId"] ?: ""
+                if (cameraId.isBlank()) return@withContext emptyList()
+                database.alertDao().getAlertsByCameraFlow(cameraId).first()
+                    .take(10)
+                    .map { alert ->
+                        val time = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault())
+                            .format(java.util.Date(alert.timestamp))
+                        val comment = alert.aiComment.take(40)
+                        OptionItem(alert.id.trim(), "$time — $comment")
+                    }
+            }
             // 🌟 MỚI: Nạp danh sách Lịch trình tự động đang có
             "schedule", "schedule_ref" -> {
                 database.scheduleDao().getAllSchedules().map { sch ->

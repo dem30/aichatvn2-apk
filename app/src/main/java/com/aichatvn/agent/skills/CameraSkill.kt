@@ -146,7 +146,11 @@ PluginAction(
                 examples = listOf("báo động giả camera", "không có trộm camera", "báo giả"),
                 parameters = listOf(
                     PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
-                    PluginParameter("alertId", "string", "Mã cảnh báo (tùy chọn)", false, "string")
+                    // 🌟 SỬA: Dùng semanticType = "alert_id" thay cho "string" — mở
+                    // Dropdown danh sách cảnh báo gần đây của camera đã chọn ở trên,
+                    // thay vì bắt người dùng gõ tay 1 mã cảnh báo mà họ không thể nhớ.
+                    PluginParameter("alertId", "string", "Chọn cảnh báo cần báo giả", false, "alert_id",
+                        dependsOn = "cameraId")
                 )
             ),
             
@@ -1983,11 +1987,17 @@ PluginAction(
                 "drift" to p.lastDrift,
                 "driftTrigger" to DRIFT_TRIGGER
             )
+            // ✅ SỬA: inCooldown trước đây chỉ xét cooldownUntil > now, không quan tâm
+            // camera.enableCooldown đang bật/tắt. Hệ quả: sau khi người dùng gạt TẮT cooldown,
+            // mốc cooldownUntil cũ (đã set từ trước đó) vẫn còn trong state nên UI vẫn báo
+            // "Đang cooldown" — dù logic quét thực tế (nhánh forceAi || enableCooldown==0 || ...)
+            // đã bỏ qua cooldown đúng. Đọc thêm enableCooldown của camera để đồng bộ UI với hành vi thật.
+            val cameraEnableCooldown = database.cameraDao().getCameraById(tid)?.enableCooldown ?: 1
             mapOf(
                 "day" to periodStats(state.day),
                 "night" to periodStats(state.night),
                 "realEvents" to state.realEvents,
-                "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
+                "inCooldown" to (cameraEnableCooldown == 1 && state.cooldownUntil > System.currentTimeMillis()),
                 "circuitBreakerOpen" to (cb?.isOpen ?: false),
                 "offlineCount" to (cb?.offlineCount ?: 0),
                 "pendingReset" to pendingResets.containsKey(tid)

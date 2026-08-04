@@ -429,6 +429,14 @@ class CameraDetailViewModel @Inject constructor(
                 database.cameraDao().updateCamera(cam.copy(enableCooldown = newCooldown))
             }
             loadCamera()
+            // ✅ SỬA: trước đây badge "⏳ Đang cooldown" chỉ được làm mới ở tick polling 5s
+            // tiếp theo (init{} block), nên sau khi gạt tắt switch, người dùng vẫn thấy badge
+            // cũ trong tối đa 5s dù DB đã cập nhật. Ép refresh diagnostics ngay sau khi ghi DB
+            // để UI phản hồi tức thì.
+            withContext(Dispatchers.IO) {
+                val diagMap = cameraSkill.getDiagnostics()
+                _diagnostics.value = diagMap[cameraId] as? Map<String, Any>
+            }
             logger.i("CameraDetailViewModel", "toggleCooldown ${cam.id} → $newCooldown")
         }
     }
