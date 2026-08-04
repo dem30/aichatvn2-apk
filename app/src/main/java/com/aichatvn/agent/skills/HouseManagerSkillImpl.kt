@@ -136,7 +136,18 @@ class HouseManagerSkillImpl @Inject constructor(
         capabilities = PluginCapabilities(dashboard = true),
         routable = true,
         visibleOnDashboard = true,
-        autoGenerateQA = true,
+        // 🌟 SỬA (chủ ý, không phải bug): CHỈ Camera/Device được điều khiển bằng chat tự do.
+        // Quản gia có các action nhạy cảm về an ninh (set_away_mode, set_policy) — rủi ro fuzzy-
+        // match sai qua chat cao hơn nhiều so với bật/tắt đèn (không thể "bật lại" 1 cách vô hại
+        // nếu chat hiểu nhầm và tắt oan chế độ an toàn vắng nhà/ban đêm). Trước đây để `true`
+        // nhưng KHÔNG action nào khai `examples` nên tình cờ QAInitBuilder vẫn sinh ra 0 QA — để
+        // `false` tường minh ở đây để chặn đứng khả năng ai đó vô tình "mở khoá" chat tự do cho
+        // các action này chỉ bằng cách thêm `examples` sau này mà không nhận ra hệ quả an ninh.
+        // routable vẫn giữ `true` — Quản gia KHÔNG mất khả năng dùng qua SmartActionFormSheet
+        // (Thêm hành động tự động trong Workflow Group) hay picker plugin_id của schedule.add;
+        // 2 đường đó là chọn tay/đánh số, không phải fuzzy-match tự do, nên không mang rủi ro
+        // tương tự.
+        autoGenerateQA = false,
         actions = listOf(
             PluginAction(
                 name = "evaluate",
