@@ -650,9 +650,12 @@ class AgentKernel @Inject constructor(
                     .split(Regex("\\s+"))
                     .map { it.trim() }
                     .filter { word ->
+                        // ✅ SỬA BƯỚC 3: Dùng bản normalize (không dấu) CHỈ ĐỂ QUYẾT ĐỊNH stopword/độ dài
                         val normWord = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(word.lowercase()) ?: word.lowercase()
+                        // Nhưng giữ NGUYÊN bản GỐC (có dấu) của `word` trong kết quả trả về
                         normWord.length > 1 && normWord !in STOPWORD_KEYWORDS
                     }
+                    // ✅ Đảm bảo keywords trả về GIỮ NGUYÊN DẤU (không gọi normalize() sau filter)
             } else {
                 emptyList()
             }

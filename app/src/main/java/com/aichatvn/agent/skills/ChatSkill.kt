@@ -158,12 +158,20 @@ class ChatSkill @Inject constructor(
             val normMsg = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(message.lowercase()) ?: ""
 
             val intent = when {
-                normMsg.contains("gia bao nhieu") || normMsg.contains("bao gia") || normMsg.contains("mua") || normMsg.contains("ban") -> "ask_price"
-                normMsg.contains("loi") || normMsg.contains("hong") || normMsg.contains("bao hanh") || normMsg.contains("ho tro") -> "support"
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "gia bao nhieu") ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "bao gia") ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "mua") ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "ban") -> "ask_price"
+                
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "loi") ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "hong") ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "bao hanh") ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "ho tro") -> "support"
+                
                 else -> "general"
             }
 
-            val urgency = if (normMsg.contains("gap") || normMsg.contains("ngay") || normMsg.contains("khan") || normMsg.contains("nguy") || normMsg.contains("trom") || normMsg.contains("chay")) "high" else "normal"
+            val urgency = if (com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "gap") || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "ngay") || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "khan") || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "nguy") || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "trom") || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(normMsg, "chay")) "high" else "normal"
 
             val existingState = database.worldStateDao().getState("chat", username)
             val prevUnread = existingState?.let {

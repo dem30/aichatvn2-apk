@@ -1026,12 +1026,20 @@ class RoutingPipeline @Inject constructor(
             .filter { it.second >= configAliasThreshold }
             .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
 
-        val queryNormalized = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
+        // ✅ SỬA BƯỚC 2: Dùng bản GIỮ DẤU thay bỏ dấu để Tier 4 match chính xác (tránh nhầm "Tắt" vs "Tất cả")
+        val queryKeepAccent = context.resolvedQuery.lowercase().trim()
+        
         val matchedActions = normalizedActionMetadataList.filter { meta ->
             meta.plugin.manifest.routable && meta.action.enabled && (
-                meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
-                meta.normalizedExamples.any { ex -> 
-                    ex.length >= 5 && (queryNormalized.contains(ex) || ex.contains(queryNormalized)) 
+                // ❌ CŨ (substring matching trên text bỏ dấu):
+                // meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
+                
+                // ✅ MỚI (whole phrase matching trên text GIỮ DẤU):
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(meta.descriptionKeepAccent, queryKeepAccent) ||
+                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(queryKeepAccent, meta.descriptionKeepAccent) ||
+                
+                meta.examplesKeepAccent.any { ex -> 
+                    ex.length >= 5 && (com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(queryKeepAccent, ex) || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(ex, queryKeepAccent))
                 }
             )
         }
