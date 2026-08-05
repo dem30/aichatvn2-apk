@@ -339,7 +339,14 @@ class AgentKernel @Inject constructor(
                                 rawAnswer
                             }
                         } ?: if (request.allowDeviceControl) {
-                            runLocalQAEventAnalysis(message, username)
+                            val (localText, localImages) = runLocalQAEventAnalysis(message, username)
+                            // ✅ MỚI: gán ảnh (nếu có) vào biến searchImagePath dùng chung cho
+                            // ChatResponse cuối hàm (dòng khai báo "var searchImagePath" phía
+                            // trên) — cùng cơ chế đã dùng cho nhánh "groq"/"combined", để câu trả
+                            // lời QA local liệt kê hoạt động camera cũng hiện được ảnh minh hoạ
+                            // thay vì chỉ có text như trước.
+                            searchImagePath = localImages
+                            localText
                         } else {
                             // ✅ SỬA: khách ngoại bị chặn điều khiển thiết bị tuyệt đối không được
                             // đọc WorldState/EventLog trong mode QA — trước đây hàm này chạy vô
@@ -496,7 +503,7 @@ class AgentKernel @Inject constructor(
         return ChatResponse(responseText, usedMode, usedPluginId, searchImagePath)
     }
 
-    private suspend fun runLocalQAEventAnalysis(userQuery: String, username: String): String = withContext(Dispatchers.IO) {
+    private suspend fun runLocalQAEventAnalysis(userQuery: String, username: String): Pair<String, List<String>?> = withContext(Dispatchers.IO) {
         try {
             val now = System.currentTimeMillis()
             val normalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userQuery.lowercase()) ?: ""
@@ -706,7 +713,7 @@ class AgentKernel @Inject constructor(
             // (thống kê đi/đến/nhỡ chính xác qua countMissedCalls()) — không viết lại bộ sinh câu
             // chung ở đây cho call, tránh trùng lặp logic và mất số liệu chi tiết đã có sẵn.
             if (sourceCategory == "call") {
-                return@withContext searchResult.summaryText
+                return@withContext searchResult.summaryText to null
             }
 
             val total = searchResult.totalCount
@@ -740,26 +747,32 @@ class AgentKernel @Inject constructor(
                     if (total > 0) {
                         val latest = logs.lastOrNull()?.summary?.takeIf { it.isNotBlank() }
                         val latestNote = if (latest != null) " (Gần nhất: $latest)" else ""
-                        "CÓ. Trong $label ghi nhận $total sự kiện liên quan đến $targetName$stateNote$objectNote.$latestNote"
+                        "CÓ. Trong $label ghi nhận $total sự kiện liên quan đến $targetName$stateNote$objectNote.$latestNote" to null
                     } else {
-                        "KHÔNG. Trong $label không ghi nhận sự kiện nào từ $targetName$stateNote$objectNote."
+                        "KHÔNG. Trong $label không ghi nhận sự kiện nào từ $targetName$stateNote$objectNote." to null
                     }
                 }
                 isQuantity -> {
-                    "Trong $label, $targetName ghi nhận tổng cộng $total lần hoạt động$stateNote$objectNote."
+                    "Trong $label, $targetName ghi nhận tổng cộng $total lần hoạt động$stateNote$objectNote." to null
                 }
                 total > 0 -> {
-                    val details = logs.takeLast(3).joinToString("\n• ") { log ->
+                    val shownLogs = logs.takeLast(3)
+                    val details = shownLogs.joinToString("\n• ") { log ->
                         val timeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(log.timestamp))
                         "[$timeStr] ${log.summary}"
                     }
-                    "Trong $label, ghi nhận $total hoạt động của $targetName:\n• $details"
+                    // ✅ MỚI: đính kèm ảnh của ĐÚNG các dòng log vừa liệt kê trong câu trả lời —
+                    // cùng field imagePath mà đường Groq 2-pass đã dùng (EventLogEntity.imagePath).
+                    // Chỉ lấy ảnh từ shownLogs (không phải toàn bộ "logs"/"total"), để ảnh khớp
+                    // đúng 1-1 với những gì Admin vừa đọc thấy trong text, không lạc sang dòng khác.
+                    val images = shownLogs.mapNotNull { it.imagePath }.distinct().ifEmpty { null }
+                    "Trong $label, ghi nhận $total hoạt động của $targetName:\n• $details" to images
                 }
-                else -> "Trong $label, $targetName hoạt động bình thường, không có bản ghi mới."
+                else -> "Trong $label, $targetName hoạt động bình thường, không có bản ghi mới." to null
             }
         } catch (e: Exception) {
             logger.e("AgentKernel", "Lỗi phân tích sự kiện cục bộ trong QA Mode: ${e.message}", e)
-            "Không thể phân tích dữ liệu cục bộ lúc này."
+            "Không thể phân tích dữ liệu cục bộ lúc này." to null
         }
     }
 
@@ -790,7 +803,14 @@ class AgentKernel @Inject constructor(
         "co", "khong", "nao", "duoc", "da", "se", "dang", "la", "va", "hay", "hoac",
         "the", "thi", "sao", "gi", "ai", "may", "cho", "voi", "cua", "tu", "den",
         "ghi", "nhan", "kiem", "tra", "xem", "toi", "biet",
-        "camera", "thiet", "bi", "tin", "nhan", "cuoc", "goi"
+        "camera", "thiet", "bi", "tin", "nhan", "cuoc", "goi",
+        // ✅ MỚI: "lai" (lại) lọt qua bộ lọc cũ — là hư từ RẤT phổ biến, dễ xuất hiện tình cờ
+        // trong hầu hết mọi mô tả camera dài (vd "phát hiện lại...", "quay lại..."). Vì cơ chế
+        // lọc detailsKeywords ở DatabaseSearchHelper dùng "any" (khớp ÍT NHẤT 1 từ khoá là giữ
+        // log), chỉ cần 1 hư từ phổ biến lọt qua là đủ để vô hiệu hoá toàn bộ bộ lọc nội dung
+        // (gần như mọi log đều dính "lại" ở đâu đó -> kết quả trông như không lọc gì). Thêm
+        // "lai" cùng vài hư từ tương tự khác cũng dễ lọt (đây/đó/này/vậy/nhé/à) để phòng ngừa.
+        "lai", "day", "do", "nay", "vay", "nhe", "a"
     )
 
     // ✅ MỚI: xử lý lượt kế tiếp SAU KHI hệ thống đã dừng lại hỏi khoảng ngày cụ thể (Time Range

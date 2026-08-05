@@ -1388,6 +1388,11 @@ PluginAction(
                 var isSuspicious = false
                 var visionObjects: List<String> = emptyList()
                 var finalStateJson: String? = null
+                // ✅ MỚI: đánh dấu khi isSuspicious chỉ đến từ suy đoán pixel-diff tạm thời (Groq lỗi/hết
+                // Quota), KHÔNG phải từ mô tả AI đáng tin — dùng để chặn gửi email/thông báo báo động
+                // giả (giữ đúng ý đồ gốc: khi AI lỗi, không làm phiền người dùng bằng cảnh báo không rõ
+                // ràng), trong khi vẫn cho phép world_state/event_log cập nhật đúng biến động thực tế.
+                var aiWasUnreliable = false
                 
                 if (shouldCallAi) {
                     val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
@@ -1407,9 +1412,32 @@ PluginAction(
                     val isApiError = aiResult.startsWith(GroqClientTool.AI_ERROR_PREFIX)
 
                     if (isApiError) {
-                        logger.w("CameraSkill", "⚠️ AI gặp sự cố ($aiResult) -> Bỏ qua lọc từ khóa, tránh báo động giả")
-                        isSuspicious = false
-                        aiComment = "Không thể phân tích AI (Lỗi kết nối/Hết Quota)"
+                        // ✅ SỬA: trước đây khi Groq lỗi (hết quota/timeout), state chỉ bị đặt về
+                        // isSuspicious=false và finalStateJson KHÔNG được gán (vẫn là null) -> world_state
+                        // giữ NGUYÊN giá trị CŨ từ lần quét thành công gần nhất, đóng băng vô thời hạn nếu
+                        // Groq lỗi kéo dài (vd hết quota nhiều giờ). Điều này đặc biệt sai với
+                        // check_precondition: một chuỗi "quét -> delay -> quét lại xem đã an toàn chưa"
+                        // sẽ không bao giờ nhận biết được thay đổi thật nếu đúng lúc đó Groq lỗi.
+                        //
+                        // Nay fallback dùng lại isSuddenChange (so sánh pHash/diff/drift thô, đã tính sẵn
+                        // ở trên, không tốn thêm chi phí) làm tín hiệu tạm thời — giống hệt cách nhánh
+                        // "AI tắt" bên dưới đang làm — để state/objects LUÔN được cập nhật theo biến động
+                        // ảnh thực tế, không đứng yên. Vẫn KHÔNG gửi thông báo dựa trên "mô tả AI" vì
+                        // không có mô tả nào đáng tin lúc này — chỉ ghi nhận có/không biến động pixel.
+                        logger.w("CameraSkill", "⚠️ AI gặp sự cố ($aiResult) -> Dùng tạm kết quả so sánh pixel (isSuddenChange=$isSuddenChange) thay vì đóng băng state cũ")
+                        aiWasUnreliable = true
+                        isSuspicious = isSuddenChange
+                        aiComment = if (isSuddenChange) {
+                            "Phát hiện biến động (AI tạm thời lỗi/hết Quota, dùng so sánh pixel)"
+                        } else {
+                            "Không thể phân tích AI (Lỗi kết nối/Hết Quota) — không phát hiện biến động pixel"
+                        }
+                        visionObjects = if (isSuddenChange) listOf("chuyển động") else emptyList()
+                        finalStateJson = JSONObject().apply {
+                            put("state", if (isSuspicious) "suspicious" else "normal")
+                            put("description", aiComment)
+                            put("objects", JSONArray(visionObjects))
+                        }.toString()
                     } else {
                         val visionParsed = parseVisionResult(aiResult)
                         aiComment = visionParsed.displayComment
@@ -1483,13 +1511,23 @@ PluginAction(
                         UUID.randomUUID().toString()
                     }
 
-                    val emailSent = houseManagerProvider.get().sendDefaultCameraAlerts(
-                        camera = camera,
-                        aiComment = aiComment ?: "Phát hiện bất thường",
-                        imageBytes = optimizedBytes,
-                        activeAlertId = activeAlertId,
-                        shouldMerge = shouldMerge
-                    )
+                    // ✅ SỬA: khi isSuspicious chỉ đến từ suy đoán pixel-diff tạm thời (aiWasUnreliable),
+                    // KHÔNG gửi email/thông báo — giữ đúng ý đồ gốc "AI lỗi -> tránh báo động giả làm
+                    // phiền người dùng". Alert vẫn được lưu vào lịch sử/world_state (dưới) để
+                    // check_precondition và các bước sau đọc được biến động thực tế, chỉ riêng bước GỬI
+                    // THÔNG BÁO là bị chặn.
+                    val emailSent = if (aiWasUnreliable) {
+                        logger.w("CameraSkill", "🔕 Bỏ qua gửi thông báo cho camera $tid vì kết quả suspicious đến từ suy đoán pixel khi AI lỗi, không phải mô tả AI đáng tin")
+                        false
+                    } else {
+                        houseManagerProvider.get().sendDefaultCameraAlerts(
+                            camera = camera,
+                            aiComment = aiComment ?: "Phát hiện bất thường",
+                            imageBytes = optimizedBytes,
+                            activeAlertId = activeAlertId,
+                            shouldMerge = shouldMerge
+                        )
+                    }
 
                     saveAlertToHistory(
                         alertId = activeAlertId,
@@ -1511,7 +1549,7 @@ PluginAction(
                         existingAlert = latestAlert
                     )
                     
-                    if (!shouldMerge) {
+                    if (!shouldMerge && !aiWasUnreliable) {
                         executeAlertActions(camera, aiComment ?: "Phát hiện bất thường", overrideAlertActions) 
                     }
                     logger.i("CameraSkill", "🚨 ALERT handled for camera $tid (merged=$shouldMerge, id=$activeAlertId): $aiComment")
@@ -1972,15 +2010,7 @@ PluginAction(
     }
 
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
-
-    // ✅ MỚI: getDiagnostics() chỉ đọc cache _diagnostics.value, được tính lần gần nhất lúc
-    // quét ảnh (updateDiagnostics() private, chỉ gọi trong luồng scan). Khi người dùng đổi
-    // config (vd tắt enableCooldown) từ UI, cache cũ vẫn còn nguyên tới lượt quét kế tiếp nên
-    // badge "Đang cooldown" không phản hồi tức thì. Hàm public này cho phép ép tính lại ngay.
-    suspend fun refreshDiagnostics() {
-        updateDiagnostics()
-    }
-
+    
     private suspend fun updateDiagnostics() {
         // ✅ MỚI (day/night split): mỗi camera giờ báo cáo 2 bộ chỉ số (day/night) thay vì 1.
         val stats = learningStates.mapValues { (cameraId, state) ->
@@ -1995,17 +2025,11 @@ PluginAction(
                 "drift" to p.lastDrift,
                 "driftTrigger" to DRIFT_TRIGGER
             )
-            // ✅ SỬA: inCooldown trước đây chỉ xét cooldownUntil > now, không quan tâm
-            // camera.enableCooldown đang bật/tắt. Hệ quả: sau khi người dùng gạt TẮT cooldown,
-            // mốc cooldownUntil cũ (đã set từ trước đó) vẫn còn trong state nên UI vẫn báo
-            // "Đang cooldown" — dù logic quét thực tế (nhánh forceAi || enableCooldown==0 || ...)
-            // đã bỏ qua cooldown đúng. Đọc thêm enableCooldown của camera để đồng bộ UI với hành vi thật.
-            val cameraEnableCooldown = database.cameraDao().getCameraById(tid)?.enableCooldown ?: 1
             mapOf(
                 "day" to periodStats(state.day),
                 "night" to periodStats(state.night),
                 "realEvents" to state.realEvents,
-                "inCooldown" to (cameraEnableCooldown == 1 && state.cooldownUntil > System.currentTimeMillis()),
+                "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
                 "circuitBreakerOpen" to (cb?.isOpen ?: false),
                 "offlineCount" to (cb?.offlineCount ?: 0),
                 "pendingReset" to pendingResets.containsKey(tid)
