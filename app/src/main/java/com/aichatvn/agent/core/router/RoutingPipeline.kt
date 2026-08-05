@@ -1029,7 +1029,7 @@ class RoutingPipeline @Inject constructor(
         // ✅ SỬA BƯỚC 2: Dùng bản GIỮ DẤU thay bỏ dấu để Tier 4 match chính xác (tránh nhầm "Tắt" vs "Tất cả")
         val queryKeepAccent = context.resolvedQuery.lowercase().trim()
 
-        val queryNormalized = VietnameseTextNormalizer.normalize(queryKeepAccent)
+        val queryNormalized = StringSimilarityUtil.normalizeVietnamese(queryKeepAccent)
         
         val matchedActions = normalizedActionMetadataList.filter { meta ->
             meta.plugin.manifest.routable && meta.action.enabled && (
