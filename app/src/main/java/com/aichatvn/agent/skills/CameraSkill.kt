@@ -2010,7 +2010,15 @@ PluginAction(
     }
 
     fun getDiagnostics(): Map<String, Any> = _diagnostics.value
-    
+
+    // ✅ MỚI: getDiagnostics() chỉ đọc cache _diagnostics.value, được tính lần gần nhất lúc
+    // quét ảnh (updateDiagnostics() private, chỉ gọi trong luồng scan). Khi người dùng đổi
+    // config (vd tắt enableCooldown) từ UI, cache cũ vẫn còn nguyên tới lượt quét kế tiếp nên
+    // badge "Đang cooldown" không phản hồi tức thì. Hàm public này cho phép ép tính lại ngay.
+    suspend fun refreshDiagnostics() {
+        updateDiagnostics()
+    }
+
     private suspend fun updateDiagnostics() {
         // ✅ MỚI (day/night split): mỗi camera giờ báo cáo 2 bộ chỉ số (day/night) thay vì 1.
         val stats = learningStates.mapValues { (cameraId, state) ->
@@ -2025,11 +2033,17 @@ PluginAction(
                 "drift" to p.lastDrift,
                 "driftTrigger" to DRIFT_TRIGGER
             )
+            // ✅ SỬA: inCooldown trước đây chỉ xét cooldownUntil > now, không quan tâm
+            // camera.enableCooldown đang bật/tắt. Hệ quả: sau khi người dùng gạt TẮT cooldown,
+            // mốc cooldownUntil cũ (đã set từ trước đó) vẫn còn trong state nên UI vẫn báo
+            // "Đang cooldown" — dù logic quét thực tế (nhánh forceAi || enableCooldown==0 || ...)
+            // đã bỏ qua cooldown đúng. Đọc thêm enableCooldown của camera để đồng bộ UI với hành vi thật.
+            val cameraEnableCooldown = database.cameraDao().getCameraById(tid)?.enableCooldown ?: 1
             mapOf(
                 "day" to periodStats(state.day),
                 "night" to periodStats(state.night),
                 "realEvents" to state.realEvents,
-                "inCooldown" to (state.cooldownUntil > System.currentTimeMillis()),
+                "inCooldown" to (cameraEnableCooldown == 1 && state.cooldownUntil > System.currentTimeMillis()),
                 "circuitBreakerOpen" to (cb?.isOpen ?: false),
                 "offlineCount" to (cb?.offlineCount ?: 0),
                 "pendingReset" to pendingResets.containsKey(tid)
