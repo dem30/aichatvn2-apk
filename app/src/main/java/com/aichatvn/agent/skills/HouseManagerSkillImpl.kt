@@ -296,9 +296,20 @@ PluginAction(
                         "chat" -> params["chatSession"] as? String ?: ""
                         else -> ""
                     }
-                    if (source.isNotEmpty() && sourceId.isNotEmpty()) {
+                    // ✅ MỚI: Chặn tạo điều kiện khi "expected" rỗng — trước đây rơi vào trường hợp
+                    // này sẽ tạo ra condition.expected="" mà actualValue (world_state) không bao giờ
+                    // bằng chuỗi rỗng -> bước check_precondition LUÔN LUÔN thất bại một cách âm thầm,
+                    // không có cảnh báo gì cho chủ nhà (xem log "Cần state=, Thực tế: true"). Nay coi
+                    // như thiếu cấu hình hợp lệ -> trả về null để rơi vào nhánh "Không có điều kiện"
+                    // (PASS) thay vì tạo ra 1 điều kiện không bao giờ thoả mãn được.
+                    if (source.isNotEmpty() && sourceId.isNotEmpty() && expected.isNotEmpty()) {
                         WorldStateHelper.WorldStateCondition(source, sourceId, attribute, expected)
-                    } else null
+                    } else {
+                        if (source.isNotEmpty() && sourceId.isNotEmpty()) {
+                            logger.w("HouseManager", "⚠️ Bước check_precondition thiếu 'expected' (source=$source, sourceId=$sourceId, attribute=$attribute) — bỏ qua điều kiện, coi như PASS. Vui lòng sửa lại bước trong Planner.")
+                        }
+                        null
+                    }
                 }
 
                 if (condition != null) {
@@ -602,7 +613,19 @@ PluginAction(
                         "chat" -> cfg.params["chatSession"] ?: ""
                         else -> ""
                     }
-                    if (pSource.isNotEmpty() && pSourceId.isNotEmpty()) "$pSource.$pSourceId.$pAttr=$pExpected" else null
+                    // ✅ MỚI: Không tạo chuỗi precondition khi "expected" rỗng — nếu không, chuỗi
+                    // dạng "tuya.<id>.state=" sẽ parse ra expected="" và KHÔNG BAO GIỜ khớp với
+                    // actualValue thật (world_state luôn ghi "true"/"false", không bao giờ rỗng)
+                    // -> kịch bản luôn bị DỪNG tại bước này một cách âm thầm, không cảnh báo rõ
+                    // ràng cho chủ nhà (đây chính là nguyên nhân bug "Cần state=, Thực tế: true").
+                    if (pSource.isNotEmpty() && pSourceId.isNotEmpty() && pExpected.isNotEmpty()) {
+                        "$pSource.$pSourceId.$pAttr=$pExpected"
+                    } else {
+                        if (pSource.isNotEmpty() && pSourceId.isNotEmpty()) {
+                            logger.w("HouseManager", "⚠️ Bước check_precondition trong nhóm kịch bản '${group.label}' thiếu 'expected' (source=$pSource, sourceId=$pSourceId, attribute=$pAttr) — bỏ qua điều kiện, coi như PASS. Vui lòng sửa lại bước trong Planner.")
+                        }
+                        null
+                    }
                 }
             }
 

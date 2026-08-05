@@ -42,6 +42,22 @@ fun SmartActionFormSheet(
         }
     }
 
+    // ✅ FIX: Xoá TOÀN BỘ hậu duệ (con, cháu, chắt...) khi 1 tham số cha đổi giá trị — không chỉ
+    // con trực tiếp. Trước đây chỉ xoá con cấp 1 (vd đổi "source" chỉ xoá "attribute"/"device"),
+    // khiến "expected" (cháu, dependsOn="attribute") giữ lại giá trị CŨ/rác từ ngữ cảnh trước đó
+    // dù đang bị ẩn, rồi khi "attribute" được chọn lại, "expected" hiện lại mang giá trị sai lệch
+    // mà không bị "required" bắt lỗi (paramValues[expected] không rỗng, dù không hợp lệ nữa).
+    // Đây chính là nguyên nhân bước "check_precondition" từng bị lưu với expected="" / sai lệch.
+    fun clearDescendants(paramName: String) {
+        selectedAction?.parameters
+            ?.filter { it.dependsOn == paramName }
+            ?.forEach { child ->
+                paramValues.remove(child.name)
+                paramBooleans.remove(child.name)
+                clearDescendants(child.name)
+            }
+    }
+
     // 🌟 LỌC THAM SỐ THÔNG MINH: Lọc ra danh sách tham số ĐỦ ĐIỀU KIỆN HIỂN THỊ
     val visibleParameters = remember(selectedAction, paramValues.toMap()) {
         selectedAction?.parameters?.filter { param ->
@@ -188,12 +204,11 @@ fun SmartActionFormSheet(
                                     onClick = {
                                         val oldVal = paramValues[param.name]
                                         paramValues[param.name] = item.value
-                                        
-                                        // 🌟 Tự động reset các tham số con thuộc về nó nếu cha đổi giá trị
+
+                                        // ✅ FIX: dùng clearDescendants() để reset đệ quy toàn bộ
+                                        // hậu duệ (không chỉ con trực tiếp) khi cha đổi giá trị.
                                         if (oldVal != item.value) {
-                                            selectedAction?.parameters?.filter { it.dependsOn == param.name }?.forEach { child ->
-                                                paramValues.remove(child.name)
-                                            }
+                                            clearDescendants(param.name)
                                         }
                                         dropdownExpanded = false
                                     }
