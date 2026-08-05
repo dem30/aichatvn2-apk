@@ -24,7 +24,6 @@ import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.StringSimilarityUtil
 import com.aichatvn.agent.utils.toMap
 import org.json.JSONObject
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -51,13 +50,6 @@ class RoutingPipeline @Inject constructor(
 ) {
     companion object {
         private const val MAX_DEPTH = 3
-        private const val MAX_FALLBACK_PLUGINS = 3
-
-        private val COMMAND_TRIGGER_KEYWORDS = setOf(
-            "bat", "tat", "mo", "dong", "chay", "quet", "gui", "len lich", "dat lich", "kiem tra", "setup",
-            "den", "quat", "camera", "bom", "khoa", "thiet bi", "tuya", "canh bao", "email", "thu", "status",
-            "huy", "xoa", "sua", "doi", "them", "xem", "hen gio", "bao thuc"
-        )
     }
 
     // ✅ MỚI: đọc danh sách filler word từ AppConfigDefaults.GLOBAL_CLAUSE_FILLER_WORDS thay vì
@@ -75,11 +67,6 @@ class RoutingPipeline @Inject constructor(
             result = pattern.replace(result, " ")
         }
         return result.replace(Regex("\\s+"), " ").trim()
-    }
-
-    private fun isPotentialCommand(message: String): Boolean {
-        val norm = StringSimilarityUtil.normalizeVietnamese(message.lowercase().trim())
-        return COMMAND_TRIGGER_KEYWORDS.any { keyword -> norm.contains(keyword) }
     }
 
     internal fun detectScheduleAction(queryNormalized: String): String {
@@ -140,29 +127,13 @@ class RoutingPipeline @Inject constructor(
 
     private fun devicePlugins(): List<Plugin> = plugins.filter { it.manifest.routable }
 
-    private val actionCandidates: List<LocalCandidate> by lazy {
-        plugins.flatMap { plugin ->
-            plugin.manifest.actions.map { act ->
-                LocalCandidate(
-                    pluginId = plugin.manifest.id,
-                    action = act.name,
-                    description = act.description,
-                    parameters = act.parameters.map { if (it.required) it.name else "${it.name}?" }
-                )
-            }
-        }
-    }
-
     internal val normalizedActionMetadataList: List<NormalizedActionMetadata> by lazy {
         plugins.flatMap { plugin ->
             plugin.manifest.actions.map { action ->
                 NormalizedActionMetadata(
                     plugin = plugin,
                     action = action,
-                    normalizedDescription = StringSimilarityUtil.normalizeVietnamese(action.description),
-                    normalizedExamples = action.examples.map { StringSimilarityUtil.normalizeVietnamese(it) },
-                    normalizedTags = action.tags.map { StringSimilarityUtil.normalizeVietnamese(it) },
-                    // ✅ MỚI: chỉ lowercase, GIỮ NGUYÊN dấu — cho Tier 4 so khớp chính xác.
+                    // ✅ chỉ lowercase, GIỮ NGUYÊN dấu — cho Tier 4 so khớp chính xác.
                     descriptionKeepAccent = action.description.lowercase().trim(),
                     examplesKeepAccent = action.examples.map { it.lowercase().trim() }
                 )
@@ -1014,181 +985,7 @@ class RoutingPipeline @Inject constructor(
         return original.copy(bestAliasMatches = updatedBest)
     }
 
-    // ✅ Tầng 5 di sản (Chỉ giữ lại làm Helper tham chiếu nếu cần, không còn được gọi trong luồng EXECUTE nữa)
-    private suspend fun executeTier3LlmRouting(
-        context: RoutingContext,
-        devicePlugins: List<Plugin>,
-        traceId: String
-    ): RouterOutcome {
-        val configAliasThreshold = configProvider.getFloat(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD, AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ALIAS_THRESHOLD).toFloat())
-
-        val foundAliases = context.globalMatchResult.aliasMatches
-            .filter { it.second >= configAliasThreshold }
-            .joinToString("\n") { "  - \"${it.first.question}\" ánh xạ sang \"${it.first.answer}\" (danh mục: ${it.first.category})" }
-
-        // ✅ SỬA BƯỚC 2: Dùng bản GIỮ DẤU thay bỏ dấu để Tier 4 match chính xác (tránh nhầm "Tắt" vs "Tất cả")
-        val queryKeepAccent = context.resolvedQuery.lowercase().trim()
-
-        val queryNormalized = StringSimilarityUtil.normalizeVietnamese(queryKeepAccent)
-        
-        val matchedActions = normalizedActionMetadataList.filter { meta ->
-            meta.plugin.manifest.routable && meta.action.enabled && (
-                // ❌ CŨ (substring matching trên text bỏ dấu):
-                // meta.normalizedDescription.contains(queryNormalized) || queryNormalized.contains(meta.normalizedDescription) ||
-                
-                // ✅ MỚI (whole phrase matching trên text GIỮ DẤU):
-                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(meta.descriptionKeepAccent, queryKeepAccent) ||
-                com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(queryKeepAccent, meta.descriptionKeepAccent) ||
-                
-                meta.examplesKeepAccent.any { ex -> 
-                    ex.length >= 5 && (com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(queryKeepAccent, ex) || com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(ex, queryKeepAccent))
-                }
-            )
-        }
-
-        val candidateLines = if (matchedActions.isNotEmpty()) {
-            matchedActions.joinToString("\n") { meta ->
-                val paramsInfo = meta.action.parameters.joinToString(", ") { p ->
-                    "${p.name} (kiểu: ${p.type}, yêu cầu: ${p.required}, vai trò: ${p.semanticType})"
-                }
-                "  - plugin=\"${meta.plugin.manifest.id}\" action=\"${meta.action.name}\": ${meta.action.description}. Cấu trúc tham số: [$paramsInfo]"
-            }
-        } else {
-            val relevantPlugins = rankRelevantPlugins(queryNormalized, devicePlugins)
-
-            if (relevantPlugins.isNotEmpty()) {
-                logger.d("RoutingPipeline", "[$traceId] 🎯 [Tầng 5 Fallback] Thu hẹp candidate về ${relevantPlugins.size} plugin liên quan: ${relevantPlugins.joinToString { it.manifest.id }}")
-                actionCandidates
-                    .filter { c -> relevantPlugins.any { it.manifest.id == c.pluginId } }
-                    .joinToString("\n") { c ->
-                        "  - plugin=\"${c.pluginId}\" action=\"${c.action}\": ${c.description} (tham số: ${c.parameters.joinToString(",")})"
-                    }
-            } else {
-                logger.d("RoutingPipeline", "[$traceId] ⚠️ [Tầng 5 Fallback] Không tìm được plugin liên quan cục bộ -> gửi toàn bộ danh sách")
-                actionCandidates
-                    .filter { c -> devicePlugins.any { it.manifest.id == c.pluginId } }
-                    .joinToString("\n") { c ->
-                        "  - plugin=\"${c.pluginId}\" action=\"${c.action}\": ${c.description} (tham số: ${c.parameters.joinToString(",")})"
-                    }
-            }
-        }
-
-        val shortHistory = chatHistoryManager.getRecentTurnsAsText(context.username)
-        val lastDevice = chatHistoryManager.getLastMentionedDevice(context.username) ?: "none"
-
-        val activePendingInfo = chatHistoryManager.getActivePendingIntents(context.username).firstOrNull()?.let {
-            "⚠️ Lệnh đang chờ hoàn thành: ${it.pluginId}.${it.action}, Các trường chưa điền: ${it.missingParams.joinToString()}"
-        } ?: "Không có lệnh dở dang"
-
-        val routerPrompt = buildString {
-            append("<sys>Bạn là bộ định tuyến ý định (Intent Router) thông minh cho hệ thống Smarthome.\n")
-            append("Nhiệm vụ: Phân tích câu nói của người dùng và chuyển đổi thành JSON thô chính xác: {\"plugin\":\"ID\",\"action\":\"Name\",\"params\":{}}\n\n")
-            append("🚨 QUY TẮC CHỐNG GÁN LỆNH NHẦM (ANTI-TOOL-USE BIAS):\n")
-            append("1. Chỉ định tuyến sang một ứng viên (candidate) bên dưới KHI VÀ CHỈ KHI người dùng đưa ra một YÊU CẦU HÀNH ĐỘNG RÕ RÀNG (ví dụ: bật, tắt, đóng, mở, quét, gửi email cụ thể, thiết lập lịch hẹn giờ thực tế, kiểm tra trạng thái thiết bị).\n")
-            append("2. Nếu câu nói là CÂU HỎI THÔNG TIN, GIẢI THÍCH LÝ THUYẾT, ĐỊNH NGHĨA, CHÀO HỎI, TÁN GẪU (ví dụ: 'camera có bao nhiêu loại', 'email hoạt động thế nào', 'tại sao đèn không sáng', 'thời tiết thế nào'...): Bạn TUYỆT ĐỐI KHÔNG ĐƯỢC gán vào bất kỳ lệnh thiết bị nào, cho dù câu nói có chứa từ khóa 'camera', 'email' hay 'đèn'. Hãy xuất chính xác: {\"plugin\":\"chat\",\"action\":\"none\"}\n")
-            append("3. Không tự ý suy diễn câu hỏi lý thuyết, câu hỏi khảo sát hoặc thắc mắc chung của người dùng thành một hành động điều khiển thực tế.\n")
-            append("4. Tuyệt đối không giải thích thêm, chỉ xuất JSON thô.\n")
-            append("5. Trường \"plugin\" CHỈ được chứa đúng ID plugin (vd \"smart_switch\"), TUYỆT ĐỐI không nối thêm tên action vào sau bằng dấu chấm (SAI: \"smart_switch.set\"). Tên action nằm RIÊNG ở trường \"action\".</sys>\n")
-            
-            append("<candidates>\n$candidateLines\n</candidates>\n")
-            if (foundAliases.isNotEmpty()) append("<aliases>\n$foundAliases\n</aliases>\n")
-            append("<context>last_device: \"$lastDevice\", pending_status: \"$activePendingInfo\"</context>\n")
-            append("<history>\n$shortHistory\n</history>\n")
-            append("<input>${context.resolvedQuery}</input>\n")
-            append("<output>")
-        }
-
-        val routerResultJson = try {
-            withTimeout(15_000L) { groqClient.routeIntent(routerPrompt) }
-        } catch (e: Exception) {
-            return RouterOutcome.RouterFailed("Tầng 5 LLM timeout/error: ${e.message}")
-        }
-
-        val rawIntent = parseIntentResponse(routerResultJson) ?: return RouterOutcome.RouterFailed("Tầng 5 LLM parse error")
-        if (rawIntent.pluginId == "chat") return RouterOutcome.NotACommand
-
-        var targetPlugin = devicePlugins.find { it.manifest.id == rawIntent.pluginId }
-        var effectiveAction = rawIntent.action
-
-        if (targetPlugin == null && rawIntent.pluginId.contains(".")) {
-            val fixedPluginId = rawIntent.pluginId.substringBefore(".")
-            val suffixAction = rawIntent.pluginId.substringAfter(".", "")
-            val fixedPlugin = devicePlugins.find { it.manifest.id == fixedPluginId }
-            if (fixedPlugin != null) {
-                logger.d("RoutingPipeline", "[$traceId] 🩹 [Tầng 5 Auto-Fix] LLM gộp nhầm plugin=\"${rawIntent.pluginId}\" -> tách lại thành plugin=\"$fixedPluginId\"")
-                targetPlugin = fixedPlugin
-                if (effectiveAction.isBlank() || fixedPlugin.manifest.actions.none { it.name == effectiveAction }) {
-                    effectiveAction = suffixAction
-                }
-            }
-        }
-
-        val finalTargetPlugin = targetPlugin ?: return RouterOutcome.RouterFailed("Không tìm thấy Plugin")
-        val targetAction = finalTargetPlugin.manifest.actions.find { it.name == effectiveAction } ?: return RouterOutcome.RouterFailed("Không tìm thấy Action")
-        
-        // 🌟 SỬA: áp dụng cùng cơ chế chặn tự-tham-chiếu như Tầng 4 Wrapper — plugin đích ở đây
-        // do LLM xác định (có thể là "schedule"), nên vẫn cần loại QA của chính plugin đó khỏi
-        // việc được chọn làm secondaryIntentQA khi auto-fill tham số.
-        val finalParams = resolveParametersWithMeta(
-            parameters = targetAction.parameters,
-            inputParams = rawIntent.params,
-            context = context,
-            excludeIntentId = null,
-            excludePluginId = finalTargetPlugin.manifest.id,
-            depth = 0
-        )
-        
-        val intent = rawIntent.copy(pluginId = finalTargetPlugin.manifest.id, action = effectiveAction, params = finalParams)
-        val result = intentExecutor.executeIntent(finalTargetPlugin, intent, context, traceId)
-
-        return RouterOutcome.Matched(DeviceCommandResult(finalTargetPlugin.manifest.id, result))
-    }
-
-    private fun rankRelevantPlugins(queryNormalized: String, devicePlugins: List<Plugin>): List<Plugin> {
-        val hasScheduleSignal = queryNormalized.contains("cron") || 
-            queryNormalized.contains("lich") || 
-            queryNormalized.contains("hen gio") || 
-            queryNormalized.contains("dat lich") || 
-            queryNormalized.contains("setup")
-
-        val queryTokens = queryNormalized.split(" ", "\t", "\n").filter { it.length >= 2 }.toSet()
-        if (queryTokens.isEmpty() && !hasScheduleSignal) return emptyList()
-
-        val scoreByPluginId = mutableMapOf<String, Int>()
-
-        if (hasScheduleSignal) {
-            scoreByPluginId["schedule"] = 999
-        }
-
-        normalizedActionMetadataList.forEach { meta ->
-            if (!meta.plugin.manifest.routable || !meta.action.enabled) return@forEach
-            val haystack = (listOf(meta.normalizedDescription) + meta.normalizedExamples + meta.normalizedTags)
-                .flatMap { it.split(" ", "\t", "\n") }
-                .toSet()
-            val overlap = queryTokens.count { token -> haystack.any { it.contains(token) || token.contains(it) } }
-            if (overlap > 0) {
-                val pluginId = meta.plugin.manifest.id
-                scoreByPluginId[pluginId] = maxOf(scoreByPluginId[pluginId] ?: 0, overlap)
-            }
-        }
-
-        return scoreByPluginId.entries
-            .sortedByDescending { it.value }
-            .take(MAX_FALLBACK_PLUGINS)
-            .mapNotNull { entry -> devicePlugins.find { it.manifest.id == entry.key } }
-    }
-
-    private fun parseIntentResponse(response: String): Intent? {
-        return try {
-            val cleaned = response.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            val json = JSONObject(cleaned)
-            Intent(
-                pluginId = json.getString("plugin"),
-                action = json.getString("action"),
-                params = json.optJSONObject("params")?.toMap() ?: emptyMap()
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
+    // ❌ ĐÃ XOÁ: executeTier3LlmRouting()/rankRelevantPlugins()/parseIntentResponse() (Tầng 5 LLM
+    // Router di sản, cùng hàm parse JSON riêng của nó) — không còn được gọi trong luồng EXECUTE
+    // (đã bypass hẳn, xem nhánh isT5Matched phía trên), giữ lại trước đây chỉ để tham khảo.
 }

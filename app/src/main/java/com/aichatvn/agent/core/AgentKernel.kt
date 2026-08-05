@@ -75,13 +75,6 @@ data class DiagnosticInfo(
     val askedQuestion: String? = null
 )
 
-data class LocalCandidate(
-    val pluginId: String,
-    val action: String,
-    val description: String,
-    val parameters: List<String>
-)
-
 data class Layer2Result(
     val plugin: Plugin,
     val intent: AgentKernel.Intent,
@@ -91,15 +84,13 @@ data class Layer2Result(
 data class NormalizedActionMetadata(
     val plugin: Plugin,
     val action: com.aichatvn.agent.core.plugin.PluginAction,
-    val normalizedDescription: String,
-    val normalizedExamples: List<String>,
-    val normalizedTags: List<String>,
-    // ✅ MỚI: giữ nguyên dấu tiếng Việt (chỉ lowercase) — dùng cho Tier 4 so khớp lệnh điều khiển
-    // thiết bị, CHÍNH XÁC hơn hẳn bản normalizedDescription/normalizedExamples đã bỏ dấu ở trên.
-    // Bỏ dấu khiến câu hỏi đào sâu không liên quan (vd "Vậy còn báo giá") dễ trùng substring với
+    // ✅ giữ nguyên dấu tiếng Việt (chỉ lowercase) — dùng cho Tier 4 so khớp lệnh điều khiển thiết
+    // bị. Bỏ dấu khiến câu hỏi đào sâu không liên quan (vd "Vậy còn báo giá") dễ trùng substring với
     // mô tả/ví dụ action (sau khi bỏ dấu, nhiều từ khác nghĩa hoàn toàn lại trở thành cùng 1 chuỗi
-    // ký tự) rồi bị Tier 4 hốt nhầm thành lệnh thiết bị. Không đổi 2 field cũ vì rankRelevantPlugins()
-    // (Tầng 5 di sản) vẫn đang dùng bản bỏ dấu cho match rộng.
+    // ký tự) rồi bị Tier 4 hốt nhầm thành lệnh thiết bị.
+    // (Đã xoá 3 field bỏ dấu normalizedDescription/normalizedExamples/normalizedTags — chỉ tồn tại
+    // để nuôi rankRelevantPlugins()/executeTier3LlmRouting(), 2 hàm Tầng 5 di sản đã bị xoá vì
+    // không còn được gọi trong luồng EXECUTE.)
     val descriptionKeepAccent: String,
     val examplesKeepAccent: List<String>
 )
@@ -507,6 +498,11 @@ class AgentKernel @Inject constructor(
         try {
             val now = System.currentTimeMillis()
             val normalized = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userQuery.lowercase()) ?: ""
+            // ✅ SỬA: bản GIỮ NGUYÊN dấu (chỉ lowercase/trim) — dùng riêng cho so khớp deviceKeywords
+            // bên dưới, cùng lý do đã áp dụng ở mentionsAppDomain()/getDeviceKeywordsOriginal(): bỏ dấu
+            // khiến "đèn" và "đến" cùng thành "den", dễ gán nhầm sourceCategory="tuya" cho câu không
+            // liên quan gì tới thiết bị.
+            val rawKeepAccent = userQuery.lowercase().trim()
 
             val parsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalized, now)
             val since = parsedRange?.since ?: (now - 24 * 60 * 60 * 1000L)
@@ -568,8 +564,19 @@ class AgentKernel @Inject constructor(
                 } catch (e: Exception) { fallback }
             }
 
+            // ✅ SỬA: thiết bị (đèn/cửa/quạt...) phải giữ dấu khi đọc — cùng khuôn với
+            // getDeviceKeywordsOriginal() ở mentionsAppDomain(), tránh lệch hành vi giữa 2 nơi.
+            suspend fun readKeywordsKeepAccent(key: String, fallback: List<String>): List<String> {
+                return try {
+                    configProvider.getString(key, AppConfigDefaults.defaultOf(key))
+                        .split(",")
+                        .map { it.trim().lowercase() }
+                        .filter { it.isNotBlank() }
+                } catch (e: Exception) { fallback }
+            }
+
             val cameraKeywords = readKeywordsNormalized(AppConfigDefaults.GLOBAL_CAMERA_KEYWORDS, listOf("camera"))
-            val deviceKeywords = readKeywordsNormalized(AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS, listOf("thiet bi"))
+            val deviceKeywords = readKeywordsKeepAccent(AppConfigDefaults.GLOBAL_DEVICE_KEYWORDS, listOf("thiết bị"))
             val chatKeywords = readKeywordsNormalized(AppConfigDefaults.GLOBAL_CHAT_KEYWORDS, listOf("tin nhan"))
             val callKeywordsLocal = readKeywordsNormalized(AppConfigDefaults.GLOBAL_CALL_KEYWORDS, listOf("cuoc goi"))
 
@@ -577,7 +584,7 @@ class AgentKernel @Inject constructor(
                 matchedCam != null -> { sourceCategory = "camera"; sourceName = matchedCam.customername.ifBlank { matchedCam.id } }
                 matchedDev != null -> { sourceCategory = "tuya"; sourceName = matchedDev.name.ifBlank { matchedDev.id } }
                 cameraKeywords.any { normalized.contains(it) } -> sourceCategory = "camera"
-                deviceKeywords.any { normalized.contains(it) } -> sourceCategory = "tuya"
+                deviceKeywords.any { rawKeepAccent.contains(it) } -> sourceCategory = "tuya"
                 // ✅ MỚI: trước đây KHÔNG có nhánh nào gán sourceCategory = "call" trong hàm này —
                 // câu hỏi cuộc gọi ở QA mode (khi miss catalog) sẽ rơi vào nhánh chung (không lọc
                 // nguồn "call"), khác hẳn hành vi của luồng Groq/db_search.

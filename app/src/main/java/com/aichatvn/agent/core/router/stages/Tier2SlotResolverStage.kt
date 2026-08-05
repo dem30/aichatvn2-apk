@@ -5,7 +5,6 @@ import com.aichatvn.agent.core.Layer2Result
 import com.aichatvn.agent.core.RoutingContext
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.core.router.RoutingPipeline
-import com.aichatvn.agent.utils.StringSimilarityUtil
 import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -29,11 +28,26 @@ class Tier2SlotResolverStage @Inject constructor() : RouterStage<Layer2Result?> 
             }
 
         if (wrapperIntentPair == null) {
-            val queryNorm = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
-            val scheduleManageSignal = (queryNorm.contains("lich") || queryNorm.contains("hen gio")) &&
-                setOf("huy", "xoa", "bo", "ngung", "dung lich", "sua", "doi", "cap nhat",
-          "xem", "liet ke", "danh sach", "kiem tra",
-          "tat lich", "bat lich", "kich hoat", "vo hieu hoa").any { queryNorm.contains(it) }
+            // ✅ SỬA: trước đây so khớp trên bản BỎ DẤU (StringSimilarityUtil.normalizeVietnamese)
+            // bằng .contains() thô — 2 vấn đề cộng dồn:
+            // (1) bỏ dấu khiến các từ khác nghĩa trùng chuỗi (vd "sua" = cả "sửa" và "sữa", "bo" =
+            //     cả "bỏ"/"bò"/"bờ", "doi" = cả "đổi"/"đợi"/"đôi");
+            // (2) .contains() không có word-boundary nên khớp cả khi từ khoá chỉ là 1 phần bên
+            //     trong từ khác không liên quan (vd "bo" là substring của "bỏng").
+            // Nay chuyển sang so khớp trên bản GIỮ NGUYÊN dấu (chỉ lowercase) + word-boundary bằng
+            // regex, cùng cách tiếp cận đã áp dụng ở Tier 4 / mentionsAppDomain().
+            val queryKeepAccent = context.resolvedQuery.lowercase().trim()
+
+            fun containsWord(keyword: String): Boolean =
+                Regex("(?<!\\p{L})${Regex.escape(keyword)}(?!\\p{L})").containsMatchIn(queryKeepAccent)
+
+            val hasScheduleTopic = containsWord("lịch") || containsWord("hẹn giờ")
+            val manageVerbs = setOf(
+                "hủy", "huỷ", "xóa", "xoá", "bỏ", "ngừng", "dừng lịch", "sửa", "đổi", "cập nhật",
+                "xem", "liệt kê", "danh sách", "kiểm tra",
+                "tắt lịch", "bật lịch", "kích hoạt", "vô hiệu hoá", "vô hiệu hóa"
+            )
+            val scheduleManageSignal = hasScheduleTopic && manageVerbs.any { containsWord(it) }
             if (scheduleManageSignal) return null
         }
 
