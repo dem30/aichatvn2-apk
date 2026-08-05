@@ -409,7 +409,7 @@ class AgentKernel @Inject constructor(
                         // buildToolCallingGuard() (ngay sau marker) nên bỏ khỏi đây, tránh lặp lại 2
                         // lần ở Pass 1 lẫn leak sang Pass 2.
                         val minimalAdminGuard =
-                            "Không tự nhận đã điều khiển thiết bị nếu chưa chắc. Trả lời tối đa $maxSentences câu. " +
+                            "Không tự nhận điều khiển thiết bị. Trả lời tối đa $maxSentences câu. " +
                             "Không tự xử lý đơn hàng/thanh toán/hẹn lịch."
 
                         val fullContext = buildString {
