@@ -2,8 +2,24 @@ package com.aichatvn.agent.utils
 
 object DateTimeParser {
 
+    // ✅ MỚI: cụm chỉ HƯỚNG QUÁ KHỨ/TƯƠNG ĐỐI đi ngay sau số giờ (vd "6 giờ TRƯỚC", "3 tiếng QUA",
+    // "5 giờ GẦN ĐÂY") — đây là câu hỏi TRA CỨU LỊCH SỬ (xem VietnameseTimeRangeParser rule "X
+    // giờ/tiếng" đang xử lý ĐÚNG các cụm này), KHÔNG PHẢI giờ hẹn để đặt lịch. Trước đây hourRegex
+    // chỉ có group bắt buổi (sáng/chiều/tối/đêm) mà không loại trừ nhóm từ này, nên "xem camera 6
+    // giờ trước" bị hiểu nhầm thành cron "0 6 * * *" ở fallback cuối hàm (dòng 82-84), khiến
+    // Tier4MetadataStage.hasScheduleSignal bật nhầm (localEntities["cron"] có giá trị) và route
+    // toàn bộ câu hỏi camera sang ScheduleSkill.
+    private val RELATIVE_PAST_SUFFIX = Regex("\\b(trước|qua|gần đây|vừa qua)\\b")
+
     fun parseVietnameseTime(message: String): String? {
         val lower = message.lowercase().trim()
+
+        // Nếu câu chứa "N giờ/tiếng ... trước/qua/gần đây/vừa qua" thì đây chắc chắn là truy vấn
+        // khoảng thời gian quá khứ, không phải lệnh đặt lịch — từ chối luôn, không cố đoán tiếp.
+        if (Regex("\\b\\d+\\s*(giờ|tiếng|g|h)\\b").containsMatchIn(lower) &&
+            RELATIVE_PAST_SUFFIX.containsMatchIn(lower)) {
+            return null
+        }
         
         var extractedHour: Int? = null
         var extractedMinute: Int = 0

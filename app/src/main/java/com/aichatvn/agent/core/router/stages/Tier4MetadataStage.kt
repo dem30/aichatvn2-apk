@@ -22,10 +22,18 @@ class Tier4MetadataStage @Inject constructor(
         val resolvedIntents = mutableListOf<Pair<Plugin, Intent>>()
         val queryNormalized = StringSimilarityUtil.normalizeVietnamese(context.resolvedQuery)
 
+        // ✅ SỬA: dùng VietnameseTextNormalizer.containsWholePhrase() (nguồn chân lý duy nhất của
+        // dự án cho so khớp cụm từ trọn vẹn, đã có ranh giới đúng chuẩn) thay cho
+        // queryNormalized.contains() thô — tránh khớp nhầm "lich"/"setup" là chuỗi con nằm giữa
+        // 2 từ khác nghĩa. Lưu ý: nguyên nhân THẬT của bug "xem camera 6 giờ trước" bị route vào
+        // schedule không phải ở gate này (câu đó không chứa "lich"/"setup") mà ở
+        // DateTimeParser.parseVietnameseTime() gán nhầm localEntities["cron"] — đã sửa riêng ở
+        // DateTimeParser.kt. Sửa ở đây vẫn giữ lại vì gate substring thô là rủi ro thật, dù không
+        // phải nguyên nhân của case cụ thể này.
         val hasScheduleSignal = context.localEntities.containsKey("cron") || 
-            queryNormalized.contains("lich", ignoreCase = true) ||
+            com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(queryNormalized, "lich") ||
             queryNormalized.contains("hen gio", ignoreCase = true) ||
-            queryNormalized.contains("setup", ignoreCase = true)
+            com.aichatvn.agent.core.text.VietnameseTextNormalizer.containsWholePhrase(queryNormalized, "setup")
 
         if (hasScheduleSignal) {
             val schedulePlugin = devicePlugins.find { it.manifest.id == "schedule" }

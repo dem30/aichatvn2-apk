@@ -4,9 +4,32 @@ import java.util.Calendar
 
 object VietnameseTimeRangeParser {
 
-    data class TimeRange(val since: Long, val until: Long, val label: String)
+    // ✅ MỚI: matchedWords — cụm từ THỰC SỰ đã khớp trong normalizedMsg (không dấu), tách theo
+    // từ. Trước đây AgentKernel dùng `label` (chuỗi do rule TỰ SINH, vd "6 giờ gần nhất") để
+    // strip cụm thời gian ra khỏi câu gốc nhằm tính detailsKeywords — nhưng với các rule ĐỘNG
+    // (N giờ/tiếng, N tháng, N ngày...) label không trùng với cách người dùng thực sự gõ ("6 tiếng
+    // trước"), nên strip thất bại. matchedWords cho AgentKernel một danh sách từ (không dấu) để
+    // loại bỏ đúng VỊ TRÍ TỪ khỏi câu gốc, thay vì so khớp chuỗi con — tránh toàn bộ vấn đề lệch
+    // dấu/lệch khoảng trắng giữa bản gốc và bản normalize.
+    data class TimeRange(
+        val since: Long,
+        val until: Long,
+        val label: String,
+        val matchedWords: List<String> = emptyList()
+    )
 
     private val SPACE_REGEX = Regex("\\s+")
+
+    // Tách 1 chuỗi (đã ở dạng normalize/không dấu) thành danh sách từ, bỏ khoảng trắng thừa.
+    private fun words(s: String): List<String> = s.trim().split(SPACE_REGEX).filter { it.isNotBlank() }
+
+    // Cùng vai trò containsAny(), nhưng trả về ĐÚNG biến thể nào đã khớp (thay vì chỉ true/false)
+    // để lấy được matchedWords chính xác khi rule có nhiều cách nói tương đương (vd "dau thang
+    // truoc" HAY "dau thang qua" đều ra label cố định "đầu tháng trước", nhưng cụm khớp thật khác
+    // nhau tuỳ người dùng gõ biến thể nào).
+    private fun firstMatch(text: String, vararg keywords: String): String? =
+        keywords.firstOrNull { text.contains(it) }
+
     private const val HOUR_MS = 60 * 60 * 1000L
     private const val DAY_MS = 24 * HOUR_MS
     // ✅ ĐÃ SỬA: 30 -> 7. Giới hạn quét tối đa 7 ngày cho mọi truy vấn quá khứ — khớp yêu cầu
@@ -46,7 +69,7 @@ object VietnameseTimeRangeParser {
     // tuần 1 = ngày 1-7, tuần 2 = 8-14, tuần 3 = 15-21, tuần 4 = 22-28,
     // tuần 5 = 29-hết tháng (nếu tháng đó có đủ ngày, ngược lại trả null). Kết quả luôn <= 7
     // ngày -> KHÔNG cần đi qua capOrAskAgain(), tự thân đã trong giới hạn cho phép.
-    private fun buildWeekOfMonthRange(week: Int, month: Int, explicitYear: Int?, now: Long): TimeRange? {
+    private fun buildWeekOfMonthRange(week: Int, month: Int, explicitYear: Int?, now: Long, matchedWords: List<String>): TimeRange? {
         val calNow = Calendar.getInstance().apply { timeInMillis = now }
         val year = explicitYear ?: calNow.get(Calendar.YEAR)
 
@@ -73,12 +96,12 @@ object VietnameseTimeRangeParser {
         // Không nêu năm rõ ràng và mốc tính ra lại nằm ở TƯƠNG LAI -> hiểu là năm ngoái,
         // cùng logic đã dùng ở parseAbsoluteDate() bên dưới.
         if (explicitYear == null && sinceCal.timeInMillis > now) {
-            return buildWeekOfMonthRange(week, month, year - 1, now)
+            return buildWeekOfMonthRange(week, month, year - 1, now, matchedWords)
         }
 
         val untilCal = try { buildCal(endDay) } catch (e: Exception) { return null }
         untilCal.add(Calendar.DAY_OF_MONTH, 1)
-        return TimeRange(sinceCal.timeInMillis, untilCal.timeInMillis - 1, "tuần $week tháng $month/$year")
+        return TimeRange(sinceCal.timeInMillis, untilCal.timeInMillis - 1, "tuần $week tháng $month/$year", matchedWords)
     }
 
     fun parse(normalizedMsg: String, now: Long): TimeRange? {
@@ -104,20 +127,20 @@ object VietnameseTimeRangeParser {
                 val month = parseVnNumber(m.groupValues[2])
                 val explicitYear = m.groupValues.getOrNull(3)?.toIntOrNull()
                 if (week != null && week in 1..5 && month != null && month in 1..12) {
-                    buildWeekOfMonthRange(week, month, explicitYear, now)?.let { return it }
+                    buildWeekOfMonthRange(week, month, explicitYear, now, words(m.value))?.let { return it }
                 }
             }
 
         // 1. Cụm từ thời gian rất ngắn / gần đây
-        if (containsAny(normalizedMsg, "luc nay", "vua roi", "vua xong", "moi day")) {
-            return TimeRange(now - 2 * HOUR_MS, now, "2 giờ gần nhất")
+        firstMatch(normalizedMsg, "luc nay", "vua roi", "vua xong", "moi day")?.let { hit ->
+            return TimeRange(now - 2 * HOUR_MS, now, "2 giờ gần nhất", words(hit))
         }
 
         // Parse động "X giờ / X tiếng" (vd: "3 gio truoc", "5 tieng qua", "1 gio gan day")
         Regex("(\\d+)\\s*(?:gio|tieng)(?:\\s*(?:truoc|qua|gan day|vua qua))?").find(normalizedMsg)?.let { m ->
             val h = m.groupValues[1].toIntOrNull()
             if (h != null && h in 1..72) { // Tối đa 72 giờ
-                return TimeRange(now - h * HOUR_MS, now, "$h giờ gần nhất")
+                return TimeRange(now - h * HOUR_MS, now, "$h giờ gần nhất", words(m.value))
             }
         }
 
@@ -125,13 +148,13 @@ object VietnameseTimeRangeParser {
         val startToday = startOfDay(now)
 
         if (containsAny(normalizedMsg, "hom kia")) { // ✅ Đã bổ sung "hôm kia"
-            return TimeRange(startToday - 2 * DAY_MS, startToday - DAY_MS, "hôm kia")
+            return TimeRange(startToday - 2 * DAY_MS, startToday - DAY_MS, "hôm kia", words("hom kia"))
         }
         if (containsAny(normalizedMsg, "hom qua")) {
-            return TimeRange(startToday - DAY_MS, startToday, "hôm qua")
+            return TimeRange(startToday - DAY_MS, startToday, "hôm qua", words("hom qua"))
         }
         if (containsAny(normalizedMsg, "hom nay")) {
-            return TimeRange(startToday, now, "hôm nay")
+            return TimeRange(startToday, now, "hôm nay", words("hom nay"))
         }
 
         // 2.5. MỚI: "đầu tháng này/trước", "cuối tháng này/trước" — PHẢI đặt trước rule "tháng
@@ -141,24 +164,24 @@ object VietnameseTimeRangeParser {
         if (containsAny(normalizedMsg, "dau thang nay")) {
             val start = startOfMonth(now)
             val weekEnd = start + 6 * DAY_MS + DAY_MS - 1
-            return TimeRange(start, minOf(now, weekEnd), "đầu tháng này")
+            return TimeRange(start, minOf(now, weekEnd), "đầu tháng này", words("dau thang nay"))
         }
-        if (containsAny(normalizedMsg, "dau thang truoc", "dau thang qua")) {
+        firstMatch(normalizedMsg, "dau thang truoc", "dau thang qua")?.let { hit ->
             val prevMonthCal = Calendar.getInstance().apply { timeInMillis = now; add(Calendar.MONTH, -1) }
             val start = startOfMonth(prevMonthCal.timeInMillis)
-            return TimeRange(start, start + 6 * DAY_MS + DAY_MS - 1, "đầu tháng trước")
+            return TimeRange(start, start + 6 * DAY_MS + DAY_MS - 1, "đầu tháng trước", words(hit))
         }
         if (containsAny(normalizedMsg, "cuoi thang nay")) {
             val start = startOfMonth(now)
-            return TimeRange(maxOf(start, now - 6 * DAY_MS), now, "cuối tháng này")
+            return TimeRange(maxOf(start, now - 6 * DAY_MS), now, "cuối tháng này", words("cuoi thang nay"))
         }
-        if (containsAny(normalizedMsg, "cuoi thang truoc", "cuoi thang qua")) {
+        firstMatch(normalizedMsg, "cuoi thang truoc", "cuoi thang qua")?.let { hit ->
             val until = startOfMonth(now) // = 00:00 ngày 1 tháng này = mốc kết thúc tháng trước
-            return TimeRange(until - 7 * DAY_MS, until, "cuối tháng trước")
+            return TimeRange(until - 7 * DAY_MS, until, "cuối tháng trước", words(hit))
         }
 
         // 3. Tuần / Tháng tương đối
-        if (containsAny(normalizedMsg, "thang truoc", "thang qua")) {
+        firstMatch(normalizedMsg, "thang truoc", "thang qua")?.let { hit ->
             val untilMonth = startOfMonth(now)
             val cal = Calendar.getInstance().apply { timeInMillis = now; add(Calendar.MONTH, -1) }
             val sinceMonth = startOfMonth(cal.timeInMillis)
@@ -166,17 +189,17 @@ object VietnameseTimeRangeParser {
             // TRẢ LỜI ĐƯỢC nhưng thiếu dữ liệu mà không nói rõ. Giờ dùng capOrAskAgain(): nếu cả
             // tháng dài hơn 7 ngày (luôn đúng, trừ tháng chạy sát cuối) -> trả null, đẩy sang cơ
             // chế hỏi lại "tuần mấy tháng mấy" hoặc dd/mm/yy - dd/mm/yy ở AgentKernel.
-            return capOrAskAgain(TimeRange(sinceMonth, untilMonth, "tháng trước"))
+            return capOrAskAgain(TimeRange(sinceMonth, untilMonth, "tháng trước", words(hit)))
         }
         if (containsAny(normalizedMsg, "thang nay")) {
-            return capOrAskAgain(TimeRange(startOfMonth(now), now, "tháng này"))
+            return capOrAskAgain(TimeRange(startOfMonth(now), now, "tháng này", words("thang nay")))
         }
         if (containsAny(normalizedMsg, "tuan truoc")) {
             val startThisWeek = startOfWeek(now)
-            return TimeRange(startThisWeek - 7 * DAY_MS, startThisWeek, "tuần trước")
+            return TimeRange(startThisWeek - 7 * DAY_MS, startThisWeek, "tuần trước", words("tuan truoc"))
         }
         if (containsAny(normalizedMsg, "tuan nay")) {
-            return TimeRange(startOfWeek(now), now, "tuần này")
+            return TimeRange(startOfWeek(now), now, "tuần này", words("tuan nay"))
         }
 
         // 4. Parse động "X tháng trước"
@@ -187,7 +210,7 @@ object VietnameseTimeRangeParser {
             val n = m.groupValues[1].toIntOrNull()
             if (n != null && n in 1..12) {
                 val cal = Calendar.getInstance().apply { timeInMillis = now; add(Calendar.MONTH, -n) }
-                return capOrAskAgain(TimeRange(cal.timeInMillis, now, "$n tháng gần nhất"))
+                return capOrAskAgain(TimeRange(cal.timeInMillis, now, "$n tháng gần nhất", words(m.value)))
             }
         }
 
@@ -197,7 +220,7 @@ object VietnameseTimeRangeParser {
         Regex("(\\d+)\\s*(?:ngay|hom)\\s*(?:truoc|qua|gan day|do lai)").find(normalizedMsg)?.let { m ->
             val d = m.groupValues[1].toIntOrNull()
             if (d != null && d in 1..MAX_DAYS_BACK) {
-                return TimeRange(now - d * DAY_MS, now, "$d ngày gần nhất")
+                return TimeRange(now - d * DAY_MS, now, "$d ngày gần nhất", words(m.value))
             }
         }
 
@@ -238,7 +261,7 @@ object VietnameseTimeRangeParser {
         if (until - since > MAX_DAYS_BACK * DAY_MS) return null
 
         val label = "${m.groupValues[1]}/${m.groupValues[2]}/${m.groupValues[3]} - ${m.groupValues[4]}/${m.groupValues[5]}/${m.groupValues[6]}"
-        return TimeRange(since, until, label)
+        return TimeRange(since, until, label, words(m.value))
     }
 
     private fun parseAbsoluteDate(normalizedMsg: String, now: Long): TimeRange? {
@@ -277,7 +300,7 @@ object VietnameseTimeRangeParser {
         }
 
         val since = candidate.timeInMillis
-        return TimeRange(since, since + DAY_MS, "ngày $day/$month/$year")
+        return TimeRange(since, since + DAY_MS, "ngày $day/$month/$year", words(match.value))
     }
 
     private fun containsAny(text: String, vararg keywords: String) =

@@ -649,7 +649,13 @@ class AgentKernel @Inject constructor(
             // nào là stopword/quá ngắn — giữ nguyên từ CÓ DẤU trong danh sách keyword cuối cùng.
             val keywordParam: List<String> = if (!isQuantity && !isYesNo) {
                 var stripped = userQuery
-                parsedRange?.label?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
+                // ✅ SỬA: label (chuỗi rule tự sinh, vd "6 giờ gần nhất") không khớp cách người
+                // dùng thực sự gõ ("6 tiếng trước") với các rule ĐỘNG -> strip theo VỊ TRÍ TỪ dựa
+                // trên matchedWords (cụm từ thật sự khớp trong bản normalize) thay vì string-replace
+                // theo label. Xem stripMatchedTimeWords() để biết chi tiết.
+                if (parsedRange != null && parsedRange.matchedWords.isNotEmpty()) {
+                    stripped = stripMatchedTimeWords(stripped, normalized, parsedRange.matchedWords)
+                }
                 sourceName?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 matchedCam?.customername?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 matchedDev?.name?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
@@ -1797,6 +1803,47 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
     // model dễ lẫn lộn dữ liệu cũ/mới. Regex non-greedy + String.replace (thay hết mọi match).
     private fun stripOldSystemMemory(guardText: String): String {
         return guardText.replace(Regex("<SYSTEM_MEMORY>[\\s\\S]*?</SYSTEM_MEMORY>"), "").trim()
+    }
+
+    // ✅ MỚI: thay cho `stripped.replace(parsedRange.label, "", ignoreCase = true)` cũ ở
+    // runLocalQAEventAnalysis() — label là chuỗi rule TỰ SINH (vd "6 giờ gần nhất"), với các rule
+    // ĐỘNG (N giờ/tiếng, N tháng, N ngày...) label không hề trùng với cách người dùng thực sự gõ
+    // ("6 tiếng trước"), nên .replace() theo label luôn thất bại — câu hỏi gốc không được cắt bớt
+    // mốc thời gian, khiến các từ như "6", "tiếng", "trước" lọt vào keywordParam và làm sai lệch
+    // kết quả tìm kiếm nội dung.
+    //
+    // Cách sửa: VietnameseTimeRangeParser giờ trả kèm `matchedWords` — đúng cụm từ (không dấu) mà
+    // regex/keyword ĐÃ THỰC SỰ khớp trong `normalizedMsg`, tách sẵn theo từ. Ở đây, thay vì so
+    // khớp CHUỖI CON (dễ vỡ vì `original` còn dấu còn `normalizedMsg` đã bỏ dấu — khác nhau từng
+    // ký tự), ta so khớp theo VỊ TRÍ TỪ: tách cả `original` và `normalizedMsg` thành danh sách từ
+    // bằng cùng 1 quy tắc (khoảng trắng) — normalize() chỉ hạ chữ thường/bỏ dấu, không gộp/tách
+    // từ, nên 2 danh sách này LUÔN cùng số từ và cùng thứ tự — rồi tìm matchedWords là dãy con
+    // LIÊN TIẾP nào trong danh sách từ đã normalize, và loại đúng các từ ở CÙNG VỊ TRÍ đó khỏi
+    // danh sách từ gốc (còn dấu). Không tìm thấy hoặc số từ lệch nhau (giả định trên bị phá vỡ,
+    // vd normalize() đổi hành vi trong tương lai) -> trả nguyên `original`, an toàn hơn là cắt sai
+    // vị trí.
+    private fun stripMatchedTimeWords(original: String, normalizedMsg: String, matchedWords: List<String>): String {
+        if (matchedWords.isEmpty()) return original
+
+        val wordSplit = Regex("\\s+")
+        val originalWords = original.trim().split(wordSplit).filter { it.isNotBlank() }
+        val normWords = normalizedMsg.trim().split(wordSplit).filter { it.isNotBlank() }
+
+        if (originalWords.size != normWords.size) return original
+
+        val n = matchedWords.size
+        var startIdx = -1
+        for (i in 0..normWords.size - n) {
+            if (normWords.subList(i, i + n) == matchedWords) {
+                startIdx = i
+                break
+            }
+        }
+        if (startIdx == -1) return original
+
+        return originalWords
+            .filterIndexed { idx, _ -> idx < startIdx || idx >= startIdx + n }
+            .joinToString(" ")
     }
 
     // ✅ MỚI: tách khối "[REF_TIMESTAMPS: ...]" mà Pass 2 được yêu cầu tự thêm vào cuối câu trả
