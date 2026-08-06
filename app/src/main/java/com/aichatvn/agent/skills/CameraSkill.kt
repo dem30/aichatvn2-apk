@@ -196,6 +196,11 @@ PluginAction(
         var realEvents: Int = 0,
         var cooldownUntil: Long = 0L,
         var lastNormalScanAt: Long = 0L,
+        // ✅ MỚI: mốc thời gian lần gần nhất ẢNH được lưu ở nhánh "Bình thường" (dù do có biến
+        // động hay do đến hạn định kỳ) — dùng để tính "đã quá 1 tiếng chưa có ảnh nào" mà không
+        // cần lưu MỌI lượt quét. Chỉ tồn tại trong RAM (giống lastNormalScanAt) — mất khi app
+        // khởi động lại, chấp nhận được vì tối đa chỉ lưu dư 1 ảnh không cần thiết sau restart.
+        var lastPeriodicImageAt: Long = 0L,
         val day: PeriodLearningState = PeriodLearningState(),
         val night: PeriodLearningState = PeriodLearningState()
     )
@@ -290,6 +295,11 @@ PluginAction(
         // độc lập với deltaTrigger/absDiffTrigger. Đặt thành hằng số dùng chung để tránh lệch giá trị
         // giữa nơi tính toán (scanCamera) và nơi báo cáo chẩn đoán (updateDiagnostics).
         const val DRIFT_TRIGGER = 12
+
+        // ✅ MỚI: khoảng cách tối thiểu giữa 2 ảnh "nền" (không do biến động) ở nhánh "Bình
+        // thường" — đảm bảo luôn có ít nhất 1 ảnh/tiếng để tra cứu dù camera đứng yên hoàn toàn
+        // trong thời gian dài, mà không phải lưu ảnh ở MỌI lượt quét 5 phút.
+        const val PERIODIC_IMAGE_INTERVAL_MS = 60 * 60 * 1000L
 
         // ✅ MỚI (decay): giá trị mặc định để ngưỡng hạ về khi không còn mẫu nhiễu nào "còn hạn".
         const val DEFAULT_DELTA_TRIGGER = 10
@@ -972,9 +982,36 @@ PluginAction(
                 withContext(Dispatchers.IO) {
                     database.eventLogDao().pruneLogsOlderThan(cutoff)
                 }
+                // ✅ MỚI: chat_images/ giờ nhận ảnh từ MỌI lượt quét "Bình thường" (không chỉ
+                // forceAi nữa — xem comment ở resolvedNormalImagePath trong processImageWithLearning()), nên
+                // cần dọn file định kỳ giống hệt alert_images/ ở cleanupOldAlerts(), nếu không sẽ
+                // phình dung lượng vô hạn vì trước đây thư mục này gần như không có file nào.
+                // Dùng chung cutoff với event_logs (cùng retentionDays) để ảnh và dòng log tương
+                // ứng hết hạn cùng lúc — tránh vênh giữa "log đã xoá nhưng file ảnh còn" (rác) hoặc
+                // ngược lại (log tham chiếu path đã bị xoá).
+                cleanupChatImages(cutoff)
             } catch (e: Exception) {
                 logger.e("CameraSkill", "cleanupOldEventLogs error: ${e.message}", e)
             }
+        }
+    }
+
+    private fun cleanupChatImages(cutoff: Long) {
+        try {
+            val dir = File(context.filesDir, "chat_images")
+            if (dir.exists()) {
+                var deletedCount = 0
+                dir.listFiles()?.forEach { file ->
+                    if (file.lastModified() < cutoff) {
+                        if (file.delete()) deletedCount++
+                    }
+                }
+                if (deletedCount > 0) {
+                    logger.i("CameraSkill", "🧹 Đã dọn $deletedCount ảnh cũ trong chat_images/")
+                }
+            }
+        } catch (e: Exception) {
+            logger.e("CameraSkill", "cleanupChatImages error: ${e.message}", e)
         }
     }
     
@@ -1000,6 +1037,12 @@ PluginAction(
                 delay(delay)
                 sendDailyReports()
                 pruneOrphanedCameraState()
+                // ✅ MỚI: trước đây cleanupOldAlerts()/cleanupOldEventLogs() chỉ chạy 1 lần lúc
+                // initialize() (cold start) — đủ khi chat_images/ gần như trống, nhưng giờ thư
+                // mục này nhận ảnh liên tục từ MỌI lượt quét nền (kể cả forceAi=false), nên cần
+                // dọn định kỳ thay vì chỉ chờ app khởi động lại.
+                cleanupOldAlerts()
+                cleanupOldEventLogs()
             }
         }
     }
@@ -1565,16 +1608,24 @@ PluginAction(
                         val normalComment = aiComment ?: "Bình thường"
                         val objectsSuffix = if (visionObjects.isNotEmpty()) " [objects: ${visionObjects.joinToString(",")}]" else ""
 
-                        // ✅ MỚI: trước đây optimizedBytes ở nhánh "Bình thường" luôn bị bỏ qua, dù
-                        // AI đã thật sự phân tích ảnh (ảnh chỉ được lưu ở nhánh alert). Nhưng người
-                        // dùng còn có chế độ quét liên tục ép buộc camera phân tích (forceAi=true,
-                        // qua handleScan()/lệnh "quét camera") — phần lớn các lần quét ép buộc đó sẽ
-                        // được AI gán nhãn "Bình thường" (không phải mọi lần ép buộc đều bắt được bất
-                        // thường), nên ảnh không chỉ nên gắn với alert. Chỉ lưu khi forceAi=true để
-                        // tránh vòng quét nền tự động (không ép buộc) tích luỹ ảnh "Bình thường" liên
-                        // tục, gây phình dung lượng — quét ép buộc do người dùng chủ động yêu cầu nên
-                        // tần suất thấp hơn hẳn, chấp nhận được.
-                        val resolvedNormalImagePath = if (forceAi) saveChatImage(optimizedBytes) else null
+                        // ✅ SỬA (theo yêu cầu — điều chỉnh lại bản vá trước): lưu MỌI lượt quét
+                        // (kể cả quét nền 5 phút/lần đứng yên hoàn toàn) tốn dung lượng không cần
+                        // thiết. Giờ chỉ lưu ảnh khi: (1) có biến động thật (isSuddenChange, bất kể
+                        // biến động đó có bị coi là "cảnh báo" isSuspicious hay không — camera có
+                        // thể chỉ chuyển động nhẹ không đủ ngưỡng báo động nhưng vẫn đáng lưu ảnh),
+                        // (2) là lượt quét ép buộc (forceAi, người dùng chủ động yêu cầu "quét
+                        // camera" nên luôn muốn thấy ảnh phản hồi), hoặc (3) đã quá
+                        // PERIODIC_IMAGE_INTERVAL_MS (1 tiếng) kể từ ảnh gần nhất — đảm bảo luôn có
+                        // ít nhất 1 ảnh/tiếng làm mốc tham chiếu dù camera đứng yên tuyệt đối. Ảnh
+                        // vẫn dùng optimizedBytes — cùng bản đã qua ImageHashTool.optimizeImage() để
+                        // giảm kích thước, giống hệt ảnh gửi cho AI phân tích, không xử lý thêm lần
+                        // nào nữa.
+                        val isPeriodicImageDue = now - state.lastPeriodicImageAt >= PERIODIC_IMAGE_INTERVAL_MS
+                        val shouldSaveNormalImage = isSuddenChange || forceAi || isPeriodicImageDue
+                        val resolvedNormalImagePath = if (shouldSaveNormalImage) {
+                            state.lastPeriodicImageAt = now
+                            saveChatImage(optimizedBytes)
+                        } else null
 
                         database.eventLogDao().insertLog(
                             EventLogEntity(
