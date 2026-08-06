@@ -135,13 +135,9 @@ object AppConfigDefaults {
     // normalizeVietnamese), nên giá trị mặc định giữ nguyên dấu.
     const val GLOBAL_CLAUSE_FILLER_WORDS    = "global.clause_filler_words"
 
-    // ✅ MỚI: Từ khoá kích hoạt tra cứu lịch sử (Memory Recall) trong ChatSkill.isPastMemoryQuery() —
-    // thay cho PAST_QUERY_KEYWORDS hardcode cứng trước đây.
-    const val GLOBAL_MEMORY_QUERY_KEYWORDS  = "global.memory_query_keywords"
-    // ✅ MỚI: từ khoá riêng để nhận diện câu hỏi thuộc miền "cuộc gọi" — tách khỏi
-    // GLOBAL_MEMORY_QUERY_KEYWORDS vì mục đích khác: không chỉ kích hoạt tra ký ức, mà còn
-    // dùng để route sourceCategory="call" ở AgentKernel (mentionsAppDomain, sourceHint resolve)
-    // và ChatSkill (buildMemoryContext), để user tự thêm từ khoá qua Settings mà không cần sửa code.
+    // ✅ MỚI: từ khoá riêng để nhận diện câu hỏi thuộc miền "cuộc gọi" — dùng để route
+    // sourceCategory="call" ở AgentKernel (mentionsAppDomain, sourceHint resolve), để user tự
+    // thêm từ khoá qua Settings mà không cần sửa code.
     const val GLOBAL_CALL_KEYWORDS          = "global.call_keywords"
 
     // ✅ MỚI: cùng khuôn với GLOBAL_CALL_KEYWORDS — tách riêng từ khoá nhận diện miền cho
@@ -634,14 +630,6 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Từ đệm bị lọc bỏ khi phân tích câu lệnh",
             description = "Từ đệm/lịch sự (giữ nguyên dấu, cách nhau bằng dấu phẩy) sẽ bị loại khỏi câu trước khi tách mệnh đề và nhận diện lệnh điều khiển thiết bị. Thêm từ đệm bạn hay dùng vào cuối danh sách nếu hệ thống chưa nhận ra."
-        ),
-        AppConfigEntity(
-            key = GLOBAL_MEMORY_QUERY_KEYWORDS,
-            value = "mấy hôm trước,hôm qua,hôm nay,gần đây,vừa rồi,lúc nãy,lịch sử,nhật ký,hoạt động,đã làm gì,đã xảy ra,có ai gọi,có ai nhắn,tin nhắn gì,cuộc gọi,bỏ lỡ,chưa đọc,mấy ngày nay,tuần trước,tuần này,trước đó,sự kiện,biến cố,cảnh báo,báo cáo,camera,thiết bị",
-            type = "string",
-            pluginId = "global",
-            label = "Từ khoá kích hoạt tra cứu lịch sử (Memory Recall)",
-            description = "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn bạn gõ chứa 1 trong các từ này, hệ thống sẽ tự tra lại nhật ký (chat, cuộc gọi, camera, thiết bị) để trả lời chính xác thay vì để AI tự đoán/bịa. Thêm từ khoá riêng của bạn vào cuối danh sách (vd: 'nãy giờ', 'khách nào') nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
         ),
         AppConfigEntity(
             key = GLOBAL_CALL_KEYWORDS,
