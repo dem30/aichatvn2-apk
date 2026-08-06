@@ -451,10 +451,11 @@ interface WorldStateDao {
         CallContactEntity::class,
         CallLogEntity::class
     ],
-    // ✅ MỚI: bump 15 → 16 do EventLogEntity thêm cột imagePath. Vẫn cần bump dù dùng
-    // fallbackToDestructiveMigration() — Room so khớp identity hash theo version khi mở DB,
-    // không bump sẽ báo lỗi integrity dù có destructive fallback hay không.
-    version = 16, 
+    // ✅ MỚI: bump 16 → 17 do EventLogEntity thêm cột analysisSource (đánh dấu nguồn phân tích
+    // "groq" | "ml_kit_local" cho LocalVisionTool fallback). Sản phẩm chưa phát hành nên dùng
+    // thẳng fallbackToDestructiveMigration() có sẵn — không cần viết Migration thủ công, DB dev
+    // sẽ tự xoá/tạo lại khi version đổi.
+    version = 17,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

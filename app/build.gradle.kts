@@ -191,6 +191,13 @@ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
     implementation("com.jcraft:jsch:0.1.55")
 }
+dependencies {
+    // ML Kit Image Labeling (bundled — model ~4-5MB đóng gói sẵn trong APK)
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+ 
+    // ML Kit Face Detection (bundled — chỉ cần "có mặt người" hay không, KHÔNG nhận diện danh tính)
+    implementation("com.google.mlkit:face-detection:16.1.7")
+}
 
 kapt {
     correctErrorTypes = true

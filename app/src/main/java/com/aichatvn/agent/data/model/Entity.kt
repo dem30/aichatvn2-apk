@@ -204,7 +204,13 @@ data class EventLogEntity(
     // ✅ MỚI: đường dẫn ảnh cảnh báo tương ứng (copy từ AlertEntity.imagePath tại đúng thời
     // điểm ghi log này) — để db_search/DatabaseSearchHelper trả lời camera có thể đính kèm
     // đúng ảnh của sự kiện khớp, thay vì chỉ có text. null với log không có ảnh (tuya/call/chat).
-    val imagePath: String? = null
+    val imagePath: String? = null,
+    // ✅ MỚI (LocalVisionTool/ML Kit fallback): đánh dấu NGUỒN của "summary" — "groq" (Groq Vision,
+    // mô tả chi tiết, đáng tin) vs "ml_kit_local" (nhãn thô ML Kit khi smart mode tắt hoặc Groq
+    // lỗi/hết quota) vs null (log không qua phân tích ảnh nào — tuya/call/chat/motion thuần).
+    // Dùng để UI/báo cáo phân biệt độ tin cậy, KHÔNG trộn lẫn 2 chất lượng mô tả khác nhau khi
+    // hiển thị cho người dùng — xem thảo luận trước về rủi ro nhầm lẫn nguồn.
+    val analysisSource: String? = null
 )
 
 // ==================== WORLD STATE (BẢN SAO SỐ THỜI GIAN THỰC) ====================
