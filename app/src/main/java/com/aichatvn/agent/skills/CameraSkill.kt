@@ -566,10 +566,19 @@ PluginAction(
                         val hasChange = cam["hasChange"] as? Boolean ?: false
                         val isSuspicious = cam["isSuspicious"] as? Boolean ?: false
                         val aiComment = cam["aiComment"] as? String
+                        // ✅ SỬA: trước đây "hasChange" (= isSuddenChange, thuần pixel-diff) bị dùng
+                        // làm điều kiện TIÊN QUYẾT để hiện aiComment — khiến quét thủ công (luôn có
+                        // phân tích thật từ ML Kit/Groq nhờ isManualTrigger, bất kể pixel đổi nhiều
+                        // hay ít) bị tóm tắt thành "✅ Bình thường" trống trơn mỗi khi pixel không đổi
+                        // nhiều, dù aiComment thật sự đã có nội dung chi tiết. Giờ ưu tiên hiện
+                        // aiComment bất cứ khi nào nó có nội dung thật — hasChange chỉ còn quyết định
+                        // CÂU CHỮ mở đầu ("Có biến động" vs "Bình thường"), không quyết định có ẩn
+                        // chi tiết hay không.
+                        val hasRealComment = aiComment != null && aiComment != "No analysis"
                         when {
                             isSuspicious -> append("• Camera $id: 🚨 CẢNH BÁO — ${aiComment ?: "phát hiện bất thường"} (email đã gửi nếu bật thông báo)\n")
-                            hasChange && aiComment != null && aiComment != "No analysis" ->
-                                append("• Camera $id: 🔄 Có biến động — $aiComment\n")
+                            hasChange && hasRealComment -> append("• Camera $id: 🔄 Có biến động — $aiComment\n")
+                            hasRealComment -> append("• Camera $id: ✅ Bình thường — $aiComment\n")
                             hasChange -> append("• Camera $id: 🔄 Có biến động nhỏ, AI đánh giá bình thường\n")
                             else -> append("• Camera $id: ✅ Bình thường\n")
                         }
