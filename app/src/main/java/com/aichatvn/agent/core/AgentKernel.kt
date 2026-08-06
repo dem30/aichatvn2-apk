@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.jvm.JvmSuppressWildcards
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -771,11 +772,25 @@ class AgentKernel @Inject constructor(
                         val timeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(log.timestamp))
                         "[$timeStr] ${log.summary}"
                     }
-                    // ✅ MỚI: đính kèm ảnh của ĐÚNG các dòng log vừa liệt kê trong câu trả lời —
-                    // cùng field imagePath mà đường Groq 2-pass đã dùng (EventLogEntity.imagePath).
-                    // Chỉ lấy ảnh từ shownLogs (không phải toàn bộ "logs"/"total"), để ảnh khớp
-                    // đúng 1-1 với những gì Admin vừa đọc thấy trong text, không lạc sang dòng khác.
-                    val images = shownLogs.mapNotNull { it.imagePath }.distinct().ifEmpty { null }
+                    // ✅ SỬA (fix "QA mode chỉ trả 1 ảnh"): trước đây ảnh chỉ được lấy từ đúng 3
+                    // dòng log GẦN NHẤT theo thời gian (shownLogs) — nhưng phần lớn log là
+                    // "motion_detected" (không kèm ảnh), nên 3 dòng cuối thường chỉ có 0-1 dòng có
+                    // ảnh thật, khiến QA mode gần như luôn trả về ≤1 ảnh dù có nhiều sự kiện đáng
+                    // chú ý hơn nằm xa hơn trong "logs". Giờ tách riêng: "shownLogs" vẫn dùng cho
+                    // phần TEXT tóm tắt (không đổi), còn ẢNH lấy từ TOÀN BỘ "logs" đã match, ưu
+                    // tiên các dòng gần nhất CÓ ảnh, giới hạn bởi MAX_RESULT_IMAGES — cùng cơ chế
+                    // và cùng giới hạn với đường Groq 2-pass (interceptAndExecuteToolCall) để 2 mode
+                    // nhất quán với nhau.
+                    // ✅ MỚI (fix "ảnh bị lỗi"/bong bóng trống): thêm File(it).exists() để loại bỏ
+                    // ngay từ đây những path trỏ tới file đã bị cleanupChatImages()/cleanupOldAlerts()
+                    // dọn — tránh đẩy dangling reference xuống ChatSkill.kt/ChatScreen.kt.
+                    val images = logs
+                        .filter { !it.imagePath.isNullOrBlank() }
+                        .takeLast(MAX_RESULT_IMAGES)
+                        .mapNotNull { it.imagePath }
+                        .distinct()
+                        .filter { path -> try { File(path).exists() } catch (e: Exception) { false } }
+                        .ifEmpty { null }
                     "Trong $label, ghi nhận $total hoạt động của $targetName:\n• $details" to images
                 }
                 else -> "Trong $label, $targetName hoạt động bình thường, không có bản ghi mới." to null
@@ -1349,6 +1364,11 @@ class AgentKernel @Inject constructor(
                         .mapNotNull { it.imagePath }
                         .distinct()
                         .takeLast(MAX_RESULT_IMAGES)
+                        // ✅ MỚI (fix "ảnh bị lỗi"/bong bóng trống): loại path trỏ tới file đã bị
+                        // dọn (cleanupChatImages()/cleanupOldAlerts()) hoặc không hợp lệ — ngăn
+                        // dangling reference đi xuống ChatSkill.kt trước khi bị insert thành
+                        // ChatMessageEntity(type="image").
+                        .filter { path -> try { File(path).exists() } catch (e: Exception) { false } }
                         .ifEmpty { null }
                 } else {
                     // Model không tuân thủ định dạng REF_TIMESTAMPS (không chèn dòng này, hoặc để

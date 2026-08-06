@@ -495,6 +495,24 @@ class ChatSkill @Inject constructor(
                 // ChatScreen.kt) — không cần đổi UI hay migration DB.
                 val imagePaths = response.imagePaths.orEmpty()
 
+                // ✅ MỚI (fix "ảnh bị lỗi"/bong bóng trống trong ChatBubble): AgentKernel đã lọc
+                // File.exists() ở tầng data (xem runLocalQAEventAnalysis()/interceptAndExecuteToolCall()
+                // trong AgentKernel.kt), nhưng vẫn kiểm tra lại NGAY TRƯỚC KHI insert ở đây — đây là
+                // lớp phòng thủ gần nhất với thời điểm tạo ChatMessageEntity, tránh mọi khả năng
+                // dangling reference lọt qua (race condition với cleanupChatImages()/cleanupOldAlerts()
+                // chạy song song, hoặc nguồn imagePaths nào khác trong tương lai không đi qua
+                // AgentKernel). Không bao giờ tạo ChatMessageEntity(type="image") trỏ tới file
+                // không tồn tại — ChatScreen.kt/ChatBubble() sẽ không còn vẽ ra bong bóng rỗng.
+                val validImagePaths = withContext(Dispatchers.IO) {
+                    imagePaths.filter { path -> path.isNotBlank() && java.io.File(path).exists() }
+                }
+                if (validImagePaths.size < imagePaths.size) {
+                    logger.w(
+                        "ChatSkill",
+                        "⚠️ Bỏ qua ${imagePaths.size - validImagePaths.size}/${imagePaths.size} ảnh không tồn tại trên đĩa (đã bị dọn hoặc path sai) trước khi tạo ChatMessageEntity."
+                    )
+                }
+
                 val assistantMessage = ChatMessageEntity(
                     id = assistantMessageId,
                     sessionToken = "session_$username",
@@ -507,7 +525,7 @@ class ChatSkill @Inject constructor(
                     sourcePlugin = response.usedPluginId
                 )
 
-                val imageMessages = imagePaths.mapIndexed { index, path ->
+                val imageMessages = validImagePaths.mapIndexed { index, path ->
                     ChatMessageEntity(
                         id = UUID.randomUUID().toString(),
                         sessionToken = "session_$username",
@@ -539,7 +557,7 @@ class ChatSkill @Inject constructor(
                         "response" to response.responseText,
                         "messageId" to assistantMessageId,
                         "mode" to response.usedMode,
-                        "imagePaths" to imagePaths
+                        "imagePaths" to validImagePaths
                     )
                 )
             }

@@ -728,6 +728,9 @@ private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin)
 
 
 
+// ✅ MỚI: 3 trạng thái tải ảnh cho ChatBubble — xem comment chi tiết bên trong ChatBubble().
+private enum class ImgLoadState { LOADING, LOADED, FAILED }
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(message: ChatMessageEntity) {
@@ -737,10 +740,15 @@ fun ChatBubble(message: ChatMessageEntity) {
 
     var bitmap by remember(message.fileUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
     var showFullImage by remember { mutableStateOf(false) }
+    // ✅ MỚI (fix "ảnh bị lỗi"/bong bóng trống): trước đây chỉ có biến "bitmap" (null) — không
+    // phân biệt được giữa "đang tải" và "tải thất bại" (file đã bị dọn/hỏng), nên khi decode lỗi,
+    // Card (bong bóng) vẫn hiện ra rỗng vì bitmap?.let{} đơn giản là không vẽ gì mà không ai chặn
+    // cả Card lại. Thêm ImgLoadState để phân biệt rõ 3 trạng thái và xử lý riêng từng trường hợp.
+    var imgLoadState by remember(message.fileUrl) { mutableStateOf(ImgLoadState.LOADING) }
 
     LaunchedEffect(message.fileUrl) {
         if (message.type == "image" && message.fileUrl != null) {
-            bitmap = withContext(Dispatchers.IO) {
+            val decoded = withContext(Dispatchers.IO) {
                 try {
                     val file = java.io.File(message.fileUrl)
                     if (file.exists()) BitmapFactory.decodeFile(message.fileUrl) else null
@@ -748,7 +756,20 @@ fun ChatBubble(message: ChatMessageEntity) {
                     null
                 }
             }
+            bitmap = decoded
+            imgLoadState = if (decoded != null) ImgLoadState.LOADED else ImgLoadState.FAILED
+        } else {
+            // Tin nhắn text bình thường (không phải type="image") — không có gì phải chờ tải.
+            imgLoadState = ImgLoadState.LOADED
         }
+    }
+
+    // ✅ MỚI: tin nhắn CHỈ CÓ ảnh (content rỗng, do ChatSkill.kt tự sinh 1 message riêng cho mỗi
+    // ảnh — xem imageMessages trong ChatSkill.kt) mà ảnh tải thất bại → ẩn hẳn bong bóng thay vì
+    // hiện 1 khung Card trống không có gì bên trong. Không ẩn khi message có kèm text, để không
+    // mất nội dung text nếu future code gộp ảnh+text vào cùng 1 message.
+    if (message.type == "image" && imgLoadState == ImgLoadState.FAILED && message.content.isBlank()) {
+        return
     }
 
     Row(
