@@ -33,7 +33,8 @@ import kotlin.math.min
 data class LocalVisionResult(
     val labels: List<String>,       // vd ["person", "vehicle"] — đã dịch sang tiếng Việt qua mapLabelToVietnamese()
     val hasFace: Boolean,
-    val dominantColorName: String?  // vd "đỏ", "đen" — null nếu không xác định được (ảnh quá tối/đơn sắc)
+    val dominantColorName: String?,  // vd "đỏ", "đen" — null nếu không xác định được (ảnh quá tối/đơn sắc)
+    val rawMlKitLabels: List<Pair<String, Float>> = emptyList()  // ✅ NEW: debug field — raw labels từ ML Kit trước khi filter
 )
 
 /**
@@ -45,18 +46,24 @@ data class LocalVisionResult(
  *
  * Khởi tạo ImageLabeler/FaceDetector MỘT LẦN (lazy, cấp Singleton) — không tạo mới mỗi lần
  * scan, tránh leak native resource (rủi ro #5 đã nêu).
+ * 
+ * ✅ SỬA: confidence threshold từ 0.6 → 0.35 (ML Kit default) để nhạy cảm hơn, tránh bỏ sót
+ * vật thể thật. Khi smartMode TẮT, dùng local nên không sao nếu có ít false positive — mục đích
+ * chỉ là làm giàu event log/summary cho search local, KHÔNG để đưa ra cảnh báo an ninh quan trọng.
  */
 @Singleton
 class LocalVisionTool @Inject constructor(
     @ApplicationContext private val context: Context,
     private val logger: Logger,
 ) {
-    // Ngưỡng tin cậy tối thiểu để 1 label được coi là đáng tin — 0.6 là mức cân bằng giữa
-    // false positive (label rác) và false negative (bỏ sót vật thể thật).
+    // ✅ SỬA: Giảm threshold từ 0.6 → 0.35 (ML Kit default) để nhạy cảm hơn.
+    // Giải thích: threshold 0.6 quá cao, loại bỏ nhiều vật thể hợp lệ. Khi dùng local fallback
+    // (smartMode TẮT), mục đích chỉ là enrichment event log cho search, KHÔNG quyết định cảnh báo
+    // quan trọng, nên lower threshold được.
     private val imageLabeler by lazy {
         ImageLabeling.getClient(
             ImageLabelerOptions.Builder()
-                .setConfidenceThreshold(0.6f)
+                .setConfidenceThreshold(0.35f)  // ✅ SỬA từ 0.6
                 .build()
         )
     }
@@ -93,9 +100,10 @@ class LocalVisionTool @Inject constructor(
                 val dominantColor = calculateDominantColorName(bitmap)
 
                 LocalVisionResult(
-                    labels = labelsDeferred,
+                    labels = labelsDeferred.first,
                     hasFace = facesDeferred,
-                    dominantColorName = dominantColor
+                    dominantColorName = dominantColor,
+                    rawMlKitLabels = labelsDeferred.second  // ✅ NEW: keep raw labels for debugging
                 )
             }
         } catch (e: TimeoutCancellationException) {
@@ -114,18 +122,27 @@ class LocalVisionTool @Inject constructor(
         }
     }
 
-    private suspend fun runLabeling(inputImage: InputImage): List<String> =
+    // ✅ SỬA: Trả về Pair<filtered labels, raw labels> để debug & logging có đủ thông tin
+    private suspend fun runLabeling(inputImage: InputImage): Pair<List<String>, List<Pair<String, Float>>> =
         suspendCancellableCoroutine { cont ->
             imageLabeler.process(inputImage)
                 .addOnSuccessListener { labels ->
+                    val rawLabels = labels.map { it.text to it.confidence }  // ✅ NEW: giữ lại raw
                     val mapped = labels
                         .sortedByDescending { it.confidence }
-                        .take(5)
+                        .take(10)  // ✅ SỬA từ 5 → 10 để lấy thêm labels (threshold đã giảm nên có thể nhiều hơn)
                         .mapNotNull { mapLabelToVietnamese(it.text) }
                         .distinct()
-                    if (cont.isActive) cont.resume(mapped)
+                    
+                    // ✅ NEW: Debug logging — show ngay khi labels trở nên trống sau filter
+                    if (rawLabels.isNotEmpty() && mapped.isEmpty()) {
+                        logger.d("LocalVisionTool", "⚠️ ML Kit trả labels nhưng tất cả bị filter: raw=$rawLabels")
+                    }
+                    
+                    if (cont.isActive) cont.resume(mapped to rawLabels)
                 }
                 .addOnFailureListener { e ->
+                    logger.e("LocalVisionTool", "ML Kit labeling error: ${e.message}", e)
                     if (cont.isActive) cont.resumeWithException(e)
                 }
         }
@@ -137,6 +154,7 @@ class LocalVisionTool @Inject constructor(
                     if (cont.isActive) cont.resume(faces.isNotEmpty())
                 }
                 .addOnFailureListener { e ->
+                    logger.e("LocalVisionTool", "ML Kit face detection error: ${e.message}", e)
                     if (cont.isActive) cont.resumeWithException(e)
                 }
         }
@@ -144,19 +162,28 @@ class LocalVisionTool @Inject constructor(
     // ML Kit trả nhãn tiếng Anh chung chung (vd "Person", "Vehicle", "Plant", "Furniture") —
     // map sang tiếng Việt cho khớp văn phong summary hiện có trong EventLogEntity, đồng thời
     // lọc bớt nhãn quá chung chung/nhiễu (vd "Font", "Material") không có giá trị cho search.
+    // 
+    // ✅ SỬA: Thêm nhiều mapping mới (clothing, shoes, furniture chi tiết hơn) để catch thêm
+    // label từ ML Kit — trước đây quá nhiều label bị null → return nên cuối cùng trả empty list.
     private fun mapLabelToVietnamese(mlKitLabel: String): String? {
         val normalized = mlKitLabel.trim().lowercase()
         return when {
-            normalized.contains("person") || normalized.contains("human") -> "người"
-            normalized.contains("vehicle") || normalized.contains("car") -> "xe ô tô"
-            normalized.contains("motorcycle") || normalized.contains("bicycle") -> "xe máy/xe đạp"
-            normalized.contains("dog") -> "chó"
-            normalized.contains("cat") -> "mèo"
-            normalized.contains("animal") -> "động vật"
-            normalized.contains("plant") || normalized.contains("tree") -> "cây cối"
-            normalized.contains("furniture") -> "đồ nội thất"
-            normalized.contains("clothing") -> "quần áo"
-            normalized.contains("bag") || normalized.contains("luggage") -> "túi/hành lý"
+            normalized.contains("person") || normalized.contains("human") || normalized.contains("people") -> "người"
+            normalized.contains("vehicle") || normalized.contains("car") || normalized.contains("automobile") -> "xe ô tô"
+            normalized.contains("motorcycle") || normalized.contains("motorbike") || normalized.contains("bicycle") || normalized.contains("bike") -> "xe máy/xe đạp"
+            normalized.contains("dog") || normalized.contains("puppy") -> "chó"
+            normalized.contains("cat") || normalized.contains("kitten") -> "mèo"
+            normalized.contains("animal") || normalized.contains("wildlife") -> "động vật"
+            normalized.contains("plant") || normalized.contains("tree") || normalized.contains("flora") -> "cây cối"
+            normalized.contains("furniture") || normalized.contains("chair") || normalized.contains("table") || normalized.contains("sofa") -> "đồ nội thất"
+            normalized.contains("clothing") || normalized.contains("apparel") || normalized.contains("clothes") || normalized.contains("dress") -> "quần áo"
+            normalized.contains("shoe") || normalized.contains("footwear") -> "giày"
+            normalized.contains("bag") || normalized.contains("luggage") || normalized.contains("backpack") || normalized.contains("handbag") -> "túi/hành lý"
+            normalized.contains("building") || normalized.contains("house") || normalized.contains("room") || normalized.contains("indoor") -> "tòa nhà/phòng"
+            normalized.contains("outdoor") || normalized.contains("street") || normalized.contains("road") -> "ngoài trời/đường"
+            normalized.contains("sky") || normalized.contains("cloud") || normalized.contains("weather") -> "bầu trời"
+            normalized.contains("water") || normalized.contains("ocean") || normalized.contains("sea") -> "nước"
+            normalized.contains("food") || normalized.contains("fruit") || normalized.contains("vegetable") -> "thực phẩm"
             else -> null // bỏ qua nhãn không map được — tránh nhồi rác vào summary
         }
     }

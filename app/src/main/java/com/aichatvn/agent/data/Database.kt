@@ -2,6 +2,8 @@ package com.aichatvn.agent.data
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.aichatvn.agent.data.model.*
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
@@ -432,6 +434,23 @@ interface WorldStateDao {
     fun getAllStatesFlow(): Flow<List<WorldStateEntity>>
 }
 
+// ==================== MIGRATIONS ====================
+
+// ✅ SỬA: version 17 (thêm cột EventLogEntity.analysisSource) đã được cài cho khách hàng thật ở
+// version 16 — KHÔNG được để fallbackToDestructiveMigration() xoá sạch DB của họ nữa. Viết
+// Migration thật, chỉ 1 ALTER TABLE ADD COLUMN đúng bằng đúng thay đổi entity đã ghi trong
+// comment ở @Database bên dưới (EventLogEntity thêm analysisSource: String? = null).
+// ⚠️ TỪ NAY VỀ SAU: mỗi lần bump version, PHẢI viết thêm 1 Migration(N, N+1) tương ứng ở đây rồi
+// add vào .addMigrations(...) phía dưới — KHÔNG dựa vào fallbackToDestructiveMigration() nữa.
+// Room ưu tiên dùng Migration đã đăng ký nếu có đường đi hợp lệ; fallbackToDestructiveMigration()
+// chỉ nên còn lại như lưới an toàn cho các bản dev/test rất cũ không còn ai dùng, KHÔNG phải cơ
+// chế "migration" chính thức cho bản đã phát hành.
+val MIGRATION_16_17 = object : Migration(16, 17) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE event_logs ADD COLUMN analysisSource TEXT")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -451,10 +470,10 @@ interface WorldStateDao {
         CallContactEntity::class,
         CallLogEntity::class
     ],
-    // ✅ MỚI: bump 16 → 17 do EventLogEntity thêm cột analysisSource (đánh dấu nguồn phân tích
-    // "groq" | "ml_kit_local" cho LocalVisionTool fallback). Sản phẩm chưa phát hành nên dùng
-    // thẳng fallbackToDestructiveMigration() có sẵn — không cần viết Migration thủ công, DB dev
-    // sẽ tự xoá/tạo lại khi version đổi.
+    // bump 16 → 17 do EventLogEntity thêm cột analysisSource (đánh dấu nguồn phân tích
+    // "groq" | "ml_kit_local" cho LocalVisionTool fallback).
+    // ⚠️ Version 16 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_16_17 (ALTER TABLE ADD
+    // COLUMN) ở trên, KHÔNG được để fallbackToDestructiveMigration() xoá dữ liệu của họ.
     version = 17,
     exportSchema = false
 )
@@ -488,6 +507,11 @@ abstract fun callLogDao(): CallLogDao
                     "aichatvn_database"
                 )
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+                    // ✅ SỬA: đăng ký Migration thật cho 16→17 — Room sẽ dùng đường đi này trước
+                    // (giữ nguyên dữ liệu khách hàng ở version 16). fallbackToDestructiveMigration()
+                    // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
+                    // lịch sử) — KHÔNG áp dụng cho bước 16→17 vì đã có Migration cụ thể ở trên.
+                    .addMigrations(MIGRATION_16_17)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

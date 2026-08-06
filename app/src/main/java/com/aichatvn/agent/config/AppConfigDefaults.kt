@@ -333,15 +333,15 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "camera",
             label = "Từ khoá cảnh báo mặc định",
-            description = "Danh sách từ khoá (cách nhau bằng dấu phẩy) để nhận diện phản hồi AI là CẢNH BÁO. Dùng cho camera chưa cấu hình riêng."
+            description = "Danh sách từ khoá (cách nhau bằng dấu phẩy) QUYẾT ĐỊNH báo động — dùng cho cả 2 nguồn: (1) văn bản mô tả của Groq AI (mặc định \"cảnh báo\", đúng theo prompt yêu cầu AI tự viết chữ này khi phát hiện bất thường), và (2) nhãn vật thể do ML Kit local nhận diện (vd \"người\", \"xe ô tô\" — copy từ danh sách tham khảo ở CAMERA_DEFAULT_NEGATIVE_KW sang đây). CHỈ báo động khi khớp đúng 1 từ khoá trong danh sách này — để trống hoặc không khớp gì = không bao giờ báo động (an toàn mặc định, không tốn quota AI). Dùng cho camera chưa cấu hình riêng."
         ),
         AppConfigEntity(
             key = CAMERA_DEFAULT_NEGATIVE_KW,
-            value = "bình thường",
+            value = "bình thường,người,xe ô tô,xe máy/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi/hành lý,tòa nhà/phòng,ngoài trời/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
             type = "string",
             pluginId = "camera",
-            label = "Từ khoá bình thường mặc định",
-            description = "Từ khoá để nhận diện phản hồi AI là BÌNH THƯỜNG. Dùng cho camera chưa cấu hình riêng."
+            label = "Từ khoá bình thường mặc định (danh sách tham khảo nhãn)",
+            description = "KHÔNG còn dùng để loại trừ báo động — đây là DANH SÁCH THAM KHẢO gồm \"bình thường\" (chữ Groq AI tự viết khi không có gì bất thường) + toàn bộ nhãn tiếng Việt mà ML Kit local có thể trả về (xem mapLabelToVietnamese() trong LocalVisionTool.kt). Vì người dùng không biết chính xác ML Kit sẽ phân loại ra nhãn gì, họ chỉ cần COPY đúng từ danh sách này sang ô \"Từ khoá cảnh báo\" (CAMERA_DEFAULT_POSITIVE_KW / aiPositiveKeywords) để bật báo động cho nhãn đó. Dùng cho camera chưa cấu hình riêng."
         ),
         AppConfigEntity(
             key = CAMERA_COOLDOWN_MS,
