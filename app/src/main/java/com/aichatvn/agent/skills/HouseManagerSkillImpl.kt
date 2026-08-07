@@ -405,12 +405,22 @@ PluginAction(
                 val isAway = WorldStateHelper.getAttribute(database.worldStateDao(), "system", "house", "away_mode") == "true"
                 val ownerPresent = !isAway
 
+                // ✅ SỬA: Đổi thứ tự ưu tiên — "thời gian" (đêm/ngủ) giờ được xét TRƯỚC "bận chat".
+                // Trước đây totalUnreadChats > 3 luôn thắng SLEEPING/NIGHT, nghĩa là dù 3 giờ sáng
+                // nhà yên tĩnh, chỉ cần có khách đặt hàng lúc nửa đêm là mood báo "BUSY" — sai bản
+                // chất (nhà vẫn đang ở khung giờ đêm/ngủ, chỉ là có việc cần xử lý). Giờ mood "khung
+                // giờ" (đêm/ngủ) ưu tiên cao hơn mood "hoạt động" (BUSY/QUIET).
+                // ✅ MỚI: Thêm nhánh QUIET (từng khai báo trong enum HouseMood nhưng chưa từng được
+                // gán ở đây) — áp dụng khi ban ngày, không có gì bất thường, ít hoạt động (không
+                // khách, không thiết bị nào bật, không tin chưa đọc) — phân biệt với NORMAL (ban
+                // ngày nhưng có hoạt động, ví dụ có thiết bị đang bật hoặc có khách ra vào).
                 val computedMood = when {
                     isAway -> HouseMood.VACATION
                     isSuspicious -> HouseMood.ALERT
-                    totalUnreadChats > 3 -> HouseMood.BUSY
                     isNightTime() && activeDevicesCount == 0 -> HouseMood.SLEEPING
                     isNightTime() -> HouseMood.NIGHT
+                    totalUnreadChats > 3 -> HouseMood.BUSY
+                    activeDevicesCount == 0 && guestCount == 0 && totalUnreadChats == 0 -> HouseMood.QUIET
                     else -> HouseMood.NORMAL
                 }
 

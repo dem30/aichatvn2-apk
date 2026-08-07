@@ -285,6 +285,13 @@ class HouseManagerViewModel @Inject constructor(
             "camera" -> "camera.$entityId.state=$expectedValue"
             "tuya" -> "tuya.$entityId.state=$expectedValue"
             "chat" -> "chat.$entityId.keyword=$expectedValue"
+            // ✅ MỚI: Ngòi nổ "Chế độ nhà đổi thành X" — dùng đúng đường ghi world_state đã có sẵn
+            // ở HouseManagerSkillImpl.evaluateSituation() (system:brain, key="mood"). Không cần
+            // entityId thật (mood là trạng thái toàn nhà, không gắn với 1 thiết bị/camera cụ thể)
+            // nên UI (VisualTriggerBuilderDialog) sẽ luôn truyền entityId="*" cho nhánh này —
+            // sourceId "*" đã được onWorldStateChanged() xử lý như "khớp mọi nguồn" (xem
+            // condition.sourceId == "*" ở HouseManagerSkillImpl.kt).
+            "mood" -> "system.brain.mood=$expectedValue"
             else -> "system.brain.state=normal"
         }
 

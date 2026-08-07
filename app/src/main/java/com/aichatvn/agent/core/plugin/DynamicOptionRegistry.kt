@@ -3,11 +3,26 @@
 package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.model.HouseMood
+import com.aichatvn.agent.data.model.displayName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+
+// ✅ MỚI: Emoji gợi nhớ cho từng Chế độ nhà trong picker "house_mood" — tách riêng hàm nhỏ
+// ở đây (không đặt trong HouseMood.kt) vì đây là chi tiết hiển thị của riêng màn hình Planner
+// Builder, không phải quy tắc nghiệp vụ chung như displayName().
+private fun moodEmoji(mood: HouseMood): String = when (mood) {
+    HouseMood.NORMAL -> "🙂"
+    HouseMood.BUSY -> "🏃"
+    HouseMood.QUIET -> "🤫"
+    HouseMood.NIGHT -> "🌆"
+    HouseMood.ALERT -> "🚨"
+    HouseMood.SLEEPING -> "😴"
+    HouseMood.VACATION -> "🏖️"
+}
 
 data class OptionItem(
     val value: String, // Giá trị thực gửi cho backend/plugin
@@ -81,6 +96,17 @@ class DynamicOptionRegistry @Inject constructor(
                     .map { cust ->
                         OptionItem(cust.email.trim(), "${cust.name} <${cust.email.trim()}>")
                     }
+            }
+            // ✅ MỚI: Nạp danh sách Chế độ nhà (HouseMood) để làm ngòi nổ kịch bản — trước đây
+            // Planner Builder chỉ biết 3 nguồn cứng (camera/tuya/chat), không có cách nào tạo
+            // kịch bản dựa trên "Chế độ nhà đổi thành X" (vd tự động bật đèn hành lang khi nhà
+            // chuyển sang SLEEPING). Value dùng đúng tên enum (import com.aichatvn.agent.data.model.HouseMood)
+            // vì đó là giá trị thật được ghi vào world_state (system:brain:mood, xem
+            // HouseManagerSkillImpl.evaluateSituation()) — label dùng displayName() tiếng Việt.
+            "house_mood" -> {
+                com.aichatvn.agent.data.model.HouseMood.entries.map { mood ->
+                    OptionItem(mood.name, "${moodEmoji(mood)} ${mood.displayName()}")
+                }
             }
             // 🌟 MỚI: Nạp danh sách Chính sách an ninh Quản gia
             "house_policy" -> {

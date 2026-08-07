@@ -1142,6 +1142,10 @@ fun VisualTriggerBuilderDialog(
             "camera" -> availableCameras.firstOrNull()?.id ?: ""
             "tuya" -> availableDevices.firstOrNull()?.id ?: ""
             "chat" -> "*"
+            // ✅ MỚI: Ngòi nổ "mood" không gắn với 1 thiết bị/camera cụ thể (là trạng thái toàn
+            // nhà) — dùng "*" giống "chat" để luôn hợp lệ (isValid) mà không cần chủ nhà chọn gì
+            // ở Bước 2.
+            "mood" -> "*"
             else -> ""
         }
         selectedExpectedValue = when (selectedSource) {
@@ -1150,6 +1154,9 @@ fun VisualTriggerBuilderDialog(
             // ✅ ĐÃ SỬA: không còn giá trị "high" cứng — chủ nhà sẽ tự gõ từ khoá của mình vào ô
             // nhập bên dưới (xem nhánh "chat" ở Bước 3), nên khởi tạo rỗng để bắt buộc họ nhập.
             "chat" -> ""
+            // ✅ MỚI: Mặc định chọn SLEEPING — case dùng nhiều nhất (vd tự động khoá cửa/tắt đèn
+            // khi nhà chuyển sang chế độ ngủ).
+            "mood" -> "SLEEPING"
             else -> ""
         }
     }
@@ -1169,7 +1176,15 @@ fun VisualTriggerBuilderDialog(
 
                 Text("Bước 1: Chọn nguồn kích hoạt kịch bản", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val sources = listOf("camera" to "📷 Camera", "tuya" to "🔌 Thiết bị Tuya", "chat" to "💬 Khách nhắn")
+                    // ✅ MỚI: Thêm nguồn "mood" (Chế độ nhà) — cho phép kịch bản kích hoạt khi
+                    // HouseManagerSkillImpl.evaluateSituation() tính ra Chế độ nhà đổi thành 1 giá
+                    // trị cụ thể (vd SLEEPING, VACATION), thay vì chỉ dựa vào camera/tuya/chat riêng lẻ.
+                    val sources = listOf(
+                        "camera" to "📷 Camera",
+                        "tuya" to "🔌 Thiết bị Tuya",
+                        "chat" to "💬 Khách nhắn",
+                        "mood" to "🏠 Chế độ nhà"
+                    )
                     sources.forEach { (key, label) ->
                         FilterChip(
                             selected = selectedSource == key,
@@ -1215,10 +1230,52 @@ fun VisualTriggerBuilderDialog(
                     "chat" -> {
                         Text("Áp dụng tự động cho mọi kênh nhắn tin (Facebook/Telegram/Web).", fontSize = 12.sp)
                     }
+                    // ✅ MỚI: "mood" là trạng thái toàn nhà, không cần chọn thiết bị/camera cụ thể ở
+                    // Bước 2 — chủ nhà chọn giá trị Chế độ nhà mong muốn trực tiếp ở Bước 3.
+                    "mood" -> {
+                        Text("Áp dụng tự động khi Chế độ nhà (Mood) thay đổi — không cần chọn thiết bị.", fontSize = 12.sp)
+                    }
                 }
 
                 Text("Bước 3: Chọn điều kiện kích hoạt", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                 when (selectedSource) {
+                    // ✅ MỚI: 7 lựa chọn khớp đúng enum HouseMood (data/model/HouseMood.kt) — dùng
+                    // displayName() để hiển thị tiếng Việt, nhưng value gửi đi vẫn là tên enum gốc
+                    // (vd "SLEEPING") vì đó là giá trị thật world_state ghi ra (xem
+                    // HouseManagerSkillImpl.evaluateSituation(), brainJson.put("mood", computedMood.name)).
+                    "mood" -> {
+                        Text(
+                            "Kịch bản sẽ chạy khi Chế độ nhà chuyển đúng sang giá trị đã chọn.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        // ⚠️ Dùng 2 Row cố định (không FlowRow) để tránh phải opt-in API thực nghiệm
+                        // (ExperimentalLayoutApi) chỉ vì 7 chip — nhất quán với cách các Bước 1/3
+                        // khác trong dialog này đã làm (Row + weight, xem "sources" ở Bước 1).
+                        val moodOptions = listOf(
+                            "NORMAL" to "🙂 Bình thường",
+                            "BUSY" to "🏃 Bận rộn",
+                            "QUIET" to "🤫 Yên tĩnh",
+                            "NIGHT" to "🌆 Ban đêm",
+                            "ALERT" to "🚨 Cảnh báo",
+                            "SLEEPING" to "😴 Đang ngủ",
+                            "VACATION" to "🏖️ Vắng nhà"
+                        )
+                        moodOptions.chunked(2).forEach { rowItems ->
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                rowItems.forEach { (value, label) ->
+                                    FilterChip(
+                                        selected = selectedExpectedValue == value,
+                                        onClick = { selectedExpectedValue = value },
+                                        label = { Text(label, fontSize = 11.sp) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                // Đệm khoảng trống nếu hàng cuối lẻ 1 item, tránh chip bị giãn rộng gấp đôi
+                                if (rowItems.size == 1) Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
                     "chat" -> {
                         // ✅ ĐÃ SỬA (Từ khoá khẩn cấp tự chọn): trước đây chỉ có 1 chip cứng "Khách
                         // gửi tin nhắn khẩn cấp" (giá trị ẩn "high", do 1 danh sách từ code cứng
