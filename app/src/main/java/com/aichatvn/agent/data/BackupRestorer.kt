@@ -70,8 +70,20 @@ class BackupRestorer @Inject constructor(
     // Lưu ý: global.gateway_token KHÔNG nằm trong danh sách này — đây là mã xác minh bắt
     // buộc để app hoạt động (không phải mã sinh riêng theo máy), nên luôn được seed cùng
     // giá trị mặc định.
+    //
+    // ✅ MỚI (fix "Thiết bị này đã được kích hoạt trước đó" khi cài app mới): thêm
+    // local.device_id/local.activation_status. Đây là 2 key định danh + trạng thái kích
+    // hoạt do chính máy tự sinh (không nằm trong AppConfigDefaults.all() nên không seed từ
+    // code, mà được ghi trực tiếp bởi luồng activation — do đó dùng literal string, không
+    // có hằng số AppConfigDefaults tương ứng). Nếu để bản demo/backup của MÁY KHÁC (hoặc
+    // bản export cũ của CHÍNH máy này từ TRƯỚC khi xoá app) ghi đè 2 key này, app sẽ gửi lại
+    // đúng device_id ĐÃ TỪNG kích hoạt lên gateway → server nhận diện nhầm là thiết bị cũ,
+    // từ chối kích hoạt dù thực tế vừa cài mới hoàn toàn. Mỗi máy phải luôn tự sinh
+    // device_id mới và tự đi qua lại flow activation của riêng nó.
     private val MACHINE_SPECIFIC_CONFIG_KEYS = setOf(
-        AppConfigDefaults.WEBSITE_WIDGET_KEY
+        AppConfigDefaults.WEBSITE_WIDGET_KEY,
+        "local.device_id",
+        "local.activation_status"
     )
 
     /**

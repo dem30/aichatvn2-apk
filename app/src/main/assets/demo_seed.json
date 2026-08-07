@@ -521,15 +521,7 @@
         "description": "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại\/video P2P từ các thiết bị khác.",
         "updatedAt": 1786084953044
       },
-      {
-        "key": "local.device_id",
-        "value": "eb54a042-0faa-4d99-8d33-32c1a9579125",
-        "type": "string",
-        "pluginId": "global",
-        "label": "",
-        "description": "",
-        "updatedAt": 1786084953047
-      },
+      
       {
         "key": "website.widget_key",
         "value": "84dcc7cc283d46b9944d3c0b73be4e39",
@@ -565,16 +557,8 @@
         "label": "",
         "description": "",
         "updatedAt": 1786084963320
-      },
-      {
-        "key": "local.activation_status",
-        "value": "false",
-        "type": "string",
-        "pluginId": "global",
-        "label": "",
-        "description": "",
-        "updatedAt": 1786085167868
       }
+      
     ],
     "event_logs": [
       {
