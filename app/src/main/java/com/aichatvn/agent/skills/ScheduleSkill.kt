@@ -25,7 +25,12 @@ import javax.inject.Singleton
 @Singleton
 class ScheduleSkill @Inject constructor(
     @ApplicationContext private val context: Context,
-    logger: Logger
+    logger: Logger,
+    // ✅ MỚI: cần Set<Plugin> để tự kiểm tra "params" gửi vào (từ UI hoặc từ chat NLU) có đủ
+    // tham số bắt buộc của action ĐÍCH hay không, trước khi lưu. Dùng lại đúng multibinding
+    // Set<Plugin> đã có sẵn qua các @IntoSet trong AppModule.kt — giống hệt cách
+    // DynamicOptionRegistry đã dùng để build danh sách plugin_id/action_id.
+    private val plugins: Set<@JvmSuppressWildcards Plugin>
 ) : BaseSkill("schedule", "Lên lịch trình", logger), Plugin {
 
     override val manifest = PluginManifest(
@@ -116,11 +121,6 @@ class ScheduleSkill @Inject constructor(
         }
     }
 
-    // ✅ MỚI: chống tạo lịch trùng — ví dụ khi người dùng bấm "Đồng ý" nhiều lần trên
-    // cùng 1 đề xuất thói quen (approvePattern), hoặc pattern mining vô tình sinh lại đề xuất
-    // đã duyệt (xem WebhookGatewayService.minePatterns). So khớp theo pluginId + action + cron
-    // + intervalMinutes + tham số "device" lồng trong params (nếu có), vì đây là bộ khóa đủ để
-    // coi là "cùng một thói quen tự động".
     private suspend fun findDuplicateSchedule(
         pluginId: String,
         action: String,
@@ -133,14 +133,79 @@ class ScheduleSkill @Inject constructor(
         return existing.find { s ->
             if (s.pluginId != pluginId || s.action != action) return@find false
             if (s.cron.trim() != cron.trim() || s.intervalMinutes != intervalMinutes) return@find false
-            if (targetDevice == null) return@find true
-            val sParams = try { JSONObject(s.params) } catch (e: Exception) { JSONObject() }
-            val sDevice = sParams.optString("device", sParams.optString("device_id", sParams.optString("deviceId", "")))
-            sDevice == targetDevice
+            if (targetDevice != null) {
+                val sParams = try { JSONObject(s.params) } catch (e: Exception) { JSONObject() }
+                val sDevice = sParams.optString("device", sParams.optString("device_id", sParams.optString("deviceId", "")))
+                return@find sDevice == targetDevice
+            }
+            // ✅ FIX: trước đây `targetDevice == null` -> coi MỌI lịch cùng plugin+action+cron/
+            // interval là trùng nhau, bất kể nội dung params khác nhau thế nào. Với action không
+            // có field kiểu device (vd notification.send chỉ có title/message), điều này khiến 2
+            // lịch có nội dung hoàn toàn khác nhau nhưng trùng giờ chạy bị chặn nhầm thành
+            // "trùng" — lịch mới (nội dung đúng) không được lưu, trả về lịch cũ (có thể rỗng/sai)
+            // thay thế. Giờ so khớp theo đúng nội dung params thực tế.
+            val sParamsJson = try { JSONObject(s.params) } catch (e: Exception) { JSONObject() }
+            sParamsJson.toString() == JSONObject(nestedParams).toString()
+        }
+    }
+
+    // ✅ MỚI: chốt chặn cuối cùng trước khi lưu — trước đây handleAdd/handleUpdate nhận bất kỳ
+    // "params" nào được truyền vào (từ UI hoặc từ chat NLU) và lưu thẳng, kể cả khi rỗng/thiếu.
+    // Điều này khiến lịch trình "tạo thành công" (không báo lỗi gì) nhưng thiếu tham số bắt buộc
+    // của action đích (vd notification.send thiếu "title"/"message") — lỗi chỉ lộ ra khi
+    // ScheduleLoop thực thi thật và action đích không biết làm gì với params rỗng. Việc dặn dò
+    // LLM qua description ("params phải chứa ĐẦY ĐỦ...") chỉ là gợi ý, không phải ràng buộc —
+    // cần chặn cứng ở code.
+    private fun findMissingRequiredParams(
+        pluginId: String,
+        action: String,
+        nestedParams: Map<String, Any>
+    ): List<String> {
+        val targetAction = plugins.find { it.manifest.id == pluginId }
+            ?.manifest?.actions?.find { it.name == action }
+            ?: return emptyList() // Không tìm thấy plugin/action đích -> để lỗi lộ ra tự nhiên khi thực thi, không chặn ở đây
+
+        return targetAction.parameters
+            .filter { it.required }
+            .filter { p ->
+                val v = nestedParams[p.name]
+                v == null || (v is String && v.isBlank())
+            }
+            .map { it.description.ifBlank { it.name } }
+    }
+
+
+
+    // ✅ MỚI: SmartActionFormSheet gửi "params" dưới dạng CHUỖI JSON (vì AlertActionConfig.params
+    // là Map<String,String> — không thể chứa nested Map, nên phải .toString() trước khi nhét
+    // vào). Trước đây handleAdd/handleUpdate chỉ nhận "params" khi nó là Map<*,*> — chuỗi JSON
+    // rơi vào nhánh else -> emptyMap(), khiến lịch trình luôn lưu params RỖNG dù người dùng đã
+    // điền đầy đủ trên SmartActionFormSheet. Giờ parse thêm nhánh String -> JSONObject -> Map.
+    private fun jsonObjectToMap(json: JSONObject): Map<String, Any> {
+        val map = mutableMapOf<String, Any>()
+        json.keys().forEach { key ->
+            val value = json.get(key)
+            if (value != JSONObject.NULL) map[key] = value
+        }
+        return map
+    }
+
+    private fun parseNestedParams(raw: Any?): Map<String, Any> {
+        return when (raw) {
+            is Map<*, *> -> {
+                @Suppress("UNCHECKED_CAST")
+                raw as Map<String, Any>
+            }
+            is String -> {
+                if (raw.isBlank()) emptyMap()
+                else try { jsonObjectToMap(JSONObject(raw)) } catch (e: Exception) { emptyMap() }
+            }
+            else -> emptyMap()
         }
     }
 
     private suspend fun handleAdd(params: Map<String, Any>): AgentKernel.PluginResult {
+
         val pluginId = params["pluginId"] as? String
             ?: return failure("Thiếu pluginId")
         
@@ -155,12 +220,16 @@ class ScheduleSkill @Inject constructor(
         }
         
         @Suppress("UNCHECKED_CAST")
-        val nestedParams: Map<String, Any> = when (val raw = params["params"]) {
-            is Map<*, *> -> raw as Map<String, Any>
-            null -> emptyMap()
-            else -> emptyMap()
-        }
+        val nestedParams: Map<String, Any> = parseNestedParams(params["params"])
         val paramsJson = JSONObject(nestedParams).toString()
+
+        // ✅ MỚI: chặn cứng nếu thiếu tham số bắt buộc của action đích — không cho lưu "thành
+        // công" một lịch trình chắc chắn sẽ lỗi khi chạy.
+        findMissingRequiredParams(pluginId, action, nestedParams).let { missing ->
+            if (missing.isNotEmpty()) {
+                return failure("⚠️ Thiếu tham số bắt buộc cho \"$pluginId.$action\": ${missing.joinToString(", ")}")
+            }
+        }
 
         // ✅ MỚI: chặn tạo trùng ngay tại nguồn — áp dụng cho MỌI lời gọi "add" (kể cả từ
         // approvePattern, chat NLU, hay UI thêm lịch thủ công), không chỉ riêng luồng gợi ý.
@@ -215,12 +284,17 @@ val cron = params["cron"] as? String ?: existing.cron
 val intervalMinutes = (params["intervalMinutes"] as? Number)?.toInt() ?: existing.intervalMinutes
 
         @Suppress("UNCHECKED_CAST")
-        val nestedParams: Map<String, Any> = when (val raw = params["params"]) {
-            is Map<*, *> -> raw as Map<String, Any>
-            null -> emptyMap()
-            else -> emptyMap()
-        }
+        val nestedParams: Map<String, Any> = parseNestedParams(params["params"])
         val paramsJson = if (params.containsKey("params")) {
+            // ✅ MỚI: cùng lý do như handleAdd — nếu caller CÓ gửi "params" mới (dù rỗng), phải
+            // đảm bảo nó đủ tham số bắt buộc của action đích trước khi ghi đè lên params cũ.
+            // Không thì 1 lần "sửa" vô tình gửi params rỗng (vd chat NLU chỉ định đổi giờ chạy
+            // nhưng lại kèm theo "params": {}) sẽ xoá sạch title/message đã cấu hình đúng trước đó.
+            findMissingRequiredParams(pluginId, action, nestedParams).let { missing ->
+                if (missing.isNotEmpty()) {
+                    return failure("⚠️ Thiếu tham số bắt buộc cho \"$pluginId.$action\": ${missing.joinToString(", ")}")
+                }
+            }
             JSONObject(nestedParams).toString()
         } else {
             existing.params
