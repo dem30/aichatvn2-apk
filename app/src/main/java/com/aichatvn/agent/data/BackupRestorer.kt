@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.skills.CameraSkill
@@ -62,7 +63,27 @@ class BackupRestorer @Inject constructor(
         )
     }
 
-    suspend fun restore(context: Context, jsonString: String): String {
+    // ✅ MỚI: một số key trong app_config được TỰ SINH RIÊNG cho từng máy (khoá nhúng
+    // widget website) — không được copy nguyên từ bản demo/backup của máy khác sang, nếu
+    // không các máy khách sẽ dùng chung 1 khoá, gây xung đột hoặc lộ khả năng điều khiển
+    // chéo giữa các máy.
+    // Lưu ý: global.gateway_token KHÔNG nằm trong danh sách này — đây là mã xác minh bắt
+    // buộc để app hoạt động (không phải mã sinh riêng theo máy), nên luôn được seed cùng
+    // giá trị mặc định.
+    private val MACHINE_SPECIFIC_CONFIG_KEYS = setOf(
+        AppConfigDefaults.WEBSITE_WIDGET_KEY
+    )
+
+    /**
+     * @param preserveMachineTokens true (mặc định) = phục hồi đầy đủ mọi giá trị trong
+     *   app_config đúng như trong file backup — dùng cho Import thủ công ở màn Settings khi
+     *   người dùng khôi phục lại chính máy của họ (đổi điện thoại...).
+     *   false = bỏ qua các key máy-sinh riêng (widget_key), giữ nguyên giá trị hiện có trên
+     *   máy (hoặc để trống nếu máy chưa từng sinh) — dùng khi nạp dữ liệu demo dùng chung
+     *   cho mọi máy khách cài mới. gateway_token vẫn luôn được seed vì là mã xác minh bắt
+     *   buộc, không phải mã riêng theo máy.
+     */
+    suspend fun restore(context: Context, jsonString: String, preserveMachineTokens: Boolean = true): String {
         return withContext(Dispatchers.IO) {
             try {
                 val json = JSONObject(jsonString)
@@ -110,9 +131,14 @@ class BackupRestorer @Inject constructor(
                                     rowsArray.toString(),
                                     object : TypeToken<List<AppConfigEntity>>() {}.type
                                 )
-                                list.forEach { configProvider.upsert(it) }
+                                val filteredList = if (preserveMachineTokens) {
+                                    list
+                                } else {
+                                    list.filter { it.key !in MACHINE_SPECIFIC_CONFIG_KEYS }
+                                }
+                                filteredList.forEach { configProvider.upsert(it) }
                                 configProvider.cleanupDeadKeys()
-                                restoredCount += list.size
+                                restoredCount += filteredList.size
                                 continue
                             }
 

@@ -83,7 +83,10 @@ class MainApplication : Application(), Configuration.Provider {
                 if (alreadySeeded) return@launch
 
                 val jsonString = assets.open(DEMO_ASSET_NAME).bufferedReader().use { it.readText() }
-                val result = backupRestorer.restore(this@MainApplication, jsonString)
+                // preserveMachineTokens = false: không copy website.widget_key của máy demo
+                // gốc sang máy khách (mỗi máy giữ khoá riêng); global.gateway_token vẫn được
+                // seed bình thường vì là mã xác minh bắt buộc để app hoạt động.
+                val result = backupRestorer.restore(this@MainApplication, jsonString, preserveMachineTokens = false)
                 logger.i("MainApplication", "🌱 Đã nạp dữ liệu demo: $result")
 
                 dataStore.edit { prefs -> prefs[DEMO_SEEDED] = true }
