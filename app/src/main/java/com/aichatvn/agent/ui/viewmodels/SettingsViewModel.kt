@@ -1,6 +1,5 @@
 package com.aichatvn.agent.ui.viewmodels
 
-import com.aichatvn.agent.skills.ScheduleSkill
 import android.content.Context
 import android.database.Cursor
 import android.os.Environment
@@ -15,6 +14,7 @@ import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.data.BackupRestorer
 import com.aichatvn.agent.data.model.AppConfigEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerEntity
@@ -26,15 +26,11 @@ import com.aichatvn.agent.data.model.FacebookPageEntity
 import com.aichatvn.agent.data.model.EventLogEntity      // ✅ MỚI (Tuần 5)
 import com.aichatvn.agent.data.model.WorldStateEntity    // ✅ MỚI (Tuần 5)
 import com.aichatvn.agent.core.AgentKernel.PluginResult
-import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.skills.EmailSkill
-import com.aichatvn.agent.skills.TrainingSkill
 import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.tools.ai.PromptLogEntry
 import com.aichatvn.agent.utils.Logger
-import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -63,11 +59,9 @@ class SettingsViewModel @Inject constructor(
     private val database: AppDatabase,
     private val emailSkill: EmailSkill,
     private val tuyaManager: TuyaManager,
-    private val cameraSkill: CameraSkill,
-    private val scheduleSkill: ScheduleSkill,
     private val groqClient: GroqClientTool,
     private val configProvider: AppConfigProvider,
-    private val trainingSkill: TrainingSkill,
+    private val backupRestorer: BackupRestorer,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -493,195 +487,20 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    // ✅ SỬA: logic restore đầy đủ đã chuyển sang BackupRestorer (dùng chung với
+    // seed dữ liệu demo lúc khởi động app trong MainApplication). Hàm này chỉ còn
+    // gọi lại BackupRestorer rồi đồng bộ state Tuya riêng của màn Settings.
     suspend fun importSettings(context: Context, jsonString: String): String {
-        return withContext(Dispatchers.IO) {
-            try {
-                val json = JSONObject(jsonString)
-                val gson = Gson()
+        val message = backupRestorer.restore(context, jsonString)
 
-                val exportVersion = json.optInt("export_version", 1)
-                if (exportVersion > 4) {
-                    val errMsg = "❌ Lỗi: Bản sao lưu (v$exportVersion) mới hơn phiên bản ứng dụng hiện tại. Vui lòng cập nhật ứng dụng."
-                    _importResult.value = errMsg
-                    return@withContext errMsg
-                }
+        // Đồng bộ lại state Tuya hiển thị trên màn Settings sau khi restore
+        val prefs = context.dataStore.data.first()
+        _tuyaClientId.value = prefs[TUYA_CLIENT_ID] ?: ""
+        _tuyaClientSecret.value = prefs[TUYA_CLIENT_SECRET] ?: ""
+        _tuyaUid.value = prefs[TUYA_UID] ?: ""
 
-                val settingsJson = json.optJSONObject("settings") ?: json
-
-                val groqKey         = settingsJson.optString("groq_api_key", "")
-                val resendKey       = settingsJson.optString("resend_api_key", "")
-                val resendSenderVal = settingsJson.optString("resend_sender", "")
-                val tuyaClientIdVal = settingsJson.optString("tuya_client_id", "")
-                val tuyaSecretVal   = settingsJson.optString("tuya_client_secret", "")
-                val tuyaUidVal      = settingsJson.optString("tuya_uid", "")
-                val darkModeVal     = settingsJson.optBoolean("dark_mode", false)
-
-                context.dataStore.edit { prefs ->
-                    if (groqKey.isNotEmpty())         prefs[GROQ_API_KEY]       = groqKey
-                    if (resendKey.isNotEmpty())       prefs[RESEND_API_KEY]     = resendKey
-                    if (resendSenderVal.isNotEmpty()) prefs[RESEND_SENDER]      = resendSenderVal
-                    if (tuyaClientIdVal.isNotEmpty()) prefs[TUYA_CLIENT_ID]     = tuyaClientIdVal
-                    if (tuyaSecretVal.isNotEmpty())   prefs[TUYA_CLIENT_SECRET] = tuyaSecretVal
-                    if (tuyaUidVal.isNotEmpty())       prefs[TUYA_UID]          = tuyaUidVal
-                    prefs[DARK_MODE] = darkModeVal
-                }
-                _tuyaClientId.value = tuyaClientIdVal
-                _tuyaClientSecret.value = tuyaSecretVal
-                _tuyaUid.value = tuyaUidVal
-
-                var restoredCount = 0
-                val dataJson = json.optJSONObject("data")
-                
-                if (dataJson != null) {
-                    val sdb = database.openHelper.writableDatabase
-                    
-                    sdb.execSQL("PRAGMA foreign_keys=OFF;")
-                    sdb.beginTransaction()
-                    try {
-                        for (tableName in BACKUP_TABLES) {
-                            val rowsArray = dataJson.optJSONArray(tableName) ?: continue
-
-                            if (tableName == "app_config") {
-                                val list: List<AppConfigEntity> = gson.fromJson(
-                                    rowsArray.toString(), 
-                                    object : TypeToken<List<AppConfigEntity>>() {}.type
-                                )
-                                list.forEach { configProvider.upsert(it) }
-                                // ✅ MỚI: backup cũ có thể chứa các key đã ngừng dùng (vd
-                                // "schedule.camera_scan_interval_min") — dọn lại ngay, không chờ
-                                // tới lần khởi động app kế tiếp mới dọn.
-                                configProvider.cleanupDeadKeys()
-                                restoredCount += list.size
-                                continue
-                            }
-
-                            val pragmaCursor = sdb.query("PRAGMA table_info(`$tableName`)", emptyArray<Any?>())
-                            val existingColumns = mutableSetOf<String>()
-                            if (pragmaCursor.moveToFirst()) {
-                                val nameColIdx = pragmaCursor.getColumnIndex("name")
-                                if (nameColIdx >= 0) {
-                                    do {
-                                        existingColumns.add(pragmaCursor.getString(nameColIdx))
-                                    } while (pragmaCursor.moveToNext())
-                                }
-                            }
-                            pragmaCursor.close()
-
-                            if (existingColumns.isEmpty()) continue
-
-                            if (tableName == "qa_data") {
-                                sdb.execSQL("DELETE FROM `$tableName` WHERE `category` != 'auto_init'")
-                            } else {
-                                sdb.execSQL("DELETE FROM `$tableName`")
-                            }
-
-                            if (rowsArray.length() == 0) continue
-
-                            val firstRow = rowsArray.getJSONObject(0)
-                            val columnsToInsert = mutableListOf<String>()
-                            val colKeys = firstRow.keys()
-                            while (colKeys.hasNext()) {
-                                val colName = colKeys.next()
-                                if (colName in existingColumns) {
-                                    columnsToInsert.add(colName)
-                                }
-                            }
-
-                            if (columnsToInsert.isEmpty()) continue
-
-                            for (rowIndex in 0 until rowsArray.length()) {
-                                val rowObj = rowsArray.getJSONObject(rowIndex)
-                                val values = android.content.ContentValues()
-                                
-                                for (colName in columnsToInsert) {
-                                    val value = rowObj.opt(colName)
-                                    if (value == JSONObject.NULL || value == null) {
-                                        values.putNull(colName)
-                                    } else {
-                                        when (value) {
-                                            is Boolean -> values.put(colName, value)
-                                            is Int -> values.put(colName, value)
-                                            is Long -> values.put(colName, value)
-                                            is Double -> values.put(colName, value)
-                                            is String -> values.put(colName, value)
-                                            is JSONObject -> {
-                                                if (value.optString("_type") == "blob") {
-                                                    val base64Data = value.getString("data")
-                                                    val bytes = android.util.Base64.decode(base64Data, android.util.Base64.NO_WRAP)
-                                                    values.put(colName, bytes)
-                                                } else {
-                                                    values.put(colName, value.toString())
-                                                }
-                                            }
-                                            else -> values.put(colName, value.toString())
-                                        }
-                                    }
-                                }
-                                sdb.insert(tableName, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE, values)
-                                restoredCount++
-                            }
-
-                            if (tableName == "cameras") {
-                                val cursor = sdb.query("SELECT DISTINCT `customerId` FROM `cameras` WHERE `customerId` != ''", emptyArray<Any?>())
-                                if (cursor.moveToFirst()) {
-                                    do {
-                                        val customerId = cursor.getString(0)
-                                        val checkCursor = sdb.query("SELECT 1 FROM `customer_settings` WHERE `customerId` = ?", arrayOf<Any?>(customerId))
-                                        val exists = checkCursor.count > 0
-                                        checkCursor.close()
-                                        if (!exists) {
-                                            val now = System.currentTimeMillis()
-                                            val customerValues = android.content.ContentValues().apply {
-                                                put("customerId", customerId)
-                                                put("smartMode", 0)
-                                                put("isActive", 1)
-                                                put("updatedAt", now)
-                                                put("timestamp", now)
-                                            }
-                                            sdb.insert("customer_settings", android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE, customerValues)
-                                            restoredCount++
-                                        }
-                                    } while (cursor.moveToNext())
-                                }
-                                cursor.close()
-                            }
-                        }
-                        
-                        sdb.setTransactionSuccessful()
-                    } finally {
-                        sdb.endTransaction()
-                        sdb.execSQL("PRAGMA foreign_keys=ON;")
-                    }
-                }
-
-                database.invalidationTracker.refreshVersionsAsync()
-
-                trainingSkill.refreshQAList("default_user")
-
-                try {
-                    cameraSkill.initialize()
-                    tuyaManager.loadDevicesFromDB()
-                    scheduleSkill.loadSchedules() 
-                } catch (e: Exception) {
-                    logger.e("SettingsViewModel", "Khởi tạo lại sơ đồ camera/tuya/lịch trình sau khi import thất bại", e)
-                }
-
-                if (dataJson?.has("schedules") == true || dataJson?.has("ScheduleEntity") == true) {
-                    logger.i("SettingsViewModel", "🔄 Đã đồng bộ danh sách lịch trình vừa nạp từ bản sao lưu thành công.")
-                }
-
-                val message = if (restoredCount > 0)
-                    "✅ Import thành công! Đã phục hồi $restoredCount bản ghi cấu trúc Whitelist an toàn."
-                else
-                    "✅ Import thành công! (chỉ có settings, không có dữ liệu DB)"
-                _importResult.value = message
-                message
-            } catch (e: Exception) {
-                logger.e("SettingsViewModel", "Import error: ${e.message}", e)
-                _importResult.value = "❌ Lỗi: ${e.message}"
-                "❌ Lỗi: ${e.message}"
-            }
-        }
+        _importResult.value = message
+        return message
     }
 
     override fun onCleared() {
