@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 @Singleton
@@ -30,7 +31,13 @@ class ScheduleSkill @Inject constructor(
     // tham số bắt buộc của action ĐÍCH hay không, trước khi lưu. Dùng lại đúng multibinding
     // Set<Plugin> đã có sẵn qua các @IntoSet trong AppModule.kt — giống hệt cách
     // DynamicOptionRegistry đã dùng để build danh sách plugin_id/action_id.
-    private val plugins: Set<@JvmSuppressWildcards Plugin>
+    // ⚠️ QUAN TRỌNG: phải inject Provider<Set<Plugin>>, KHÔNG được inject thẳng Set<Plugin> —
+    // vì bản thân ScheduleSkill cũng là 1 phần tử của Set<Plugin> (@IntoSet ở
+    // AppModule.provideScheduleSkill). Inject thẳng Set<Plugin> tạo vòng lặp phụ thuộc Dagger
+    // (Set<Plugin> cần ScheduleSkill dựng xong, ScheduleSkill lại cần Set<Plugin> dựng xong ->
+    // [Dagger/DependencyCycle]). Provider trì hoãn việc resolve tới lúc gọi .get() thật sự
+    // (initialize()/execute() — lúc đó Set<Plugin> đã sẵn sàng), nên phá được vòng lặp.
+    private val pluginsProvider: Provider<Set<@JvmSuppressWildcards Plugin>>
 ) : BaseSkill("schedule", "Lên lịch trình", logger), Plugin {
 
     override val manifest = PluginManifest(
@@ -161,7 +168,7 @@ class ScheduleSkill @Inject constructor(
         action: String,
         nestedParams: Map<String, Any>
     ): List<String> {
-        val targetAction = plugins.find { it.manifest.id == pluginId }
+        val targetAction = pluginsProvider.get().find { it.manifest.id == pluginId }
             ?.manifest?.actions?.find { it.name == action }
             ?: return emptyList() // Không tìm thấy plugin/action đích -> để lỗi lộ ra tự nhiên khi thực thi, không chặn ở đây
 

@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalLifecycleOwner // ✅ MỚI (UX): refresh khi quay lại màn hình
+import androidx.compose.ui.platform.LocalClipboardManager // 🌟 MỚI: sao chép ngữ cảnh AI vào clipboard
+import androidx.compose.ui.text.AnnotatedString // 🌟 MỚI: dùng cho LocalClipboardManager.setText
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.Alignment
@@ -39,6 +41,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType // 🌟 MỚI
 import androidx.compose.ui.platform.LocalHapticFeedback // 🌟 MỚI
 import androidx.compose.ui.semantics.Role // 🌟 MỚI
 import com.aichatvn.agent.ui.navigation.Screen // 🌟 MỚI: dùng Screen.INBOX_ROUTE thay vì gõ tay chuỗi "inbox"
+import kotlinx.coroutines.delay // 🌟 MỚI: debounce validate JSON trong ImportWorkflowJsonDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -840,6 +843,10 @@ fun MultiWorkflowPlannerSection(
     val availableDevices by viewModel.availableTuyaDevices.collectAsState()
 
     var showCreateDialog by remember { mutableStateOf(false) }
+    // ✅ MỚI (Nhập kịch bản qua AI ngoài): điều khiển dialog dán JSON — tách biệt hoàn toàn với
+    // dialog tạo thủ công ở trên, chỉ mở khi chủ nhà chủ động bấm nút "Nhập kịch bản (JSON)".
+    var showImportDialog by remember { mutableStateOf(false) }
+    val clipboardManager = LocalClipboardManager.current
 
     if (showCreateDialog) {
         VisualTriggerBuilderDialog(
@@ -849,6 +856,16 @@ fun MultiWorkflowPlannerSection(
             onConfirm = { name, source, entity, value ->
                 viewModel.createWorkflowGroup(name, source, entity, value)
                 showCreateDialog = false
+            }
+        )
+    }
+
+    if (showImportDialog) {
+        ImportWorkflowJsonDialog(
+            viewModel = viewModel,
+            onDismiss = {
+                showImportDialog = false
+                viewModel.clearImportPreview()
             }
         )
     }
@@ -871,6 +888,35 @@ fun MultiWorkflowPlannerSection(
                 Icon(imageVector = Icons.Default.Add, contentDescription = "Tạo")
                 Spacer(modifier = Modifier.width(4.dp))
                 Text("Tạo kịch bản mới", fontSize = 12.sp)
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        // ✅ MỚI: Hàng nút phụ cho luồng "nhờ AI ngoài soạn kịch bản hộ" — dành cho chủ nhà thấy
+        // VisualTriggerBuilderDialog quá phức tạp, có thể mô tả bằng lời cho 1 AI khác rồi dán
+        // JSON AI trả về vào đây thay vì tự bấm từng bước.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(viewModel.buildAiContextForWorkflowCreation()))
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(imageVector = Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Sao chép ngữ cảnh AI", fontSize = 11.sp)
+            }
+            OutlinedButton(
+                onClick = { showImportDialog = true },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(imageVector = Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Nhập kịch bản (JSON)", fontSize = 11.sp)
             }
         }
         Spacer(modifier = Modifier.height(10.dp))
@@ -906,6 +952,106 @@ fun MultiWorkflowPlannerSection(
             }
         }
     }
+}
+
+// ✅ MỚI (Nhập kịch bản qua AI ngoài): Dialog dán JSON do AI ngoài sinh ra (dựa trên ngữ cảnh đã
+// sao chép ở nút "Sao chép ngữ cảnh AI"). Validate MỖI LẦN nội dung đổi (debounce 400ms) — KHÔNG
+// bao giờ lưu thẳng JSON dán vào; chỉ lưu sau khi validate sạch VÀ chủ nhà tự bấm xác nhận trên
+// bản tóm tắt tiếng Việt dễ hiểu.
+@Composable
+fun ImportWorkflowJsonDialog(
+    viewModel: HouseManagerViewModel,
+    onDismiss: () -> Unit
+) {
+    var text by remember { mutableStateOf("") }
+    val preview by viewModel.importPreview.collectAsState()
+
+    LaunchedEffect(text) {
+        if (text.isBlank()) {
+            viewModel.clearImportPreview()
+            return@LaunchedEffect
+        }
+        delay(400L) // debounce — tránh validate liên tục khi đang gõ/dán từng ký tự
+        viewModel.validateImportJson(text)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nhập kịch bản (dán JSON)") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Dán JSON mà AI ngoài trả về (sau khi bạn đưa nó khối \"ngữ cảnh AI\" đã sao chép kèm mô tả kịch bản mong muốn).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 220.dp),
+                    placeholder = { Text("Dán JSON vào đây...", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                val result = preview
+                if (result != null) {
+                    if (result.hasErrors) {
+                        Text(
+                            text = "Không thể nhập — cần sửa các lỗi sau:",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        result.errors.forEach { err ->
+                            val prefix = if (err.groupIndex >= 0) "\"${err.groupLabel}\": " else ""
+                            Text(
+                                text = "• $prefix${err.message}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                    if (result.validGroups.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Sẽ tạo ${result.validGroups.size} kịch bản sau:",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color(0xFF2E7D32),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        viewModel.summarizeImportPreview().forEach { line ->
+                            Text(
+                                text = "• $line",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF2E7D32)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val canConfirm = preview?.validGroups?.isNotEmpty() == true
+            Button(
+                onClick = {
+                    viewModel.confirmImportedWorkflows()
+                    onDismiss()
+                },
+                enabled = canConfirm
+            ) {
+                Text(if (canConfirm) "Xác nhận thêm ${preview?.validGroups?.size} kịch bản" else "Xác nhận")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Huỷ") }
+        }
+    )
 }
 
 @Composable

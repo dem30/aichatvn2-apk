@@ -17,6 +17,7 @@ import com.aichatvn.agent.skills.WorkflowGroup
 import com.aichatvn.agent.skills.workflowGroupsFromJson
 import com.aichatvn.agent.skills.workflowGroupsToJson
 import com.aichatvn.agent.utils.WorldStateHelper
+import com.aichatvn.agent.utils.WorkflowImportExportHelper // 🌟 MỚI: Xuất ngữ cảnh cho AI ngoài + validate JSON dán vào
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -103,6 +104,12 @@ class HouseManagerViewModel @Inject constructor(
     // kích hoạt tự động; UI đa nhóm (MultiWorkflowPlannerSection) đọc/ghi trực tiếp qua đây.
     private val _workflowGroups = MutableStateFlow<List<WorkflowGroup>>(emptyList())
     val workflowGroups: StateFlow<List<WorkflowGroup>> = _workflowGroups.asStateFlow()
+
+    // ✅ MỚI (Nhập kịch bản qua AI ngoài): Kết quả validate của JSON người dùng vừa dán vào —
+    // null nghĩa là chưa nhập gì / đã đóng dialog. UI (ImportWorkflowJsonDialog) đọc state này để
+    // hiện lỗi (đỏ) hoặc bản tóm tắt hợp lệ (xanh) TRƯỚC khi chủ nhà bấm xác nhận lưu thật.
+    private val _importPreview = MutableStateFlow<WorkflowImportExportHelper.ValidationResult?>(null)
+    val importPreview: StateFlow<WorkflowImportExportHelper.ValidationResult?> = _importPreview.asStateFlow()
 
     // Danh sách plugin khả dụng để hiển thị trong dropdown chọn plugin/action của AlertActionFormSheet
     val alertActionPlugins: List<Plugin> = agentKernel.getAvailablePluginsForUI()
@@ -303,6 +310,50 @@ class HouseManagerViewModel @Inject constructor(
             steps = emptyList()
         )
         saveAllWorkflows(_workflowGroups.value + newGroup)
+    }
+
+    // ✅ MỚI (Nhập kịch bản qua AI ngoài): Build khối văn bản chứa định dạng JSON + dữ liệu thật
+    // của nhà (camera/thiết bị/plugin) để chủ nhà copy dán cho AI ngoài (ChatGPT/Claude/...) kèm
+    // mô tả kịch bản mong muốn bằng lời. AI ngoài trả JSON, chủ nhà dán ngược lại qua
+    // validateImportJson() bên dưới.
+    fun buildAiContextForWorkflowCreation(): String = WorkflowImportExportHelper.buildAiContext(
+        cameras = _availableCameras.value,
+        tuyaDevices = _availableTuyaDevices.value,
+        plugins = alertActionPlugins
+    )
+
+    // Chạy validate ngay khi người dùng gõ/dán JSON — không lưu gì vào workflow thật cho tới khi
+    // confirmImportedWorkflows() được gọi tường minh.
+    fun validateImportJson(json: String) {
+        _importPreview.value = WorkflowImportExportHelper.validate(
+            json = json,
+            cameras = _availableCameras.value,
+            tuyaDevices = _availableTuyaDevices.value,
+            plugins = alertActionPlugins
+        )
+    }
+
+    // Bản tóm tắt tiếng Việt dễ hiểu cho các nhóm ĐÃ hợp lệ trong _importPreview, để hiện lên
+    // trước khi chủ nhà bấm xác nhận lưu thật — không lưu thẳng JSON mù quáng.
+    fun summarizeImportPreview(): List<String> {
+        val groups = _importPreview.value?.validGroups ?: return emptyList()
+        return WorkflowImportExportHelper.summarizeGroupsForPreview(
+            groups = groups,
+            cameras = _availableCameras.value,
+            tuyaDevices = _availableTuyaDevices.value,
+            plugins = alertActionPlugins
+        )
+    }
+
+    fun confirmImportedWorkflows() {
+        val validGroups = _importPreview.value?.validGroups ?: return
+        if (validGroups.isEmpty()) return
+        saveAllWorkflows(_workflowGroups.value + validGroups)
+        _importPreview.value = null
+    }
+
+    fun clearImportPreview() {
+        _importPreview.value = null
     }
 
     fun deleteWorkflowGroup(groupId: String) {
