@@ -15,6 +15,11 @@ class DeviceIdProvider @Inject constructor(
     companion object {
         private const val KEY_DEVICE_ID = "local.device_id"
         private const val KEY_ACTIVATION_STATUS = "local.activation_status"
+        // ✅ MỚI: chữ ký HMAC server trả về khi activate thành công (xem app.py:
+        // sign_device_id()/verify_activation_token()) — PHẢI gửi kèm mỗi lần tạo invite,
+        // vì đây là bằng chứng "đã activate" duy nhất sống sót qua server restart (khác với
+        // KEY_ACTIVATION_STATUS chỉ là cờ hiển thị cục bộ, không server nào verify được).
+        private const val KEY_ACTIVATION_TOKEN = "local.activation_token"
     }
 
     // affectsConnection = false: đây là state cục bộ, không phải config Gateway, không cần
@@ -30,7 +35,14 @@ class DeviceIdProvider @Inject constructor(
     suspend fun isActivated(): Boolean =
         configProvider.getString(KEY_ACTIVATION_STATUS, "false") == "true"
 
-    suspend fun markActivated() {
+    // ✅ SỬA: giờ bắt buộc truyền activationToken nhận từ InviteApiService.activateInvite()
+    // — lưu cả cờ trạng thái (để UI đọc nhanh, không đổi hành vi cũ) lẫn token (để
+    // createInvite() sau này gửi lên server verify).
+    suspend fun markActivated(activationToken: String) {
         configProvider.set(KEY_ACTIVATION_STATUS, "true", affectsConnection = false)
+        configProvider.set(KEY_ACTIVATION_TOKEN, activationToken, affectsConnection = false)
     }
+
+    suspend fun getActivationToken(): String =
+        configProvider.getString(KEY_ACTIVATION_TOKEN, "")
 }

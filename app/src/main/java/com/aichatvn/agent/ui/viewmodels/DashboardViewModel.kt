@@ -447,7 +447,11 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             _inviteUiState.value = InviteUiState.Loading
             val deviceId = deviceIdProvider.getOrCreateDeviceId()
-            when (val result = inviteApiService.createInvite(deviceId)) {
+            // ✅ MỚI: server giờ verify activation bằng chữ ký HMAC thay vì tra RAM store
+            // (xem app.py: verify_activation_token()) — phải gửi kèm token đã lưu lúc
+            // activate thành công (DeviceIdProvider.markActivated()), không chỉ gửi device_id.
+            val activationToken = deviceIdProvider.getActivationToken()
+            when (val result = inviteApiService.createInvite(deviceId, activationToken)) {
                 is InviteResult.Success -> {
                     val baseUrl = configProvider.getString(
                         com.aichatvn.agent.config.AppConfigDefaults.GLOBAL_GATEWAY_URL, ""

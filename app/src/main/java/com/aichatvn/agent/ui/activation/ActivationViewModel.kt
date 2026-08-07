@@ -38,7 +38,13 @@ class ActivationViewModel @Inject constructor(
             val deviceId = deviceIdProvider.getOrCreateDeviceId()
             when (val result = inviteApiService.activateInvite(code, deviceId)) {
                 is InviteResult.Success -> {
-                    deviceIdProvider.markActivated()
+                    // ✅ SỬA: markActivated() giờ cần activationToken để createInvite() sau
+                    // này verify được qua HMAC (xem InviteApiService.kt). Nếu server cũ
+                    // (chưa deploy bản có activation_token) trả về rỗng, lưu chuỗi rỗng —
+                    // activation local vẫn thành công bình thường, chỉ riêng nút "Mời bạn
+                    // dùng thử" sẽ báo lỗi "chưa kích hoạt" cho tới khi server backend được
+                    // cập nhật (không crash, không chặn activation).
+                    deviceIdProvider.markActivated(result.activationToken.orEmpty())
                     _uiState.value = ActivationUiState.Success
                 }
                 is InviteResult.Error -> {

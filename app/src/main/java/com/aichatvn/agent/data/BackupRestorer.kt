@@ -83,7 +83,12 @@ class BackupRestorer @Inject constructor(
     private val MACHINE_SPECIFIC_CONFIG_KEYS = setOf(
         AppConfigDefaults.WEBSITE_WIDGET_KEY,
         "local.device_id",
-        "local.activation_status"
+        "local.activation_status",
+        // ✅ MỚI: chữ ký HMAC activation (xem DeviceIdProvider.kt/app.py sign_device_id()) —
+        // là bằng chứng "device_id NÀY đã activate", chỉ đúng cho đúng device_id của máy đó.
+        // Copy sang máy khác vô nghĩa (chữ ký không khớp device_id mới), giữ nguyên lý do
+        // loại trừ như local.device_id/local.activation_status ở trên.
+        "local.activation_token"
     )
 
     /**

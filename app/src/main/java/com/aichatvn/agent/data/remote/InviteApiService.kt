@@ -21,7 +21,10 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 sealed class InviteResult {
-    data class Success(val code: String) : InviteResult()
+    // ✅ SỬA: activationToken chỉ có giá trị khi trả về từ activateInvite() — createInvite()
+    // vẫn dùng Success(code) như cũ (activationToken mặc định null, không ảnh hưởng nơi gọi
+    // cũ chưa cần đọc field này).
+    data class Success(val code: String, val activationToken: String? = null) : InviteResult()
     data class Error(val message: String) : InviteResult()
 }
 
@@ -70,8 +73,17 @@ class InviteApiService @Inject constructor(
         }
 
     /** Device đã activate tạo mã mời mới. */
-    suspend fun createInvite(deviceId: String): InviteResult = try {
-        val json = postJson("/invites", JSONObject().put("device_id", deviceId))
+    // ✅ SỬA: giờ phải gửi kèm activationToken (chữ ký HMAC nhận được lúc activateInvite()
+    // thành công) — server verify bằng chữ ký thay vì tra RAM store, nên hoạt động đúng kể cả
+    // sau khi server restart (xem app.py: verify_activation_token()). Không còn dùng
+    // device_id đơn thuần để xác định "đã activate" như trước.
+    suspend fun createInvite(deviceId: String, activationToken: String): InviteResult = try {
+        val json = postJson(
+            "/invites",
+            JSONObject()
+                .put("device_id", deviceId)
+                .put("activation_token", activationToken)
+        )
         if (json.optString("status") == "success") {
             InviteResult.Success(json.getString("code"))
         } else {
@@ -89,7 +101,11 @@ class InviteApiService @Inject constructor(
             JSONObject().put("device_id", deviceId)
         )
         if (json.optString("status") == "success") {
-            InviteResult.Success(code)
+            // ✅ MỚI: server trả kèm activation_token (chữ ký HMAC) — PHẢI lưu lại token này
+            // (DeviceIdProvider.markActivated()), không chỉ lưu cờ true/false như trước, vì
+            // đây là bằng chứng duy nhất để tạo invite sau này sống sót qua server restart.
+            val token = json.optString("activation_token", "").ifBlank { null }
+            InviteResult.Success(code, token)
         } else {
             InviteResult.Error(json.optString("message", "Mã mời không hợp lệ."))
         }
