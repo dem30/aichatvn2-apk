@@ -190,7 +190,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GLOBAL_GATEWAY_TOKEN,
-            value = "aichatvn_secret_token_123",
+            value = "aichatvn_secret_token_1234",
             type = "string",
             pluginId = "global",
             label = "Mã xác thực Gateway (Gateway Token)",
@@ -289,7 +289,7 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GROQ_MAX_TOKENS_CHAT,
-            value = "500",
+            value = "1000",
             type = "int",
             pluginId = "groq",
             label = "Max tokens – chat",
@@ -321,7 +321,7 @@ object AppConfigDefaults {
         // ── CAMERA ──
         AppConfigEntity(
             key = CAMERA_DEFAULT_AI_PROMPT,
-            value = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả.",
+            value = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
             type = "string",
             pluginId = "camera",
             label = "Prompt AI mặc định",
@@ -527,11 +527,11 @@ object AppConfigDefaults {
       
         AppConfigEntity(
             key = GLOBAL_TIER2_HIGH_CONFIDENCE,
-            value = "0.85",
+            value = "0.95",
             type = "float",
             pluginId = "global",
             label = "Ngưỡng tin cậy Tầng 2 (High Confidence)",
-            description = "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.85."
+            description = "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.95."
         ),
         AppConfigEntity(
             key = GLOBAL_BLOCK_EXTERNAL_DEVICE_CONTROL,
@@ -570,10 +570,10 @@ object AppConfigDefaults {
             key = GLOBAL_TOOL_GUARD_RULES,
             value = "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\n" +
                 "target: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
-                "keyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera hỏi về sự kiện , cảnh báo → \"cảnh báo\".\n" +
+                "keyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera không có keywords → để trống.\n" +
                 "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
                 "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
-                "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → today|yesterday|last_3_days|last_7_days.\n" +
+                "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → hôm nay.\n" +
                 "object: person|car|motorbike|dog|cat|package|all.\n" +
                 "granularity: summary|detail.\n" +
                 "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +

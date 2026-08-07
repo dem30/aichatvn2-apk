@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerEntity
+import com.aichatvn.agent.skills.CameraSkill
 
 @Composable
 fun CameraCard(
@@ -177,6 +178,7 @@ fun CameraCard(
 fun CameraDialog(
     camera: CameraConfigEntity?,
     customer: CustomerEntity?,          // ✅ MỚI
+    defaults: CameraSkill.NewCameraDefaults, // ✅ MỚI: giá trị mặc định lấy từ AppConfigDefaults, dùng khi camera == null
     onDismiss: () -> Unit,
     onSave: (Map<String, Any>) -> Unit
 ) {
@@ -190,9 +192,11 @@ fun CameraDialog(
     
     var snapshotUrl by remember { mutableStateOf(camera?.snapshoturl ?: "") }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
-    var aiPrompt by remember { mutableStateOf(camera?.aiPrompt ?: "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có ghi: cảnh báo và mô tả. Ngược lại ghi: Bình thường và mô tả.") }
-    var aiPositiveKeywords by remember { mutableStateOf(camera?.aiPositiveKeywords ?: "cảnh báo") }
-    var aiNegativeKeywords by remember { mutableStateOf(camera?.aiNegativeKeywords ?: "bình thường") }
+    // ✅ SỬA: camera mới lấy prompt/từ khoá mặc định từ AppConfigDefaults (đã nạp qua `defaults`)
+    // thay vì gõ cứng "cảnh báo"/"bình thường" trực tiếp trong UI.
+    var aiPrompt by remember { mutableStateOf(camera?.aiPrompt ?: defaults.aiPrompt) }
+    var aiPositiveKeywords by remember { mutableStateOf(camera?.aiPositiveKeywords ?: defaults.aiPositiveKeywords) }
+    var aiNegativeKeywords by remember { mutableStateOf(camera?.aiNegativeKeywords ?: defaults.aiNegativeKeywords) }
 
     val context = LocalContext.current
     var locationError by remember { mutableStateOf<String?>(null) }

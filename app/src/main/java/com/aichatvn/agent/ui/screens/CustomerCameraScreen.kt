@@ -60,7 +60,19 @@ class CustomerCameraViewModel @Inject constructor(
     private val _testResult = MutableStateFlow<String?>(null)
     val testResult: StateFlow<String?> = _testResult.asStateFlow()
 
-    init { load() }
+    // ✅ MỚI: nạp sẵn giá trị mặc định từ AppConfigDefaults để dialog "Thêm Camera"
+    // không còn gõ cứng "cảnh báo"/"bình thường" nữa.
+    private val _newCameraDefaults = MutableStateFlow(
+        CameraSkill.NewCameraDefaults(aiPrompt = "", aiPositiveKeywords = "", aiNegativeKeywords = "")
+    )
+    val newCameraDefaults: StateFlow<CameraSkill.NewCameraDefaults> = _newCameraDefaults.asStateFlow()
+
+    init {
+        load()
+        viewModelScope.launch {
+            _newCameraDefaults.value = cameraSkill.getNewCameraDefaults()
+        }
+    }
 
     fun load() {
         viewModelScope.launch {
@@ -274,6 +286,7 @@ fun CustomerCameraScreen(
     val masterSmartMode by viewModel.masterSmartMode.collectAsState()
     val cameraSmartModes by viewModel.cameraSmartModes.collectAsState()
     val testResult by viewModel.testResult.collectAsState()
+    val newCameraDefaults by viewModel.newCameraDefaults.collectAsState()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var selectedCamera by remember { mutableStateOf<CameraConfigEntity?>(null) }
@@ -296,6 +309,7 @@ fun CustomerCameraScreen(
         CameraDialog(
             camera = selectedCamera,
             customer = customer,
+            defaults = newCameraDefaults,
             onDismiss = { showAddDialog = false; selectedCamera = null },
             onSave = { config ->
                 val merged = config.toMutableMap().apply { put("customerId", viewModel.customerId.trim()) }
