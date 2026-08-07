@@ -148,6 +148,13 @@ object AppConfigDefaults {
     const val GLOBAL_DEVICE_KEYWORDS        = "global.device_keywords"
     const val GLOBAL_CHAT_KEYWORDS          = "global.chat_keywords"
 
+    // ✅ MỚI: Lưu bền chế độ chat (GROQ | QA | COMBINED) do admin tự chọn ở màn hình Chat —
+    // trước đây chỉ giữ trong MutableStateFlow (RAM), mất khi tắt/mở lại app. Tách riêng
+    // admin (default_user) và khách ngoại kênh (facebook/telegram/website), đúng như 2
+    // StateFlow độc lập hiện có trong ChatSkill (_adminChatMode/_externalChatMode).
+    const val GLOBAL_ADMIN_CHAT_MODE        = "global.admin_chat_mode"
+    const val GLOBAL_EXTERNAL_CHAT_MODE     = "global.external_chat_mode"
+
     // ───────────────────────── CLOUD GATEWAY ────────────────
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
@@ -666,6 +673,22 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Từ khoá nhận diện câu hỏi về Kênh chat",
             description = "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền chat đa kênh (facebook/telegram/website) và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_ADMIN_CHAT_MODE,
+            value = "QA",
+            type = "string",
+            pluginId = "global",
+            label = "Chế độ chat mặc định (Admin)",
+            description = "Chế độ trả lời cho chat nội bộ (default_user): GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên."
+        ),
+        AppConfigEntity(
+            key = GLOBAL_EXTERNAL_CHAT_MODE,
+            value = "QA",
+            type = "string",
+            pluginId = "global",
+            label = "Chế độ chat mặc định (Khách ngoại kênh)",
+            description = "Chế độ trả lời chung cho khách Facebook/Telegram/Website: GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên."
         )
     )
 }

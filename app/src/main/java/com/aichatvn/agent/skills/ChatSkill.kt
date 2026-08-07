@@ -21,6 +21,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -82,10 +83,10 @@ class ChatSkill @Inject constructor(
     // (facebook_/telegram_/instagram_/website_ — dùng CHUNG 1 mode cho tất cả khách, không
     // phải per-khách-hàng, vì user không yêu cầu tách sâu tới mức đó). allowDeviceControl
     // (blockExternalDeviceControl) giữ nguyên hoàn toàn logic cũ, không đổi gì.
-    private val _adminChatMode = MutableStateFlow(ChatMode.COMBINED)
+    private val _adminChatMode = MutableStateFlow(ChatMode.QA)
     val adminChatMode: StateFlow<ChatMode> = _adminChatMode.asStateFlow()
 
-    private val _externalChatMode = MutableStateFlow(ChatMode.COMBINED)
+    private val _externalChatMode = MutableStateFlow(ChatMode.QA)
     val externalChatMode: StateFlow<ChatMode> = _externalChatMode.asStateFlow()
 
     private val database by lazy { AppDatabase.getDatabase(context) }
@@ -93,6 +94,13 @@ class ChatSkill @Inject constructor(
     private val messagesMutex = Mutex()
 
     private val chatMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    // ✅ MỚI: scope riêng CHỈ để ghi _adminChatMode/_externalChatMode xuống app_config (bền
+    // vững qua khởi động lại app) mà không phải đổi setAdminChatMode()/setExternalChatMode()
+    // thành suspend fun — tránh phải sửa mọi nơi UI (ViewModel/Screen) đang gọi 2 hàm này.
+    private val persistScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
+    )
 
     companion object {
         // ✅ MỚI: chặn tin nhắn khách ngoại kênh gửi tới quá dài trước khi nó đi vào cả 3 nơi:
@@ -111,6 +119,23 @@ class ChatSkill @Inject constructor(
 
     override suspend fun initialize() {
         reloadMessages(currentUsername)
+        // ✅ MỚI: nạp lại mode đã lưu ở app_config (nếu admin từng đổi qua UI) — nếu key
+        // chưa có/giá trị hỏng (vd sửa tay DB) thì rơi về default hiện tại của StateFlow (QA),
+        // không crash.
+        loadPersistedChatModes()
+    }
+
+    private suspend fun loadPersistedChatModes() {
+        val savedAdmin = configProvider.getString(
+            AppConfigDefaults.GLOBAL_ADMIN_CHAT_MODE,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_ADMIN_CHAT_MODE)
+        )
+        val savedExternal = configProvider.getString(
+            AppConfigDefaults.GLOBAL_EXTERNAL_CHAT_MODE,
+            AppConfigDefaults.defaultOf(AppConfigDefaults.GLOBAL_EXTERNAL_CHAT_MODE)
+        )
+        runCatching { ChatMode.valueOf(savedAdmin) }.getOrNull()?.let { _adminChatMode.value = it }
+        runCatching { ChatMode.valueOf(savedExternal) }.getOrNull()?.let { _externalChatMode.value = it }
     }
 
     override suspend fun shutdown() {}
@@ -284,10 +309,18 @@ class ChatSkill @Inject constructor(
 
     fun setAdminChatMode(mode: ChatMode) {
         _adminChatMode.value = mode
+        // affectsConnection = false: đổi mode chat không liên quan gateway/SSE, không cần
+        // ép WebhookGatewayService resync (xem comment trong AppConfigProvider.set()).
+        persistScope.launch {
+            configProvider.set(AppConfigDefaults.GLOBAL_ADMIN_CHAT_MODE, mode.name, affectsConnection = false)
+        }
     }
 
     fun setExternalChatMode(mode: ChatMode) {
         _externalChatMode.value = mode
+        persistScope.launch {
+            configProvider.set(AppConfigDefaults.GLOBAL_EXTERNAL_CHAT_MODE, mode.name, affectsConnection = false)
+        }
     }
 
     suspend fun openThread(username: String) {
