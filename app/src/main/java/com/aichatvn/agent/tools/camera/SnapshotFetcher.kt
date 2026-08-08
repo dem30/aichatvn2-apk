@@ -3,6 +3,8 @@ package com.aichatvn.agent.tools.camera
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Credentials
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
@@ -22,14 +24,43 @@ class SnapshotFetcher @Inject constructor(
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    suspend fun fetchSnapshot(url: String): ByteArray? = withContext(Dispatchers.IO) {
+    // ✅ MỚI: hỗ trợ Basic Auth cho camera LAN yêu cầu đăng nhập (vd http://admin:pass@192.168.1.50/snap.jpg).
+    // OkHttp KHÔNG tự đọc user:pass nhúng trong URL (khác HttpURLConnection/trình duyệt) — nếu
+    // không xử lý riêng, request sẽ gửi đi KHÔNG có Authorization header và camera trả 401.
+    //
+    // username/password: optional, dùng khi URL không nhúng sẵn credential (vd cấu hình URL sạch
+    // "http://192.168.1.50/snap.jpg" + nhập user/pass riêng ở màn Settings).
+    //
+    // Nếu URL có nhúng sẵn "user:pass@host" (dạng cũ), hàm tự tách ra và build Authorization header
+    // tương ứng — không bắt người dùng phải sửa lại URL đã cấu hình từ trước.
+    suspend fun fetchSnapshot(
+        url: String,
+        username: String? = null,
+        password: String? = null
+    ): ByteArray? = withContext(Dispatchers.IO) {
         try {
             logger.d("SnapshotFetcher", "Bắt đầu lấy snapshot: $url")
 
-            val request = Request.Builder()
-                .url(url)
+            val httpUrl = url.toHttpUrlOrNull()
+            if (httpUrl == null) {
+                logger.e("SnapshotFetcher", "URL không hợp lệ: $url")
+                return@withContext null
+            }
+
+            // Ưu tiên username/password truyền vào; nếu không có, thử lấy từ user:pass nhúng
+            // sẵn trong URL (HttpUrl tự parse phần userInfo dù OkHttp không tự gửi nó đi).
+            val resolvedUser = username?.takeIf { it.isNotBlank() } ?: httpUrl.username.takeIf { it.isNotBlank() }
+            val resolvedPass = password?.takeIf { it.isNotBlank() } ?: httpUrl.password.takeIf { it.isNotBlank() }
+
+            val requestBuilder = Request.Builder()
+                .url(httpUrl)
                 .get()
-                .build()
+
+            if (!resolvedUser.isNullOrBlank()) {
+                requestBuilder.header("Authorization", Credentials.basic(resolvedUser, resolvedPass ?: ""))
+            }
+
+            val request = requestBuilder.build()
 
             // KHẮC PHỤC RÒ RỈ: Ép buộc đóng Response bằng '.use' trong mọi tình huống (thành công lẫn thất bại)
             client.newCall(request).execute().use { response ->
@@ -37,6 +68,9 @@ class SnapshotFetcher @Inject constructor(
                     val bytes = response.body?.bytes()
                     logger.d("SnapshotFetcher", "Thành công: nhận ${bytes?.size ?: 0} bytes | url=$url")
                     bytes
+                } else if (response.code == 401) {
+                    logger.e("SnapshotFetcher", "HTTP 401 Unauthorized — kiểm tra lại username/password camera | url=$url")
+                    null
                 } else {
                     logger.e("SnapshotFetcher", "HTTP lỗi ${response.code} (${response.message}) | url=$url")
                     null
