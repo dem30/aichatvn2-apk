@@ -1,6 +1,8 @@
 package com.aichatvn.agent.data.local
 
 import com.aichatvn.agent.config.AppConfigProvider
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,6 +36,14 @@ class DeviceIdProvider @Inject constructor(
 
     suspend fun isActivated(): Boolean =
         configProvider.getString(KEY_ACTIVATION_STATUS, "false") == "true"
+
+    // ✅ MỚI: bản Flow của isActivated() — dùng cho nơi cần UI tự cập nhật NGAY khi
+    // markActivated() được gọi (vd. ActivationGateViewModel), thay vì đọc 1 lần lúc init.
+    // Dựa trên AppConfigProvider.observeBoolean(), vốn đã map từ allConfigs (StateFlow toàn
+    // cục được Room tự phát lại mỗi khi bảng app_config đổi) — nên khi markActivated() upsert
+    // xong, Flow này tự bắn "true" mà không cần bất kỳ cầu nối thủ công nào khác.
+    fun observeIsActivated(): Flow<Boolean> =
+        configProvider.observeBoolean(KEY_ACTIVATION_STATUS, false)
 
     // ✅ SỬA: giờ bắt buộc truyền activationToken nhận từ InviteApiService.activateInvite()
     // — lưu cả cờ trạng thái (để UI đọc nhanh, không đổi hành vi cũ) lẫn token (để
