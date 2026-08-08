@@ -136,7 +136,20 @@ class SmartSwitchSkill @Inject constructor(
         }
 
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
-        
+
+        // ✅ SỬA (tối ưu quota API): trước đây mỗi node async bên dưới tự gọi
+        // tuyaManager.getStatus(dev.name) RIÊNG (N call cho N thiết bị, mỗi lần Dashboard
+        // build/refresh/chuyển tab). Giờ gọi 1 lần getStatusBatch() cho TẤT CẢ thiết bị đang
+        // online trước vòng lặp, các node bên dưới chỉ tra cứu trong map có sẵn — 1 call
+        // (hoặc ceil(N/20) nếu >20 thiết bị) thay vì N call mỗi lần mở/làm mới Dashboard.
+        val onlineDeviceIds = tuyaDevices.filter { it.online }.map { it.id }
+        val batchStates = try {
+            tuyaManager.getStatusBatch(onlineDeviceIds)
+        } catch (e: Exception) {
+            logger.e("SmartSwitchSkill", "Lỗi lấy trạng thái hàng loạt cho Dashboard: ${e.message}")
+            emptyMap()
+        }
+
         val deferredNodes = tuyaDevices.mapIndexed { index, dev ->
             async {
                 val defaultX = 40f + (index % 2) * 160f
@@ -148,14 +161,12 @@ class SmartSwitchSkill @Inject constructor(
                 val finalY = if (savedY >= 0f) savedY else defaultY
 
                 val isOnline = dev.online 
-                
-                val isDeviceOn = try {
-                    if (isOnline) {
-                        tuyaManager.getStatus(dev.name)
-                    } else {
-                        false
-                    }
-                } catch (e: Exception) {
+
+                // Thiếu key trong batchStates (offline, lỗi call, hoặc không dò được switch
+                // code) -> coi là tắt để hiển thị an toàn, giống hành vi cũ khi getStatus() lỗi.
+                val isDeviceOn = if (isOnline) {
+                    batchStates[dev.id] ?: false
+                } else {
                     false
                 }
 

@@ -600,6 +600,112 @@ class TuyaManager @Inject constructor(
         return resolved
     }
 
+    // ✅ MỚI (tối ưu quota API): Tuya có endpoint /v1.0/iot-03/devices/status nhận TỐI ĐA 20
+    // device_ids cùng lúc và trả trạng thái của tất cả trong 1 response — thay vì gọi
+    // fetchDeviceStatusList() riêng cho từng thiết bị (N call), giờ chỉ tốn ceil(N/20) call.
+    // Dùng cho cả vòng lặp nền (syncTuyaDeviceStates) lẫn Dashboard (getDashboardNodes) —
+    // đây là 2 nơi tốn call nhiều nhất vì lặp qua từng thiết bị.
+    //
+    // Trả về Map<deviceId, isOn>. Thiết bị không dò được switch code (model lạ, hoặc chưa
+    // từng bật/tắt lần nào) sẽ bị bỏ qua khỏi map — caller nên coi thiếu key là "không rõ",
+    // không phải false.
+    suspend fun getStatusBatch(deviceIds: List<String>): Map<String, Boolean> = withContext(Dispatchers.IO) {
+        if (deviceIds.isEmpty()) return@withContext emptyMap()
+
+        val token = getAccessToken()
+        val prefs = context.dataStore.data.first()
+        val clientId = prefs[CLIENT_ID] ?: ""
+        val clientSecret = prefs[CLIENT_SECRET] ?: ""
+        val baseUrl = getApiBaseUrl()
+
+        val result = mutableMapOf<String, Boolean>()
+
+        // Giới hạn cứng của Tuya: tối đa 20 device_ids/lần gọi -> chia batch nếu khách có
+        // nhiều hơn 20 thiết bị (vẫn rẻ hơn rất nhiều so với gọi từng thiết bị một).
+        deviceIds.chunked(20).forEach { chunk ->
+            val urlPath = "/v1.0/iot-03/devices/status?device_ids=${chunk.joinToString(",")}"
+            val timestamp = System.currentTimeMillis()
+            val nonce = UUID.randomUUID().toString()
+
+            val sign = calculateSignature(
+                clientId = clientId,
+                accessToken = token,
+                timestamp = timestamp,
+                nonce = nonce,
+                secret = clientSecret,
+                method = "GET",
+                urlPathAndQuery = urlPath,
+                bodyStr = ""
+            )
+
+            val url = "$baseUrl$urlPath"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("client_id", clientId)
+                .addHeader("access_token", token)
+                .addHeader("sign", sign)
+                .addHeader("t", timestamp.toString())
+                .addHeader("nonce", nonce)
+                .addHeader("sign_method", "HMAC-SHA256")
+                .get()
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                logger.e("TuyaManager", "Batch status thất bại (${chunk.size} thiết bị): ${response.code}")
+                return@forEach
+            }
+
+            val json = JSONObject(response.body?.string() ?: "")
+            if (!json.optBoolean("success")) {
+                logger.e("TuyaManager", "Batch status API error: ${json.optString("msg", "Unknown error")}")
+                return@forEach
+            }
+
+            val arr = json.optJSONArray("result") ?: JSONArray()
+            for (i in 0 until arr.length()) {
+                val deviceStatus = arr.getJSONObject(i)
+                val deviceId = deviceStatus.optString("id")
+                if (deviceId.isBlank()) continue
+
+                val statusList = deviceStatus.optJSONArray("status") ?: JSONArray()
+                val codes = (0 until statusList.length()).map { statusList.getJSONObject(it).optString("code") }
+
+                // Dùng switchCodeCache đã có nếu có; nếu chưa, tự dò ngay từ response này
+                // (cùng logic ưu tiên với resolveSwitchCode) và cache lại luôn — không tốn
+                // thêm call nào để dò code.
+                val switchCode = switchCodeCache[deviceId] ?: run {
+                    val preferredOrder = listOf("switch_led", "switch", "switch_1")
+                    val resolved = preferredOrder.firstOrNull { it in codes }
+                        ?: codes.firstOrNull { it.startsWith("switch") }
+                    if (resolved != null) switchCodeCache[deviceId] = resolved
+                    resolved
+                }
+
+                if (switchCode == null) {
+                    logger.e("TuyaManager", "Batch status: không dò được switch code cho $deviceId (codes: $codes)")
+                    continue
+                }
+
+                for (j in 0 until statusList.length()) {
+                    val status = statusList.getJSONObject(j)
+                    if (status.optString("code") == switchCode) {
+                        val value = status.opt("value")
+                        result[deviceId] = when (value) {
+                            is Boolean -> value
+                            is Int -> value == 1
+                            is String -> value == "true" || value == "1"
+                            else -> false
+                        }
+                        break
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     suspend fun getStatus(deviceName: String): Boolean = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         val switchCode = resolveSwitchCode(device.id)

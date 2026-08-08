@@ -1491,7 +1491,12 @@ class WebhookGatewayService : Service() {
                 } catch (e: Exception) {
                     logger.e("TuyaSync", "Lỗi đồng bộ trạng thái Tuya dưới nền: ${e.message}")
                 }
-                delay(10 * 60 * 1000L) 
+                // ✅ SỬA (tối ưu quota API): 10 phút -> 30 phút. Vòng lặp này chạy 24/7 bất kể
+                // user có mở app hay không, nên interval càng ngắn thì chi phí nền càng lớn dù
+                // không ai đụng vào app. Kết hợp với getStatusBatch() (xem TuyaSync bên dưới),
+                // interval 30 phút giảm call nền xuống còn ~1/6 so với trước (10 phút, gọi từng
+                // thiết bị). Có thể chỉnh lại nếu cần độ trễ phát hiện thay đổi vật lý ngắn hơn.
+                delay(30 * 60 * 1000L) 
             }
         }
     }
@@ -1507,6 +1512,17 @@ class WebhookGatewayService : Service() {
         val currentCloudDevices = tuyaManager.scanDevices()
         val now = System.currentTimeMillis()
 
+        // ✅ SỬA (tối ưu quota API): trước đây gọi tuyaManager.getStatus(cloudDev.name) RIÊNG
+        // cho từng thiết bị online (N call). Giờ gộp thành 1 lần getStatusBatch() cho TẤT CẢ
+        // thiết bị online cùng lúc (chia nhóm 20 nếu nhiều hơn 20 thiết bị) — 1 call thay vì N.
+        val onlineDeviceIds = currentCloudDevices.values.filter { it.online }.map { it.id }
+        val batchStates = try {
+            tuyaManager.getStatusBatch(onlineDeviceIds)
+        } catch (e: Exception) {
+            logger.e("TuyaSync", "Lỗi lấy trạng thái hàng loạt: ${e.message}")
+            emptyMap()
+        }
+
         currentCloudDevices.forEach { (deviceId, cloudDev) ->
             val cleanId = deviceId.trim()
             val existingState = database.worldStateDao().getState("tuya", cleanId)
@@ -1517,15 +1533,13 @@ class WebhookGatewayService : Service() {
 
             val oldState = oldStateStr.toBooleanStrictOrNull() ?: false
 
-            val newState = try {
-                if (cloudDev.online) {
-                    tuyaManager.getStatus(cloudDev.name)
-                } else {
-                    false
-                }
-            } catch (e: Exception) {
-                logger.e("TuyaSync", "Lỗi lấy trạng thái ON/OFF thực tế của ${cloudDev.name}: ${e.message}")
-                oldState
+            // batchStates thiếu key nghĩa là: thiết bị offline, hoặc call batch lỗi, hoặc
+            // không dò được switch code -> giữ nguyên trạng thái cũ thay vì ép về false, để
+            // tránh báo "tắt" giả khi thực ra chỉ là không lấy được dữ liệu.
+            val newState = if (cloudDev.online) {
+                batchStates[cleanId] ?: oldState
+            } else {
+                false
             }
 
             if (newState != oldState) {
