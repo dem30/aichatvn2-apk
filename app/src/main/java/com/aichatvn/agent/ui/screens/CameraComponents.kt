@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerEntity
 import com.aichatvn.agent.skills.CameraSkill
+import com.aichatvn.agent.tools.camera.DiscoveredCamera
 
 @Composable
 fun CameraCard(
@@ -191,6 +192,10 @@ fun CameraDialog(
 
     
     var snapshotUrl by remember { mutableStateOf(camera?.snapshoturl ?: "") }
+    // ✅ MỚI: Basic Auth cho camera LAN — nạp sẵn từ camera đang sửa (nếu có), để trống khi thêm mới.
+    var snapshotUsername by remember { mutableStateOf(camera?.snapshotUsername ?: "") }
+    var snapshotPassword by remember { mutableStateOf(camera?.snapshotPassword ?: "") }
+    var showDiscoveryDialog by remember { mutableStateOf(false) }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
     // ✅ SỬA: camera mới lấy prompt/từ khoá mặc định từ AppConfigDefaults (đã nạp qua `defaults`)
     // thay vì gõ cứng "cảnh báo"/"bình thường" trực tiếp trong UI.
@@ -201,6 +206,21 @@ fun CameraDialog(
     val context = LocalContext.current
     var locationError by remember { mutableStateOf<String?>(null) }
     var gpsLoading by remember { mutableStateOf(false) }
+
+    // ✅ MỚI: dialog tự động dò tìm camera LAN — tách riêng khỏi AlertDialog chính bên dưới để
+    // tránh lồng dialog-trong-dialog. Khi người dùng chọn 1 kết quả, tự điền lại 3 state ở trên
+    // rồi đóng dialog dò tìm — người dùng vẫn thấy form chính, chỉ cần bấm "Lưu" như bình thường.
+    if (showDiscoveryDialog) {
+        CameraDiscoveryDialog(
+            onCameraSelected = { discovered: DiscoveredCamera ->
+                snapshotUrl = discovered.snapshotUrl
+                snapshotUsername = discovered.username ?: ""
+                snapshotPassword = discovered.password ?: ""
+                showDiscoveryDialog = false
+            },
+            onDismiss = { showDiscoveryDialog = false }
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -218,6 +238,41 @@ fun CameraDialog(
 if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTheme.typography.bodySmall)
 
                 OutlinedTextField(value = snapshotUrl, onValueChange = { snapshotUrl = it }, label = { Text("URL ảnh chụp") }, modifier = Modifier.fillMaxWidth())
+
+                // ✅ MỚI: nút 1-click dò tìm camera LAN — tự điền URL + tài khoản/mật khẩu nếu tìm
+                // thấy, người dùng vẫn có thể sửa tay các ô bên dưới sau khi dò.
+                OutlinedButton(
+                    onClick = { showDiscoveryDialog = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.WifiFind, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Tự động dò tìm camera trong mạng")
+                }
+
+                OutlinedTextField(
+                    value = snapshotUsername,
+                    onValueChange = { snapshotUsername = it },
+                    label = { Text("Tài khoản camera (nếu cần)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                var showPassword by remember { mutableStateOf(false) }
+                OutlinedTextField(
+                    value = snapshotPassword,
+                    onValueChange = { snapshotPassword = it },
+                    label = { Text("Mật khẩu camera (nếu cần)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (showPassword) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showPassword) "Ẩn mật khẩu" else "Hiện mật khẩu"
+                            )
+                        }
+                    }
+                )
+
                 OutlinedTextField(value = landInfo, onValueChange = { landInfo = it }, label = { Text("Thông tin thửa đất") }, modifier = Modifier.fillMaxWidth())
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -302,6 +357,8 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                         "customername" to customerName.trim(),
                         "customeremail" to customerEmail.trim(),
                         "snapshoturl" to snapshotUrl.trim(),
+                        "snapshotUsername" to snapshotUsername.trim(),
+                        "snapshotPassword" to snapshotPassword.trim(),
                         "landinfo" to landInfo.trim(),
                         "aiPrompt" to aiPrompt.trim(),
                         "aiPositiveKeywords" to aiPositiveKeywords.trim(),

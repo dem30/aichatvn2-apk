@@ -451,6 +451,16 @@ val MIGRATION_16_17 = object : Migration(16, 17) {
     }
 }
 
+// ✅ MỚI: version 18 — CameraConfigEntity thêm snapshotUsername/snapshotPassword (Basic Auth cho
+// camera LAN). Theo đúng quy tắc đã đặt ở trên: bump version PHẢI kèm Migration thật, không dựa
+// vào fallbackToDestructiveMigration() để tránh mất dữ liệu khách hàng đang chạy version 17.
+val MIGRATION_17_18 = object : Migration(17, 18) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cameras ADD COLUMN snapshotUsername TEXT")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN snapshotPassword TEXT")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -470,11 +480,11 @@ val MIGRATION_16_17 = object : Migration(16, 17) {
         CallContactEntity::class,
         CallLogEntity::class
     ],
-    // bump 16 → 17 do EventLogEntity thêm cột analysisSource (đánh dấu nguồn phân tích
-    // "groq" | "ml_kit_local" cho LocalVisionTool fallback).
-    // ⚠️ Version 16 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_16_17 (ALTER TABLE ADD
+    // bump 17 → 18 do CameraConfigEntity thêm cột snapshotUsername/snapshotPassword (Basic Auth
+    // cho camera LAN nội bộ, xem MIGRATION_17_18).
+    // ⚠️ Version 17 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_17_18 (ALTER TABLE ADD
     // COLUMN) ở trên, KHÔNG được để fallbackToDestructiveMigration() xoá dữ liệu của họ.
-    version = 17,
+    version = 18,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -507,11 +517,11 @@ abstract fun callLogDao(): CallLogDao
                     "aichatvn_database"
                 )
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-                    // ✅ SỬA: đăng ký Migration thật cho 16→17 — Room sẽ dùng đường đi này trước
-                    // (giữ nguyên dữ liệu khách hàng ở version 16). fallbackToDestructiveMigration()
+                    // ✅ SỬA: đăng ký Migration thật cho 16→17 và 17→18 — Room sẽ dùng đường đi
+                    // này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
-                    // lịch sử) — KHÔNG áp dụng cho bước 16→17 vì đã có Migration cụ thể ở trên.
-                    .addMigrations(MIGRATION_16_17)
+                    // lịch sử) — KHÔNG áp dụng cho bước 16→17 hay 17→18 vì đã có Migration cụ thể.
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

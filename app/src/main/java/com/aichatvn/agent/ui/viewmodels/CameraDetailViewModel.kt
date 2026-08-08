@@ -39,7 +39,10 @@ data class CameraConfigDraft(
     val aiNegativeKeywords: String = "",
     val enableCooldown: Boolean = true,     // ✅ MỚI
     val enableNotification: Boolean = true,  // ✅ MỚI
-  val alertActions: List<AlertActionConfig> = emptyList() // ✅ MỚI
+  val alertActions: List<AlertActionConfig> = emptyList(), // ✅ MỚI
+    // ✅ MỚI: Basic Auth cho camera LAN yêu cầu đăng nhập, để trống nếu camera không cần.
+    val snapshotUsername: String = "",
+    val snapshotPassword: String = ""
 
 )
 
@@ -159,6 +162,8 @@ class CameraDetailViewModel @Inject constructor(
             aiNegativeKeywords = cam.aiNegativeKeywords,
             enableCooldown = cam.enableCooldown == 1,
             enableNotification = cam.enableNotification == 1,
+            snapshotUsername = cam.snapshotUsername ?: "",
+            snapshotPassword = cam.snapshotPassword ?: "",
 
           alertActions = alertActionsFromJson(cam.alertActions) // ✅ MỚI
         
@@ -199,6 +204,8 @@ class CameraDetailViewModel @Inject constructor(
                     aiNegativeKeywords = draft.aiNegativeKeywords.trim(),
                     enableCooldown = if (draft.enableCooldown) 1 else 0,
                     enableNotification = if (draft.enableNotification) 1 else 0,
+                    snapshotUsername = draft.snapshotUsername.trim().ifBlank { null },
+                    snapshotPassword = draft.snapshotPassword.trim().ifBlank { null },
 
 
                   alertActions = alertActionsToJson(draft.alertActions) // ✅ MỚI

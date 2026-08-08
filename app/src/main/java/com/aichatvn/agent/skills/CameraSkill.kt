@@ -139,6 +139,9 @@ PluginAction(
         PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo (chỉ báo động khi khớp — dùng cho cả AI lẫn ML Kit)", false, "string"),
         PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường (danh sách tham khảo nhãn ML Kit — copy sang ô cảnh báo để bật báo động cho nhãn đó)", false, "string"),
         PluginParameter("snapshotUrl", "string", "URL ảnh chụp", false, "string"),
+        // ✅ MỚI: Basic Auth cho camera LAN yêu cầu đăng nhập — để trống nếu camera không cần auth.
+        PluginParameter("snapshotUsername", "string", "Tên đăng nhập camera (nếu cần)", false, "string"),
+        PluginParameter("snapshotPassword", "string", "Mật khẩu camera (nếu cần)", false, "string"),
         PluginParameter("landInfo", "string", "Thông tin vị trí", false, "string"),
         // 🌟 SỬA: Đổi kiểu từ "number" sang "boolean" để UI vẽ công tắc Switch thay vì ô nhập số
         PluginParameter("enableCooldown", "boolean", "Bật/Tắt cooldown hoãn quét", false, "boolean"),
@@ -473,6 +476,8 @@ PluginAction(
             aiPositiveKeywords = (params["aiPositiveKeywords"] as? String)?.trim() ?: cam.aiPositiveKeywords,
             aiNegativeKeywords = (params["aiNegativeKeywords"] as? String)?.trim() ?: cam.aiNegativeKeywords,
             snapshoturl = (params["snapshotUrl"] as? String)?.trim() ?: cam.snapshoturl,
+            snapshotUsername = (params["snapshotUsername"] as? String)?.trim()?.ifBlank { null } ?: cam.snapshotUsername,
+            snapshotPassword = (params["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: cam.snapshotPassword,
             landinfo = (params["landInfo"] as? String)?.trim() ?: cam.landinfo,
             enableCooldown = (params["enableCooldown"] as? Int) ?: (params["enableCooldown"] as? Number)?.toInt() ?: cam.enableCooldown,
             enableNotification = (params["enableNotification"] as? Int) ?: (params["enableNotification"] as? Number)?.toInt() ?: cam.enableNotification
@@ -1954,7 +1959,7 @@ PluginAction(
     ): Map<String, Any> {
         val tid = camera.id.trim()
         try {
-            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
+            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
             if (imageBytes == null) {
                 handleOfflineCamera(camera)
                 recordOffline(tid)
@@ -1987,7 +1992,7 @@ PluginAction(
     private suspend fun scanForDailyReport(camera: CameraConfigEntity): Map<String, Any> {
         val tid = camera.id.trim()
         return try {
-            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl)
+            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
             if (imageBytes == null) {
                 return mapOf(
                     "cameraId" to tid,
@@ -2094,7 +2099,9 @@ PluginAction(
                 aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim(),
                 enableCooldown = (config["enableCooldown"] as? Int) ?: (config["enableCooldown"] as? Number)?.toInt() ?: existing?.enableCooldown ?: 1,
                 enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1,
-                alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]" 
+                alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]",
+                snapshotUsername = (config["snapshotUsername"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotUsername,
+                snapshotPassword = (config["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotPassword
             )
             
             withContext(Dispatchers.IO) {
@@ -2233,10 +2240,10 @@ PluginAction(
     
     fun observeCameras() = database.cameraDao().getAllCamerasFlow()
 
-    suspend fun testCameraUrl(snapshotUrl: String): PluginResult {
+    suspend fun testCameraUrl(snapshotUrl: String, snapshotUsername: String? = null, snapshotPassword: String? = null): PluginResult {
         return try {
             logger.i("CameraSkill", "🧪 testCameraUrl: $snapshotUrl")
-            val imageBytes = snapshotFetcher.fetchSnapshot(snapshotUrl)
+            val imageBytes = snapshotFetcher.fetchSnapshot(snapshotUrl, snapshotUsername, snapshotPassword)
 
             if (imageBytes == null) {
                 logger.w("CameraSkill", "🧪 testCameraUrl: fetch trả về null (URL sai hoặc camera offline)")

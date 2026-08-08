@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -499,6 +500,7 @@ fun CameraDetailScreen(
                             Column {
                                 Spacer(Modifier.height(4.dp))
                                 DetailRow("Snapshot URL", cam.snapshoturl.ifBlank { "—" })
+                                DetailRow("Tài khoản đăng nhập camera", cam.snapshotUsername?.ifBlank { null } ?: "—")
                                 DetailRow("Vị trí", cam.landinfo?.ifBlank { "—" } ?: "—")
                                 DetailRow("AI Prompt", cam.aiPrompt.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (+)", cam.aiPositiveKeywords.ifBlank { "(mặc định)" })
@@ -518,6 +520,32 @@ fun CameraDetailScreen(
                                         label = { Text("Snapshot URL") },
                                         modifier = Modifier.fillMaxWidth(),
                                         singleLine = true
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.snapshotUsername,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(snapshotUsername = v) } },
+                                        label = { Text("Tài khoản camera (để trống nếu không cần đăng nhập)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    var showSnapshotPassword by remember { mutableStateOf(false) }
+                                    OutlinedTextField(
+                                        value = draft.snapshotPassword,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(snapshotPassword = v) } },
+                                        label = { Text("Mật khẩu camera") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        visualTransformation = if (showSnapshotPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                                        trailingIcon = {
+                                            IconButton(onClick = { showSnapshotPassword = !showSnapshotPassword }) {
+                                                Icon(
+                                                    if (showSnapshotPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                    contentDescription = if (showSnapshotPassword) "Ẩn mật khẩu" else "Hiện mật khẩu"
+                                                )
+                                            }
+                                        }
                                     )
                                     Spacer(Modifier.height(6.dp))
                                     val gpsContext = androidx.compose.ui.platform.LocalContext.current
