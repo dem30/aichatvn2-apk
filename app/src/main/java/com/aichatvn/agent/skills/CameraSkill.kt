@@ -1518,42 +1518,16 @@ PluginAction(
                 // KHÔNG có mô tả AI thật, chỉ là so sánh pixel tạm thời như code cũ đã làm).
                 var analysisSource: String? = null
                 
-                // ✅ MỚI: Lớp lọc ML Kit TRƯỚC khi gọi Groq (chỉ áp dụng cho quét tự động do
-                // isSuddenChange — KHÔNG áp dụng cho isManualTrigger/forceAi, vì 2 trường hợp đó
-                // đúng nghĩa phải gọi AI thẳng, bỏ qua mọi bộ lọc). Mục đích: tiết kiệm quota Groq,
-                // chỉ gọi AI khi ML Kit đã thấy nhãn khớp đúng từ khoá cảnh báo (aiPositiveKeywords)
-                // camera tự cấu hình — không khớp thì không đáng để tốn 1 lượt gọi AI.
-                // Nếu ML Kit tự lỗi/timeout (KHÁC với "chạy được nhưng không khớp") -> mở khoá gọi
-                // Groq như cũ, không để lỗi kỹ thuật của bộ lọc làm bỏ lọt sự kiện thật.
-                val bypassPreFilter = isManualTrigger || forceAi
-                var preFilterResult: LocalVisionResult? = null
-                var preFilterPassed = true
-                if (shouldCallAi && !bypassPreFilter) {
-                    preFilterResult = try {
-                        localVisionTool.analyze(optimizedBytes)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        logger.w("CameraSkill", "⚠️ ML Kit pre-filter lỗi, mở khoá gọi AI để không bỏ lọt sự kiện thật: ${e.message}")
-                        null
-                    }
-                    if (preFilterResult != null) {
-                        val preFilterPositiveKw = if (camera.aiPositiveKeywords.isNotEmpty()) {
-                            camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-                        } else {
-                            defaultPositiveKw()
-                        }
-                        val preFilterLabelsText = buildString {
-                            append(preFilterResult.labels.joinToString(" "))
-                            if (preFilterResult.hasFace) append(" khuôn mặt mặt người")
-                        }.lowercase()
-                        preFilterPassed = preFilterPositiveKw.isNotEmpty() &&
-                            preFilterPositiveKw.any { preFilterLabelsText.contains(it) }
-                    }
-                    // preFilterResult == null (ML Kit lỗi kỹ thuật) -> preFilterPassed giữ nguyên true (fail-open)
-                }
+                // ✅ SỬA: Bỏ lớp lọc ML Kit TRƯỚC Groq. Trước đây ML Kit chặn Groq khi nhãn không
+                // khớp aiPositiveKeywords -> nếu người dùng cấu hình từ khoá thiếu/sai, sự kiện
+                // THẬT (isSuddenChange=true) bị coi là "bình thường", vừa bỏ sót cảnh báo vừa bị
+                // ghi vào falseDeltas/falseDiffs khiến recomputeThresholdsFromSamples() NÂNG
+                // deltaTrigger/absDiffTrigger — làm lần sau còn khó phát hiện hơn (học sai lặp lại).
+                // Giờ hễ shouldCallAi=true (đã vượt ngưỡng pHash/thủ công/force) là gọi Groq thẳng,
+                // không qua ML Kit trước. ML Kit chỉ còn đứng SAU Groq — làm fallback khi Groq lỗi/
+                // hết quota (xem nhánh isApiError phía dưới) — không còn giữ vai trò gác cổng.
 
-                if (shouldCallAi && preFilterPassed) {
+                if (shouldCallAi) {
                     val prompt = if (camera.aiPrompt.isNotEmpty()) camera.aiPrompt else defaultAiPrompt()
                     val aiResult: String = try {
                         // ✅ SỬA: 20s cũ quá ngắn — log server cho thấy model vision cần hơn
@@ -1578,11 +1552,9 @@ PluginAction(
                         // thô thuần tuý (isSuddenChange) như bản vá trước.
                         logger.w("CameraSkill", "⚠️ AI gặp sự cố ($aiResult) -> Thử ML Kit local trước khi rơi về so sánh pixel")
 
-                        // ✅ MỚI: nếu đã chạy ML Kit ở bước pre-filter phía trên (trường hợp không
-                        // bypass), TÁI SỬ DỤNG luôn kết quả đó thay vì gọi lại localVisionTool.analyze()
-                        // lần 2 trên cùng 1 ảnh — vừa dư thừa vừa tốn thời gian CPU. Chỉ gọi mới khi
-                        // preFilterResult chưa có (bypass do isManualTrigger/forceAi).
-                        val fallbackLocalResult = preFilterResult ?: try {
+                        // ✅ SỬA: ML Kit không còn chạy trước (pre-filter) nữa — Groq luôn được gọi
+                        // thẳng khi shouldCallAi=true, nên ở đây luôn cần gọi ML Kit mới làm fallback.
+                        val fallbackLocalResult = try {
                             localVisionTool.analyze(optimizedBytes)
                         } catch (e: CancellationException) {
                             throw e
@@ -1670,7 +1642,20 @@ PluginAction(
                         val hasNegative = negativeKeywords.any { rawTextClean.contains(it) }
                         val keywordMatch = hasPositive && !hasNegative
 
-                        isSuspicious = keywordMatch || visionParsed.structuredSuspicious == true
+                        // ✅ SỬA (lần 2): Bản trước "keywordMatch && structuredSuspicious != false"
+                        // vẫn còn 1 lỗ hổng ở CHIỀU NGƯỢC LẠI: nếu Groq minh thị nói "suspicious"
+                        // (structuredSuspicious == true) nhưng mô tả không chứa đúng từ khoá cấu
+                        // hình sẵn -> keywordMatch = false -> isSuspicious bị dập xuống false, tức
+                        // phán đoán THẬT của Groq bị ghi đè ngược. keyword không nên là điều kiện
+                        // quyết định ở CẢ HAI chiều khi Groq đã trả JSON hợp lệ.
+                        //
+                        // Nguyên tắc mới: world_state PHẢI phản ánh đúng 100% phán đoán của Groq khi
+                        // Groq trả JSON hợp lệ (structuredSuspicious != null). keywordMatch không còn
+                        // tham gia quyết định isSuspicious trong trường hợp này — nó chỉ còn là tín
+                        // hiệu phụ trợ cho ML Kit (nhánh smartMode tắt, xem dưới) và làm fallback DUY
+                        // NHẤT khi Groq trả text thô/JSON lỗi parse (structuredSuspicious == null).
+                        isSuspicious = visionParsed.structuredSuspicious
+                            ?: keywordMatch
 
                         finalStateJson = buildVisionStateJson(
                             state = if (isSuspicious) "suspicious" else "normal",
@@ -1683,29 +1668,6 @@ PluginAction(
                         analysisSource = "groq"
                     }
 
-                } else if (shouldCallAi && !preFilterPassed) {
-                    // ML Kit đã chạy (pre-filter) nhưng KHÔNG khớp từ khoá cảnh báo -> không gọi Groq,
-                    // coi là bình thường, vẫn ghi lại nhãn ML Kit thật (nếu có) để làm giàu event log.
-                    val labels = preFilterResult?.labels.orEmpty()
-                    visionObjects = labels
-                    aiComment = if (labels.isNotEmpty() || preFilterResult?.hasFace == true) {
-                        buildString {
-                            append("ML Kit lọc trước AI (không khớp từ khoá cảnh báo): ")
-                            append(if (labels.isNotEmpty()) labels.joinToString(", ") else "chuyển động")
-                            if (preFilterResult?.hasFace == true) append(" [có khuôn mặt]")
-                        }
-                    } else {
-                        "ML Kit lọc trước AI: không phát hiện vật thể khớp từ khoá cảnh báo"
-                    }
-                    isSuspicious = false
-                    analysisSource = "ml_kit_local"
-                    finalStateJson = buildVisionStateJson(
-                        state = "normal",
-                        description = aiComment ?: "",
-                        objects = visionObjects,
-                        source = "ml_kit_local",
-                        hasFace = preFilterResult?.hasFace ?: false
-                    )
                 } else if (!isSmartMode && (isManualTrigger || forceAi || isSuddenChange)) {
                     // ✅ SỬA (lần 2): trước đây chỉ xét isSuddenChange (không xét forceAi/thủ công) vì
                     // lo ngại ép chạy khi ảnh không đổi sẽ báo "biến động" giả (khi đó aiComment chỉ
