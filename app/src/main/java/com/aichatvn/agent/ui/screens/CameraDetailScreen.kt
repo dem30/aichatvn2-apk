@@ -502,6 +502,7 @@ fun CameraDetailScreen(
                                 Spacer(Modifier.height(4.dp))
                                 DetailRow("Snapshot URL", cam.snapshoturl.ifBlank { "—" })
                                 DetailRow("Tài khoản đăng nhập camera", cam.snapshotUsername?.ifBlank { null } ?: "—")
+                                DetailRow("URL dự phòng (cloud/ngoài mạng)", cam.snapshotUrlRemote?.ifBlank { null } ?: "—")
                                 DetailRow("Vị trí", cam.landinfo?.ifBlank { "—" } ?: "—")
                                 DetailRow("AI Prompt", cam.aiPrompt.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (+)", cam.aiPositiveKeywords.ifBlank { "(mặc định)" })
@@ -547,6 +548,15 @@ fun CameraDetailScreen(
                                                 )
                                             }
                                         }
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.snapshotUrlRemote,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(snapshotUrlRemote = v) } },
+                                        label = { Text("URL dự phòng (cloud, dùng khi ra ngoài mạng nhà)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        supportingText = { Text("Để trống nếu chỉ dùng trong mạng nhà. Lấy từ app gốc của hãng camera.") }
                                     )
                                     Spacer(Modifier.height(6.dp))
                                     val gpsContext = androidx.compose.ui.platform.LocalContext.current

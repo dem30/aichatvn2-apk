@@ -42,7 +42,9 @@ data class CameraConfigDraft(
   val alertActions: List<AlertActionConfig> = emptyList(), // ✅ MỚI
     // ✅ MỚI: Basic Auth cho camera LAN yêu cầu đăng nhập, để trống nếu camera không cần.
     val snapshotUsername: String = "",
-    val snapshotPassword: String = ""
+    val snapshotPassword: String = "",
+    // ✅ MỚI: URL dự phòng cloud/public — dùng khi LAN không kết nối được (vd đang ở ngoài mạng nhà).
+    val snapshotUrlRemote: String = ""
 
 )
 
@@ -164,6 +166,7 @@ class CameraDetailViewModel @Inject constructor(
             enableNotification = cam.enableNotification == 1,
             snapshotUsername = cam.snapshotUsername ?: "",
             snapshotPassword = cam.snapshotPassword ?: "",
+            snapshotUrlRemote = cam.snapshotUrlRemote ?: "",
 
           alertActions = alertActionsFromJson(cam.alertActions) // ✅ MỚI
         
@@ -206,6 +209,7 @@ class CameraDetailViewModel @Inject constructor(
                     enableNotification = if (draft.enableNotification) 1 else 0,
                     snapshotUsername = draft.snapshotUsername.trim().ifBlank { null },
                     snapshotPassword = draft.snapshotPassword.trim().ifBlank { null },
+                    snapshotUrlRemote = draft.snapshotUrlRemote.trim().ifBlank { null },
 
 
                   alertActions = alertActionsToJson(draft.alertActions) // ✅ MỚI

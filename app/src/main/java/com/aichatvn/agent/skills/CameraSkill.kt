@@ -142,6 +142,7 @@ PluginAction(
         // ✅ MỚI: Basic Auth cho camera LAN yêu cầu đăng nhập — để trống nếu camera không cần auth.
         PluginParameter("snapshotUsername", "string", "Tên đăng nhập camera (nếu cần)", false, "string"),
         PluginParameter("snapshotPassword", "string", "Mật khẩu camera (nếu cần)", false, "string"),
+        PluginParameter("snapshotUrlRemote", "string", "URL dự phòng (cloud/public, dùng khi ra ngoài mạng nhà)", false, "string"),
         PluginParameter("landInfo", "string", "Thông tin vị trí", false, "string"),
         // 🌟 SỬA: Đổi kiểu từ "number" sang "boolean" để UI vẽ công tắc Switch thay vì ô nhập số
         PluginParameter("enableCooldown", "boolean", "Bật/Tắt cooldown hoãn quét", false, "boolean"),
@@ -178,6 +179,25 @@ PluginAction(
     private val cameraMutexMap = ConcurrentHashMap<String, Mutex>()
     private fun getMutexForCamera(cameraId: String): Mutex =
         cameraMutexMap.getOrPut(cameraId.trim()) { Mutex() }
+
+    // ✅ MỚI: thử snapshoturl (LAN nội bộ) TRƯỚC — nhanh, không tốn data, hoạt động cả khi không
+    // có internet (miễn điện thoại cùng Wi-Fi với camera). Chỉ khi LAN fail (null — hết timeout,
+    // không kết nối được, vd điện thoại đang ở ngoài mạng nhà) mới fallback qua snapshotUrlRemote
+    // (URL cloud/public từ app gốc hãng camera, do người dùng tự cấu hình).
+    //
+    // ⚠️ CHỦ Ý: KHÔNG đổi hành vi khi snapshotUrlRemote để trống — trường hợp đó fallback chỉ
+    // đơn giản là không có gì để thử thêm, trả về null y hệt hành vi cũ (không phá vỡ camera nào
+    // chưa cấu hình URL remote).
+    private suspend fun fetchSnapshotWithFallback(camera: CameraConfigEntity): ByteArray? {
+        val lanBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
+        if (lanBytes != null) return lanBytes
+
+        val remoteUrl = camera.snapshotUrlRemote?.trim()
+        if (remoteUrl.isNullOrBlank()) return null
+
+        logger.d("CameraSkill", "🌐 LAN fetch thất bại, thử fallback qua snapshotUrlRemote cho camera ${camera.id.trim()}")
+        return snapshotFetcher.fetchSnapshot(remoteUrl, camera.snapshotUsername, camera.snapshotPassword)
+    }
 
     // ✅ MỚI (day/night split): trước đây các mẫu học báo giả (falseDeltas/falseDiffs), baseline
     // trung bình (baselineWindow) và ngưỡng suy ra (deltaTrigger/absDiffTrigger) dùng CHUNG 1 bộ
@@ -478,6 +498,7 @@ PluginAction(
             snapshoturl = (params["snapshotUrl"] as? String)?.trim() ?: cam.snapshoturl,
             snapshotUsername = (params["snapshotUsername"] as? String)?.trim()?.ifBlank { null } ?: cam.snapshotUsername,
             snapshotPassword = (params["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: cam.snapshotPassword,
+            snapshotUrlRemote = (params["snapshotUrlRemote"] as? String)?.trim()?.ifBlank { null } ?: cam.snapshotUrlRemote,
             landinfo = (params["landInfo"] as? String)?.trim() ?: cam.landinfo,
             enableCooldown = (params["enableCooldown"] as? Int) ?: (params["enableCooldown"] as? Number)?.toInt() ?: cam.enableCooldown,
             enableNotification = (params["enableNotification"] as? Int) ?: (params["enableNotification"] as? Number)?.toInt() ?: cam.enableNotification
@@ -1959,7 +1980,7 @@ PluginAction(
     ): Map<String, Any> {
         val tid = camera.id.trim()
         try {
-            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
+            val imageBytes = fetchSnapshotWithFallback(camera)
             if (imageBytes == null) {
                 handleOfflineCamera(camera)
                 recordOffline(tid)
@@ -1992,7 +2013,7 @@ PluginAction(
     private suspend fun scanForDailyReport(camera: CameraConfigEntity): Map<String, Any> {
         val tid = camera.id.trim()
         return try {
-            val imageBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
+            val imageBytes = fetchSnapshotWithFallback(camera)
             if (imageBytes == null) {
                 return mapOf(
                     "cameraId" to tid,
@@ -2101,7 +2122,8 @@ PluginAction(
                 enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1,
                 alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]",
                 snapshotUsername = (config["snapshotUsername"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotUsername,
-                snapshotPassword = (config["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotPassword
+                snapshotPassword = (config["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotPassword,
+                snapshotUrlRemote = (config["snapshotUrlRemote"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotUrlRemote
             )
             
             withContext(Dispatchers.IO) {

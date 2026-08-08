@@ -91,7 +91,12 @@ data class CameraConfigEntity(
     // user/pass riêng, không nhúng trong URL). Optional — camera không cần auth để trống là được,
     // SnapshotFetcher.fetchSnapshot() chỉ thêm Authorization header khi username không rỗng.
     val snapshotUsername: String? = null,
-    val snapshotPassword: String? = null
+    val snapshotPassword: String? = null,
+    // ✅ MỚI: URL dự phòng (cloud/public URL từ app gốc của hãng camera) — dùng khi snapshoturl
+    // (LAN nội bộ) không kết nối được, vd khi điện thoại đang ở ngoài mạng nhà. CameraSkill sẽ
+    // thử snapshoturl (LAN) TRƯỚC, chỉ fallback qua field này nếu LAN fail — giữ nguyên lợi ích
+    // offline (nhanh, không tốn data) khi đang ở nhà, đồng thời không mất khả năng xem từ xa.
+    val snapshotUrlRemote: String? = null
 )
 
 @Entity(tableName = "customer_settings")

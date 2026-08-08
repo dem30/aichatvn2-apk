@@ -195,6 +195,8 @@ fun CameraDialog(
     // ✅ MỚI: Basic Auth cho camera LAN — nạp sẵn từ camera đang sửa (nếu có), để trống khi thêm mới.
     var snapshotUsername by remember { mutableStateOf(camera?.snapshotUsername ?: "") }
     var snapshotPassword by remember { mutableStateOf(camera?.snapshotPassword ?: "") }
+    // ✅ MỚI: URL dự phòng cloud/public — dùng khi LAN không kết nối được (vd đang ở ngoài mạng nhà).
+    var snapshotUrlRemote by remember { mutableStateOf(camera?.snapshotUrlRemote ?: "") }
     var showDiscoveryDialog by remember { mutableStateOf(false) }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
     // ✅ SỬA: camera mới lấy prompt/từ khoá mặc định từ AppConfigDefaults (đã nạp qua `defaults`)
@@ -271,6 +273,14 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                             )
                         }
                     }
+                )
+
+                OutlinedTextField(
+                    value = snapshotUrlRemote,
+                    onValueChange = { snapshotUrlRemote = it },
+                    label = { Text("URL dự phòng (cloud, dùng khi ra ngoài mạng nhà)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    supportingText = { Text("Để trống nếu chỉ dùng trong mạng nhà. Lấy từ app gốc của hãng camera.") }
                 )
 
                 OutlinedTextField(value = landInfo, onValueChange = { landInfo = it }, label = { Text("Thông tin thửa đất") }, modifier = Modifier.fillMaxWidth())
@@ -359,6 +369,7 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                         "snapshoturl" to snapshotUrl.trim(),
                         "snapshotUsername" to snapshotUsername.trim(),
                         "snapshotPassword" to snapshotPassword.trim(),
+                        "snapshotUrlRemote" to snapshotUrlRemote.trim(),
                         "landinfo" to landInfo.trim(),
                         "aiPrompt" to aiPrompt.trim(),
                         "aiPositiveKeywords" to aiPositiveKeywords.trim(),
