@@ -189,7 +189,11 @@ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("io.ktor:ktor-server-netty:2.3.12")
     implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
-    implementation("com.jcraft:jsch:0.1.55")
+      implementation("com.jcraft:jsch:0.1.55")
+
+    implementation("androidx.media3:media3-exoplayer-rtsp:1.4.1")
+implementation("androidx.media3:media3-ui:1.4.1")
+implementation("com.arthenica:ffmpeg-kit-min:6.0-2")   // bản "min" — chỉ remux (-c copy), không cần codec nặng, đỡ tăng size APK
 }
 dependencies {
     // ✅ SỬA: đổi sang bản "unbundled" — model KHÔNG đóng gói trong APK, tải qua Google Play

@@ -254,6 +254,14 @@ fun AppNavigator(
                     route = "camera_detail/{cameraId}",
                     arguments = listOf(navArgument("cameraId") { type = NavType.StringType })
                 ) { CameraDetailScreen(navController) }
+
+                // ✅ MỚI: màn xem trực tiếp/ghi hình RTSP — CameraLiveViewScreen đã nằm cùng
+                // package com.aichatvn.agent.ui.screens, đã được phủ bởi wildcard import
+                // "com.aichatvn.agent.ui.screens.*" ở đầu file, KHÔNG cần thêm import riêng.
+                composable(
+                    route = "camera_live/{cameraId}",
+                    arguments = listOf(navArgument("cameraId") { type = NavType.StringType })
+                ) { CameraLiveViewScreen(navController) }
             }
         }
 

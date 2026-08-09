@@ -110,7 +110,29 @@ data class CameraConfigEntity(
     @ColumnInfo(defaultValue = "0")
     val enableAlarmPush: Int = 0,
     @ColumnInfo(defaultValue = "NULL")
-    val alarmSecret: String? = null
+    val alarmSecret: String? = null,
+    // ✅ MỚI: kết quả CameraCapabilityProber.probe() — CHỈ ghi nhận "có vẻ hỗ trợ", KHÔNG tự
+    // bật tính năng nào. onvifEventUrl/rtspUrl là URL/endpoint THẬT probe tìm được, dùng trực
+    // tiếp bởi open_live_view/record (rtspUrl) một khi người dùng đã tự bật rtspEnabled qua Switch
+    // riêng — xem ghi chú "CHỦ Ý" trong CameraCapabilityProber.kt. Cùng lý do enableAlarmPush ở
+    // trên, khai báo @ColumnInfo(defaultValue=...) tường minh để default cũng áp dụng ở tầng SQL
+    // (ContentValues insert thô của BackupRestorer.kt), không chỉ qua constructor Kotlin.
+    @ColumnInfo(defaultValue = "0")
+    val onvifSupported: Int = 0,
+    @ColumnInfo(defaultValue = "NULL")
+    val onvifEventUrl: String? = null,
+    @ColumnInfo(defaultValue = "0")
+    val onvifEnabled: Int = 0,
+    @ColumnInfo(defaultValue = "0")
+    val rtspSupported: Int = 0,
+    // ⚠️ Nếu camera cần auth, URL này PHẢI đã có sẵn "rtsp://user:pass@ip:port/path" (nhúng
+    // credential ngay trong URL) — xem CameraCapabilityProber.tryProbeRtsp() đã sửa để nhúng
+    // sẵn, vì ExoPlayer RtspMediaSource/ffmpeg-kit không có tham số username/password riêng,
+    // chỉ đọc credential từ chính URI.
+    @ColumnInfo(defaultValue = "NULL")
+    val rtspUrl: String? = null,
+    @ColumnInfo(defaultValue = "0")
+    val rtspEnabled: Int = 0
 )
 
 @Entity(tableName = "customer_settings")

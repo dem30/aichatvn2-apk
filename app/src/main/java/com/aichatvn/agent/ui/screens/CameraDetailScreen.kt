@@ -63,6 +63,8 @@ fun CameraDetailScreen(
     val scheduleResult by viewModel.scheduleResult.collectAsState()
     val alarmPushUrl by viewModel.alarmPushUrl.collectAsState() // ✅ MỚI
     val alarmVerifyState by viewModel.alarmVerifyState.collectAsState() // ✅ MỚI
+    val isProbing by viewModel.isProbing.collectAsState() // ✅ MỚI
+    val probeResult by viewModel.probeResult.collectAsState() // ✅ MỚI
     val clipboardManager: ClipboardManager = LocalClipboardManager.current // ✅ MỚI
 
     val alertActionPlugins = viewModel.alertActionPlugins
@@ -99,6 +101,13 @@ fun CameraDetailScreen(
             is AlarmVerifyState.Success -> snackbarHostState.showSnackbar("✅ Đã xác nhận camera bắn báo động thành công!")
             is AlarmVerifyState.TimedOut -> snackbarHostState.showSnackbar("⚠️ Không nhận được báo động nào — camera có thể không hỗ trợ, đã tắt tính năng này.")
             else -> {}
+        }
+    }
+    // ✅ MỚI: báo kết quả "Kiểm tra khả năng RTSP/ONVIF" qua snackbar.
+    LaunchedEffect(probeResult) {
+        probeResult?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearProbeResult()
         }
     }
 
@@ -489,6 +498,82 @@ fun CameraDetailScreen(
                                         Text("🔍 Kiểm tra kết nối")
                                     }
                                 }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(12.dp))
+
+                        // ✅ MỚI: Xem trực tiếp / ghi hình qua RTSP. ⚠️ CHỦ Ý: nút "Kiểm tra khả
+                        // năng" gọi thẳng IP LAN của camera — CHỈ hoạt động khi điện thoại đang
+                        // cùng Wi-Fi nhà, y hệt giới hạn của snapshot LAN trước khi có
+                        // snapshotUrlRemote. Khác với snapshot, RTSP/ONVIF CHƯA có đường dự
+                        // phòng qua mạng ngoài — ngoài Wi-Fi nhà, mục này sẽ luôn báo "không tìm
+                        // thấy" dù camera có hỗ trợ thật.
+                        Text("Xem trực tiếp (RTSP)", style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Chỉ hoạt động khi điện thoại đang cùng Wi-Fi với camera.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        if (cam.rtspSupported == 1) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("✅ Camera hỗ trợ RTSP", style = MaterialTheme.typography.labelMedium)
+                                Switch(checked = cam.rtspEnabled == 1, onCheckedChange = { viewModel.toggleRtspEnabled() })
+                            }
+                            if (cam.onvifSupported == 1) {
+                                Spacer(Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("✅ Camera hỗ trợ ONVIF", style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            if (cam.onvifEnabled == 1)
+                                                "Bật — theo dõi chuyển động trực tiếp qua ONVIF Events (chính xác hơn quét định kỳ, chỉ hoạt động cùng Wi-Fi nhà)"
+                                            else "Tắt — chỉ dùng lịch quét định kỳ/báo động thường",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Switch(checked = cam.onvifEnabled == 1, onCheckedChange = { viewModel.toggleOnvifEnabled() })
+                                }
+                            }
+                            if (cam.rtspEnabled == 1) {
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = { navController.navigate("camera_live/$cameraId") },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("▶️ Xem trực tiếp")
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+                        if (isProbing) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Đang kiểm tra...", style = MaterialTheme.typography.labelSmall)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { viewModel.probeCapabilities() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(if (cam.rtspSupported == 1) "🔍 Kiểm tra lại" else "🔍 Kiểm tra khả năng RTSP/ONVIF")
                             }
                         }
 

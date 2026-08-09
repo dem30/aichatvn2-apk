@@ -85,6 +85,8 @@ class CameraDetailViewModel @Inject constructor(
     val optionRegistry: DynamicOptionRegistry, // 🌟 MỚI: Inject Registry trung tâm
     private val configProvider: AppConfigProvider, // ✅ MỚI: đọc Gateway URL/Token cho toggleAlarmPush()/verifyAlarmConnection()
     private val callSkill: CallSkill, // ✅ MỚI: getOrCreateMyDeviceCode() — cùng deviceCode đang dùng cho kênh /call/stream
+    // ✅ MỚI: probe RTSP/ONVIF — @Singleton @Inject constructor sẵn, không cần khai báo @Provides riêng.
+    private val capabilityProber: com.aichatvn.agent.tools.camera.CameraCapabilityProber,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -513,6 +515,90 @@ class CameraDetailViewModel @Inject constructor(
 
     private val _alarmVerifyState = MutableStateFlow<AlarmVerifyState>(AlarmVerifyState.Idle)
     val alarmVerifyState: StateFlow<AlarmVerifyState> = _alarmVerifyState.asStateFlow()
+
+    // ✅ MỚI: trạng thái "Kiểm tra khả năng RTSP/ONVIF" — CHỈ chạy được khi điện thoại đang
+    // cùng Wi-Fi LAN với camera (probe gọi thẳng IP nội bộ), xem giải thích đầy đủ trong
+    // CameraCapabilityProber.kt. Kết quả lưu vào cam.rtspSupported/onvifSupported/rtspUrl/
+    // onvifEventUrl — KHÔNG tự bật rtspEnabled, người dùng vẫn phải tự bật Switch riêng.
+    private val _isProbing = MutableStateFlow(false)
+    val isProbing: StateFlow<Boolean> = _isProbing.asStateFlow()
+
+    private val _probeResult = MutableStateFlow<String?>(null)
+    val probeResult: StateFlow<String?> = _probeResult.asStateFlow()
+
+    // ✅ MỚI: kiểm tra camera có hỗ trợ RTSP/ONVIF không — gọi trực tiếp IP LAN của camera
+    // (trích từ cam.snapshoturl), nên CHỈ hoạt động khi máy đang ở cùng Wi-Fi nhà. Xa nhà/dùng
+    // 4G sẽ luôn báo "không tìm thấy" dù camera thực sự có hỗ trợ — đây là giới hạn đã biết của
+    // giao thức RTSP/ONVIF (kết nối trực tiếp theo IP), không phải lỗi probe.
+    fun probeCapabilities() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cam = _camera.value ?: return@launch
+            _isProbing.value = true
+            try {
+                val uri = try { java.net.URI(cam.snapshoturl) } catch (e: Exception) { null }
+                val host = uri?.host
+                if (host.isNullOrBlank()) {
+                    _probeResult.value = "❌ Không xác định được địa chỉ IP từ URL ảnh chụp — kiểm tra lại cấu hình camera."
+                    return@launch
+                }
+                val port = if (uri.port > 0) uri.port else 80
+                val result = capabilityProber.probe(host, port, cam.snapshotUsername, cam.snapshotPassword)
+
+                val updated = cam.copy(
+                    onvifSupported = if (result.onvifSupported) 1 else 0,
+                    onvifEventUrl = result.onvifEventUrl,
+                    rtspSupported = if (result.rtspSupported) 1 else 0,
+                    rtspUrl = result.rtspUrl
+                    // rtspEnabled/onvifEnabled KHÔNG đổi ở đây — probe chỉ cập nhật "có hỗ trợ",
+                    // bật thật vẫn qua toggleRtspEnabled() do người dùng tự bấm.
+                )
+                database.cameraDao().updateCamera(updated)
+                loadCamera()
+
+                _probeResult.value = if (result.rtspSupported || result.onvifSupported) {
+                    "✅ Tìm thấy hỗ trợ: " + listOfNotNull(
+                        if (result.rtspSupported) "RTSP" else null,
+                        if (result.onvifSupported) "ONVIF" else null
+                    ).joinToString(", ")
+                } else {
+                    "Không phát hiện RTSP/ONVIF. Kiểm tra máy đang cùng Wi-Fi với camera, hoặc camera đời quá cũ không hỗ trợ."
+                }
+                logger.i("CameraDetailViewModel", "probeCapabilities cameraId=$cameraId rtsp=${result.rtspSupported} onvif=${result.onvifSupported}")
+            } catch (e: Exception) {
+                _probeResult.value = "❌ Lỗi kiểm tra: ${e.message}"
+                logger.e("CameraDetailViewModel", "probeCapabilities lỗi: ${e.message}", e)
+            } finally {
+                _isProbing.value = false
+            }
+        }
+    }
+
+    fun clearProbeResult() {
+        _probeResult.value = null
+    }
+
+    // ✅ MỚI: chỉ cho bật khi rtspSupported=1 (đã probe xác nhận) — tránh người dùng bật Switch
+    // rồi bấm "Xem trực tiếp" ra màn hình lỗi ngay vì chưa hề có rtspUrl.
+    fun toggleRtspEnabled() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cam = _camera.value ?: return@launch
+            if (cam.rtspSupported != 1) return@launch
+            database.cameraDao().updateCamera(cam.copy(rtspEnabled = if (cam.rtspEnabled == 1) 0 else 1))
+            loadCamera()
+        }
+    }
+
+    // ✅ MỚI: giờ có tác dụng thật — WebhookGatewayService.startOnvifMonitoring() soát DB mỗi
+    // 30s, tự bắt/thoát long-poll ONVIF Events theo đúng field này, KHÔNG cần gọi gì thêm ở
+    // đây ngoài lưu DB. Chỉ cho bật khi onvifSupported=1 (đã probe xác nhận có Events service).
+    fun toggleOnvifEnabled() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cam = _camera.value ?: return@launch
+            if (cam.onvifSupported != 1) return@launch
+            database.cameraDao().updateCamera(cam.copy(onvifEnabled = if (cam.onvifEnabled == 1) 0 else 1))
+            loadCamera()
+        }
+    }
 
     // ✅ MỚI: Bật/tắt "Báo động camera" (camera tự đẩy push khi có motion, xem thiết kế
     // /camera/alarm/stream/{deviceCode} phía gateway). Bật → sinh secret mới + trả về URL

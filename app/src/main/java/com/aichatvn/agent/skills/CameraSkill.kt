@@ -75,6 +75,10 @@ class CameraSkill @Inject constructor(
     private val deviceRegistry: DeviceRegistry,
     private val intentExecutorProvider: Provider<IntentExecutor>, 
     private val houseManagerProvider: Provider<HouseManagerSkill>,
+    // ✅ MỚI: xem trực tiếp/ghi hình qua RTSP — chỉ dùng khi cam.rtspEnabled=1 (người dùng tự
+    // bật sau khi CameraCapabilityProber xác nhận camera hỗ trợ), KHÔNG liên quan gì tới luồng
+    // snapshot HTTP định kỳ vẫn đang chạy song song như cũ.
+    private val cameraRecorder: com.aichatvn.agent.tools.camera.CameraRecorder,
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
@@ -170,6 +174,35 @@ PluginAction(
                 description = "Liệt kê danh sách tất cả các camera hiện có trong hệ thống",
                 examples = listOf("danh sách camera", "liệt kê camera"),
                 parameters = emptyList()
+            ),
+
+            // ✅ MỚI: 3 action RTSP — chỉ hoạt động khi cam.rtspEnabled=1 (Switch riêng người dùng
+            // tự bật ở CameraDetailScreen sau khi probe xác nhận hỗ trợ). KHÔNG đụng gì tới luồng
+            // snapshot HTTP định kỳ/AI phân tích đang chạy song song.
+            PluginAction(
+                name = "open_live_view",
+                description = "Mở màn hình xem trực tiếp camera qua RTSP (chỉ khi ở cùng Wi-Fi nhà)",
+                examples = listOf("xem camera trực tiếp", "cho xem camera phòng khách"),
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera")
+                )
+            ),
+            PluginAction(
+                name = "record",
+                description = "Ghi hình camera trong khoảng thời gian nhất định (chỉ khi ở cùng Wi-Fi nhà)",
+                examples = listOf("ghi hình camera phòng khách", "quay camera 1 phút"),
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
+                    PluginParameter("durationSec", "number", "Thời lượng ghi (giây), tối đa 300s", false, "number")
+                )
+            ),
+            PluginAction(
+                name = "stop_record",
+                description = "Dừng ghi hình camera đang chạy",
+                examples = listOf("dừng ghi hình camera"),
+                parameters = listOf(
+                    PluginParameter("cameraId", "string", "Mã camera", true, "camera")
+                )
             )
         )
     )
@@ -447,6 +480,9 @@ PluginAction(
             "set_smart_mode" -> handleSetSmartMode(params)
             "mark_false_positive" -> handleMarkFalsePositive(params)
             "configure" -> handleConfigure(params)
+            "open_live_view" -> handleOpenLiveView(params)   // ✅ MỚI
+            "record" -> handleRecord(params)                  // ✅ MỚI
+            "stop_record" -> handleStopRecord(params)          // ✅ MỚI
             else -> PluginResult.Failure("Action không xác định: $action")
         }
     }
@@ -519,6 +555,68 @@ PluginAction(
         
         syncToDeviceRegistry()
         PluginResult.Success(mapOf("message" to "✅ Camera \"${cam.customername}\": $summary"))
+    }
+
+    private suspend fun handleOpenLiveView(params: Map<String, Any>): PluginResult {
+        val cameraId = (params["cameraId"] as? String)?.trim()
+            ?: return PluginResult.Failure("Thiếu cameraId.")
+        return openLiveView(cameraId)
+    }
+
+    // ✅ MỚI: Tái dùng ĐÚNG cơ chế deep-link đã có sẵn cho notification (DEEP_LINK_EXTRA +
+    // MainActivity.onNewIntent) — không cần thêm bus/event mới. FLAG_ACTIVITY_SINGLE_TOP để
+    // khi app đang mở sẵn (trường hợp phổ biến nhất khi ra lệnh qua chat) thì đi thẳng vào
+    // onNewIntent(), không tạo Activity mới, không mất state đang có.
+    suspend fun openLiveView(cameraId: String): PluginResult = withContext(Dispatchers.IO) {
+        val cam = database.cameraDao().getCameraById(cameraId)
+            ?: return@withContext PluginResult.Failure("Không tìm thấy camera.")
+        if (cam.rtspEnabled != 1 || cam.rtspUrl.isNullOrBlank()) {
+            return@withContext PluginResult.Failure(
+                "Camera \"${cam.customername}\" chưa bật Xem trực tiếp hoặc không hỗ trợ RTSP."
+            )
+        }
+        val intent = android.content.Intent(context, com.aichatvn.agent.MainActivity::class.java).apply {
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(NotificationSkill.DEEP_LINK_EXTRA, "camera_live/$cameraId")
+        }
+        context.startActivity(intent)
+        PluginResult.Success(mapOf("message" to "✅ Đang mở camera trực tiếp"))
+    }
+
+    private suspend fun handleRecord(params: Map<String, Any>): PluginResult {
+        val cameraId = (params["cameraId"] as? String)?.trim()
+            ?: return PluginResult.Failure("Thiếu cameraId.")
+        val durationSec = (params["durationSec"] as? Number)?.toInt()
+            ?: (params["durationSec"] as? String)?.toIntOrNull()
+            ?: 60
+        return startRecording(cameraId, durationSec)
+    }
+
+    suspend fun startRecording(cameraId: String, durationSec: Int): PluginResult = withContext(Dispatchers.IO) {
+        val cam = database.cameraDao().getCameraById(cameraId)
+            ?: return@withContext PluginResult.Failure("Không tìm thấy camera.")
+        if (cam.rtspEnabled != 1 || cam.rtspUrl.isNullOrBlank()) {
+            return@withContext PluginResult.Failure(
+                "Camera \"${cam.customername}\" chưa bật RTSP hoặc không hỗ trợ ghi hình."
+            )
+        }
+        val path = cameraRecorder.startRecording(cameraId, cam.rtspUrl, durationSec)
+            ?: return@withContext PluginResult.Failure("Camera này đang ghi hình rồi, đợi xong hoặc dừng trước.")
+        PluginResult.Success(mapOf("message" to "🔴 Đang ghi hình ${durationSec}s", "path" to path))
+    }
+
+    private suspend fun handleStopRecord(params: Map<String, Any>): PluginResult {
+        val cameraId = (params["cameraId"] as? String)?.trim()
+            ?: return PluginResult.Failure("Thiếu cameraId.")
+        return stopRecording(cameraId)
+    }
+
+    suspend fun stopRecording(cameraId: String): PluginResult = withContext(Dispatchers.IO) {
+        if (cameraRecorder.stopRecording(cameraId)) {
+            PluginResult.Success(mapOf("message" to "⏹️ Đã dừng ghi hình"))
+        } else {
+            PluginResult.Failure("Camera này hiện không đang ghi hình.")
+        }
     }
 
     private suspend fun handleListCameras(): PluginResult = withContext(Dispatchers.IO) {
@@ -2127,6 +2225,16 @@ PluginAction(
                 // và bấm Lưu, toggle báo động đang bật sẽ bị âm thầm reset về tắt.
                 enableAlarmPush = existing?.enableAlarmPush ?: 0,
                 alarmSecret = existing?.alarmSecret,
+                // ✅ MỚI: cùng lý do enableAlarmPush ở trên — saveCameraConfig() (auto-discovery
+                // / onboarding save) không có tham số cho 6 field RTSP/ONVIF mới, PHẢI kế thừa
+                // nguyên giá trị cũ, nếu không mỗi lần sửa cấu hình qua form này sẽ xoá mất kết
+                // quả probe + tắt mất Switch RTSP/ONVIF người dùng đã bật.
+                onvifSupported = existing?.onvifSupported ?: 0,
+                onvifEventUrl = existing?.onvifEventUrl,
+                onvifEnabled = existing?.onvifEnabled ?: 0,
+                rtspSupported = existing?.rtspSupported ?: 0,
+                rtspUrl = existing?.rtspUrl,
+                rtspEnabled = existing?.rtspEnabled ?: 0,
                 alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]",
                 snapshotUsername = (config["snapshotUsername"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotUsername,
                 snapshotPassword = (config["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotPassword,
