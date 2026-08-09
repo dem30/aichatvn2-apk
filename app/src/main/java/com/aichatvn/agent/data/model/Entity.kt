@@ -1,5 +1,6 @@
 package com.aichatvn.agent.data.model
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -97,7 +98,18 @@ data class CameraConfigEntity(
     // thử snapshoturl (LAN) TRƯỚC, chỉ fallback qua field này nếu LAN fail — giữ nguyên lợi ích
     // offline (nhanh, không tốn data) khi đang ở nhà, đồng thời không mất khả năng xem từ xa.
     val snapshotUrlRemote: String? = null,
+    // ✅ SỬA: Kotlin default value (= 0 / = null) KHÔNG được Room dịch thành SQL DEFAULT khi
+    // sinh CREATE TABLE — nó chỉ áp dụng khi gọi constructor Kotlin trực tiếp. Không có
+    // @ColumnInfo(defaultValue=...), cột enableAlarmPush được tạo NOT NULL nhưng KHÔNG có
+    // DEFAULT ở tầng SQL. Hệ quả: BackupRestorer.kt insert bằng ContentValues (raw SQL, không
+    // qua constructor) — nếu bản backup/seed cũ (trước khi thêm cột này) thiếu key
+    // "enableAlarmPush", cột bị bỏ trống khỏi ContentValues → SQLite ném "NOT NULL constraint
+    // failed", rollback toàn bộ transaction import/seed, coi như "chạy nhưng không có gì được
+    // thêm vào". Thêm @ColumnInfo(defaultValue=...) để default cũng tồn tại ở tầng SQL, áp
+    // dụng cho MỌI đường insert (kể cả ContentValues thô), không chỉ qua constructor Kotlin.
+    @ColumnInfo(defaultValue = "0")
     val enableAlarmPush: Int = 0,
+    @ColumnInfo(defaultValue = "NULL")
     val alarmSecret: String? = null
 )
 

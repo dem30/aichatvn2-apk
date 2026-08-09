@@ -37,7 +37,7 @@
         "customerId": "KH",
         "customername": "khách",
         "customeremail": "email_cua_toi@abcd.com",
-        "snapshoturl": "https:\/\/picsum.photos\/800\/600",
+        "snapshoturl": "https://picsum.photos/800/600",
         "landinfo": "",
         "snapshotPath": null,
         "timestamp": 1786078680484,
@@ -45,12 +45,17 @@
         "isOnline": 1,
         "manualOff": 0,
         "smartMode": 1,
-        "aiPrompt": "Camera giám sát thửa đất. Hãy xem có người\/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
+        "aiPrompt": "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
         "aiPositiveKeywords": "cảnh báo",
-        "aiNegativeKeywords": "bình thường,người,xe ô tô,xe máy\/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi\/hành lý,tòa nhà\/phòng,ngoài trời\/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
+        "aiNegativeKeywords": "bình thường,người,xe ô tô,xe máy/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi/hành lý,tòa nhà/phòng,ngoài trời/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
         "enableCooldown": 0,
         "enableNotification": 1,
-        "alertActions": "[]"
+        "alertActions": "[]",
+        "snapshotUsername": null,
+        "snapshotPassword": null,
+        "snapshotUrlRemote": null,
+        "enableAlarmPush": 0,
+        "alarmSecret": null
       }
     ],
     "tuya_devices": [],
@@ -139,7 +144,7 @@
       {
         "id": "6e09d63a-9358-41a1-9457-01d7ca418bed",
         "question": "app có những tính năng gì",
-        "answer": "AIChatVN2 gồm các tính năng chính: giám sát camera (có thể bật AI phát hiện bất thường hoặc chỉ xem trực tiếp), điều khiển thiết bị thông minh (công tắc, ổ cắm Tuya...), đặt lịch tự động cho các thiết bị\/chức năng, gọi thoại\/video, và trò chuyện hỏi đáp thông minh ngay trong app.",
+        "answer": "AIChatVN2 gồm các tính năng chính: giám sát camera (có thể bật AI phát hiện bất thường hoặc chỉ xem trực tiếp), điều khiển thiết bị thông minh (công tắc, ổ cắm Tuya...), đặt lịch tự động cho các thiết bị/chức năng, gọi thoại/video, và trò chuyện hỏi đáp thông minh ngay trong app.",
         "category": "general",
         "type": "alias",
         "createdBy": "default_user",
@@ -149,7 +154,7 @@
       {
         "id": "2735e6d1-cd23-4d3c-965d-d703ac74d3ef",
         "question": "app dùng để làm gì",
-        "answer": "App giúp bạn quản lý và giám sát ngôi nhà từ xa: xem camera, bật\/tắt thiết bị điện, hẹn giờ tự động cho các thiết bị, và hỏi đáp trực tiếp với trợ lý AI mọi lúc mọi nơi.",
+        "answer": "App giúp bạn quản lý và giám sát ngôi nhà từ xa: xem camera, bật/tắt thiết bị điện, hẹn giờ tự động cho các thiết bị, và hỏi đáp trực tiếp với trợ lý AI mọi lúc mọi nơi.",
         "category": "general",
         "type": "alias",
         "createdBy": "default_user",
@@ -189,7 +194,7 @@
       {
         "id": "1e7c6598-900f-4341-ba7d-18fb4dbcebe1",
         "question": "app có tốn phí không",
-        "answer": "Dùng cho cá nhân\/học tập thì được cấp mã miễn phí. Nếu bạn dùng app cho mục đích kinh doanh (VD: cung cấp lại dịch vụ giám sát\/nhà thông minh cho khách hàng của mình), sẽ có điều khoản và chi phí riêng theo thoả thuận. Liên hệ Zalo 0944121150 để được tư vấn cụ thể theo mục đích sử dụng.",
+        "answer": "Dùng cho cá nhân/học tập thì được cấp mã miễn phí. Nếu bạn dùng app cho mục đích kinh doanh (VD: cung cấp lại dịch vụ giám sát/nhà thông minh cho khách hàng của mình), sẽ có điều khoản và chi phí riêng theo thoả thuận. Liên hệ Zalo 0944121150 để được tư vấn cụ thể theo mục đích sử dụng.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -219,7 +224,7 @@
       {
         "id": "3a8e5f4f-4c37-4dcb-b951-bf05857bf3b3",
         "question": "vì sao app không dùng được",
-        "answer": "Có thể do server chung đang quá tải nên tạm thời gián đoạn. Bạn liên hệ Zalo 0944121150 để được admin hỗ trợ kiểm tra và cấp lại file\/mã nếu cần.",
+        "answer": "Có thể do server chung đang quá tải nên tạm thời gián đoạn. Bạn liên hệ Zalo 0944121150 để được admin hỗ trợ kiểm tra và cấp lại file/mã nếu cần.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -239,7 +244,7 @@
       {
         "id": "202624e5-3f11-406f-88f4-aaef2069c82a",
         "question": "cài camera thế nào",
-        "answer": "Bạn chỉ cần cài app xong, sau đó gắn link\/luồng camera của mình vào là có thể xem ngay – không cần bật AI cho phần xem camera cơ bản.",
+        "answer": "Bạn chỉ cần cài app xong, sau đó gắn link/luồng camera của mình vào là có thể xem ngay – không cần bật AI cho phần xem camera cơ bản.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -289,7 +294,7 @@
       {
         "id": "a47a2cee-4655-41dd-bcb2-7bf16a0be11a",
         "question": "làm sao thêm camera vào app",
-        "answer": "Bạn vào mục Camera, thêm camera mới và nhập link\/luồng camera của bạn vào là xong, không cần cấu hình gì thêm nếu chỉ xem bình thường.",
+        "answer": "Bạn vào mục Camera, thêm camera mới và nhập link/luồng camera của bạn vào là xong, không cần cấu hình gì thêm nếu chỉ xem bình thường.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -319,7 +324,7 @@
       {
         "id": "7e4c9245-4df5-471a-a6cc-35ec68804524",
         "question": "camera báo động giả liên tục phải làm sao",
-        "answer": "Bạn có thể đánh dấu \"báo động giả\" ngay trên cảnh báo đó trong lịch sử cảnh báo. Hệ thống sẽ tự học và nâng ngưỡng nhạy cảm theo khung giờ ngày\/đêm để giảm báo giả về sau. Nếu muốn làm lại từ đầu, có nút \"Reset học tập\" để đưa ngưỡng về mặc định.",
+        "answer": "Bạn có thể đánh dấu \"báo động giả\" ngay trên cảnh báo đó trong lịch sử cảnh báo. Hệ thống sẽ tự học và nâng ngưỡng nhạy cảm theo khung giờ ngày/đêm để giảm báo giả về sau. Nếu muốn làm lại từ đầu, có nút \"Reset học tập\" để đưa ngưỡng về mặc định.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -329,7 +334,7 @@
       {
         "id": "26cbf63b-7120-45c8-9fc5-b2b1d0440a71",
         "question": "làm sao xem lại cảnh báo cũ",
-        "answer": "Vào mục Lịch sử cảnh báo, bạn có thể xem\/lọc cảnh báo theo từng camera hoặc xem tất cả. Bấm vào cảnh báo để xem chi tiết, hoặc xoá từng cảnh báo\/xoá toàn bộ nếu muốn dọn dẹp.",
+        "answer": "Vào mục Lịch sử cảnh báo, bạn có thể xem/lọc cảnh báo theo từng camera hoặc xem tất cả. Bấm vào cảnh báo để xem chi tiết, hoặc xoá từng cảnh báo/xoá toàn bộ nếu muốn dọn dẹp.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -369,7 +374,7 @@
       {
         "id": "0829ca86-eff5-49d7-934e-656db99f75a3",
         "question": "AI camera nhận diện dựa vào đâu",
-        "answer": "AI phân tích hình ảnh camera theo mô tả bạn thiết lập (ví dụ \"có người\/xe lạ trong sân\" là bất thường) và từ khoá cảnh báo\/bình thường bạn khai báo, nên có thể tuỳ chỉnh riêng cho từng góc camera, từng nhu cầu giám sát.",
+        "answer": "AI phân tích hình ảnh camera theo mô tả bạn thiết lập (ví dụ \"có người/xe lạ trong sân\" là bất thường) và từ khoá cảnh báo/bình thường bạn khai báo, nên có thể tuỳ chỉnh riêng cho từng góc camera, từng nhu cầu giám sát.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -379,7 +384,7 @@
       {
         "id": "039ea519-ab3b-4eba-8dfe-c092c686c028",
         "question": "xem camera có tốn dữ liệu server không",
-        "answer": "Chức năng xem camera thường (không AI) hoạt động cục bộ, không cần server riêng nên không phát sinh chi phí. Chỉ khi bật chế độ AI phân tích (Smart Mode) mới cần xử lý qua server\/AI.",
+        "answer": "Chức năng xem camera thường (không AI) hoạt động cục bộ, không cần server riêng nên không phát sinh chi phí. Chỉ khi bật chế độ AI phân tích (Smart Mode) mới cần xử lý qua server/AI.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -389,7 +394,7 @@
       {
         "id": "795177e6-5f59-4034-8787-c163170ef862",
         "question": "một app quản lý được nhiều camera không",
-        "answer": "Được, app hỗ trợ quản lý nhiều camera cùng lúc, mỗi camera có thể bật\/tắt AI, cấu hình riêng và xem trạng thái độc lập với nhau.",
+        "answer": "Được, app hỗ trợ quản lý nhiều camera cùng lúc, mỗi camera có thể bật/tắt AI, cấu hình riêng và xem trạng thái độc lập với nhau.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -409,7 +414,7 @@
       {
         "id": "f18ea699-d448-4f77-a65c-5c39041451d9",
         "question": "app điều khiển được những thiết bị gì",
-        "answer": "App điều khiển được các thiết bị đóng\/ngắt thông minh chạy nền tảng Tuya: đèn, ổ cắm, quạt, máy bơm, máy giặt, điều hoà, máy hút bụi, tủ lạnh, bình nóng lạnh... Bạn chỉ cần nói \"bật đèn\", \"tắt quạt\"... là app hiểu và điều khiển ngay.",
+        "answer": "App điều khiển được các thiết bị đóng/ngắt thông minh chạy nền tảng Tuya: đèn, ổ cắm, quạt, máy bơm, máy giặt, điều hoà, máy hút bụi, tủ lạnh, bình nóng lạnh... Bạn chỉ cần nói \"bật đèn\", \"tắt quạt\"... là app hiểu và điều khiển ngay.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -429,7 +434,7 @@
       {
         "id": "50363a6e-6cc7-442b-bced-fe6ec8861ce8",
         "question": "thiết bị báo mất kết nối phải làm sao",
-        "answer": "Bạn thử bấm làm mới (refresh) trên Dashboard để app kiểm tra lại trạng thái thật từ Tuya Cloud. Nếu vẫn báo mất kết nối, kiểm tra lại nguồn điện\/wifi của thiết bị hoặc liên hệ Zalo 0944121150 để được hỗ trợ.",
+        "answer": "Bạn thử bấm làm mới (refresh) trên Dashboard để app kiểm tra lại trạng thái thật từ Tuya Cloud. Nếu vẫn báo mất kết nối, kiểm tra lại nguồn điện/wifi của thiết bị hoặc liên hệ Zalo 0944121150 để được hỗ trợ.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -439,7 +444,7 @@
       {
         "id": "9d23b8e2-971a-47d7-b025-c841ae043ddd",
         "question": "điều khiển thiết bị có cần internet không",
-        "answer": "Có. Vì thiết bị kết nối qua nền tảng Tuya Cloud nên cả app và thiết bị đều cần có internet hoạt động để bật\/tắt và cập nhật trạng thái.",
+        "answer": "Có. Vì thiết bị kết nối qua nền tảng Tuya Cloud nên cả app và thiết bị đều cần có internet hoạt động để bật/tắt và cập nhật trạng thái.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -449,7 +454,7 @@
       {
         "id": "9d95995d-2a92-4ac4-8839-6ef369e89f5b",
         "question": "app có tự động ngăn bật thiết bị nguy hiểm không",
-        "answer": "Có. App có cơ chế khoá bảo vệ theo điều kiện — ví dụ chỉ cho bật máy bơm khi camera sân sau đang bình thường, hoặc tự chặn thiết bị gây ồn (còi, loa, TV) vào ban đêm, chặn bình nóng lạnh\/máy bơm khi bạn đang bật chế độ vắng nhà. Đây là lớp an toàn tự động giúp tránh bật nhầm khi có rủi ro.",
+        "answer": "Có. App có cơ chế khoá bảo vệ theo điều kiện — ví dụ chỉ cho bật máy bơm khi camera sân sau đang bình thường, hoặc tự chặn thiết bị gây ồn (còi, loa, TV) vào ban đêm, chặn bình nóng lạnh/máy bơm khi bạn đang bật chế độ vắng nhà. Đây là lớp an toàn tự động giúp tránh bật nhầm khi có rủi ro.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -459,7 +464,7 @@
       {
         "id": "cc077b62-3d34-4ebf-83cf-08e18162735f",
         "question": "đặt khoá bảo vệ cho thiết bị thế nào",
-        "answer": "Bạn vào chi tiết thiết bị và thiết lập điều kiện khoá — ví dụ chỉ cho phép bật khi một camera khác đang ở trạng thái bình thường. Sau khi đặt, app sẽ tự kiểm tra điều kiện này trước khi cho bật\/tắt.",
+        "answer": "Bạn vào chi tiết thiết bị và thiết lập điều kiện khoá — ví dụ chỉ cho phép bật khi một camera khác đang ở trạng thái bình thường. Sau khi đặt, app sẽ tự kiểm tra điều kiện này trước khi cho bật/tắt.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -489,7 +494,7 @@
       {
         "id": "9307afb1-6e17-4341-9a06-b22b4c0fd181",
         "question": "app có đặt lịch tự động được không",
-        "answer": "Có. Bạn có thể đặt lịch để app tự động thực hiện một hành động (bật\/tắt thiết bị, quét camera...) vào giờ cố định hằng ngày hoặc lặp lại theo khoảng thời gian bạn chọn.",
+        "answer": "Có. Bạn có thể đặt lịch để app tự động thực hiện một hành động (bật/tắt thiết bị, quét camera...) vào giờ cố định hằng ngày hoặc lặp lại theo khoảng thời gian bạn chọn.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -499,7 +504,7 @@
       {
         "id": "193566bc-4cc8-41dc-974f-d1d043f824b8",
         "question": "làm sao đặt lịch bật tắt thiết bị",
-        "answer": "Bạn vào mục Lịch trình, chọn thêm lịch mới, chọn thiết bị\/chức năng muốn hẹn giờ, rồi chọn giờ cố định hoặc khoảng lặp lại (ví dụ mỗi 30 phút). Bạn cũng có thể đặt tên gợi nhớ cho lịch để dễ quản lý.",
+        "answer": "Bạn vào mục Lịch trình, chọn thêm lịch mới, chọn thiết bị/chức năng muốn hẹn giờ, rồi chọn giờ cố định hoặc khoảng lặp lại (ví dụ mỗi 30 phút). Bạn cũng có thể đặt tên gợi nhớ cho lịch để dễ quản lý.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -529,7 +534,7 @@
       {
         "id": "f047f32d-5fb3-43c3-94ca-79081bc8a776",
         "question": "tắt tạm thời một lịch trình có được không",
-        "answer": "Được, bạn không cần xoá lịch — chỉ cần bật\/tắt (bật lại lúc nào cũng được) ngay trong danh sách lịch trình.",
+        "answer": "Được, bạn không cần xoá lịch — chỉ cần bật/tắt (bật lại lúc nào cũng được) ngay trong danh sách lịch trình.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -549,7 +554,7 @@
       {
         "id": "c80694cd-aaa8-44d1-b2ad-7959c4ea46d9",
         "question": "app có tạo lịch trùng lặp không",
-        "answer": "Không, app tự kiểm tra và chặn tạo lịch trùng — nếu bạn tạo một lịch giống hệt lịch đã có (cùng chức năng, cùng giờ\/khoảng lặp, cùng thiết bị), app sẽ báo là đã tồn tại thay vì tạo thêm bản trùng.",
+        "answer": "Không, app tự kiểm tra và chặn tạo lịch trùng — nếu bạn tạo một lịch giống hệt lịch đã có (cùng chức năng, cùng giờ/khoảng lặp, cùng thiết bị), app sẽ báo là đã tồn tại thay vì tạo thêm bản trùng.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -619,7 +624,7 @@
       {
         "id": "577796b9-d408-4e6f-a394-de7d089c60e0",
         "question": "app có tự học thói quen của tôi không",
-        "answer": "Có. App phân tích dữ liệu 7 ngày gần nhất, nếu phát hiện bạn hay bật\/tắt một thiết bị vào cùng một khung giờ nhiều lần, app sẽ đề xuất tạo lịch tự động cho thói quen đó. Bạn chỉ cần duyệt \"Phê duyệt\" hoặc bỏ qua.",
+        "answer": "Có. App phân tích dữ liệu 7 ngày gần nhất, nếu phát hiện bạn hay bật/tắt một thiết bị vào cùng một khung giờ nhiều lần, app sẽ đề xuất tạo lịch tự động cho thói quen đó. Bạn chỉ cần duyệt \"Phê duyệt\" hoặc bỏ qua.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -629,7 +634,7 @@
       {
         "id": "fac13611-dfff-4a0f-b07c-144033baa0b4",
         "question": "app có tự chạy kịch bản khi có bất thường không",
-        "answer": "Có. Bạn có thể tạo \"Nhóm kịch bản\" tự chọn ngòi nổ (ví dụ camera phát hiện bất thường, thiết bị đổi trạng thái) và chuỗi hành động tự động tiếp theo — như bật đèn, gửi thông báo\/email, chờ vài giây rồi kiểm tra lại, bật còi nếu vẫn còn nghi vấn.",
+        "answer": "Có. Bạn có thể tạo \"Nhóm kịch bản\" tự chọn ngòi nổ (ví dụ camera phát hiện bất thường, thiết bị đổi trạng thái) và chuỗi hành động tự động tiếp theo — như bật đèn, gửi thông báo/email, chờ vài giây rồi kiểm tra lại, bật còi nếu vẫn còn nghi vấn.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -759,7 +764,7 @@
       {
         "id": "b4925888-7411-4bcc-8128-07f2dbc89dc1",
         "question": "mã máy của tôi ở đâu",
-        "answer": "Bạn vào mục Gọi thoại\/video trong app để xem mã máy 8 ký tự của mình — gửi mã này cho người khác để họ gọi tới máy bạn.",
+        "answer": "Bạn vào mục Gọi thoại/video trong app để xem mã máy 8 ký tự của mình — gửi mã này cho người khác để họ gọi tới máy bạn.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -809,7 +814,7 @@
       {
         "id": "00423d8c-e79a-4859-919f-7660a8257da2",
         "question": "cài đặt app ở đâu",
-        "answer": "Bạn vào tab \"Khác\" rồi chọn \"Cấu hình hệ thống\" (Settings). Đây là nơi khai báo các khóa kết nối (Groq AI, Tuya, Resend email), quản lý kênh chat, sao lưu\/phục hồi dữ liệu và một số tùy chọn khác.",
+        "answer": "Bạn vào tab \"Khác\" rồi chọn \"Cấu hình hệ thống\" (Settings). Đây là nơi khai báo các khóa kết nối (Groq AI, Tuya, Resend email), quản lý kênh chat, sao lưu/phục hồi dữ liệu và một số tùy chọn khác.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -819,7 +824,7 @@
       {
         "id": "0bcb51e9-35a0-4e4d-89a9-d7d4abad8f4b",
         "question": "groq api key là gì lấy ở đâu",
-        "answer": "Groq API Key là khóa kết nối để app dùng AI phân tích chat\/hình ảnh camera. Bạn đăng ký tài khoản Groq, tạo API Key rồi dán vào ô \"Groq API Key\" trong Cấu hình hệ thống, sau đó bấm \"Kiểm tra kết nối Groq\" để xác nhận đã đúng.",
+        "answer": "Groq API Key là khóa kết nối để app dùng AI phân tích chat/hình ảnh camera. Bạn đăng ký tài khoản Groq, tạo API Key rồi dán vào ô \"Groq API Key\" trong Cấu hình hệ thống, sau đó bấm \"Kiểm tra kết nối Groq\" để xác nhận đã đúng.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -859,7 +864,7 @@
       {
         "id": "d1a5758d-b4f4-4607-96ac-fbf5f20016cf",
         "question": "gửi email cảnh báo thế nào",
-        "answer": "App dùng dịch vụ Resend để gửi email cảnh báo. Bạn đăng ký tài khoản tại resend.com, tạo API Key rồi điền vào Cấu hình hệ thống cùng địa chỉ email gửi đi (From) — lưu ý địa chỉ gửi phải dùng domain đã xác minh trên Resend. Tài khoản miễn phí giới hạn khoảng 3.000 email\/tháng, tối đa 100 email\/ngày.",
+        "answer": "App dùng dịch vụ Resend để gửi email cảnh báo. Bạn đăng ký tài khoản tại resend.com, tạo API Key rồi điền vào Cấu hình hệ thống cùng địa chỉ email gửi đi (From) — lưu ý địa chỉ gửi phải dùng domain đã xác minh trên Resend. Tài khoản miễn phí giới hạn khoảng 3.000 email/tháng, tối đa 100 email/ngày.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -929,7 +934,7 @@
       {
         "id": "f365432c-b7eb-4671-9a4d-66071b757ff7",
         "question": "đổi giao diện tối sáng thế nào",
-        "answer": "Vào Cấu hình hệ thống, bật\/tắt công tắc \"Chế độ tối (Dark Mode)\" là đổi giao diện ngay.",
+        "answer": "Vào Cấu hình hệ thống, bật/tắt công tắc \"Chế độ tối (Dark Mode)\" là đổi giao diện ngay.",
         "category": "faq",
         "type": "alias",
         "createdBy": "default_user",
@@ -968,12 +973,12 @@
         "type": "string",
         "pluginId": "global",
         "label": "Chế độ chat mặc định (Khách ngoại kênh)",
-        "description": "Chế độ trả lời chung cho khách Facebook\/Telegram\/Website: GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên.",
+        "description": "Chế độ trả lời chung cho khách Facebook/Telegram/Website: GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên.",
         "updatedAt": 1786100554861
       },
       {
         "key": "global.gateway_url",
-        "value": "https:\/\/aichatvn2-apk-gateway.onrender.com",
+        "value": "https://aichatvn2-apk-gateway.onrender.com",
         "type": "string",
         "pluginId": "global",
         "label": "Cổng đám mây (Cloud Gateway URL)",
@@ -1022,7 +1027,7 @@
         "type": "string",
         "pluginId": "telegram",
         "label": "Telegram Bot Token",
-        "description": "Mã token của Bot Telegram (do @BotFather cấp) dùng để kết nối nhận\/gửi tin nhắn.",
+        "description": "Mã token của Bot Telegram (do @BotFather cấp) dùng để kết nối nhận/gửi tin nhắn.",
         "updatedAt": 1786100556231
       },
       {
@@ -1036,7 +1041,7 @@
       },
       {
         "key": "groq.model_text",
-        "value": "openai\/gpt-oss-120b",
+        "value": "openai/gpt-oss-120b",
         "type": "string",
         "pluginId": "groq",
         "label": "Model chat chính",
@@ -1045,7 +1050,7 @@
       },
       {
         "key": "groq.model_vision",
-        "value": "qwen\/qwen3.6-27b",
+        "value": "qwen/qwen3.6-27b",
         "type": "string",
         "pluginId": "groq",
         "label": "Model vision (phân tích ảnh)",
@@ -1054,7 +1059,7 @@
       },
       {
         "key": "groq.model_router",
-        "value": "openai\/gpt-oss-20b",
+        "value": "openai/gpt-oss-20b",
         "type": "string",
         "pluginId": "groq",
         "label": "Model router (phân loại lệnh)",
@@ -1076,7 +1081,7 @@
         "type": "int",
         "pluginId": "groq",
         "label": "Max tokens – vision",
-        "description": "Số token tối đa model vision trả về khi phân tích ảnh camera. Schema objects càng nhiều vật thể\/trường càng cần token lớn hơn để không bị cắt cụt trước khi tới phần mô tả.",
+        "description": "Số token tối đa model vision trả về khi phân tích ảnh camera. Schema objects càng nhiều vật thể/trường càng cần token lớn hơn để không bị cắt cụt trước khi tới phần mô tả.",
         "updatedAt": 1786100556248
       },
       {
@@ -1090,7 +1095,7 @@
       },
       {
         "key": "camera.default_ai_prompt",
-        "value": "Camera giám sát thửa đất. Hãy xem có người\/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
+        "value": "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
         "type": "string",
         "pluginId": "camera",
         "label": "Prompt AI mặc định",
@@ -1108,11 +1113,11 @@
       },
       {
         "key": "camera.default_negative_keywords",
-        "value": "bình thường,người,xe ô tô,xe máy\/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi\/hành lý,tòa nhà\/phòng,ngoài trời\/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
+        "value": "bình thường,người,xe ô tô,xe máy/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi/hành lý,tòa nhà/phòng,ngoài trời/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
         "type": "string",
         "pluginId": "camera",
         "label": "Từ khoá bình thường mặc định (danh sách tham khảo nhãn)",
-        "description": "KHÔNG còn dùng để loại trừ báo động — đây là DANH SÁCH THAM KHẢO gồm \"bình thường\" (chữ Groq AI tự viết khi không có gì bất thường) + toàn bộ nhãn tiếng Việt mà ML Kit local có thể trả về (xem mapLabelToVietnamese() trong LocalVisionTool.kt). Vì người dùng không biết chính xác ML Kit sẽ phân loại ra nhãn gì, họ chỉ cần COPY đúng từ danh sách này sang ô \"Từ khoá cảnh báo\" (CAMERA_DEFAULT_POSITIVE_KW \/ aiPositiveKeywords) để bật báo động cho nhãn đó. Dùng cho camera chưa cấu hình riêng.",
+        "description": "KHÔNG còn dùng để loại trừ báo động — đây là DANH SÁCH THAM KHẢO gồm \"bình thường\" (chữ Groq AI tự viết khi không có gì bất thường) + toàn bộ nhãn tiếng Việt mà ML Kit local có thể trả về (xem mapLabelToVietnamese() trong LocalVisionTool.kt). Vì người dùng không biết chính xác ML Kit sẽ phân loại ra nhãn gì, họ chỉ cần COPY đúng từ danh sách này sang ô \"Từ khoá cảnh báo\" (CAMERA_DEFAULT_POSITIVE_KW / aiPositiveKeywords) để bật báo động cho nhãn đó. Dùng cho camera chưa cấu hình riêng.",
         "updatedAt": 1786100556260
       },
       {
@@ -1129,7 +1134,7 @@
         "value": "50",
         "type": "int",
         "pluginId": "camera",
-        "label": "Sự kiện tối đa \/ ngày \/ camera",
+        "label": "Sự kiện tối đa / ngày / camera",
         "description": "Giới hạn số sự kiện ghi nhận mỗi ngày trên 1 camera để tránh spam alert.",
         "updatedAt": 1786100556266
       },
@@ -1166,7 +1171,7 @@
         "type": "int",
         "pluginId": "camera",
         "label": "Giờ bắt đầu ban ngày (camera)",
-        "description": "Giờ trong ngày (0–23) camera bắt đầu tính là 'ban ngày' — dùng để tách riêng ngưỡng học báo giả (deltaTrigger\/absDiffTrigger\/baseline) giữa ban ngày và ban đêm, tránh cú sốc IR ban đêm làm ngưỡng ban ngày bị kẹt cao. Mặc định 6h sáng.",
+        "description": "Giờ trong ngày (0–23) camera bắt đầu tính là 'ban ngày' — dùng để tách riêng ngưỡng học báo giả (deltaTrigger/absDiffTrigger/baseline) giữa ban ngày và ban đêm, tránh cú sốc IR ban đêm làm ngưỡng ban ngày bị kẹt cao. Mặc định 6h sáng.",
         "updatedAt": 1786100556277
       },
       {
@@ -1229,7 +1234,7 @@
         "type": "string",
         "pluginId": "house_manager",
         "label": "Các nhóm kịch bản điều hành Quản gia",
-        "description": "JSON chứa danh sách các nhóm kịch bản liên hoàn được Quản gia tự học hoặc chủ nhà tự xây. Mẫu seed dùng camera 'cam_01' làm ví dụ — chỉnh lại triggerSource cho khớp camera\/thiết bị thật của bạn.",
+        "description": "JSON chứa danh sách các nhóm kịch bản liên hoàn được Quản gia tự học hoặc chủ nhà tự xây. Mẫu seed dùng camera 'cam_01' làm ví dụ — chỉnh lại triggerSource cho khớp camera/thiết bị thật của bạn.",
         "updatedAt": 1786100556297
       },
       {
@@ -1238,7 +1243,7 @@
         "type": "int",
         "pluginId": "house_manager",
         "label": "Giờ bắt đầu ngủ",
-        "description": "Giờ trong ngày (0-23) mà Quản gia bắt đầu coi là 'giờ ngủ' để chuyển Mood sang Đang ngủ\/Ban đêm và áp dụng Chính sách ban đêm yên tĩnh. Mặc định 22h, giữ đúng hành vi cũ khi chưa cấu hình.",
+        "description": "Giờ trong ngày (0-23) mà Quản gia bắt đầu coi là 'giờ ngủ' để chuyển Mood sang Đang ngủ/Ban đêm và áp dụng Chính sách ban đêm yên tĩnh. Mặc định 22h, giữ đúng hành vi cũ khi chưa cấu hình.",
         "updatedAt": 1786100556301
       },
       {
@@ -1292,7 +1297,7 @@
         "type": "boolean",
         "pluginId": "global",
         "label": "Chặn điều khiển thiết bị từ kênh ngoài",
-        "description": "Mặc định BẬT (an toàn): khách chat từ Facebook\/Telegram\/Website chỉ được trả lời QA\/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào. TẮT switch này để cấp cho khách ngoại kênh quyền điều khiển ngang với chat nội bộ. Không ảnh hưởng đến chat nội bộ (default_user), luôn có đầy đủ quyền.",
+        "description": "Mặc định BẬT (an toàn): khách chat từ Facebook/Telegram/Website chỉ được trả lời QA/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào. TẮT switch này để cấp cho khách ngoại kênh quyền điều khiển ngang với chat nội bộ. Không ảnh hưởng đến chat nội bộ (default_user), luôn có đầy đủ quyền.",
         "updatedAt": 1786100556318
       },
       {
@@ -1315,29 +1320,29 @@
       },
       {
         "key": "global.chat_system_prompt",
-        "value": "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.\n\n⚠️ Khi khách muốn đặt hàng\/hẹn lịch\/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý\/xác nhận đơn hàng\/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể.",
+        "value": "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.\n\n⚠️ Khi khách muốn đặt hàng/hẹn lịch/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý/xác nhận đơn hàng/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể.",
         "type": "string",
         "pluginId": "global",
         "label": "Prompt hệ thống cho AI chat (khi khách bị khoá điều khiển thiết bị)",
-        "description": "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI, bao gồm cả cảnh báo không tự nhận xử lý đơn hàng\/hẹn lịch — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Xoá dòng cảnh báo ⚠️ nếu bạn chấp nhận rủi ro AI có thể tự nhận đã xử lý đơn hàng\/lịch hẹn dù thực tế không làm được. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này.",
+        "description": "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI, bao gồm cả cảnh báo không tự nhận xử lý đơn hàng/hẹn lịch — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Xoá dòng cảnh báo ⚠️ nếu bạn chấp nhận rủi ro AI có thể tự nhận đã xử lý đơn hàng/lịch hẹn dù thực tế không làm được. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này.",
         "updatedAt": 1786100556327
       },
       {
         "key": "global.tool_guard_rules",
-        "value": "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ\/chung\/sản phẩm\/giá\/chính sách → qa.\ntarget: tên\/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\nkeyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật\/tắt\/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera không có keywords → để trống.\nstate: category=tuya, hỏi rõ bật\/tắt → on|off. Không rõ → để trống.\ncall_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\ntimeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch\/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → hôm nay.\nobject: person|car|motorbike|dog|cat|package|all.\ngranularity: summary|detail.\nThiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\nlưu ý: Chưa có data thật ở lượt này → không bịa nội dung\/giờ\/chi tiết...",
+        "value": "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\ntarget: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\nkeyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera không có keywords → để trống.\nstate: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\ncall_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\ntimeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → hôm nay.\nobject: person|car|motorbike|dog|cat|package|all.\ngranularity: summary|detail.\nThiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\nlưu ý: Chưa có data thật ở lượt này → không bịa nội dung/giờ/chi tiết...",
         "type": "string",
         "pluginId": "global",
         "label": "Luật diễn giải ý định (Tool Guard Rules)",
-        "description": "Quy tắc hướng dẫn AI điền các field category\/target\/keyword\/state\/call_status\/timeframe\/object\/granularity khi gọi db_search. Sửa câu chữ ở đây thoải mái. KHÔNG đụng vào tên field JSON ({\"tool\":\"db_search\",...}) — phần đó cố định trong code, sửa sai tên sẽ khiến hệ thống không đọc được kết quả AI trả về. Dòng \"📷 Camera:\/🔌 Thiết bị:\/...\" không nằm ở đây vì luôn tự lấy danh sách thật mới nhất từ dữ liệu app.",
+        "description": "Quy tắc hướng dẫn AI điền các field category/target/keyword/state/call_status/timeframe/object/granularity khi gọi db_search. Sửa câu chữ ở đây thoải mái. KHÔNG đụng vào tên field JSON ({\"tool\":\"db_search\",...}) — phần đó cố định trong code, sửa sai tên sẽ khiến hệ thống không đọc được kết quả AI trả về. Dòng \"📷 Camera:/🔌 Thiết bị:/...\" không nằm ở đây vì luôn tự lấy danh sách thật mới nhất từ dữ liệu app.",
         "updatedAt": 1786100556330
       },
       {
         "key": "global.pass2_memory_instruction",
-        "value": "Dùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa. Trả lời ngắn gọn, tự nhiên, đi thẳng vào trọng tâm câu hỏi.\n🚨 BẮT BUỘC: Sau khi bạn trả lời cho người dùng xong, \nNếu có dữ liệu  camera, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng định dạng: [REF_TIMESTAMPS: hh:mm:ss dd\/MM\/yyyy, hh:mm:ss dd\/MM\/yyyy, ...] — liệt kê CHÍNH XÁC để kiểm chứng dữ liệu cho câu trả lời của bạn.\n[REF_TIMESTAMPS: ]. Dòng này LUÔN ở cuối cùng, không viết gì sau nó.",
+        "value": "Dùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa. Trả lời ngắn gọn, tự nhiên, đi thẳng vào trọng tâm câu hỏi.\n🚨 BẮT BUỘC: Sau khi bạn trả lời cho người dùng xong, \nNếu có dữ liệu  camera, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng định dạng: [REF_TIMESTAMPS: hh:mm:ss dd/MM/yyyy, hh:mm:ss dd/MM/yyyy, ...] — liệt kê CHÍNH XÁC để kiểm chứng dữ liệu cho câu trả lời của bạn.\n[REF_TIMESTAMPS: ]. Dòng này LUÔN ở cuối cùng, không viết gì sau nó.",
         "type": "string",
         "pluginId": "global",
         "label": "Chỉ thị SYSTEM_MEMORY ở Pass 2 (khi đã có dữ liệu thật)",
-        "description": "Câu chữ hướng dẫn AI sau khi đã tra được dữ liệu thật (camera\/thiết bị\/tin nhắn\/cuộc gọi) ở lượt gọi thứ 2 — vd đổi giọng điệu, độ dài câu trả lời mong muốn. CHỈ áp dụng Pass 2, không ảnh hưởng Pass 1 (Luật diễn giải ý định ở trên). ⚠️ Muốn giữ tính năng tự động đính kèm ảnh camera đúng dòng dữ liệu đã nhắc tới, PHẢI giữ nguyên literal \"[REF_TIMESTAMPS: ...]\" trong câu chữ — đây là marker cố định hệ thống dò tìm bằng regex trong câu trả lời của AI, đổi tên sẽ làm mất khả năng đính kèm ảnh (không lỗi, chỉ đơn giản là không có ảnh).",
+        "description": "Câu chữ hướng dẫn AI sau khi đã tra được dữ liệu thật (camera/thiết bị/tin nhắn/cuộc gọi) ở lượt gọi thứ 2 — vd đổi giọng điệu, độ dài câu trả lời mong muốn. CHỈ áp dụng Pass 2, không ảnh hưởng Pass 1 (Luật diễn giải ý định ở trên). ⚠️ Muốn giữ tính năng tự động đính kèm ảnh camera đúng dòng dữ liệu đã nhắc tới, PHẢI giữ nguyên literal \"[REF_TIMESTAMPS: ...]\" trong câu chữ — đây là marker cố định hệ thống dò tìm bằng regex trong câu trả lời của AI, đổi tên sẽ làm mất khả năng đính kèm ảnh (không lỗi, chỉ đơn giản là không có ảnh).",
         "updatedAt": 1786100556333
       },
       {
@@ -1364,7 +1369,7 @@
         "type": "string",
         "pluginId": "global",
         "label": "Câu lệnh thoát chế độ điều khiển riêng",
-        "description": "Câu (không dấu, cách nhau bằng dấu phẩy) mà khi bạn gõ KHỚP TOÀN BỘ câu sẽ thoát chế độ khoá điều khiển riêng cho 1 thiết bị\/plugin. Thêm câu riêng vào cuối nếu muốn dùng cách nói khác.",
+        "description": "Câu (không dấu, cách nhau bằng dấu phẩy) mà khi bạn gõ KHỚP TOÀN BỘ câu sẽ thoát chế độ khoá điều khiển riêng cho 1 thiết bị/plugin. Thêm câu riêng vào cuối nếu muốn dùng cách nói khác.",
         "updatedAt": 1786100556347
       },
       {
@@ -1373,7 +1378,7 @@
         "type": "string",
         "pluginId": "global",
         "label": "Từ đệm bị lọc bỏ khi phân tích câu lệnh",
-        "description": "Từ đệm\/lịch sự (giữ nguyên dấu, cách nhau bằng dấu phẩy) sẽ bị loại khỏi câu trước khi tách mệnh đề và nhận diện lệnh điều khiển thiết bị. Thêm từ đệm bạn hay dùng vào cuối danh sách nếu hệ thống chưa nhận ra.",
+        "description": "Từ đệm/lịch sự (giữ nguyên dấu, cách nhau bằng dấu phẩy) sẽ bị loại khỏi câu trước khi tách mệnh đề và nhận diện lệnh điều khiển thiết bị. Thêm từ đệm bạn hay dùng vào cuối danh sách nếu hệ thống chưa nhận ra.",
         "updatedAt": 1786100556350
       },
       {
@@ -1382,7 +1387,7 @@
         "type": "string",
         "pluginId": "global",
         "label": "Từ khoá nhận diện câu hỏi về Cuộc gọi",
-        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền 'cuộc gọi' — sẽ tra đúng nhật ký cuộc gọi (nguồn 'call') thay vì lẫn vào camera\/thiết bị, và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
+        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền 'cuộc gọi' — sẽ tra đúng nhật ký cuộc gọi (nguồn 'call') thay vì lẫn vào camera/thiết bị, và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
         "updatedAt": 1786100556353
       },
       {
@@ -1400,7 +1405,7 @@
         "type": "string",
         "pluginId": "global",
         "label": "Từ khoá nhận diện câu hỏi về Thiết bị",
-        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy. LƯU Ý: khác các danh sách khác, danh sách này được so khớp trên văn bản GỐC CÒN DẤU (không qua chuẩn hoá bỏ dấu), để tránh nhầm lẫn giữa các từ gần giống nhau (vd 'đèn'\/'đến'). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền thiết bị Tuya và cho phép AI gọi tool tra cứu.",
+        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy. LƯU Ý: khác các danh sách khác, danh sách này được so khớp trên văn bản GỐC CÒN DẤU (không qua chuẩn hoá bỏ dấu), để tránh nhầm lẫn giữa các từ gần giống nhau (vd 'đèn'/'đến'). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền thiết bị Tuya và cho phép AI gọi tool tra cứu.",
         "updatedAt": 1786100556358
       },
       {
@@ -1409,7 +1414,7 @@
         "type": "string",
         "pluginId": "global",
         "label": "Từ khoá nhận diện câu hỏi về Kênh chat",
-        "description": "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền chat đa kênh (facebook\/telegram\/website) và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
+        "description": "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền chat đa kênh (facebook/telegram/website) và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
         "updatedAt": 1786100556361
       },
       {
@@ -1418,7 +1423,7 @@
         "type": "string",
         "pluginId": "call",
         "label": "Mã thiết bị cuộc gọi (Device Code)",
-        "description": "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại\/video P2P từ các thiết bị khác.",
+        "description": "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại/video P2P từ các thiết bị khác.",
         "updatedAt": 1786100556364
       },
       {
@@ -1521,7 +1526,7 @@
         "eventType": "state_change",
         "value": "Bình thường",
         "summary": "Camera khách (testdemo): Bình thường",
-        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/64140f9e-372f-4852-95dd-3a6ccbfee13c.jpg",
+        "imagePath": "/data/user/0/com.aichatvn.agent/files/chat_images/64140f9e-372f-4852-95dd-3a6ccbfee13c.jpg",
         "analysisSource": null
       },
       {
@@ -1532,7 +1537,7 @@
         "eventType": "state_change",
         "value": "Bình thường",
         "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời — màu chủ đạo: đỏ [objects: bầu trời]",
-        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/d1a53a97-1fbd-4346-92c1-9dcd574fa7d7.jpg",
+        "imagePath": "/data/user/0/com.aichatvn.agent/files/chat_images/d1a53a97-1fbd-4346-92c1-9dcd574fa7d7.jpg",
         "analysisSource": null
       },
       {
@@ -1543,7 +1548,7 @@
         "eventType": "state_change",
         "value": "Bình thường",
         "summary": "Camera khách (testdemo): Bình thường",
-        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/e3ea6967-64c6-4012-a6dc-e7301974305a.jpg",
+        "imagePath": "/data/user/0/com.aichatvn.agent/files/chat_images/e3ea6967-64c6-4012-a6dc-e7301974305a.jpg",
         "analysisSource": null
       },
       {
@@ -1553,8 +1558,8 @@
         "sourceId": "testdemo",
         "eventType": "state_change",
         "value": "Bình thường",
-        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, mèo, chó — màu chủ đạo: xám\/trắng [objects: bầu trời,mèo,chó]",
-        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/1fbaa7b0-a4e4-437d-a962-92a0eeaffd25.jpg",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, mèo, chó — màu chủ đạo: xám/trắng [objects: bầu trời,mèo,chó]",
+        "imagePath": "/data/user/0/com.aichatvn.agent/files/chat_images/1fbaa7b0-a4e4-437d-a962-92a0eeaffd25.jpg",
         "analysisSource": null
       },
       {
@@ -1565,7 +1570,7 @@
         "eventType": "state_change",
         "value": "Bình thường",
         "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, cây cối — màu chủ đạo: đỏ [objects: bầu trời,cây cối]",
-        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/8134cc99-68eb-45db-a777-d59c7f7f0fd2.jpg",
+        "imagePath": "/data/user/0/com.aichatvn.agent/files/chat_images/8134cc99-68eb-45db-a777-d59c7f7f0fd2.jpg",
         "analysisSource": null
       },
       {

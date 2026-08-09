@@ -471,6 +471,20 @@ val MIGRATION_18_19 = object : Migration(18, 19) {
     }
 }
 
+// ✅ MỚI: version 20 — CameraConfigEntity thêm enableAlarmPush/alarmSecret (báo động camera
+// qua Alarm Server URL, xem camera_alarm_secrets phía gateway). Entity đã có 2 cột này
+// nhưng version DB chưa từng được bump kèm migration tương ứng — đây là nguyên nhân khiến
+// SELECT * FROM cameras ném "no such column: enableAlarmPush" âm thầm (bị BackupRestorer
+// nuốt lỗi), làm seed/import tưởng thành công nhưng camera không được nạp vào bộ nhớ.
+// enableAlarmPush mặc định 0 (tắt) để khớp default trong Entity.kt, alarmSecret mặc định
+// NULL vì chưa có secret nào được cấp cho tới khi người dùng bật toggle.
+val MIGRATION_19_20 = object : Migration(19, 20) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cameras ADD COLUMN enableAlarmPush INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN alarmSecret TEXT DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -490,11 +504,11 @@ val MIGRATION_18_19 = object : Migration(18, 19) {
         CallContactEntity::class,
         CallLogEntity::class
     ],
-    // bump 18 → 19 do CameraConfigEntity thêm cột snapshotUrlRemote (URL cloud/public dự phòng,
-    // xem MIGRATION_18_19).
-    // ⚠️ Version 18 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_18_19 (ALTER TABLE ADD
+    // bump 19 → 20 do CameraConfigEntity thêm cột enableAlarmPush/alarmSecret (báo động
+    // camera qua Alarm Server URL, xem MIGRATION_19_20).
+    // ⚠️ Version 19 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_19_20 (ALTER TABLE ADD
     // COLUMN) ở trên, KHÔNG được để fallbackToDestructiveMigration() xoá dữ liệu của họ.
-    version = 19,
+    version = 20,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -527,11 +541,11 @@ abstract fun callLogDao(): CallLogDao
                     "aichatvn_database"
                 )
                     .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
-                    // ✅ SỬA: đăng ký Migration thật cho 16→17, 17→18, 18→19 — Room sẽ dùng
+                    // ✅ SỬA: đăng ký Migration thật cho 16→17, 17→18, 18→19, 19→20 — Room sẽ dùng
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
