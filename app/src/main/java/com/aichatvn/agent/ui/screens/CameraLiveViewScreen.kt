@@ -20,6 +20,7 @@ import androidx.navigation.NavController
 import com.aichatvn.agent.ui.viewmodels.CameraLiveViewViewModel
 import com.aichatvn.agent.ui.viewmodels.LiveViewState
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @androidx.compose.runtime.Composable
 fun CameraLiveViewScreen(navController: NavController, viewModel: CameraLiveViewViewModel = hiltViewModel()) {
     val context = LocalContext.current
