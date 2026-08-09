@@ -89,8 +89,14 @@ class CameraAutoDiscoveryTool @Inject constructor(
         // sâu) vì đây là hành vi thử trên toàn mạng LAN, dù chỉ chạy trong nhà cũng nên giữ ở mức
         // hợp lý, không giống tấn công dò mật khẩu. Nếu khách đã đổi pass khỏi mặc định, các cặp
         // này sẽ fail và người dùng cần nhập tay — đây là giới hạn chấp nhận được của tính năng.
-        private val DEFAULT_CREDENTIALS: List<Pair<String, String>?> = listOf(
-            null,                    // thử không auth trước
+        //
+        // ⚠️ SỬA (bảo mật): danh sách này CHỈ được thử sau khi 1 path đã xác nhận trả về 401 (tức
+        // endpoint có thật và có yêu cầu auth) — KHÔNG thử credential trên mọi path × mọi IP sống
+        // ngay từ đầu. Trước đây app sẽ tự gửi admin/admin, admin/12345... tới BẤT KỲ thiết bị nào
+        // mở cổng 80/8080 trong nhà (router phụ, NAS, máy in, camera hàng xóm dùng chung Wi-Fi
+        // khách...), về bản chất là credential-stuffing diện rộng dù mục đích tốt. Thu hẹp phạm vi
+        // thử về đúng các endpoint đã xác nhận là camera thật giúp giảm rủi ro này.
+        private val DEFAULT_CREDENTIALS: List<Pair<String, String>> = listOf(
             "admin" to "admin",
             "admin" to "12345",
             "admin" to "",
@@ -216,24 +222,33 @@ class CameraAutoDiscoveryTool @Inject constructor(
     private suspend fun tryDiscoverOnHost(ip: String): DiscoveredCamera? {
         for (port in CANDIDATE_PORTS) {
             for ((vendor, path) in SNAPSHOT_PATTERNS) {
-                for (cred in DEFAULT_CREDENTIALS) {
-                    val portSuffix = if (port == 80) "" else ":$port"
-                    val url = "http://$ip$portSuffix$path"
+                val portSuffix = if (port == 80) "" else ":$port"
+                val url = "http://$ip$portSuffix$path"
 
-                    val bytes = withTimeoutOrNull(SNAPSHOT_TRY_TIMEOUT_MS) {
-                        fetchAndValidate(url, cred?.first, cred?.second)
-                    }
+                // Bước 1: thử KHÔNG auth trước — nếu path này không tồn tại trên thiết bị (404,
+                // connection refused...) thì bỏ qua hẳn, không có lý do gì để thử credential.
+                val probe = withTimeoutOrNull(SNAPSHOT_TRY_TIMEOUT_MS) { fetchAndValidate(url, null, null) }
+                if (probe?.result != null) {
+                    logger.i("CameraAutoDiscoveryTool", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor, không cần auth)")
+                    return DiscoveredCamera(
+                        ip = ip, snapshotUrl = url, vendorGuess = vendor,
+                        username = null, password = null, previewBytes = probe.result
+                    )
+                }
 
-                    if (bytes != null) {
-                        logger.i("CameraAutoDiscoveryTool", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor)")
-                        return DiscoveredCamera(
-                            ip = ip,
-                            snapshotUrl = url,
-                            vendorGuess = vendor,
-                            username = cred?.first,
-                            password = cred?.second,
-                            previewBytes = bytes
-                        )
+                // Bước 2: chỉ thử credential mặc định nếu endpoint đã XÁC NHẬN có tồn tại và yêu
+                // cầu auth (401) — không rải credential lên các path không tồn tại (404) hay các
+                // thiết bị không phải camera.
+                if (probe?.requiresAuth == true) {
+                    for ((user, pass) in DEFAULT_CREDENTIALS) {
+                        val bytes = withTimeoutOrNull(SNAPSHOT_TRY_TIMEOUT_MS) { fetchAndValidate(url, user, pass).result }
+                        if (bytes != null) {
+                            logger.i("CameraAutoDiscoveryTool", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor, auth mặc định)")
+                            return DiscoveredCamera(
+                                ip = ip, snapshotUrl = url, vendorGuess = vendor,
+                                username = user, password = pass, previewBytes = bytes
+                            )
+                        }
                     }
                 }
             }
@@ -245,8 +260,14 @@ class CameraAutoDiscoveryTool @Inject constructor(
      * Gọi HTTP GET tới url (kèm auth nếu có) và xác thực response THỰC SỰ là ảnh JPEG hợp lệ —
      * không chỉ dựa vào HTTP 200, vì nhiều thiết bị (router quản trị, NAS...) cũng trả 200 cho
      * path lạ (thường là trang lỗi HTML) dẫn đến false positive nếu chỉ check status code.
+     *
+     * Trả về [ProbeResult] thay vì ByteArray? đơn thuần để phân biệt "path không tồn tại" (bỏ qua
+     * hẳn) với "path tồn tại nhưng cần auth" (requiresAuth=true) — bên gọi chỉ leo thang thử
+     * credential mặc định khi thực sự cần, không rải lên mọi path.
      */
-    private fun fetchAndValidate(url: String, username: String?, password: String?): ByteArray? {
+    private data class ProbeResult(val result: ByteArray?, val requiresAuth: Boolean = false)
+
+    private fun fetchAndValidate(url: String, username: String?, password: String?): ProbeResult {
         return try {
             val requestBuilder = Request.Builder().url(url).get()
             if (!username.isNullOrBlank()) {
@@ -254,10 +275,11 @@ class CameraAutoDiscoveryTool @Inject constructor(
             }
 
             scanClient.newCall(requestBuilder.build()).execute().use { response ->
-                if (!response.isSuccessful) return null
+                if (response.code == 401) return ProbeResult(null, requiresAuth = true)
+                if (!response.isSuccessful) return ProbeResult(null)
 
                 val contentType = response.header("Content-Type") ?: ""
-                val bytes = response.body?.bytes() ?: return null
+                val bytes = response.body?.bytes() ?: return ProbeResult(null)
 
                 // Chấp nhận nếu Content-Type khai báo đúng là ảnh, HOẶC nếu server không khai báo
                 // rõ nhưng magic bytes đúng chuẩn JPEG (0xFF 0xD8) — một số camera rẻ tiền trả
@@ -266,13 +288,13 @@ class CameraAutoDiscoveryTool @Inject constructor(
                     bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()
 
                 if (contentType.contains("image", ignoreCase = true) || looksLikeJpeg) {
-                    bytes
+                    ProbeResult(bytes)
                 } else {
-                    null
+                    ProbeResult(null)
                 }
             }
         } catch (e: Exception) {
-            null
+            ProbeResult(null)
         }
     }
 }

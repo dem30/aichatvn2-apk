@@ -31,10 +31,20 @@ class CameraRecorder @Inject constructor(
      * Trả về đường dẫn file (chưa chắc đã ghi xong) hoặc null nếu cameraId đang ghi dở.
      */
     fun startRecording(cameraId: String, rtspUrl: String, durationSec: Int): String? {
-        if (activeSessions.containsKey(cameraId)) {
-            logger.w("CameraRecorder", "startRecording: cameraId=$cameraId đang ghi dở, bỏ qua yêu cầu mới")
+        // ⚠️ SỬA (bảo mật): rtspUrl được nối thẳng vào command string của FFmpeg bên dưới, bọc
+        // trong dấu ngoặc kép. Nếu URL chứa dấu " hoặc \ (ví dụ mật khẩu camera nhập tay chưa qua
+        // percent-encode), ký tự đó có thể thoát khỏi cặp ngoặc và chèn thêm tham số FFmpeg tuỳ ý
+        // (command injection). Từ chối ngay tại đây thay vì để lệnh chạy sai/không an toàn.
+        if (rtspUrl.contains('"') || rtspUrl.contains('\\')) {
+            logger.e("CameraRecorder", "startRecording: rtspUrl chứa ký tự không an toàn, từ chối ghi hình cameraId=$cameraId")
             return null
         }
+
+        // ⚠️ SỬA (race condition): trước đây containsKey() rồi put() riêng biệt, không atomic —
+        // 2 lệnh "bắt đầu ghi" gọi gần như đồng thời (vd người dùng bấm 2 lần nhanh) có thể cả
+        // hai cùng pass qua check trước khi cái đầu kịp ghi vào map, tạo ra 2 FFmpeg session cùng
+        // ghi cho 1 cameraId. Tạo session trước, dùng putIfAbsent để đảm bảo chỉ 1 session được
+        // giữ lại; nếu đã có session khác thắng, huỷ session vừa tạo và thoát.
         val dir = File(context.getExternalFilesDir(null), "recordings/$cameraId").apply { mkdirs() }
         val outputFile = File(dir, "${System.currentTimeMillis()}.mp4")
         val clamped = durationSec.coerceIn(1, MAX_DURATION_SEC)
@@ -44,7 +54,15 @@ class CameraRecorder @Inject constructor(
             activeSessions.remove(cameraId)
             logger.i("CameraRecorder", "Ghi hình xong cameraId=$cameraId state=${finished.state} rc=${finished.returnCode}")
         }
-        activeSessions[cameraId] = session
+
+        val previous = activeSessions.putIfAbsent(cameraId, session)
+        if (previous != null) {
+            // Một session khác đã thắng race — huỷ session vừa tạo, không để nó chạy song song.
+            FFmpegKit.cancel(session.sessionId)
+            logger.w("CameraRecorder", "startRecording: cameraId=$cameraId đang ghi dở, bỏ qua yêu cầu mới")
+            return null
+        }
+
         logger.i("CameraRecorder", "startRecording cameraId=$cameraId → ${outputFile.absolutePath} (${clamped}s)")
         return outputFile.absolutePath
     }
