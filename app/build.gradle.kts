@@ -193,7 +193,14 @@ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
 
     implementation("androidx.media3:media3-exoplayer-rtsp:1.4.1")
 implementation("androidx.media3:media3-ui:1.4.1")
-implementation("com.arthenica:ffmpeg-kit-min:6.0-2")   // bản "min" — chỉ remux (-c copy), không cần codec nặng, đỡ tăng size APK
+// ⚠️ FIX: com.arthenica:ffmpeg-kit-min đã bị RETIRE, gỡ khỏi mọi Maven repo từ 4/2025
+// (repo gốc archive từ 6/2025) -> "Could not find ...ffmpeg-kit-min:6.0-2". Dùng bản rebuild
+// cộng đồng (maitrungduc1410/ffmpeg-kit, được arthenica liệt kê chính thức là 1 fork thay thế),
+// publish trên Maven Central qua CI riêng, giữ nguyên package com.arthenica.ffmpegkit.*.
+// LƯU Ý: đây là dự án cá nhân nhỏ (không phải hãng lớn) — artifact đã publish thì tồn tại vĩnh
+// viễn trên Maven Central (không bị xóa), nhưng nếu tác giả ngừng bảo trì sẽ không có bản vá mới.
+// Ghim cứng version 8.1.2 (bản mới nhất, dựa trên FFmpeg 8.1) thay vì dùng version range.
+implementation("io.github.maitrungduc1410:ffmpeg-kit-min:8.1.2")   // bản "min" — chỉ remux (-c copy), không cần codec nặng, đỡ tăng size APK
 }
 dependencies {
     // ✅ SỬA: đổi sang bản "unbundled" — model KHÔNG đóng gói trong APK, tải qua Google Play
