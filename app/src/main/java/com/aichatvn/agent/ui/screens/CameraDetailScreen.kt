@@ -553,7 +553,7 @@ fun CameraDetailScreen(
                             if (cam.rtspEnabled == 1) {
                                 Spacer(Modifier.height(8.dp))
                                 Button(
-                                    onClick = { navController.navigate("camera_live/$cameraId") },
+                                    onClick = { navController.navigate("camera_live/${cam.id.trim()}") },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Text("▶️ Xem trực tiếp")
