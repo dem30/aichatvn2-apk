@@ -360,7 +360,12 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
         },
         confirmButton = {
             TextButton(onClick = {
-                if (id.isNotBlank() && snapshotUrl.isNotBlank()) {
+                // ✅ SỬA: trước đây bắt buộc snapshotUrl.isNotBlank() mới cho lưu — nếu người
+                // dùng chỉ điền "URL dự phòng" (snapshotUrlRemote) và để trống URL LAN chính
+                // (trường hợp hợp lệ, ví dụ camera chỉ truy cập được qua cloud), nút "Lưu" âm
+                // thầm không làm gì, không báo lỗi. Giờ chỉ cần có URL LAN HOẶC URL dự phòng.
+                val hasAnyUrl = snapshotUrl.isNotBlank() || snapshotUrlRemote.isNotBlank()
+                if (id.isNotBlank() && hasAnyUrl) {
                     onSave(mapOf(
                         "id" to id.trim(),
                         "customerId" to customerId.trim(),
@@ -375,6 +380,9 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                         "aiPositiveKeywords" to aiPositiveKeywords.trim(),
                         "aiNegativeKeywords" to aiNegativeKeywords.trim()
                     ))
+                } else if (!hasAnyUrl) {
+                    // TODO: hiển thị lỗi rõ ràng cho người dùng thay vì im lặng, ví dụ:
+                    // locationError = "Cần nhập URL ảnh chụp hoặc URL dự phòng"
                 }
             }) { Text("Lưu") }
         },

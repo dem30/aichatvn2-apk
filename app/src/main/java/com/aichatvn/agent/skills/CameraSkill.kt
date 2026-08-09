@@ -2120,6 +2120,13 @@ PluginAction(
                 aiNegativeKeywords = (config["aiNegativeKeywords"] as? String ?: existing?.aiNegativeKeywords ?: "").trim(),
                 enableCooldown = (config["enableCooldown"] as? Int) ?: (config["enableCooldown"] as? Number)?.toInt() ?: existing?.enableCooldown ?: 1,
                 enableNotification = (config["enableNotification"] as? Int) ?: (config["enableNotification"] as? Number)?.toInt() ?: existing?.enableNotification ?: 1,
+                // ✅ MỚI: saveCameraConfig() không có tham số enableAlarmPush/alarmSecret trong
+                // form cấu hình chung (2 field này chỉ đổi qua toggleAlarmPush() ở
+                // CameraDetailViewModel, gọi thẳng gateway để sinh/thu hồi secret) — PHẢI kế
+                // thừa nguyên giá trị cũ ở đây, nếu không mỗi lần người dùng sửa URL/prompt...
+                // và bấm Lưu, toggle báo động đang bật sẽ bị âm thầm reset về tắt.
+                enableAlarmPush = existing?.enableAlarmPush ?: 0,
+                alarmSecret = existing?.alarmSecret,
                 alertActions = config["alertActions"] as? String ?: existing?.alertActions ?: "[]",
                 snapshotUsername = (config["snapshotUsername"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotUsername,
                 snapshotPassword = (config["snapshotPassword"] as? String)?.trim()?.ifBlank { null } ?: existing?.snapshotPassword,
@@ -2128,6 +2135,19 @@ PluginAction(
             
             withContext(Dispatchers.IO) {
                 database.cameraDao().insertCamera(camera)
+            }
+
+            // ✅ SỬA: trước đây sau khi sửa cấu hình (URL/tài khoản/mật khẩu), isOnline chỉ kế
+            // thừa giá trị cũ trong Room (existing?.isOnline) — nếu camera từng bị đánh dấu
+            // offline do URL sai, sau khi sửa đúng URL, isOnline vẫn kẹt ở 0 ("Mất kết nối")
+            // cho tới lần quét tự động kế tiếp. Chủ động quét lại ngay để cập nhật isOnline
+            // thật + đồng bộ DeviceRegistry (Dashboard) khớp với trạng thái mới.
+            val tidForRescan = camera.id.trim()
+            if (config["isOnline"] == null) {
+                withContext(Dispatchers.IO) {
+                    resetCircuitBreaker(tidForRescan)
+                }
+                scanCamera(tidForRescan, isDailyReport = false)
             }
             
             val setting = withContext(Dispatchers.IO) {

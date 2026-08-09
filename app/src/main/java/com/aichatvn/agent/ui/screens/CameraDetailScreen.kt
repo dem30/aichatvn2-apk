@@ -23,6 +23,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.platform.ClipboardManager // ✅ MỚI: copy alarmPushUrl
+import androidx.compose.ui.platform.LocalClipboardManager // ✅ MỚI
+import androidx.compose.ui.text.AnnotatedString // ✅ MỚI
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -32,6 +35,7 @@ import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.ui.components.SmartActionFormSheet
+import com.aichatvn.agent.ui.viewmodels.AlarmVerifyState // ✅ MỚI
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
 import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +61,9 @@ fun CameraDetailScreen(
     val schedules by viewModel.schedules.collectAsState()
     val scheduleDraft by viewModel.scheduleDraft.collectAsState()
     val scheduleResult by viewModel.scheduleResult.collectAsState()
+    val alarmPushUrl by viewModel.alarmPushUrl.collectAsState() // ✅ MỚI
+    val alarmVerifyState by viewModel.alarmVerifyState.collectAsState() // ✅ MỚI
+    val clipboardManager: ClipboardManager = LocalClipboardManager.current // ✅ MỚI
 
     val alertActionPlugins = viewModel.alertActionPlugins
 
@@ -83,6 +90,15 @@ fun CameraDetailScreen(
         scheduleResult?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearScheduleResult()
+        }
+    }
+    // ✅ MỚI: báo kết quả "Kiểm tra kết nối" qua snackbar — Success/TimedOut là 2 trạng
+    // thái đáng thông báo, Idle/Listening thì thôi (Listening đã có UI riêng ở nút bấm).
+    LaunchedEffect(alarmVerifyState) {
+        when (alarmVerifyState) {
+            is AlarmVerifyState.Success -> snackbarHostState.showSnackbar("✅ Đã xác nhận camera bắn báo động thành công!")
+            is AlarmVerifyState.TimedOut -> snackbarHostState.showSnackbar("⚠️ Không nhận được báo động nào — camera có thể không hỗ trợ, đã tắt tính năng này.")
+            else -> {}
         }
     }
 
@@ -175,6 +191,44 @@ fun CameraDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showResetLearningDialog = false }) { Text("Huỷ") }
+            }
+        )
+    }
+
+    // ✅ MỚI: dialog hiện URL báo động ngay sau khi bật toggle — người dùng copy URL này
+    // dán vào ô "Alarm Server URL" / "HTTP Notification" trong web UI của camera. Chỉ
+    // hiện 1 lần (dialog tự đóng khi bấm "Đã copy, đóng"), sau đó nên bấm "Kiểm tra kết
+    // nối" ở màn hình chính để xác nhận camera đã cấu hình đúng.
+    if (alarmPushUrl != null) {
+        AlertDialog(
+            onDismissRequest = { /* bắt buộc bấm nút để đóng, tránh bỏ sót chưa copy URL */ },
+            title = { Text("🚨 Dán URL này vào camera") },
+            text = {
+                Column {
+                    Text(
+                        "Vào web UI của camera → mục \"Alarm Server URL\" / \"HTTP Notification\" " +
+                            "(tuỳ hãng gọi khác tên) và dán URL bên dưới vào đó:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        alarmPushUrl ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Sau khi lưu ở camera, quay lại đây bấm \"Kiểm tra kết nối\" để chắc chắn camera bắn được.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    clipboardManager.setText(AnnotatedString(alarmPushUrl ?: ""))
+                    viewModel.clearAlarmPushUrl()
+                }) { Text("📋 Copy & đóng") }
             }
         )
     }
@@ -393,6 +447,49 @@ fun CameraDetailScreen(
                             }
                             Spacer(Modifier.width(12.dp))
                             Switch(checked = cam.enableNotification == 1, onCheckedChange = { viewModel.toggleNotification() })
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+
+                        // ✅ MỚI: Báo động camera — camera tự đẩy push khi cảm biến motion nội bộ
+                        // kích hoạt, giúp CameraSkill quét sớm hơn thay vì chỉ đợi lịch định kỳ.
+                        // Bật xong sẽ hiện dialog URL để dán vào web UI của camera (xem
+                        // toggleAlarmPush()/alarmPushUrl trong ViewModel).
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Báo động camera (push khi có chuyển động)", style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    if (cam.enableAlarmPush == 1) "Bật — camera tự báo khi có chuyển động, quét sớm hơn lịch định kỳ"
+                                    else "Tắt — chỉ quét theo lịch định kỳ như bình thường",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(checked = cam.enableAlarmPush == 1, onCheckedChange = { viewModel.toggleAlarmPush() })
+                        }
+
+                        if (cam.enableAlarmPush == 1) {
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (alarmVerifyState is AlarmVerifyState.Listening) {
+                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Đang chờ camera báo động (tối đa 90s)...", style = MaterialTheme.typography.labelSmall)
+                                } else {
+                                    TextButton(onClick = { viewModel.verifyAlarmConnection() }) {
+                                        Text("🔍 Kiểm tra kết nối")
+                                    }
+                                }
+                            }
                         }
 
                         Spacer(Modifier.height(8.dp))

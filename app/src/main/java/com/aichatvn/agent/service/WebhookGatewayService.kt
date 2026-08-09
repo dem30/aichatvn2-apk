@@ -162,6 +162,9 @@ class WebhookGatewayService : Service() {
     // ✅ MỚI: tham chiếu Call riêng cho kênh SSE tin nhắn Facebook/Instagram theo
     // device_code (/page/inbox/{device_code}/{token}) — cùng lý do với 2 tham chiếu ở trên.
     @Volatile private var pageMessageCall: okhttp3.Call? = null
+    // ✅ MỚI: tham chiếu Call riêng cho kênh SSE "camera báo động"
+    // (/camera/alarm/stream/{device_code}) — cùng lý do với các tham chiếu ở trên.
+    @Volatile private var cameraAlarmCall: okhttp3.Call? = null
 
     // ✅ SỬA LỖI: gọi .cancel() trực tiếp lên từng Call reference thay vì
     // okHttpClient.dispatcher.cancelAll() — đảm bảo đóng chắc chắn CẢ HAI kênh SSE
@@ -177,6 +180,10 @@ class WebhookGatewayService : Service() {
         // ✅ MỚI: cùng lý do — ngắt luôn kênh SSE tin nhắn Facebook/Instagram riêng để
         // resync device_code/token mới nhất đồng thời với các kênh còn lại.
         pageMessageCall?.cancel()
+        // ✅ MỚI: cùng lý do — kênh camera alarm cũng khóa theo device_code, ngắt luôn để
+        // resync đồng thời, tránh kênh này treo với deviceCode cũ trong khi các kênh khác
+        // đã chuyển sang deviceCode mới.
+        cameraAlarmCall?.cancel()
     }
 
     // ✅ SỬA LỖI: readTimeout cũ (45s) khiến 2 kênh SSE dài hạn (/stream/{token} và
@@ -269,6 +276,10 @@ class WebhookGatewayService : Service() {
         // /page/inbox/{device_code}/{token} — tách hẳn khỏi /stream/{token} dùng chung.
         // Cùng lý do với startWebsiteMessageSSE() ở trên.
         startPageMessageSSE()
+        // ✅ MỚI: kênh SSE riêng biệt cho tín hiệu "camera báo động", kết nối tới
+        // /camera/alarm/stream/{device_code} — cho phép quét camera sớm hơn ngay khi
+        // camera tự phát hiện chuyển động, thay vì chỉ đợi lịch quét định kỳ.
+        startCameraAlarmSSE()
         startTelegramLongPolling()   
         startHeartbeatLoop()         
         startScheduleLoop()
@@ -893,6 +904,99 @@ class WebhookGatewayService : Service() {
                     // chủ động ngắt cả 2 Call reference để ép kênh CloudGateway đứt theo và
                     // cả 2 cùng resync deviceCode/token mới nhất đồng thời, tránh lệch pha
                     // deviceCode giữa 2 kênh (xem giải thích đầy đủ trong startCloudGatewaySSE()).
+                    forceResyncBothChannels()
+                    delay(5000)
+                }
+            }
+        }
+    }
+
+    // ✅ MỚI: Vòng lặp SSE riêng biệt cho tín hiệu "camera vừa báo động" (motion do
+    // chính camera IP tự phát hiện, đẩy về qua Alarm Server URL người dùng cấu hình
+    // trong web UI của camera) — cùng pattern hệt startCallSignalSSE() ở trên, kết nối
+    // tới /camera/alarm/stream/{deviceCode}.
+    //
+    // QUAN TRỌNG: alarm nhận được ở đây KHÔNG bỏ qua bất kỳ bước lọc nhiễu nào của
+    // CameraSkill — nó chỉ là 1 cú hích để chạy scanCamera() SỚM HƠN lịch định kỳ, với
+    // force=false (nghĩa là vẫn so pHash, vẫn tôn trọng cooldown y hệt 1 lượt quét nền
+    // bình thường). Việc có gọi AI hay không vẫn hoàn toàn do logic sẵn có trong
+    // scanCamera() quyết định — xem execute("scan", ...) trong CameraSkill.
+    private fun startCameraAlarmSSE() {
+        serviceScope.launch(Dispatchers.IO) {
+            var isOfflineLogged = false
+
+            while (isActive) {
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                val deviceCode = callSkill.getOrCreateMyDeviceCode()
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
+                    if (!isOfflineLogged) {
+                        logger.w("CameraAlarmSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh báo động camera.")
+                        isOfflineLogged = true
+                    }
+                    delay(5000)
+                    continue
+                }
+
+                if (!isNetworkAvailable()) {
+                    delay(5000)
+                    continue
+                }
+
+                isOfflineLogged = false
+
+                try {
+                    logger.i("CameraAlarmSSE", "🔌 Đang thiết lập đường ống SSE báo động camera cho deviceCode=$deviceCode...")
+
+                    val request = Request.Builder()
+                        .url("$gatewayUrl/camera/alarm/stream/$deviceCode")
+                        .header("Accept", "text/event-stream")
+                        .build()
+
+                    val call = okHttpClient.newCall(request)
+                    cameraAlarmCall = call
+                    call.execute().use { response ->
+                        if (!response.isSuccessful) {
+                            logger.w("CameraAlarmSSE", "⚠️ Kết nối SSE báo động camera thất bại, mã lỗi HTTP: ${response.code}")
+                            delay(5000)
+                            return@use
+                        }
+
+                        val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
+                        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                        var line: String? = null
+
+                        logger.i("CameraAlarmSSE", "🟢 Đường ống SSE báo động camera đã mở, sẵn sàng nhận tín hiệu.")
+
+                        while (isActive && reader.readLine().also { line = it } != null) {
+                            val trimmedLine = line?.trim() ?: ""
+                            if (trimmedLine.startsWith("data:")) {
+                                val rawData = trimmedLine.substring(5).trim()
+                                if (rawData.isNotEmpty()) {
+                                    serviceScope.launch {
+                                        try {
+                                            val jsonObj = org.json.JSONObject(rawData)
+                                            val cameraId = jsonObj.optString("cameraId", "").trim()
+                                            if (cameraId.isNotEmpty()) {
+                                                logger.i("CameraAlarmSSE", "🚨 Camera $cameraId báo động, kích hoạt quét sớm (vẫn tôn trọng pHash/cooldown).")
+                                                // ✅ force=false: KHÔNG bypass cooldown/pHash — chỉ chạy sớm hơn lịch,
+                                                // logic quyết định có gọi AI hay không vẫn nằm nguyên trong scanCamera().
+                                                findPlugin("camera")?.execute(
+                                                    "scan",
+                                                    mapOf("cameraId" to cameraId, "force" to false)
+                                                )
+                                            }
+                                        } catch (e: Exception) {
+                                            logger.e("CameraAlarmSSE", "Lỗi giải mã tín hiệu báo động camera: ${e.message}")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("CameraAlarmSSE", "❌ Mất đường ống SSE báo động camera: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     forceResyncBothChannels()
                     delay(5000)
                 }

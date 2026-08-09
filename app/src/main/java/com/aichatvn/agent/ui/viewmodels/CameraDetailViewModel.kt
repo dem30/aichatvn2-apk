@@ -13,6 +13,9 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerSettingEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.CameraSkill
+import com.aichatvn.agent.skills.CallSkill // ✅ MỚI: cần getOrCreateMyDeviceCode() cho kênh alarm push
+import com.aichatvn.agent.config.AppConfigDefaults // ✅ MỚI
+import com.aichatvn.agent.config.AppConfigProvider // ✅ MỚI
 import com.aichatvn.agent.tools.camera.SnapshotFetcher
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,8 +31,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.TimeUnit // ✅ MỚI
+import okhttp3.MediaType.Companion.toMediaType // ✅ MỚI
+import okhttp3.RequestBody.Companion.toRequestBody // ✅ MỚI
 import javax.inject.Inject
 import com.aichatvn.agent.core.plugin.DynamicOptionRegistry // 🌟 MỚI
+
+// ✅ MỚI: trạng thái xác nhận camera thực sự bắn được alarm push tới gateway, dùng cho
+// nút "Kiểm tra kết nối" ở màn hình chi tiết camera — xem verifyAlarmConnection().
+sealed class AlarmVerifyState {
+    object Idle : AlarmVerifyState()
+    object Listening : AlarmVerifyState()
+    object Success : AlarmVerifyState()
+    object TimedOut : AlarmVerifyState()
+}
 
 data class CameraConfigDraft(
     val snapshotUrl: String = "",
@@ -68,6 +83,8 @@ class CameraDetailViewModel @Inject constructor(
     private val snapshotFetcher: SnapshotFetcher,
     private val agentKernel: com.aichatvn.agent.core.AgentKernel, // ✅ MỚI — lấy danh sách plugin cho dropdown, giống ScheduleViewModel
     val optionRegistry: DynamicOptionRegistry, // 🌟 MỚI: Inject Registry trung tâm
+    private val configProvider: AppConfigProvider, // ✅ MỚI: đọc Gateway URL/Token cho toggleAlarmPush()/verifyAlarmConnection()
+    private val callSkill: CallSkill, // ✅ MỚI: getOrCreateMyDeviceCode() — cùng deviceCode đang dùng cho kênh /call/stream
     private val logger: Logger
 ) : ViewModel() {
 
@@ -219,6 +236,18 @@ class CameraDetailViewModel @Inject constructor(
                 withContext(Dispatchers.IO) {
                     database.cameraDao().updateCamera(updated)
                 }
+
+                // ✅ SỬA: saveConfig() trước đây chỉ ghi Room, không gọi qua CameraSkill nên
+                // không đồng bộ DeviceRegistry (nguồn dữ liệu Dashboard) và không thử kết nối
+                // lại ngay — khiến isOnline trong Room (đọc bởi CameraDetailScreen) giữ nguyên
+                // giá trị "Mất kết nối" cũ từ lần scan thất bại gần nhất, dù URL/mật khẩu vừa
+                // sửa đã đúng, trong khi Dashboard lại hiển thị trạng thái khác do lệch cache.
+                // Chủ động quét lại ngay sau khi lưu để cả hai nguồn cùng cập nhật.
+                withContext(Dispatchers.IO) {
+                    cameraSkill.resetCircuitBreaker(cameraId)
+                    cameraSkill.scanCamera(cameraId, isDailyReport = false)
+                }
+
                 loadCamera()
                 _configDraft.value = null
                 _configSaveResult.value = "✅ Đã lưu cấu hình"
@@ -234,6 +263,11 @@ class CameraDetailViewModel @Inject constructor(
 
     fun clearConfigSaveResult() {
         _configSaveResult.value = null
+    }
+
+    // ✅ MỚI: đóng dialog "Dán URL này vào camera" sau khi người dùng đã copy.
+    fun clearAlarmPushUrl() {
+        _alarmPushUrl.value = null
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -468,6 +502,186 @@ class CameraDetailViewModel @Inject constructor(
             }
             loadCamera()
             logger.i("CameraDetailViewModel", "toggleNotification ${cam.id} → $newNotification")
+        }
+    }
+
+    // ✅ MỚI: URL đầy đủ (kèm secret) để người dùng dán vào ô "Alarm Server URL" trong
+    // web UI của camera — chỉ có giá trị ngay sau khi bật toggle thành công, dùng để
+    // UI hiện dialog "Copy URL này" 1 lần; không lưu lại đâu khác ngoài bộ nhớ này.
+    private val _alarmPushUrl = MutableStateFlow<String?>(null)
+    val alarmPushUrl: StateFlow<String?> = _alarmPushUrl.asStateFlow()
+
+    private val _alarmVerifyState = MutableStateFlow<AlarmVerifyState>(AlarmVerifyState.Idle)
+    val alarmVerifyState: StateFlow<AlarmVerifyState> = _alarmVerifyState.asStateFlow()
+
+    // ✅ MỚI: Bật/tắt "Báo động camera" (camera tự đẩy push khi có motion, xem thiết kế
+    // /camera/alarm/stream/{deviceCode} phía gateway). Bật → sinh secret mới + trả về URL
+    // để người dùng dán vào camera. Tắt → thu hồi secret ở gateway, camera cũ (nếu còn
+    // giữ URL) sẽ bị từ chối push sau đó.
+    fun toggleAlarmPush() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cam = _camera.value ?: return@launch
+            val turningOn = cam.enableAlarmPush != 1
+            val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+            val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+            if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
+                logger.w("CameraDetailViewModel", "toggleAlarmPush: thiếu Gateway URL/Token, bỏ qua.")
+                return@launch
+            }
+            val deviceCode = callSkill.getOrCreateMyDeviceCode()
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .build()
+
+            try {
+                if (turningOn) {
+                    val payload = JSONObject().apply {
+                        put("token", gatewayToken)
+                        put("deviceCode", deviceCode)
+                        put("cameraId", cameraId)
+                    }
+                    val body = payload.toString()
+                        .toRequestBody("application/json; charset=utf-8".toMediaType())
+                    val request = okhttp3.Request.Builder()
+                        .url("$gatewayUrl/camera/alarm_secret")
+                        .post(body)
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        val text = response.body?.string().orEmpty()
+                        if (response.isSuccessful && text.isNotBlank()) {
+                            val json = JSONObject(text)
+                            val secret = json.optString("secret", "").trim()
+                            val pushUrl = json.optString("pushUrl", "").trim()
+                            if (secret.isNotEmpty() && pushUrl.isNotEmpty()) {
+                                database.cameraDao().updateCamera(
+                                    cam.copy(enableAlarmPush = 1, alarmSecret = secret)
+                                )
+                                _alarmPushUrl.value = pushUrl
+                                _alarmVerifyState.value = AlarmVerifyState.Idle
+                                logger.i("CameraDetailViewModel", "toggleAlarmPush BẬT cameraId=$cameraId")
+                            } else {
+                                logger.e("CameraDetailViewModel", "toggleAlarmPush: phản hồi gateway thiếu secret/pushUrl")
+                            }
+                        } else {
+                            logger.e("CameraDetailViewModel", "toggleAlarmPush: gateway lỗi HTTP ${response.code}")
+                        }
+                    }
+                } else {
+                    val payload = JSONObject().apply {
+                        put("token", gatewayToken)
+                        put("deviceCode", deviceCode)
+                        put("cameraId", cameraId)
+                    }
+                    val body = payload.toString()
+                        .toRequestBody("application/json; charset=utf-8".toMediaType())
+                    val request = okhttp3.Request.Builder()
+                        .url("$gatewayUrl/camera/alarm_secret/revoke")
+                        .post(body)
+                        .build()
+                    client.newCall(request).execute().close()
+                    database.cameraDao().updateCamera(
+                        cam.copy(enableAlarmPush = 0, alarmSecret = null)
+                    )
+                    _alarmPushUrl.value = null
+                    _alarmVerifyState.value = AlarmVerifyState.Idle
+                    logger.i("CameraDetailViewModel", "toggleAlarmPush TẮT cameraId=$cameraId")
+                }
+            } catch (e: Exception) {
+                logger.e("CameraDetailViewModel", "toggleAlarmPush lỗi: ${e.message}", e)
+            }
+            loadCamera()
+        }
+    }
+
+    // ✅ MỚI: "Kiểm tra kết nối" — mở TẠM 1 kết nối SSE thứ 2 riêng (gateway cho phép
+    // nhiều kết nối cùng deviceCode, không đụng tới kênh nền của WebhookGatewayService)
+    // và chờ tối đa timeoutMs xem có nhận được đúng 1 alarm của cameraId này không. Nếu
+    // camera không hỗ trợ "Alarm Server URL" (chỉ FTP hoặc không có gì), sẽ không bao
+    // giờ có push nào tới → hết thời gian chờ → tự tắt toggle + báo người dùng qua
+    // alarmVerifyState = TimedOut, đúng như đã chốt: không để toggle bật mà thực ra
+    // không hoạt động.
+    fun verifyAlarmConnection(timeoutMs: Long = 90_000) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cam = _camera.value ?: return@launch
+            if (cam.enableAlarmPush != 1) return@launch
+
+            _alarmVerifyState.value = AlarmVerifyState.Listening
+            val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+            val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+            if (gatewayUrl.isBlank()) {
+                _alarmVerifyState.value = AlarmVerifyState.TimedOut
+                return@launch
+            }
+            val deviceCode = callSkill.getOrCreateMyDeviceCode()
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .build()
+
+            var confirmed = false
+            try {
+                val request = okhttp3.Request.Builder()
+                    .url("$gatewayUrl/camera/alarm/stream/$deviceCode")
+                    .header("Accept", "text/event-stream")
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body
+                        if (body != null) {
+                            val reader = body.byteStream().bufferedReader()
+                            while (true) {
+                                val line = reader.readLine() ?: break
+                                val trimmed = line.trim()
+                                if (trimmed.startsWith("data:")) {
+                                    val raw = trimmed.substring(5).trim()
+                                    if (raw.isNotEmpty()) {
+                                        val json = JSONObject(raw)
+                                        if (json.optString("cameraId", "").trim() == cameraId) {
+                                            confirmed = true
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Hết readTimeout (không có alarm nào tới) hoặc lỗi mạng — coi như chưa xác nhận được.
+                logger.i("CameraDetailViewModel", "verifyAlarmConnection: hết thời gian chờ hoặc lỗi mạng (${e.message})")
+            }
+
+            if (confirmed) {
+                _alarmVerifyState.value = AlarmVerifyState.Success
+                logger.i("CameraDetailViewModel", "verifyAlarmConnection OK cameraId=$cameraId")
+            } else {
+                _alarmVerifyState.value = AlarmVerifyState.TimedOut
+                logger.w("CameraDetailViewModel", "verifyAlarmConnection TIMEOUT cameraId=$cameraId — camera có thể không hỗ trợ, tự tắt toggle.")
+                // Tự tắt toggle + thu hồi secret, đúng quyết định: không để bật mà không hoạt động.
+                val current = _camera.value
+                if (current != null && current.enableAlarmPush == 1) {
+                    if (gatewayToken.isNotBlank()) {
+                        try {
+                            val payload = JSONObject().apply {
+                                put("token", gatewayToken)
+                                put("deviceCode", deviceCode)
+                                put("cameraId", cameraId)
+                            }
+                            val revokeBody = payload.toString()
+                                .toRequestBody("application/json; charset=utf-8".toMediaType())
+                            val revokeRequest = okhttp3.Request.Builder()
+                                .url("$gatewayUrl/camera/alarm_secret/revoke")
+                                .post(revokeBody)
+                                .build()
+                            okhttp3.OkHttpClient().newCall(revokeRequest).execute().close()
+                        } catch (_: Exception) { /* dọn dẹp best-effort, không chặn tắt toggle local */ }
+                    }
+                    database.cameraDao().updateCamera(current.copy(enableAlarmPush = 0, alarmSecret = null))
+                    _alarmPushUrl.value = null
+                    loadCamera()
+                }
+            }
         }
     }
 
