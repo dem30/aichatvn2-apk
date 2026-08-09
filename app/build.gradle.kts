@@ -191,8 +191,14 @@ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("io.ktor:ktor-serialization-gson:2.3.12")
       implementation("com.jcraft:jsch:0.1.55")
 
+    // ⚠️ FIX: CameraLiveViewScreen.kt dùng ExoPlayer, MediaItem, Player trực tiếp nhưng project
+    // chỉ khai báo media3-exoplayer-rtsp (chỉ có RtspMediaSource) + media3-ui -> Gradle không tự
+    // lộ API transitive ra compile classpath -> "Unresolved reference 'ExoPlayer'/'MediaItem'".
+    // Thêm 2 module lõi chứa các class đó, khai báo tường minh.
+    implementation("androidx.media3:media3-exoplayer:1.4.1")   // chứa ExoPlayer, Player
+    implementation("androidx.media3:media3-common:1.4.1")      // chứa MediaItem
     implementation("androidx.media3:media3-exoplayer-rtsp:1.4.1")
-implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 // ⚠️ FIX: com.arthenica:ffmpeg-kit-min đã bị RETIRE, gỡ khỏi mọi Maven repo từ 4/2025
 // (repo gốc archive từ 6/2025) -> "Could not find ...ffmpeg-kit-min:6.0-2". Dùng bản rebuild
 // cộng đồng (maitrungduc1410/ffmpeg-kit, được arthenica liệt kê chính thức là 1 fork thay thế),
