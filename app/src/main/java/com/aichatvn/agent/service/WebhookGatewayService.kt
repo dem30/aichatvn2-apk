@@ -165,6 +165,11 @@ class WebhookGatewayService : Service() {
     // ✅ MỚI: tham chiếu Call riêng cho kênh SSE "camera báo động"
     // (/camera/alarm/stream/{device_code}) — cùng lý do với các tham chiếu ở trên.
     @Volatile private var cameraAlarmCall: okhttp3.Call? = null
+    // ✅ MỚI: SSE tới /device/command/stream/{deviceCode} — kênh lệnh CHUNG cho mọi thiết bị
+    // điều khiển từ xa (Tuya, và các loại khác sẽ tích hợp sau). Chỉ máy đóng vai trò "Camera
+    // Node" (đặt cố định ở nhà) cần mở kênh này; máy "Client" (mang theo người, chỉ GỬI lệnh
+    // qua POST /device/command) không cần mở SSE này — xem điều kiện bật trong onCreate().
+    @Volatile private var deviceCommandCall: okhttp3.Call? = null
 
     // ✅ SỬA LỖI: gọi .cancel() trực tiếp lên từng Call reference thay vì
     // okHttpClient.dispatcher.cancelAll() — đảm bảo đóng chắc chắn CẢ HAI kênh SSE
@@ -184,6 +189,9 @@ class WebhookGatewayService : Service() {
         // resync đồng thời, tránh kênh này treo với deviceCode cũ trong khi các kênh khác
         // đã chuyển sang deviceCode mới.
         cameraAlarmCall?.cancel()
+        // ✅ MỚI: cùng lý do — kênh lệnh thiết bị cũng khóa theo device_code, ngắt luôn để
+        // resync đồng thời với các kênh còn lại.
+        deviceCommandCall?.cancel()
     }
 
     // ✅ SỬA LỖI: readTimeout cũ (45s) khiến 2 kênh SSE dài hạn (/stream/{token} và
@@ -280,6 +288,11 @@ class WebhookGatewayService : Service() {
         // /camera/alarm/stream/{device_code} — cho phép quét camera sớm hơn ngay khi
         // camera tự phát hiện chuyển động, thay vì chỉ đợi lịch quét định kỳ.
         startCameraAlarmSSE()
+        // ✅ MỚI: kênh SSE riêng biệt cho LỆNH ĐIỀU KHIỂN THIẾT BỊ (Tuya, và các loại khác
+        // sẽ tích hợp sau), kết nối tới /device/command/stream/{deviceCode}. Chỉ thực sự mở
+        // kết nối nếu deviceRole = "camera_node" (xem điều kiện bên trong hàm) — máy "client"
+        // gọi startDeviceCommandSSE() vô hại, nó tự đứng chờ, không tốn tài nguyên đáng kể.
+        startDeviceCommandSSE()
         startTelegramLongPolling()   
         startHeartbeatLoop()         
         startScheduleLoop()
@@ -1004,6 +1017,264 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    // ✅ MỚI: kênh SSE riêng biệt cho LỆNH ĐIỀU KHIỂN THIẾT BỊ (Tuya, và các loại khác sẽ
+    // tích hợp sau — MQTT, Zigbee2MQTT...), kết nối tới /device/command/stream/{deviceCode}.
+    // Cùng mẫu với startCameraAlarmSSE() ở trên, khác ở 2 điểm:
+    // (1) chỉ khởi động nếu deviceRole = "camera_node" — máy "client" (mang theo người) không
+    //     cần mở kênh này, nó chỉ CHỦ ĐỘNG GỬI lệnh qua sendDeviceCommand()/POST bên dưới, không
+    //     bao giờ cần NHẬN lệnh;
+    // (2) payload không xử lý trực tiếp tại đây — chỉ đọc "device_type" để định tuyến tới đúng
+    //     Manager (hiện tại: TuyaManager qua handleTuyaCommand()), rồi tự báo kết quả ngược lại
+    //     qua POST /device/command_result. Thêm 1 loại thiết bị mới CHỈ cần thêm 1 nhánh "when"
+    //     mới ở đây — không cần sửa gì phía gateway.py.
+    private fun startDeviceCommandSSE() {
+        serviceScope.launch(Dispatchers.IO) {
+            var isOfflineLogged = false
+
+            while (isActive) {
+                val deviceRole = configProvider.getString(AppConfigDefaults.DEVICE_ROLE, "client").trim()
+                if (deviceRole != "camera_node") {
+                    // Máy "client": không mở kênh nhận lệnh, chỉ đứng yên chờ config đổi (ví dụ
+                    // người dùng đổi vai trò máy sau này) — kiểm tra lại mỗi 30s là đủ, không cần
+                    // phản ứng ngay lập tức như các kênh chat/gọi.
+                    delay(30_000)
+                    continue
+                }
+
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                val deviceCode = callSkill.getOrCreateMyDeviceCode()
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
+                    if (!isOfflineLogged) {
+                        logger.w("DeviceCommandSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh lệnh thiết bị.")
+                        isOfflineLogged = true
+                    }
+                    delay(5000)
+                    continue
+                }
+
+                if (!isNetworkAvailable()) {
+                    delay(5000)
+                    continue
+                }
+
+                isOfflineLogged = false
+
+                try {
+                    logger.i("DeviceCommandSSE", "🔌 Đang thiết lập đường ống SSE lệnh thiết bị cho deviceCode=$deviceCode...")
+
+                    val request = Request.Builder()
+                        .url("$gatewayUrl/device/command/stream/$deviceCode")
+                        .header("Accept", "text/event-stream")
+                        .build()
+
+                    val call = okHttpClient.newCall(request)
+                    deviceCommandCall = call
+                    call.execute().use { response ->
+                        if (!response.isSuccessful) {
+                            logger.w("DeviceCommandSSE", "⚠️ Kết nối SSE lệnh thiết bị thất bại, mã lỗi HTTP: ${response.code}")
+                            delay(5000)
+                            return@use
+                        }
+
+                        val body = response.body ?: throw IOException("Mất nội dung phản hồi từ máy chủ (Empty response body)")
+                        val reader = BufferedReader(InputStreamReader(body.byteStream()))
+                        var line: String? = null
+
+                        logger.i("DeviceCommandSSE", "🟢 Đường ống SSE lệnh thiết bị đã mở, sẵn sàng nhận lệnh.")
+
+                        while (isActive && reader.readLine().also { line = it } != null) {
+                            val trimmedLine = line?.trim() ?: ""
+                            if (trimmedLine.startsWith("data:")) {
+                                val rawData = trimmedLine.substring(5).trim()
+                                if (rawData.isNotEmpty()) {
+                                    serviceScope.launch {
+                                        handleIncomingDeviceCommand(rawData, gatewayUrl, gatewayToken)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    logger.e("DeviceCommandSSE", "❌ Mất đường ống SSE lệnh thiết bị: ${e.message}. Đang thử kết nối lại sau 5 giây...")
+                    delay(5000)
+                }
+            }
+        }
+    }
+
+    /**
+     * Nhận 1 lệnh thiết bị từ SSE, định tuyến theo "device_type", thực thi, rồi báo kết quả
+     * ngược lại qua POST /device/command_result. KHÔNG throw ra ngoài trong bất kỳ trường hợp
+     * nào — 1 lệnh lỗi/JSON hỏng không được phép làm gãy vòng lặp đọc SSE phía trên.
+     */
+    private suspend fun handleIncomingDeviceCommand(rawData: String, gatewayUrl: String, gatewayToken: String) {
+        var requestId = ""
+        try {
+            val jsonObj = org.json.JSONObject(rawData)
+            requestId = jsonObj.optString("request_id", "")
+            val deviceType = jsonObj.optString("device_type", "").trim()
+            val command = jsonObj.optJSONObject("command")
+
+            if (deviceType.isEmpty() || command == null) {
+                logger.w("DeviceCommandSSE", "Lệnh thiết bị thiếu device_type hoặc command, bỏ qua: $rawData")
+                return
+            }
+
+            logger.i("DeviceCommandSSE", "📥 Nhận lệnh device_type=$deviceType requestId=$requestId")
+
+            // ✅ Điểm mở rộng: thêm 1 loại thiết bị mới (MQTT, Zigbee2MQTT, ESPHome...) trong
+            // tương lai chỉ cần thêm 1 nhánh "when" mới ở đây — không đụng gì tới gateway.py hay
+            // vòng lặp SSE phía trên, vì cả 2 đều coi "command" là JSON mù, không hiểu nội dung.
+            val result: CommandExecutionResult = when (deviceType) {
+                "tuya" -> handleTuyaCommand(command)
+                else -> CommandExecutionResult(false, "device_type không được hỗ trợ: $deviceType")
+            }
+
+            if (requestId.isNotEmpty()) {
+                reportDeviceCommandResult(gatewayUrl, gatewayToken, requestId, result)
+            }
+        } catch (e: Exception) {
+            logger.e("DeviceCommandSSE", "Lỗi xử lý lệnh thiết bị: ${e.message}")
+            if (requestId.isNotEmpty()) {
+                reportDeviceCommandResult(gatewayUrl, gatewayToken, requestId,
+                    CommandExecutionResult(false, "Lỗi xử lý trên Camera Node: ${e.message}"))
+            }
+        }
+    }
+
+    /** Kết quả thực thi 1 lệnh thiết bị — dùng chung cho mọi loại device_type. */
+    private data class CommandExecutionResult(val success: Boolean, val message: String)
+
+    /**
+     * Diễn giải "command" JSON thành lời gọi TuyaManager thật. Tái dùng ĐÚNG turnOn()/turnOff()
+     * hiện có (đã có sẵn toàn bộ logic local-first/cloud-fallback trong TuyaManager) — không
+     * viết lại logic bật/tắt ở đây, chỉ dịch payload JSON thành tham số gọi hàm.
+     *
+     * Định dạng command mong đợi: {"deviceName": "Đèn phòng khách", "action": "on" | "off"}
+     */
+    private suspend fun handleTuyaCommand(command: org.json.JSONObject): CommandExecutionResult {
+        val deviceName = command.optString("deviceName", "").trim()
+        val action = command.optString("action", "").trim().lowercase()
+
+        if (deviceName.isEmpty()) {
+            return CommandExecutionResult(false, "Thiếu deviceName trong lệnh Tuya")
+        }
+
+        return try {
+            when (action) {
+                "on" -> {
+                    tuyaManager.turnOn(deviceName)
+                    CommandExecutionResult(true, "Đã bật $deviceName")
+                }
+                "off" -> {
+                    tuyaManager.turnOff(deviceName)
+                    CommandExecutionResult(true, "Đã tắt $deviceName")
+                }
+                else -> CommandExecutionResult(false, "action không hợp lệ: '$action' (chỉ chấp nhận on/off)")
+            }
+        } catch (e: Exception) {
+            CommandExecutionResult(false, "Lỗi điều khiển Tuya: ${e.message}")
+        }
+    }
+
+    /** Báo kết quả thực thi lệnh ngược lại gateway, để nó route về đúng Client đang chờ. */
+    private fun reportDeviceCommandResult(
+        gatewayUrl: String, gatewayToken: String, requestId: String, result: CommandExecutionResult
+    ) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val bodyJson = org.json.JSONObject().apply {
+                    put("token", gatewayToken)
+                    put("requestId", requestId)
+                    put("success", result.success)
+                    put("message", result.message)
+                }
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = bodyJson.toString().toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("$gatewayUrl/device/command_result")
+                    .post(requestBody)
+                    .build()
+
+                apiClient.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("DeviceCommandSSE", "⚠️ Báo kết quả lệnh thất bại, mã lỗi: ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                logger.e("DeviceCommandSSE", "❌ Lỗi báo kết quả lệnh: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Client (máy mang theo người) gọi hàm này để gửi lệnh xuống Camera Node ở nhà khi ở ngoài
+     * mạng LAN. Gọi từ SmartSwitchSkill khi phát hiện không thể điều khiển Local trực tiếp (ra
+     * khỏi Wi-Fi nhà) — xem ghi chú tích hợp ở SmartSwitchSkill.
+     */
+    fun sendDeviceCommandToHome(deviceType: String, command: org.json.JSONObject, onResult: (Boolean, String) -> Unit) {
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                // deviceCode của Camera Node ở nhà — KHÁC với deviceCode của chính máy Client
+                // đang chạy hàm này. Cần người dùng đã cấu hình "mã Camera Node ở nhà" trong
+                // Settings (giống cách nhập số điện thoại để gọi cho ai đó) — không tự suy ra được.
+                val homeDeviceCode = configProvider.getString(AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE).trim()
+
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank() || homeDeviceCode.isBlank()) {
+                    withContext(Dispatchers.Main) { onResult(false, "Chưa cấu hình đầy đủ Gateway hoặc mã Camera Node ở nhà.") }
+                    return@launch
+                }
+
+                val bodyJson = org.json.JSONObject().apply {
+                    put("token", gatewayToken)
+                    put("targetDeviceCode", homeDeviceCode)
+                    put("deviceType", deviceType)
+                    put("command", command)
+                }
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val requestBody = bodyJson.toString().toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url("$gatewayUrl/device/command")
+                    .post(requestBody)
+                    .build()
+
+                apiClient.newCall(request).execute().use { response ->
+                    val bodyStr = response.body?.string() ?: "{}"
+                    val json = org.json.JSONObject(bodyStr)
+                    val status = json.optString("status", "error")
+                    withContext(Dispatchers.Main) {
+                        when (status) {
+                            "success" -> onResult(true, "Đã gửi lệnh, đang chờ Camera Node xử lý...")
+                            "not_registered" -> onResult(false, "Camera Node ở nhà hiện không online.")
+                            else -> onResult(false, json.optString("message", "Gửi lệnh thất bại"))
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                logger.e("DeviceCommandSSE", "❌ Lỗi gửi lệnh thiết bị: ${e.message}")
+                withContext(Dispatchers.Main) { onResult(false, "Lỗi kết nối: ${e.message}") }
+            }
+        }
+    }
+
+
+    // toàn với startCloudGatewaySSE() (facebook/instagram/telegram-token-chung) — kết nối
+    // tới /widget/inbox/{widget_key}/{token} trên gateway. Cùng lý do và cùng mẫu với
+    // startCallSignalSSE() ở trên: widget_key là mã riêng của TỪNG MÁY (khác với
+    // gatewayToken vốn dùng chung cho mọi máy của 1 người dùng), nên tin nhắn website
+    // nhận qua kênh này chỉ có thể là của đúng máy hiện tại — không còn khả năng broadcast
+    // nhầm sang máy khác dùng chung token như trước (/stream/{token} không còn nhận tin
+    // website nữa, xem app.py: /webhook giờ push qua push_message_to_widget()).
+    //
+    // Dữ liệu SSE nhận được ở đây đã đúng NGUYÊN VẸN định dạng JSON mà
+    // handleIncomingWebhookEvent() mong đợi (platform/senderId/text/imageUrl/imageBase64 —
+    // xem unified_payload trong app.py /webhook), nên gọi thẳng vào hàm xử lý DÙNG CHUNG đó
+    // — không cần chép tay/nhân đôi logic dedup, houseManager, mutex, xử lý ảnh... vốn đã
+    // nằm sẵn trong handleIncomingWebhookEvent().
     // ✅ MỚI: Vòng lặp SSE riêng biệt cho TIN NHẮN CHAT của khách Website, độc lập hoàn
     // toàn với startCloudGatewaySSE() (facebook/instagram/telegram-token-chung) — kết nối
     // tới /widget/inbox/{widget_key}/{token} trên gateway. Cùng lý do và cùng mẫu với

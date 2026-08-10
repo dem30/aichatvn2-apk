@@ -159,6 +159,17 @@ object AppConfigDefaults {
     const val GLOBAL_GATEWAY_URL            = "global.gateway_url"
     const val GLOBAL_GATEWAY_TOKEN          = "global.gateway_token"
 
+    // ✅ MỚI: phân biệt vai trò máy — quyết định startDeviceCommandSSE() có thực sự mở kênh
+    // /device/command/stream/{deviceCode} để NHẬN lệnh hay không. "client" (mặc định) = máy
+    // mang theo người, chỉ GỬI lệnh qua sendDeviceCommandToHome(). "camera_node" = máy đặt cố
+    // định ở nhà, tự động nhận lệnh (Tuya, camera...) gửi từ Client khi Client ở ngoài LAN.
+    const val DEVICE_ROLE                   = "device.role"   // "client" | "camera_node"
+
+    // ✅ MỚI: deviceCode của Camera Node ở nhà — do người dùng tự nhập tay trên máy Client
+    // (giống lưu số điện thoại để gọi cho ai đó), KHÔNG tự suy ra được vì đây là deviceCode
+    // của MỘT MÁY KHÁC, không phải của chính máy đang chạy. Dùng bởi sendDeviceCommandToHome().
+    const val HOME_CAMERA_NODE_DEVICE_CODE  = "device.home_camera_node_code"
+
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
@@ -689,6 +700,22 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Chế độ chat mặc định (Khách ngoại kênh)",
             description = "Chế độ trả lời chung cho khách Facebook/Telegram/Website: GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên."
+        ),
+        AppConfigEntity(
+            key = DEVICE_ROLE,
+            value = "client",
+            type = "string",
+            pluginId = "global",
+            label = "Vai trò của máy này",
+            description = "\"client\" = máy mang theo người (mặc định, không đổi hành vi hiện tại). \"camera_node\" = máy đặt cố định ở nhà, tự động nhận lệnh điều khiển thiết bị (Tuya, camera...) khi máy Client ở ngoài mạng LAN gửi tới."
+        ),
+        AppConfigEntity(
+            key = HOME_CAMERA_NODE_DEVICE_CODE,
+            value = "",
+            type = "string",
+            pluginId = "global",
+            label = "Mã Camera Node ở nhà",
+            description = "Nhập mã deviceCode (8 ký tự) của máy đặt cố định ở nhà — xem mã này trong Cài đặt trên chính máy đó. Chỉ cần thiết lập trên máy đóng vai trò Client."
         )
     )
 }
