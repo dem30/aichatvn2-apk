@@ -434,6 +434,16 @@ fun DashboardScreen(
                 }
             }
 
+            // ✅ MỚI: Card "Sức khoẻ hệ thống" (SHAS) — đặt đầu danh sách nội dung, trước đề
+            // xuất AI, theo đúng thứ tự đã duyệt trong kế hoạch UX overhaul.
+            Column(modifier = Modifier.padding(top = 8.dp, start = 16.dp, end = 16.dp)) {
+                com.aichatvn.agent.ui.system.SystemHealthCard(
+                    onOpenDetail = {
+                        navController.navigate(Screen.SYSTEM_HEALTH_ROUTE)
+                    }
+                )
+            }
+
             if (aiRecommendations.isNotEmpty()) {
                 // ✅ SỬA: trước đây chỉ lấy aiRecommendations.first() — nếu có ≥2 thói quen
                 // đang chờ duyệt cùng lúc, các cái còn lại bị "giấu" hoàn toàn khỏi người dùng

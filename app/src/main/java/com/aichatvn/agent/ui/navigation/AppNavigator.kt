@@ -60,6 +60,8 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
         const val PIPELINE_GRAPH_ROUTE = "pipeline_graph"
         const val DIAL_ROUTE = "dial"
         const val CALL_ROUTE = "call"
+        // ✅ MỚI: màn chi tiết "Sức khoẻ hệ thống" (SHAS) — mở từ SystemHealthCard trên Dashboard.
+        const val SYSTEM_HEALTH_ROUTE = "system_health"
 
         // ✅ MỚI: Màn chặn đầu tiên trước Dashboard khi thiết bị chưa activation_status.
         const val ACTIVATION_ROUTE = "activation"
@@ -218,6 +220,11 @@ fun AppNavigator(
                 composable(Screen.Chat.route) { ChatScreen(navController, unreadInboxCount = totalUnreadCount) }
                 composable(Screen.INBOX_ROUTE) { InboxScreen(navController) }
                 composable(Screen.DIAGNOSTICS_ROUTE) { DiagnosticsScreen(navController) }
+                composable(Screen.SYSTEM_HEALTH_ROUTE) {
+                    com.aichatvn.agent.ui.system.SystemHealthScreen(
+                        onBack = { navController.popBackStack() }
+                    )
+                }
                 composable(Screen.PIPELINE_GRAPH_ROUTE) { PipelineGraphScreen(navController) }
                 composable(Screen.DIAL_ROUTE) { DialScreen(navController, callViewModel) }
 
