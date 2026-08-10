@@ -134,6 +134,12 @@ class WebhookGatewayService : Service() {
     @Inject
     lateinit var callSkill: com.aichatvn.agent.skills.CallSkill
 
+    // ✅ MỚI: nhận kết quả thực thi thật từ Camera Node (type="device_command_result" qua SSE
+    // /stream/{token}) và chuyển tiếp cho DeviceCommandGatewayClient để hoàn tất Deferred đang
+    // chờ — xem handleIncomingWebhookEvent() và resolvePendingResult().
+    @Inject
+    lateinit var deviceCommandGatewayClient: DeviceCommandGatewayClient
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
@@ -684,6 +690,26 @@ class WebhookGatewayService : Service() {
     private suspend fun handleIncomingWebhookEvent(rawData: String, gatewayUrl: String, gatewayToken: String) {
                                         try {
                                             val jsonObj = org.json.JSONObject(rawData)
+
+                                            // ✅ MỚI: kết quả thực thi THẬT của 1 lệnh thiết bị (Tuya, và sau này MQTT...) gửi
+                                            // qua sendDeviceCommandToHomeAndAwaitResult() — Camera Node báo về qua
+                                            // POST /device/command_result, gateway relay vào đúng kênh /stream/{token} này
+                                            // với "type"="device_command_result" (KHÁC với "event", vốn dùng cho token_sync/
+                                            // chat bên dưới). Xử lý xong thì return ngay — payload này không có
+                                            // platform/senderId/text nên không được rơi tiếp xuống nhánh chat phía dưới.
+                                            if (jsonObj.optString("type", "") == "device_command_result") {
+                                                val requestId = jsonObj.optString("requestId", "")
+                                                val success = jsonObj.optBoolean("success", false)
+                                                val message = jsonObj.optString("message", "")
+                                                if (requestId.isNotEmpty()) {
+                                                    logger.i("DeviceCommandResult", "📩 Nhận kết quả thực thi requestId=$requestId success=$success: $message")
+                                                    deviceCommandGatewayClient.resolvePendingResult(requestId, success, message)
+                                                } else {
+                                                    logger.w("DeviceCommandResult", "Nhận device_command_result thiếu requestId, bỏ qua: $rawData")
+                                                }
+                                                return
+                                            }
+
                                             val event = jsonObj.optString("event", "")
 
                                             if (event == "token_sync") {
@@ -1210,57 +1236,10 @@ class WebhookGatewayService : Service() {
     }
 
     /**
-     * Client (máy mang theo người) gọi hàm này để gửi lệnh xuống Camera Node ở nhà khi ở ngoài
-     * mạng LAN. Gọi từ SmartSwitchSkill khi phát hiện không thể điều khiển Local trực tiếp (ra
-     * khỏi Wi-Fi nhà) — xem ghi chú tích hợp ở SmartSwitchSkill.
+     * Client (máy mang theo người) gửi lệnh xuống Camera Node ở nhà khi ở ngoài mạng LAN — xem
+     * DeviceCommandGatewayClient.kt (tách ra khỏi Service này vì nơi gọi thật, SmartSwitchSkill,
+     * không nên phụ thuộc vòng đời Service chỉ để POST 1 lệnh đơn giản).
      */
-    fun sendDeviceCommandToHome(deviceType: String, command: org.json.JSONObject, onResult: (Boolean, String) -> Unit) {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
-                // deviceCode của Camera Node ở nhà — KHÁC với deviceCode của chính máy Client
-                // đang chạy hàm này. Cần người dùng đã cấu hình "mã Camera Node ở nhà" trong
-                // Settings (giống cách nhập số điện thoại để gọi cho ai đó) — không tự suy ra được.
-                val homeDeviceCode = configProvider.getString(AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE).trim()
-
-                if (gatewayUrl.isBlank() || gatewayToken.isBlank() || homeDeviceCode.isBlank()) {
-                    withContext(Dispatchers.Main) { onResult(false, "Chưa cấu hình đầy đủ Gateway hoặc mã Camera Node ở nhà.") }
-                    return@launch
-                }
-
-                val bodyJson = org.json.JSONObject().apply {
-                    put("token", gatewayToken)
-                    put("targetDeviceCode", homeDeviceCode)
-                    put("deviceType", deviceType)
-                    put("command", command)
-                }
-                val mediaType = "application/json; charset=utf-8".toMediaType()
-                val requestBody = bodyJson.toString().toRequestBody(mediaType)
-                val request = Request.Builder()
-                    .url("$gatewayUrl/device/command")
-                    .post(requestBody)
-                    .build()
-
-                apiClient.newCall(request).execute().use { response ->
-                    val bodyStr = response.body?.string() ?: "{}"
-                    val json = org.json.JSONObject(bodyStr)
-                    val status = json.optString("status", "error")
-                    withContext(Dispatchers.Main) {
-                        when (status) {
-                            "success" -> onResult(true, "Đã gửi lệnh, đang chờ Camera Node xử lý...")
-                            "not_registered" -> onResult(false, "Camera Node ở nhà hiện không online.")
-                            else -> onResult(false, json.optString("message", "Gửi lệnh thất bại"))
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                logger.e("DeviceCommandSSE", "❌ Lỗi gửi lệnh thiết bị: ${e.message}")
-                withContext(Dispatchers.Main) { onResult(false, "Lỗi kết nối: ${e.message}") }
-            }
-        }
-    }
-
 
     // toàn với startCloudGatewaySSE() (facebook/instagram/telegram-token-chung) — kết nối
     // tới /widget/inbox/{widget_key}/{token} trên gateway. Cùng lý do và cùng mẫu với

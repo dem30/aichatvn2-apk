@@ -1,6 +1,8 @@
 package com.aichatvn.agent.skills
 
 import android.content.Context
+import com.aichatvn.agent.config.AppConfigDefaults
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
@@ -37,6 +39,10 @@ class TuyaManager @Inject constructor(
     private val database: AppDatabase, // ✅ MỚI: cần worldStateDao() để dọn world_state khi xoá thiết bị
     // ✅ MỚI: điều khiển LOCAL qua LAN — xem fetchLocalKey()/setDeviceState() bên dưới.
     private val tuyaLocalController: com.aichatvn.agent.tools.tuya.TuyaLocalController,
+    // ✅ MỚI: đọc công tắc LOCAL_ONLY_MODE_ENABLED + HOME_CAMERA_NODE_DEVICE_CODE/
+    // GLOBAL_GATEWAY_URL/GLOBAL_GATEWAY_TOKEN cho nhánh fallback gateway trong
+    // setDeviceState() — xem trySetDeviceStateViaGateway() bên dưới.
+    private val configProvider: AppConfigProvider,
     private val logger: Logger
 ) {
     companion object {
@@ -957,6 +963,23 @@ class TuyaManager @Inject constructor(
         if (localDpId != null && trySetDeviceStateLocal(device.id, localDpId, state)) {
             updateDeviceStatus(device.id, true)
             return@withContext
+        }
+
+        // ✅ MỚI: "Chế độ Local-only" (LOCAL_ONLY_MODE_ENABLED) đang bật — Local vừa thất bại (hoặc
+        // thiết bị chưa từng resolve được dpId). KHÔNG rơi xuống Cloud API bên dưới nữa trong mọi
+        // trường hợp — ném lỗi thẳng ở đây. Việc thử tiếp qua Gateway → Camera Node ở nhà (đã có
+        // sẵn hạ tầng thật: WebhookGatewayService.sendDeviceCommandToHome() + handleTuyaCommand()
+        // phía Camera Node, tái dùng lại chính turnOn()/turnOff() này) là trách nhiệm của TẦNG GỌI
+        // (SmartSwitchSkill.handleSet()), KHÔNG đặt trong TuyaManager — vì gọi gateway cần
+        // DeviceCommandGatewayClient (POST bất đồng bộ, có khái niệm "đã gửi, đang chờ Camera Node
+        // xử lý" khác hẳn với true/false đồng bộ mà setDeviceState() trả về), và vì TuyaManager
+        // đang được chính Camera Node TÁI SỬ DỤNG để THỰC THI lệnh nhận từ gateway — nếu
+        // TuyaManager tự gọi gateway ở đây, một lệnh gửi tới Camera Node có thể vòng lặp lại gateway
+        // vô hạn nếu Camera Node đó lại không có Local sẵn.
+        if (configProvider.getBoolean(AppConfigDefaults.LOCAL_ONLY_MODE_ENABLED)) {
+            throw Exception(
+                "Chế độ Local-only đang bật: điều khiển LOCAL thất bại và Cloud đã bị tắt cho thiết bị này."
+            )
         }
 
         val token = getAccessToken()

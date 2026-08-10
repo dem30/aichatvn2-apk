@@ -8,6 +8,7 @@ import com.aichatvn.agent.core.plugin.PluginParameter
 import com.aichatvn.agent.core.plugin.PluginCapabilities
 import com.aichatvn.agent.core.plugin.PluginManifest
 import com.aichatvn.agent.data.AppDatabase
+import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.skills.base.BaseSkill
 import com.aichatvn.agent.utils.Logger
@@ -28,6 +29,9 @@ class SmartSwitchSkill @Inject constructor(
     private val database: AppDatabase,
     private val deviceRegistry: DeviceRegistry,
     private val configProvider: AppConfigProvider,
+    // ✅ MỚI: fallback gửi lệnh qua Gateway → Camera Node ở nhà khi Local thất bại và đang bật
+    // Chế độ Local-only (LOCAL_ONLY_MODE_ENABLED) — xem handleSet().
+    private val deviceCommandGatewayClient: DeviceCommandGatewayClient,
     logger: Logger
 ) : BaseSkill("smart_switch", "Điều khiển thiết bị đóng ngắt", logger), Plugin {
 
@@ -303,10 +307,56 @@ class SmartSwitchSkill @Inject constructor(
             val deviceId = deviceEntity.id
             val deviceName = deviceEntity.name
 
-            if (state) {
-                tuyaManager.turnOn(deviceKey)
-            } else {
-                tuyaManager.turnOff(deviceKey)
+            // ✅ MỚI: khi Chế độ Local-only đang bật, TuyaManager.turnOn()/turnOff() không còn
+            // fallback Cloud nữa — nó throw thẳng nếu Local thất bại (xem TuyaManager.
+            // setDeviceState()). Bắt lỗi đó riêng ở đây để thử fallback THỨ HAI: gửi lệnh qua
+            // Gateway tới Camera Node ở nhà, CHỜ xác nhận thực thi thật (không chỉ "đã gửi") —
+            // xem DeviceCommandGatewayClient.sendDeviceCommandToHomeAndAwaitResult(). Camera Node
+            // tự gọi lại turnOn()/turnOff() của CHÍNH NÓ (đang cùng LAN với thiết bị), tức là lệnh
+            // vẫn được thực thi bằng đường LOCAL thật, chỉ có bước "chuyển tiếp" đi qua Gateway.
+            //
+            // Khi Local-only đang TẮT (mặc định), tuyaManager.turnOn()/turnOff() không đổi hành
+            // vi cũ (vẫn tự fallback Cloud như trước) — nhánh catch bên dưới trong trường hợp đó
+            // chỉ bắt lỗi thật sự (cả Local lẫn Cloud đều thất bại), không có gì để thử thêm qua
+            // gateway, nên ném lại lỗi gốc như hành vi cũ.
+            var viaGateway = false
+            // ✅ MỚI: chỉ có ý nghĩa khi viaGateway=true — true = Camera Node đã báo về xác nhận
+            // thực thi thật; false = hết thời gian chờ mà chưa có xác nhận (lệnh CÓ THỂ vẫn đang
+            // được xử lý, không phải chắc chắn thất bại).
+            var gatewayConfirmed = true
+            try {
+                if (state) {
+                    tuyaManager.turnOn(deviceKey)
+                } else {
+                    tuyaManager.turnOff(deviceKey)
+                }
+            } catch (localOnlyFailure: Exception) {
+                val localOnlyEnabled = configProvider.getBoolean(AppConfigDefaults.LOCAL_ONLY_MODE_ENABLED)
+                if (!localOnlyEnabled) throw localOnlyFailure
+
+                val homeDeviceCode = configProvider.getString(AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE).trim()
+                if (homeDeviceCode.isBlank()) {
+                    throw Exception(
+                        "Local thất bại và chưa cấu hình Mã Camera Node ở nhà để gửi lệnh dự phòng qua Gateway."
+                    )
+                }
+
+                val gatewayResult = deviceCommandGatewayClient.sendDeviceCommandToHomeAndAwaitResult(
+                    deviceType = "tuya",
+                    command = org.json.JSONObject().apply {
+                        put("deviceName", deviceKey)
+                        put("action", if (state) "on" else "off")
+                    }
+                )
+                if (!gatewayResult.success) {
+                    // gatewayResult.confirmed luôn true ở nhánh này (thất bại KHÔNG XÁC NHẬN
+                    // không tồn tại — timeout luôn trả success=true dè dặt, xem doc-comment
+                    // sendDeviceCommandToHomeAndAwaitResult()), nên đây là thất bại THẬT: hoặc
+                    // Gateway từ chối ngay, hoặc Camera Node đã báo về thực thi lỗi.
+                    throw Exception("Local thất bại, gửi qua Gateway cũng thất bại: ${gatewayResult.message}")
+                }
+                viaGateway = true
+                gatewayConfirmed = gatewayResult.confirmed
             }
 
             val now = System.currentTimeMillis()
@@ -326,7 +376,14 @@ class SmartSwitchSkill @Inject constructor(
                     sourceId = deviceName,
                     eventType = "state_change",
                     value = state.toString(),
-                    summary = "Thiết bị Tuya $deviceName đã được chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} thành công qua ứng dụng."
+                    summary = when {
+                        viaGateway && gatewayConfirmed ->
+                            "Thiết bị Tuya $deviceName đã được Camera Node ở nhà xác nhận chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} (qua Gateway, Local trực tiếp thất bại)."
+                        viaGateway ->
+                            "Thiết bị Tuya $deviceName: đã gửi lệnh ${if (state) "Bật" else "Tắt"} qua Gateway tới Camera Node ở nhà (Local trực tiếp thất bại) — CHƯA có xác nhận thực thi thật, có thể vẫn đang xử lý."
+                        else ->
+                            "Thiết bị Tuya $deviceName đã được chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} thành công qua ứng dụng."
+                    }
                 )
             )
             
@@ -341,7 +398,14 @@ class SmartSwitchSkill @Inject constructor(
                 )
             }
             
-            success("Đã ${if (state) "bật" else "tắt"} thiết bị $deviceName")
+            when {
+                viaGateway && gatewayConfirmed ->
+                    success("Đã ${if (state) "bật" else "tắt"} $deviceName qua Camera Node ở nhà (Local trực tiếp không kết nối được)")
+                viaGateway ->
+                    success("Đã gửi lệnh ${if (state) "bật" else "tắt"} $deviceName tới Camera Node ở nhà, nhưng chưa nhận được xác nhận thực thi — kiểm tra lại nếu cần chắc chắn")
+                else ->
+                    success("Đã ${if (state) "bật" else "tắt"} thiết bị $deviceName")
+            }
         } catch (e: Exception) {
             failure("Lỗi điều khiển thiết bị: ${e.message}")
         }

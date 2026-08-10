@@ -258,10 +258,15 @@ fun AppNavigator(
                 // ✅ MỚI: màn xem trực tiếp/ghi hình RTSP — CameraLiveViewScreen đã nằm cùng
                 // package com.aichatvn.agent.ui.screens, đã được phủ bởi wildcard import
                 // "com.aichatvn.agent.ui.screens.*" ở đầu file, KHÔNG cần thêm import riêng.
+                // ⚠️ SỬA: truyền callViewModel xuống (giống DialScreen(navController, callViewModel)
+                // ở trên) — màn này có nút "Gọi xem qua Camera Node" khi phát hiện ngoài LAN nhà,
+                // cần dùng ĐÚNG instance CallViewModel đang được AppNavigator quan sát, không tự
+                // hiltViewModel() riêng bên trong route (sẽ lệch scope, xem ghi chú trong
+                // CameraLiveViewScreen.kt).
                 composable(
                     route = "camera_live/{cameraId}",
                     arguments = listOf(navArgument("cameraId") { type = NavType.StringType })
-                ) { CameraLiveViewScreen(navController) }
+                ) { CameraLiveViewScreen(navController, callViewModel) }
             }
         }
 

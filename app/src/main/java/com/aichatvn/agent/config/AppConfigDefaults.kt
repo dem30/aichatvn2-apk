@@ -170,6 +170,15 @@ object AppConfigDefaults {
     // của MỘT MÁY KHÁC, không phải của chính máy đang chạy. Dùng bởi sendDeviceCommandToHome().
     const val HOME_CAMERA_NODE_DEVICE_CODE  = "device.home_camera_node_code"
 
+    // ✅ MỚI: Công tắc "Chế độ Local-only" — khi bật, TuyaManager.setDeviceState() KHÔNG
+    // BAO GIỜ fallback xuống Cloud API nữa nếu điều khiển LOCAL (LAN) thất bại; thay vào đó
+    // fallback sang gửi lệnh qua Gateway tới Camera Node ở nhà (sendDeviceCommandToHome()),
+    // và chỉ báo lỗi cho người dùng nếu CẢ HAI đều thất bại. fetchLocalKey() vẫn là ngoại lệ
+    // bắt buộc gọi Cloud đúng 1 lần lúc thêm thiết bị mới — không tắt được, vì không có cách
+    // nào lấy local_key mà không qua Cloud. Mặc định "false" để không đổi hành vi hiện tại
+    // của người dùng cũ (vẫn fallback Cloud như trước) cho tới khi họ tự bật.
+    const val LOCAL_ONLY_MODE_ENABLED       = "device.local_only_mode_enabled"
+
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
@@ -716,6 +725,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Mã Camera Node ở nhà",
             description = "Nhập mã deviceCode (8 ký tự) của máy đặt cố định ở nhà — xem mã này trong Cài đặt trên chính máy đó. Chỉ cần thiết lập trên máy đóng vai trò Client."
+        ),
+        AppConfigEntity(
+            key = LOCAL_ONLY_MODE_ENABLED,
+            value = "false",
+            type = "boolean",
+            pluginId = "global",
+            label = "Chế độ Local-only (tắt Cloud dự phòng)",
+            description = "Khi bật: điều khiển thiết bị Tuya khi Local (LAN) thất bại sẽ chuyển sang gửi lệnh qua Gateway tới Camera Node ở nhà, KHÔNG bao giờ gọi Cloud API để điều khiển hàng ngày nữa. Yêu cầu đã nhập Mã Camera Node ở nhà trước khi bật."
         )
     )
 }
