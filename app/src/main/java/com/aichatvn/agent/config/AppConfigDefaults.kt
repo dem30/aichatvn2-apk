@@ -179,6 +179,14 @@ object AppConfigDefaults {
     // của người dùng cũ (vẫn fallback Cloud như trước) cho tới khi họ tự bật.
     const val LOCAL_ONLY_MODE_ENABLED       = "device.local_only_mode_enabled"
 
+    // ✅ MỚI: deviceCode của máy CẦN ĐƯỢC BÁO khi OnvifEventRelay (Camera Node) phát hiện chuyển
+    // động qua ONVIF — do người dùng tự nhập tay trên chính máy Camera Node, CÙNG Ý NGHĨA/CÙNG
+    // MẪU với HOME_CAMERA_NODE_DEVICE_CODE ở trên nhưng chiều NGƯỢC LẠI (đó là Client -> báo cho
+    // Camera Node biết gửi lệnh đi đâu; đây là Camera Node -> báo cho ai biết vừa có chuyển
+    // động). Để trống = relay về CHÍNH máy Camera Node này (trường hợp 1 máy vừa quản lý camera
+    // vừa làm Camera Node, không cần 2 thiết bị vật lý riêng). Xem OnvifEventRelay.kt.
+    const val CAMERA_ALARM_NOTIFY_DEVICE_CODE = "device.camera_alarm_notify_device_code"
+
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
     const val TELEGRAM_BOT_TOKEN            = "telegram.bot_token"
@@ -733,6 +741,14 @@ object AppConfigDefaults {
             pluginId = "global",
             label = "Chế độ Local-only (tắt Cloud dự phòng)",
             description = "Khi bật: điều khiển thiết bị Tuya khi Local (LAN) thất bại sẽ chuyển sang gửi lệnh qua Gateway tới Camera Node ở nhà, KHÔNG bao giờ gọi Cloud API để điều khiển hàng ngày nữa. Yêu cầu đã nhập Mã Camera Node ở nhà trước khi bật."
+        ),
+        AppConfigEntity(
+            key = CAMERA_ALARM_NOTIFY_DEVICE_CODE,
+            value = "",
+            type = "string",
+            pluginId = "global",
+            label = "Mã máy cần báo khi ONVIF phát hiện chuyển động",
+            description = "Chỉ cần thiết lập trên máy đóng vai trò Camera Node. Nhập deviceCode (8 ký tự) của máy CẦN ĐƯỢC BÁO khi ONVIF phát hiện chuyển động (thường là máy bạn mang theo người) — xem mã này trong Cài đặt trên chính máy đó. Để trống = tự báo về CHÍNH máy Camera Node này."
         )
     )
 }

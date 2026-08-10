@@ -144,6 +144,12 @@ class WebhookGatewayService : Service() {
     @Inject
     lateinit var deviceCommandGatewayClient: DeviceCommandGatewayClient
 
+    // ✅ MỚI: vá khoảng trống Local-only cho ONVIF — chỉ thực sự làm gì nếu deviceRole =
+    // "camera_node" (tự kiểm tra bên trong start()), máy "client" gọi start() vô hại. Xem
+    // OnvifEventRelay.kt để biết đầy đủ điều kiện kích hoạt/chống bắn đôi.
+    @Inject
+    lateinit var onvifEventRelay: OnvifEventRelay
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
@@ -303,6 +309,10 @@ class WebhookGatewayService : Service() {
         // kết nối nếu deviceRole = "camera_node" (xem điều kiện bên trong hàm) — máy "client"
         // gọi startDeviceCommandSSE() vô hại, nó tự đứng chờ, không tốn tài nguyên đáng kể.
         startDeviceCommandSSE()
+        // ✅ MỚI: vòng lặp relay sự kiện ONVIF (chỉ thực sự chạy nếu deviceRole = "camera_node",
+        // xem OnvifEventRelay.start()) — cùng triết lý "gọi vô hại trên máy client" với
+        // startDeviceCommandSSE() ở trên.
+        onvifEventRelay.start(serviceScope)
         startTelegramLongPolling()   
         startHeartbeatLoop()         
         startScheduleLoop()
