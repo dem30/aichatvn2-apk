@@ -49,6 +49,10 @@ import kotlin.jvm.JvmSuppressWildcards
 import com.aichatvn.agent.skills.HouseManagerSkill
 // ✅ THÊM IMPORT: Trình quản lý tín hiệu cuộc gọi P2P
 import com.aichatvn.agent.skills.GatewaySignalingManager
+// ✅ THÊM IMPORT: Client gửi lệnh thiết bị qua Gateway (thiếu import này gây lỗi
+// "Unresolved reference: DeviceCommandGatewayClient" -> kapt Hilt không resolve được
+// type, kéo theo lỗi InjectProcessingStep cho mọi field/provider liên quan.
+import com.aichatvn.agent.skills.DeviceCommandGatewayClient
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
