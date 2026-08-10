@@ -216,7 +216,7 @@ class OnvifEventRelay @Inject constructor(
 
         logger.i(TAG, "🔌 Bắt đầu relay ONVIF cho camera $cameraId ($eventsUrl)")
 
-        while (isActive) {
+        while (coroutineContext.isActive) {
             var pullPointUrl: String? = null
             try {
                 pullPointUrl = subscribe(eventsUrl, username, password)
@@ -227,7 +227,7 @@ class OnvifEventRelay @Inject constructor(
                 }
 
                 var pullCount = 0
-                while (isActive && pullCount < RESUBSCRIBE_AFTER_N_PULLS) {
+                while (coroutineContext.isActive && pullCount < RESUBSCRIBE_AFTER_N_PULLS) {
                     val motionDetected = pullOnce(pullPointUrl, username, password)
                     if (motionDetected) {
                         logger.i(TAG, "🚨 ONVIF phát hiện chuyển động: camera $cameraId")

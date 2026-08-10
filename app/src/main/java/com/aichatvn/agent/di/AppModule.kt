@@ -31,16 +31,8 @@ import javax.inject.Provider // Thêm import Provider
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    @Provides
-    @Singleton
-    fun provideTuyaManager(
-        @ApplicationContext context: Context,
-        database: AppDatabase,
-        logger: Logger
-    ): TuyaManager {
-        return TuyaManager(context, database.tuyaDeviceDao(), database, logger)
-    }
-
+    // ✅ ĐÃ SỬA: TuyaManager có @Inject constructor nên để Hilt tự dựng,
+    // không cần @Provides thủ công (constructor thật cần thêm TuyaLocalController + AppConfigProvider)
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {

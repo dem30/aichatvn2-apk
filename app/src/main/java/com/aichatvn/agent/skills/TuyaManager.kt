@@ -725,7 +725,7 @@ class TuyaManager @Inject constructor(
             return false
         }
         logger.i("TuyaManager", "⚡ ($deviceId) điều khiển LOCAL thành công qua $ip — không cần gọi Cloud API.")
-        true
+        return true
     }
 
     suspend fun turnOn(deviceName: String) = withContext(Dispatchers.IO) {
