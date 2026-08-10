@@ -53,6 +53,7 @@ import com.aichatvn.agent.ui.viewmodels.SystemHealthViewModel
 @Composable
 fun SystemHealthScreen(
     onBack: () -> Unit,
+    onNavigateToRoute: (String) -> Unit,
     viewModel: SystemHealthViewModel = hiltViewModel()
 ) {
     val report by viewModel.report.collectAsState()
@@ -131,7 +132,8 @@ fun SystemHealthScreen(
                                     HealthItemRow(
                                         item = healthItem,
                                         isApplying = isApplying,
-                                        onApply = { viewModel.applyItems(listOf(healthItem)) }
+                                        onApply = { viewModel.applyItems(listOf(healthItem)) },
+                                        onNavigate = { route -> onNavigateToRoute(route) }
                                     )
                                 }
                             }
@@ -153,7 +155,8 @@ private fun categoryTitle(category: HealthCategory): String = when (category) {
 private fun HealthItemRow(
     item: HealthItem,
     isApplying: Boolean,
-    onApply: () -> Unit
+    onApply: () -> Unit,
+    onNavigate: (String) -> Unit
 ) {
     // UNSUPPORTED không hiển thị ở màn chi tiết — không có giá trị thông tin cho người dùng
     // cuối ("camera này không hỗ trợ X" không phải hành động họ có thể làm gì với nó).
@@ -184,6 +187,12 @@ private fun HealthItemRow(
             if (item.status == HealthStatus.IMPROVABLE && item.safeToAutoApply) {
                 TextButton(onClick = onApply, enabled = !isApplying) {
                     Text("Áp dụng")
+                }
+            } else if (item.status == HealthStatus.CONFLICT && item.manualActionRoute != null) {
+                // Không tự động áp dụng được (cần người dùng tự quyết định/gọi mạng thật) —
+                // nhưng vẫn cho 1 lối đi thay vì chỉ hiện cảnh báo không làm gì được.
+                TextButton(onClick = { onNavigate(item.manualActionRoute) }) {
+                    Text("Đi tới cài đặt")
                 }
             }
         }

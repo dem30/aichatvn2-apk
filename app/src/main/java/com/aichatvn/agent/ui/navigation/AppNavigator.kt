@@ -222,7 +222,8 @@ fun AppNavigator(
                 composable(Screen.DIAGNOSTICS_ROUTE) { DiagnosticsScreen(navController) }
                 composable(Screen.SYSTEM_HEALTH_ROUTE) {
                     com.aichatvn.agent.ui.system.SystemHealthScreen(
-                        onBack = { navController.popBackStack() }
+                        onBack = { navController.popBackStack() },
+                        onNavigateToRoute = { route -> navController.navigate(route) }
                     )
                 }
                 composable(Screen.PIPELINE_GRAPH_ROUTE) { PipelineGraphScreen(navController) }

@@ -49,6 +49,11 @@ enum class HealthCategory {
  * @param safeToAutoApply true nếu SystemAutoConfigurer được phép tự áp dụng mục này khi người
  *                        dùng bấm "Áp dụng các mục an toàn" hàng loạt — false bắt buộc phải vào
  *                        đúng màn hình chi tiết (CameraDetailScreen...) để người dùng tự bấm.
+ * @param manualActionRoute route điều hướng (khớp Screen.xxx.route trong AppNavigator) cho mục
+ *                          CONFLICT cần người dùng tự xử lý ở màn khác — null nếu không có hành
+ *                          động điều hướng nào phù hợp (mục chỉ mang tính thông tin). UI hiện nút
+ *                          "Đi tới cài đặt" khi field này khác null, thay vì đoán route theo tiền
+ *                          tố id (dễ vỡ khi thêm loại mục mới).
  */
 data class HealthItem(
     val id: String,
@@ -57,7 +62,8 @@ data class HealthItem(
     val title: String,
     val description: String,
     val relatedEntityId: String? = null,
-    val safeToAutoApply: Boolean = false
+    val safeToAutoApply: Boolean = false,
+    val manualActionRoute: String? = null
 )
 
 /**

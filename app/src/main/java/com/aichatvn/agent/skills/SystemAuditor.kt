@@ -144,7 +144,10 @@ class SystemAuditor @Inject constructor(
                 relatedEntityId = device.id,
                 // CONFLICT, không IMPROVABLE: việc dò local_key gọi mạng thật (fetchLocalKey),
                 // không phải chỉ bật cờ — để người dùng tự bấm ở màn hình chi tiết thiết bị.
-                safeToAutoApply = false
+                safeToAutoApply = false,
+                // route "tuya" (Screen.Tuya) — màn danh sách thiết bị, nơi người dùng tự bấm
+                // "Bật điều khiển nhanh" cho từng thiết bị (xem TuyaScreen.kt).
+                manualActionRoute = if (hasLocalInfo) null else "tuya"
             )
         }
     }
