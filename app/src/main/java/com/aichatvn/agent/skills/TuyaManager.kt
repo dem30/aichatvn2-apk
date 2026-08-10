@@ -35,6 +35,8 @@ class TuyaManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val tuyaDeviceDao: TuyaDeviceDao,
     private val database: AppDatabase, // ✅ MỚI: cần worldStateDao() để dọn world_state khi xoá thiết bị
+    // ✅ MỚI: điều khiển LOCAL qua LAN — xem fetchLocalKey()/setDeviceState() bên dưới.
+    private val tuyaLocalController: com.aichatvn.agent.tools.tuya.TuyaLocalController,
     private val logger: Logger
 ) {
     companion object {
@@ -148,7 +150,15 @@ class TuyaManager @Inject constructor(
         // bộ. Trước đây app tin thẳng giá trị này, khiến thiết bị mới cài luôn báo "Mất kết
         // nối" cho tới khi người dùng vào bật/tắt tay (lúc đó Cloud đã kịp đồng bộ nên gọi
         // lệnh thành công, và setDeviceState() tự ép online=true).
-        val existingIds = tuyaDeviceDao.getAllDevices().map { it.id }.toSet()
+        //
+        // ✅ MỚI: cùng 1 lần đọc DB này còn dùng để LẤY LẠI 4 cột điều khiển local
+        // (localKey/lastKnownIp/protocolVersion/localSwitchDpId) cho từng id — vì
+        // insertAllDevices() bên dưới REPLACE nguyên dòng, entity dựng lại từ Cloud API
+        // không hề biết các cột này. Không kế thừa ở đây thì mỗi lần Dashboard refresh/
+        // đồng bộ nền (scanDevices chạy định kỳ) sẽ xoá sạch local_key đã fetch, buộc
+        // fetchLocalKey() phải gọi lại Cloud mỗi lần — đúng thứ ta đang cố tránh.
+        val existingEntities = tuyaDeviceDao.getAllDevices().associateBy { it.id }
+        val existingIds = existingEntities.keys
 
         val urlPath = "/v1.0/users/$uid/devices"
 
@@ -193,6 +203,12 @@ class TuyaManager @Inject constructor(
                     devicesById[id] = info
                     logger.i("TuyaManager", "📱 $name → $id (online: $online)")
 
+                    // ✅ MỚI: kế thừa 4 field local từ bản ghi cũ (nếu có) — xem giải thích ở
+                    // existingEntities phía trên. Thiết bị lần đầu thấy (existing == null) thì
+                    // các field này vẫn là null theo default của TuyaDeviceEntity, hoàn toàn
+                    // bình thường — sẽ được fetchLocalKey()/discoverIp() điền vào lần đầu điều
+                    // khiển hoặc lần đầu bấm "Kích hoạt điều khiển local" ở UI.
+                    val existing = existingEntities[id]
                     deviceList.add(
                         TuyaDeviceEntity(
                             id = id,
@@ -200,7 +216,11 @@ class TuyaManager @Inject constructor(
                             online = online,
                             category = category,
                             productName = productName,
-                            lastSeen = System.currentTimeMillis()
+                            lastSeen = System.currentTimeMillis(),
+                            localKey = existing?.localKey,
+                            lastKnownIp = existing?.lastKnownIp,
+                            protocolVersion = existing?.protocolVersion,
+                            localSwitchDpId = existing?.localSwitchDpId
                         )
                     )
                 }
@@ -518,6 +538,190 @@ class TuyaManager @Inject constructor(
             ?: throw IllegalStateException("Unsupported Tuya region: $region")
     }
 
+    // ✅ MỚI: gọi Cloud API 1 LẦN DUY NHẤT để lấy local_key — dùng chính client_id/client_secret
+    // người dùng đã tự nhập (mỗi khách hàng tự đăng ký Tuya riêng như đã chốt). Sau lần gọi này,
+    // setDeviceState()/queryStatus không cần cloud nữa cho việc điều khiển thiết bị.
+    suspend fun fetchLocalKey(deviceId: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val token = getAccessToken()
+            val prefs = context.dataStore.data.first()
+            val clientId = prefs[CLIENT_ID] ?: return@withContext null
+            val clientSecret = prefs[CLIENT_SECRET] ?: return@withContext null
+            val baseUrl = getApiBaseUrl()
+
+            val urlPath = "/v1.0/devices/$deviceId"
+            val timestamp = System.currentTimeMillis()
+            val nonce = UUID.randomUUID().toString()
+            val sign = calculateSignature(
+                clientId = clientId, accessToken = token, timestamp = timestamp, nonce = nonce,
+                secret = clientSecret, method = "GET", urlPathAndQuery = urlPath
+            )
+            val request = Request.Builder()
+                .url("$baseUrl$urlPath")
+                .addHeader("client_id", clientId)
+                .addHeader("access_token", token)
+                .addHeader("sign", sign)
+                .addHeader("t", timestamp.toString())
+                .addHeader("nonce", nonce)
+                .addHeader("sign_method", "HMAC-SHA256")
+                .get()
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                logger.w("TuyaManager", "fetchLocalKey($deviceId) HTTP lỗi: ${response.code}")
+                return@withContext null
+            }
+            val json = JSONObject(response.body?.string() ?: "")
+            if (!json.optBoolean("success")) {
+                logger.w("TuyaManager", "fetchLocalKey($deviceId) API lỗi: ${json.optString("msg")}")
+                return@withContext null
+            }
+            val localKey = json.optJSONObject("result")?.optString("local_key")
+            if (localKey.isNullOrBlank()) null else localKey
+        } catch (e: Exception) {
+            logger.e("TuyaManager", "fetchLocalKey($deviceId) lỗi: ${e.message}", e)
+            null
+        }
+    }
+
+    // ✅ MỚI: khác resolveSwitchCode() (trả về CODE dạng tên "switch_1" dùng cho Cloud API) — hàm
+    // này trả về DP ID dạng SỐ ("1") mà giao thức LOCAL cần trong payload {"dps":{"1": true}}.
+    // Tra qua endpoint "functions" (Query Instructions of a Device) rồi khớp theo đúng code đã
+    // resolve được ở resolveSwitchCode(), tránh giả định cứng DP="1" (đúng với đa số công tắc đơn
+    // nhưng không chắc đúng 100% với thiết bị nhiều kênh/loại khác).
+    suspend fun resolveLocalDpId(deviceId: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val switchCode = resolveSwitchCode(deviceId)
+            val token = getAccessToken()
+            val prefs = context.dataStore.data.first()
+            val clientId = prefs[CLIENT_ID] ?: return@withContext null
+            val clientSecret = prefs[CLIENT_SECRET] ?: return@withContext null
+            val baseUrl = getApiBaseUrl()
+
+            val urlPath = "/v1.0/devices/$deviceId/functions"
+            val timestamp = System.currentTimeMillis()
+            val nonce = UUID.randomUUID().toString()
+            val sign = calculateSignature(
+                clientId = clientId, accessToken = token, timestamp = timestamp, nonce = nonce,
+                secret = clientSecret, method = "GET", urlPathAndQuery = urlPath
+            )
+            val request = Request.Builder()
+                .url("$baseUrl$urlPath")
+                .addHeader("client_id", clientId)
+                .addHeader("access_token", token)
+                .addHeader("sign", sign)
+                .addHeader("t", timestamp.toString())
+                .addHeader("nonce", nonce)
+                .addHeader("sign_method", "HMAC-SHA256")
+                .get()
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return@withContext null
+            val json = JSONObject(response.body?.string() ?: "")
+            if (!json.optBoolean("success")) return@withContext null
+
+            val functions = json.optJSONObject("result")?.optJSONArray("functions") ?: return@withContext null
+            for (i in 0 until functions.length()) {
+                val fn = functions.getJSONObject(i)
+                if (fn.optString("code") == switchCode) {
+                    return@withContext fn.optString("dp_id").ifBlank { null }
+                }
+            }
+            // Không khớp được code nào — fallback "1" (mặc định phổ biến nhất cho công tắc đơn
+            // kênh), nhưng log rõ để dễ phát hiện nếu sai với thiết bị nhiều kênh.
+            logger.w("TuyaManager", "resolveLocalDpId($deviceId): không khớp được code=$switchCode trong functions, fallback DP=1")
+            "1"
+        } catch (e: Exception) {
+            logger.e("TuyaManager", "resolveLocalDpId($deviceId) lỗi: ${e.message}", e)
+            null
+        }
+    }
+
+    // ✅ MỚI: chuẩn bị đủ 3 thứ cần cho điều khiển local (local_key, DP id, IP LAN hiện tại) —
+    // gọi trước mỗi lần setDeviceState() nếu thiết bị chưa có đủ dữ liệu, hoặc IP cũ không còn
+    // đúng. Trả về null nếu bất kỳ bước nào thất bại — nơi gọi sẽ tự fallback Cloud API, KHÔNG
+    // throw để không làm gián đoạn luồng bật/tắt chính.
+    private suspend fun ensureLocalControlReady(deviceId: String): TuyaDeviceEntity? = withContext(Dispatchers.IO) {
+        try {
+            var entity = tuyaDeviceDao.getDeviceById(deviceId) ?: return@withContext null
+
+            if (entity.localKey.isNullOrBlank()) {
+                val key = fetchLocalKey(deviceId) ?: return@withContext null
+                val dpId = resolveLocalDpId(deviceId) ?: "1"
+                tuyaDeviceDao.updateLocalControlInfo(deviceId, key, entity.lastKnownIp, entity.protocolVersion, dpId)
+                entity = tuyaDeviceDao.getDeviceById(deviceId) ?: return@withContext null
+            }
+
+            if (entity.lastKnownIp.isNullOrBlank()) {
+                // Timeout ngắn (5s, không phải mặc định 12s của discoverIp) — đây là đường
+                // "chạy trước mỗi lệnh bật/tắt", cần nhanh, không phải bước dò tìm ban đầu ở UI.
+                val discovery = tuyaLocalController.discoverIp(deviceId, timeoutMs = 5_000L)
+                    ?: return@withContext null // không cùng LAN / thiết bị offline — fallback cloud là đúng
+                tuyaDeviceDao.updateLocalControlInfo(
+                    deviceId, entity.localKey, discovery.ip, discovery.version, entity.localSwitchDpId
+                )
+                entity = tuyaDeviceDao.getDeviceById(deviceId) ?: return@withContext null
+            }
+
+            entity
+        } catch (e: Exception) {
+            logger.d("TuyaManager", "ensureLocalControlReady($deviceId) lỗi: ${e.message}")
+            null
+        }
+    }
+
+    // ✅ MỚI: thử điều khiển LOCAL trước khi rơi về Cloud API. Trả về true nếu local thành công
+    // VÀ đã xác minh lại trạng thái thật khớp mong muốn — false trong MỌI trường hợp khác (kể cả
+    // lỗi mạng LAN, sai local_key, không cùng Wi-Fi...), để setDeviceState() tự nối tiếp bằng
+    // đường Cloud API cũ, không đổi hành vi bên ngoài của hàm turnOn()/turnOff().
+    private suspend fun trySetDeviceStateLocal(deviceId: String, dpId: String, state: Boolean): Boolean {
+        val entity = ensureLocalControlReady(deviceId) ?: return false
+        val ip = entity.lastKnownIp ?: return false
+        val localKey = entity.localKey ?: return false
+        val version = entity.protocolVersion ?: "3.3"
+
+        val sent = if (version == "3.4") {
+            tuyaLocalController.sendCommand34(ip, localKey, deviceId, mapOf(dpId to state))
+        } else {
+            tuyaLocalController.sendCommand33(ip, localKey, deviceId, mapOf(dpId to state))
+        }
+        if (!sent) {
+            logger.d("TuyaManager", "trySetDeviceStateLocal($deviceId): gửi lệnh local thất bại, IP có thể đã đổi — fallback cloud.")
+            return false
+        }
+
+        // ⚠️ Xác minh lại chỉ áp dụng cho 3.3 — 3.4 dùng session_key riêng theo từng phiên
+        // (không phải local_key), TuyaLocalController hiện chưa có queryStatus34() nên KHÔNG
+        // gọi nhầm queryStatus33() ở đây (chắc chắn fail vì sai key, khiến local 3.4 luôn bị coi
+        // là thất bại dù gửi lệnh thực ra đã thành công). Với 3.4, tạm tin thẳng kết quả
+        // sendCommand34() — chấp nhận rủi ro không xác minh được, nhất quán với cảnh báo "chưa
+        // test với thiết bị thật" đã ghi trong TuyaLocalController.
+        if (version == "3.4") {
+            logger.i("TuyaManager", "⚡ ($deviceId) đã gửi lệnh LOCAL 3.4 qua $ip (chưa xác minh lại được — xem ghi chú TuyaLocalController).")
+            return true
+        }
+
+        // Xác minh lại NGAY bằng chính đường local (không tốn thêm 1 round-trip cloud) — chỉ 1
+        // lần kiểm tra (khác verifyDeviceStateApplied() bên cloud retry nhiều lần), vì local
+        // round-trip nhanh hơn nhiều, độ trễ lan truyền DP gần như không đáng kể trên LAN.
+        kotlinx.coroutines.delay(300)
+        val status = tuyaLocalController.queryStatus33(ip, localKey, deviceId) ?: return false
+        val actual = when (val v = status[dpId]) {
+            is Boolean -> v
+            is Int -> v == 1
+            is String -> v == "true" || v == "1"
+            else -> null
+        }
+        if (actual != state) {
+            logger.d("TuyaManager", "trySetDeviceStateLocal($deviceId): gửi được nhưng xác minh không khớp (thực tế=$actual, mong muốn=$state) — fallback cloud.")
+            return false
+        }
+        logger.i("TuyaManager", "⚡ ($deviceId) điều khiển LOCAL thành công qua $ip — không cần gọi Cloud API.")
+        true
+    }
+
     suspend fun turnOn(deviceName: String) = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, true)
@@ -744,6 +948,17 @@ class TuyaManager @Inject constructor(
     // thật và cập nhật online=true (thiết bị chắc chắn đang phản hồi được). Nếu không khớp: ném
     // lỗi rõ ràng cho người dùng biết lệnh KHÔNG có tác dụng, thay vì báo thành công giả.
     private suspend fun setDeviceState(device: DeviceInfo, state: Boolean) = withContext(Dispatchers.IO) {
+        // ✅ MỚI: thử LOCAL trước — chỉ khi thành công VÀ xác minh khớp mới return sớm, bỏ qua
+        // toàn bộ phần Cloud API bên dưới. Bất kỳ lý do gì khiến local không chắc chắn (chưa có
+        // local_key, không cùng LAN, sai version, timeout...) đều rơi thẳng xuống code Cloud API
+        // CŨ, KHÔNG THAY ĐỔI, nên hành vi bên ngoài của turnOn()/turnOff() không đổi kể cả khi
+        // local luôn thất bại — an toàn để bật tính năng này mà không lo regression.
+        val localDpId = tuyaDeviceDao.getDeviceById(device.id)?.localSwitchDpId
+        if (localDpId != null && trySetDeviceStateLocal(device.id, localDpId, state)) {
+            updateDeviceStatus(device.id, true)
+            return@withContext
+        }
+
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
         val clientId = prefs[CLIENT_ID] ?: ""

@@ -32,6 +32,8 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.SmartSwitchSkill
 import com.aichatvn.agent.skills.TuyaManager
+import com.aichatvn.agent.tools.tuya.TuyaLocalController
+import com.aichatvn.agent.tools.tuya.TuyaLocalDiscovery
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -43,12 +45,24 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+data class TuyaLocalLabState(
+    val deviceId: String = "",
+    val deviceName: String = "",
+    val running: Boolean = false,
+    val discovery: TuyaLocalDiscovery? = null,
+    val auth: String = "Chưa thử",
+    val status: String = "Chưa thử",
+    val result: String = "",
+    val log: List<String> = emptyList()
+)
+
 // ─── ViewModel ───────────────────────────────────────────────────────────────
 
 @HiltViewModel
 class TuyaViewModel @Inject constructor(
     private val database: AppDatabase,
     private val tuyaManager: TuyaManager,
+    private val tuyaLocalController: TuyaLocalController,
     private val smartSwitchSkill: SmartSwitchSkill,
     private val deviceRegistry: DeviceRegistry,
     private val configProvider: AppConfigProvider,
@@ -77,6 +91,121 @@ class TuyaViewModel @Inject constructor(
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
+
+    // ===== TUYA LOCAL LAB: tuyệt đối không gọi Cloud =====
+    private val _localLab = MutableStateFlow<TuyaLocalLabState>(TuyaLocalLabState())
+    val localLab: StateFlow<TuyaLocalLabState> = _localLab.asStateFlow()
+
+    fun localLabDiscover(device: TuyaDeviceEntity) {
+        viewModelScope.launch {
+            _localLab.value = TuyaLocalLabState(
+                deviceId = device.id,
+                deviceName = device.name,
+                running = true,
+                log = listOf("🔍 Bắt đầu dò LAN cho ${device.name} (${device.id})", "☁️ Cloud: TẮT")
+            )
+            val discovery = withContext(Dispatchers.IO) {
+                tuyaLocalController.discoverIp(device.id, 12_000L)
+            }
+            if (discovery == null) {
+                _localLab.value = _localLab.value.copy(
+                    running = false,
+                    result = "❌ Không tìm thấy broadcast LAN trong 12 giây.",
+                    log = _localLab.value.log + "❌ DISCOVERY FAILED"
+                )
+                return@launch
+            }
+            _localLab.value = _localLab.value.copy(
+                running = false,
+                discovery = discovery,
+                result = "✅ DISCOVERY OK",
+                log = _localLab.value.log + listOf(
+                    "✅ gwId=${discovery.gwId}",
+                    "✅ IP=${discovery.ip}",
+                    "✅ version=${discovery.version}"
+                )
+            )
+        }
+    }
+
+    fun localLabStatus(device: TuyaDeviceEntity) {
+        viewModelScope.launch {
+            val discovery = _localLab.value.discovery
+            val ip = discovery?.ip ?: device.lastKnownIp
+            val key = device.localKey
+            if (ip.isNullOrBlank()) {
+                _localLab.value = _localLab.value.copy(
+                    result = "❌ Chưa có IP. Hãy Dò LAN trước.",
+                    log = _localLab.value.log + "❌ STATUS: thiếu IP"
+                )
+                return@launch
+            }
+            if (key.isNullOrBlank()) {
+                _localLab.value = _localLab.value.copy(
+                    auth = "❌ Chưa có local_key",
+                    result = "⚠️ LAN đã dò được nhưng chưa có local_key trong DB.",
+                    log = _localLab.value.log + "⚠️ AUTH: không có local_key — KHÔNG gọi Cloud"
+                )
+                return@launch
+            }
+            val dps = withContext(Dispatchers.IO) {
+                tuyaLocalController.queryStatus33(ip, key, device.id)
+            }
+            _localLab.value = if (dps != null) {
+                _localLab.value.copy(
+                    auth = "✅ 3.3 AUTH/RESPONSE OK",
+                    status = dps.toString(),
+                    result = "✅ STATUS OK",
+                    log = _localLab.value.log + "✅ DP_QUERY OK: $dps"
+                )
+            } else {
+                _localLab.value.copy(
+                    auth = "❌ Không nhận response",
+                    result = "❌ STATUS FAILED",
+                    log = _localLab.value.log + "❌ DP_QUERY timeout/parse/auth"
+                )
+            }
+        }
+    }
+
+    fun localLabPower(device: TuyaDeviceEntity, on: Boolean) {
+        viewModelScope.launch {
+            val discovery = _localLab.value.discovery
+            val ip = discovery?.ip ?: device.lastKnownIp
+            val key = device.localKey
+            val dpId = device.localSwitchDpId
+            if (ip.isNullOrBlank() || key.isNullOrBlank()) {
+                _localLab.value = _localLab.value.copy(
+                    result = "❌ Thiếu IP/local_key. Không gọi Cloud.",
+                    log = _localLab.value.log + "❌ POWER: thiếu credential"
+                )
+                return@launch
+            }
+            if (dpId.isNullOrBlank()) {
+                _localLab.value = _localLab.value.copy(
+                    result = "⚠️ Chưa biết DP switch.",
+                    log = _localLab.value.log + "⚠️ POWER: localSwitchDpId trống"
+                )
+                return@launch
+            }
+            val ok = withContext(Dispatchers.IO) {
+                tuyaLocalController.sendCommand33(
+                    ip = ip,
+                    localKey = key,
+                    deviceId = device.id,
+                    dps = mapOf(dpId to on)
+                )
+            }
+            _localLab.value = _localLab.value.copy(
+                result = if (ok) "✅ ${if (on) "ON" else "OFF"} OK" else "❌ ${if (on) "ON" else "OFF"} FAILED",
+                log = _localLab.value.log + (if (ok) "✅ POWER ${if (on) "ON" else "OFF"}" else "❌ POWER ${if (on) "ON" else "OFF"} FAILED")
+            )
+        }
+    }
+
+    fun clearLocalLab() {
+        _localLab.value = TuyaLocalLabState()
+    }
 
     private val _deviceGuards = MutableStateFlow<Map<String, String>>(emptyMap())
     val deviceGuards: StateFlow<Map<String, String>> = _deviceGuards.asStateFlow()
@@ -248,6 +377,9 @@ fun TuyaScreen(
 
     var deviceToDelete by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
     var guardTargetDevice by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
+    var showLocalLab by remember { mutableStateOf(false) }
+    var localLabDevice by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
+    val localLab by viewModel.localLab.collectAsState()
 
     LaunchedEffect(message) {
         message?.let {
@@ -294,6 +426,77 @@ fun TuyaScreen(
         )
     }
 
+    if (showLocalLab) {
+        AlertDialog(
+            onDismissRequest = { showLocalLab = false },
+            title = { Text("🧪 Tuya Local Lab") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Không gọi Tuya Cloud trong các nút bên dưới.")
+                    if (localLabDevice == null) {
+                        Text("Chọn thiết bị để thử LAN:", fontWeight = FontWeight.Bold)
+                        devices.forEach { dev ->
+                            OutlinedButton(
+                                onClick = {
+                                    localLabDevice = dev
+                                    viewModel.clearLocalLab()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text(dev.name) }
+                        }
+                    } else {
+                        val dev = localLabDevice!!
+                        Text(dev.name, fontWeight = FontWeight.Bold)
+                        Text("Device ID: ${dev.id}")
+                        Text("Discovery: ${localLab.discovery?.ip ?: "chưa dò"}")
+                        Text("Version: ${localLab.discovery?.version ?: "—"}")
+                        Text("Auth: ${localLab.auth}")
+                        Text("Status: ${localLab.status}")
+                        if (localLab.result.isNotBlank()) Text(localLab.result)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { viewModel.localLabDiscover(dev) },
+                                enabled = !localLab.running,
+                                modifier = Modifier.weight(1f)
+                            ) { Text(if (localLab.running) "Đang dò…" else "🔍 Dò LAN") }
+                            OutlinedButton(
+                                onClick = { viewModel.localLabStatus(dev) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("STATUS") }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { viewModel.localLabPower(dev, true) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("ON") }
+                            Button(
+                                onClick = { viewModel.localLabPower(dev, false) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("OFF") }
+                        }
+                        OutlinedButton(
+                            onClick = { localLabDevice = null; viewModel.clearLocalLab() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("← Chọn thiết bị khác") }
+                        Text("LOG", fontWeight = FontWeight.Bold)
+                        localLab.log.forEach { line ->
+                            Text(line, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLocalLab = false }) { Text("Đóng") }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -302,6 +505,9 @@ fun TuyaScreen(
                 // không có màn hình cha, nên không cần nút back ở đây.
                 navigationIcon = {},
                 actions = {
+                    IconButton(onClick = { showLocalLab = true }) {
+                        Icon(Icons.Default.BugReport, contentDescription = "Tuya Local Lab")
+                    }
                     IconButton(onClick = { viewModel.scanDevices() }, enabled = !isScanning) {
                         if (isScanning) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)

@@ -15,7 +15,30 @@ data class TuyaDeviceEntity(
     val online: Boolean = false, // Trạng thái online
     val category: String = "",   // Loại thiết bị (socket, light, switch...)
     val productName: String = "",// Tên sản phẩm
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+    // ✅ MỚI: điều khiển LOCAL qua LAN, không qua Tuya Cloud mỗi lần bật/tắt — xem
+    // TuyaLocalController.kt. localKey lấy 1 LẦN DUY NHẤT qua API cloud
+    // (TuyaManager.fetchLocalKey(), dùng chính client_id/client_secret người dùng đã
+    // nhập), sau đó lưu lại đây, không cần gọi cloud nữa cho việc điều khiển.
+    //
+    // lastKnownIp là IP LAN gần nhất dò được qua UDP broadcast
+    // (TuyaLocalController.discoverIp()) — CHỈ đáng tin trong phiên hiện tại, DHCP có
+    // thể đổi IP bất kỳ lúc nào, nên mọi lần điều khiển local đều cần fallback dò lại
+    // nếu IP cũ không phản hồi, KHÔNG coi đây là nguồn sự thật cố định.
+    //
+    // protocolVersion: "3.3" hoặc "3.4" — quyết định cách mã hoá gói tin (xem
+    // TuyaLocalController.kt). null = chưa xác định, thử "3.3" trước theo mặc định.
+    @ColumnInfo(defaultValue = "NULL")
+    val localKey: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val lastKnownIp: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val protocolVersion: String? = null,
+    // ✅ MỚI: DP id THẬT (số, vd "1") của lệnh bật/tắt chính — khác với switchCodeCache
+    // trong TuyaManager (lưu CODE dạng tên như "switch_1" dùng cho Cloud API). Giao thức
+    // LOCAL cần đúng số DP id, không phải code — xem TuyaManager.resolveLocalDpId().
+    @ColumnInfo(defaultValue = "NULL")
+    val localSwitchDpId: String? = null
 )
 
 // ==================== CHAT MESSAGE ====================

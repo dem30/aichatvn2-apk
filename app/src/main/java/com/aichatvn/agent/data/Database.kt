@@ -156,6 +156,24 @@ interface TuyaDeviceDao {
     
     @Query("UPDATE tuya_devices SET online = :online, lastSeen = :timestamp WHERE id = :deviceId")
     suspend fun updateOnlineStatus(deviceId: String, online: Boolean, timestamp: Long)
+
+    // ✅ MỚI: cập nhật RIÊNG 4 cột điều khiển local — KHÔNG dùng insertDevice/insertAllDevices
+    // (OnConflictStrategy.REPLACE, ghi đè NGUYÊN dòng) cho việc này, vì scanDevices() gọi
+    // insertAllDevices() định kỳ với entity dựng lại từ Cloud API (không có local_key) sẽ xoá
+    // mất các cột này nếu không tách riêng. Xem ghi chú "SỬA" trong TuyaManager.scanDevices().
+    @Query("""
+        UPDATE tuya_devices
+        SET localKey = :localKey, lastKnownIp = :lastKnownIp,
+            protocolVersion = :protocolVersion, localSwitchDpId = :localSwitchDpId
+        WHERE id = :deviceId
+    """)
+    suspend fun updateLocalControlInfo(
+        deviceId: String,
+        localKey: String?,
+        lastKnownIp: String?,
+        protocolVersion: String?,
+        localSwitchDpId: String?
+    )
     
     @Query("DELETE FROM tuya_devices WHERE id = :deviceId")
     suspend fun deleteDevice(deviceId: String)
@@ -485,6 +503,38 @@ val MIGRATION_19_20 = object : Migration(19, 20) {
     }
 }
 
+// ✅ MỚI: version 21 — CameraConfigEntity thêm 6 cột RTSP/ONVIF (onvifSupported,
+// onvifEventUrl, onvifEnabled, rtspSupported, rtspUrl, rtspEnabled — xem
+// CameraCapabilityProber.kt). Entity đã có 6 cột này từ trước nhưng CHƯA TỪNG được bump
+// version kèm migration — cùng lỗi đã gặp với enableAlarmPush ở MIGRATION_19_20: mọi
+// SELECT * FROM cameras hiện tại đang ném "no such column" âm thầm (bị BackupRestorer
+// nuốt lỗi), coi như tính năng RTSP/ONVIF/camera-alarm đã merge nhưng KHÔNG chạy được
+// trên máy đã cài version 20. Vá ngay tại đây, không trì hoãn thêm.
+val MIGRATION_20_21 = object : Migration(20, 21) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cameras ADD COLUMN onvifSupported INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN onvifEventUrl TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN onvifEnabled INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN rtspSupported INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN rtspUrl TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN rtspEnabled INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+// ✅ MỚI: version 22 — TuyaDeviceEntity thêm 4 cột điều khiển LOCAL qua LAN (localKey,
+// lastKnownIp, protocolVersion, localSwitchDpId — xem TuyaLocalController.kt +
+// TuyaManager.fetchLocalKey()/resolveLocalDpId()). Tất cả nullable/mặc định NULL —
+// thiết bị cũ chưa từng fetch local_key vẫn hoạt động bình thường qua Cloud API như cũ,
+// chỉ khi nào các cột này có giá trị thì TuyaManager mới thử đường local trước.
+val MIGRATION_21_22 = object : Migration(21, 22) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN localKey TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN lastKnownIp TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN protocolVersion TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN localSwitchDpId TEXT DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -504,11 +554,14 @@ val MIGRATION_19_20 = object : Migration(19, 20) {
         CallContactEntity::class,
         CallLogEntity::class
     ],
-    // bump 19 → 20 do CameraConfigEntity thêm cột enableAlarmPush/alarmSecret (báo động
-    // camera qua Alarm Server URL, xem MIGRATION_19_20).
-    // ⚠️ Version 19 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_19_20 (ALTER TABLE ADD
-    // COLUMN) ở trên, KHÔNG được để fallbackToDestructiveMigration() xoá dữ liệu của họ.
-    version = 20,
+    // bump 21 → 22 do TuyaDeviceEntity thêm 4 cột điều khiển LOCAL (localKey/lastKnownIp/
+    // protocolVersion/localSwitchDpId — xem MIGRATION_21_22). Trước đó bump 20 → 21 vá
+    // MIGRATION_20_21 còn thiếu cho 6 cột RTSP/ONVIF của CameraConfigEntity (đã tồn tại
+    // trong Entity.kt từ trước nhưng chưa từng có migration tương ứng).
+    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_20_21 +
+    // MIGRATION_21_22 (ALTER TABLE ADD COLUMN) ở trên, KHÔNG được để
+    // fallbackToDestructiveMigration() xoá dữ liệu của họ.
+    version = 22,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -545,7 +598,7 @@ abstract fun callLogDao(): CallLogDao
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
