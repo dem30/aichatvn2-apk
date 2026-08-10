@@ -15,6 +15,7 @@ import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.EventLogDao 
 import com.aichatvn.agent.data.CallContactDao
 import com.aichatvn.agent.data.CallLogDao
+import com.aichatvn.agent.data.TuyaDeviceDao
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -57,6 +58,15 @@ object AppModule {
     @Singleton
     fun provideCallLogDao(database: AppDatabase): CallLogDao {
         return database.callLogDao()
+    }
+
+    // ✅ THÊM LẠI: TuyaDeviceDao bị mất binding khi provideTuyaManager() thủ công
+    // (nơi trước đây gọi database.tuyaDeviceDao() ngầm) bị xóa để Hilt tự dựng TuyaManager
+    // qua @Inject constructor — giờ cần khai báo riêng để Dagger biết cách cung cấp nó.
+    @Provides
+    @Singleton
+    fun provideTuyaDeviceDao(database: AppDatabase): TuyaDeviceDao {
+        return database.tuyaDeviceDao()
     }
 
     @Provides
