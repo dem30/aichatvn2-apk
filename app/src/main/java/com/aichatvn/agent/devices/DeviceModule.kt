@@ -3,7 +3,7 @@ package com.aichatvn.agent.devices
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
-import dagger.hilt.android.components.SingletonComponent
+import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 
 /**
