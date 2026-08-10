@@ -53,6 +53,10 @@ import com.aichatvn.agent.skills.GatewaySignalingManager
 // "Unresolved reference: DeviceCommandGatewayClient" -> kapt Hilt không resolve được
 // type, kéo theo lỗi InjectProcessingStep cho mọi field/provider liên quan.
 import com.aichatvn.agent.skills.DeviceCommandGatewayClient
+// ✅ THÊM IMPORT: Relay sự kiện ONVIF qua Gateway (thiếu import này gây lại đúng lỗi
+// "Unresolved reference" -> kaptDebugKotlin fail hàng loạt, y hệt vụ DeviceCommandGatewayClient
+// trước đó — bài học: MỌI class mới ở package khác dùng trong file này đều phải có import riêng.
+import com.aichatvn.agent.skills.OnvifEventRelay
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
