@@ -33,6 +33,7 @@ import com.aichatvn.agent.ui.viewmodels.LiveViewState
  * ⚠️ Cần cập nhật khai báo route trong AppNavigator.kt:
  *   composable(route = "camera_live/{cameraId}", ...) { CameraLiveViewScreen(navController, callViewModel) }
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @androidx.compose.runtime.Composable
 fun CameraLiveViewScreen(
     navController: NavController,
