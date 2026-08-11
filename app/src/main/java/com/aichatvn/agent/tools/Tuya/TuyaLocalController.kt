@@ -64,9 +64,21 @@ class TuyaLocalController @Inject constructor(
         private const val UDP_PACKET_TIMEOUT_MS = 500
 
         // Khoá cố định CÔNG KHAI Tuya dùng để mã hoá lớp NGOÀI của gói broadcast UDP cổng 6667 —
-        // cộng đồng LocalTuya/tinytuya đã reverse từ lâu, KHÔNG phải bí mật riêng theo từng thiết
-        // bị/tài khoản (khác hẳn local_key). Chỉ dùng để bóc lớp ngoài broadcast xem gwId/ip.
-        private val UDP_BROADCAST_KEY = "yGAdlopoPVldABfn".toByteArray(Charsets.UTF_8)
+        // cộng đồng LocalTuya/tinytuya/tuya-convert đã reverse từ lâu, KHÔNG phải bí mật riêng
+        // theo từng thiết bị/tài khoản (khác hẳn local_key). Chỉ dùng để bóc lớp ngoài broadcast
+        // xem gwId/ip.
+        //
+        // ⚠️ SỬA (bug: decrypt "thành công" nhưng ra JSON rác): khoá AES thật sự KHÔNG PHẢI là
+        // bytes UTF-8 thô của chuỗi "yGAdlopoPVldABfn" — dù chuỗi đó tình cờ cũng dài đúng 16 ký
+        // tự nên không hề bị ném lỗi kích thước khoá, khiến bug này rất khó nhận ra chỉ qua
+        // exception. Mọi implementation tham chiếu được (tinytuya/udp_helper.py, tuya-convert/
+        // tuya-discovery.py, tuyapower/scan.py) đều thống nhất: khoá thật là MD5 DIGEST (16 byte)
+        // của chuỗi đó — `udpkey = md5(b"yGAdlopoPVldABfn").digest()` — không phải chuỗi gốc.
+        // Đây chính là lý do headerSize=20 (offset đúng, mod16=0, không lỗi block-size) vẫn ra
+        // JSONException: offset đúng, nhưng khoá sai → AES-ECB decrypt "chạy được" (đúng bội số
+        // 16) nhưng nội dung giải mã ra là rác nhị phân, không phải JSON hợp lệ.
+        private val UDP_BROADCAST_KEY = java.security.MessageDigest.getInstance("MD5")
+            .digest("yGAdlopoPVldABfn".toByteArray(Charsets.UTF_8))
     }
 
     // ═══════════════════════════════ DISCOVERY (UDP) ═══════════════════════════════
