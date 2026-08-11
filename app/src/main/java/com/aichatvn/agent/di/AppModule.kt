@@ -16,6 +16,7 @@ import com.aichatvn.agent.data.EventLogDao
 import com.aichatvn.agent.data.CallContactDao
 import com.aichatvn.agent.data.CallLogDao
 import com.aichatvn.agent.data.TuyaDeviceDao
+import com.aichatvn.agent.data.MqttDeviceDao
 import com.aichatvn.agent.skills.*
 import com.aichatvn.agent.tools.ai.GroqClientTool
 import com.aichatvn.agent.utils.Logger
@@ -67,6 +68,15 @@ object AppModule {
     @Singleton
     fun provideTuyaDeviceDao(database: AppDatabase): TuyaDeviceDao {
         return database.tuyaDeviceDao()
+    }
+
+    // ✅ MỚI (Tầng 3): cùng lý do provideTuyaDeviceDao ở trên — Hilt không tự suy ra được
+    // DAO cụ thể từ AppDatabase, phải khai báo @Provides riêng cho từng DAO được inject
+    // trực tiếp (ở đây là MqttDeviceController). Đúng pattern y hệt Tuya, chỉ đổi DAO.
+    @Provides
+    @Singleton
+    fun provideMqttDeviceDao(database: AppDatabase): MqttDeviceDao {
+        return database.mqttDeviceDao()
     }
 
     @Provides
