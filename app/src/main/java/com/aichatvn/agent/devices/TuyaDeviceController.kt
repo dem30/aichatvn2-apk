@@ -32,6 +32,13 @@ class TuyaDeviceController @Inject constructor(
         DeviceCapability.BATCH_STATUS
     )
 
+    // ⚠️ Giá trị literal "tuya" — GIỮ NGUYÊN, không đổi. Đây là khoá source đã được
+    // SmartSwitchSkill ghi thẳng vào world_state từ trước (WorldStateHelper.setAttribute(
+    // dao, "tuya", deviceId, "state", ...)) và là tiền tố mà TuyaScreen.PreconditionGuardDialog
+    // đã dùng để build các chuỗi "tuya.<id>.state=..." lưu sẵn trong DB người dùng. Đổi
+    // giá trị này ở đây coi như đổi luôn "địa chỉ" mà mọi automation cũ đang trỏ tới.
+    override val worldStateSource: String = "tuya"
+
     override suspend fun turnOn(deviceId: String): DeviceActionResult {
         val name = resolveName(deviceId)
             ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị Tuya id=$deviceId")
@@ -72,6 +79,15 @@ class TuyaDeviceController @Inject constructor(
         return entities.associate { entity ->
             val isOn = onlineByName[entity.id] ?: false
             entity.id to DeviceStatus(isOn = isOn, isOnline = entity.online)
+        }
+    }
+
+    // ✅ Điểm truy vấn tuyaDeviceDao.getAllDevices() DUY NHẤT còn lại trong toàn bộ app sau
+    // khi hoàn tất Tầng 2 — DynamicOptionRegistry và mọi nơi khác chỉ được gọi qua
+    // deviceRegistry.all().flatMap { it.listDevices() }, không tự query DAO này nữa.
+    override suspend fun listDevices(): List<DeviceSummary> {
+        return tuyaDeviceDao.getAllDevices().map { entity ->
+            DeviceSummary(id = entity.id, displayName = entity.name)
         }
     }
 

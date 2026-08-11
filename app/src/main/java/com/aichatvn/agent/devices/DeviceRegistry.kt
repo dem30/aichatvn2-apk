@@ -32,4 +32,13 @@ class DeviceRegistry @Inject constructor(
 
     /** Toàn bộ protocol hiện có driver hoạt động — dùng cho SystemAuditor liệt kê phạm vi quét. */
     fun supportedProtocols(): Set<DeviceProtocol> = byProtocol.keys
+
+    /**
+     * Toàn bộ controller đang hoạt động, không phân biệt protocol — dùng cho các nơi cần
+     * gộp dữ liệu từ MỌI giao thức cùng lúc (vd DynamicOptionRegistry build dropdown
+     * "device" gộp cả Tuya lẫn MQTT, hoặc build danh sách precondition_source động thay vì
+     * hardcode ["camera","tuya","chat"]). Thêm driver mới qua DeviceModule.kt tự động xuất
+     * hiện ở đây, không cần sửa gì thêm.
+     */
+    fun all(): Collection<DeviceController> = byProtocol.values
 }

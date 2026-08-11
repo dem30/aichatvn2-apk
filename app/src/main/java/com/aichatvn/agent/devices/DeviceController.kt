@@ -59,7 +59,42 @@ interface DeviceController {
      * broker-based có thể không cần khái niệm này).
      */
     val capabilities: Set<DeviceCapability>
+
+    /**
+     * Khoá ổn định dùng làm `source` khi ghi/đọc world_state cho thiết bị thuộc giao thức
+     * này (xem WorldStateHelper.setAttribute(dao, source, deviceId, attribute, value)) và
+     * làm giá trị `precondition_source` trong DynamicOptionRegistry/PreconditionGuardDialog.
+     *
+     * ⚠️ BẮT BUỘC giữ nguyên giá trị đã dùng trước đây cho driver cũ (Tuya = "tuya") —
+     * người dùng đã lưu sẵn các chuỗi điều kiện dạng "tuya.<id>.state=..." trong DB
+     * (lịch trình/automation). Đổi giá trị này = mọi precondition cũ ngừng khớp một cách
+     * ÂM THẦM (guard luôn fail, không có lỗi rõ ràng nào hiện ra).
+     *
+     * Với driver hoàn toàn mới (vd MQTT), chọn 1 khoá ngắn, ổn định, không dấu, không đổi
+     * sau khi đã có người dùng thật lưu precondition với khoá đó — cùng ràng buộc này áp
+     * dụng ngược lại cho driver mới ngay từ ngày đầu.
+     */
+    val worldStateSource: String
+
+    /**
+     * Liệt kê toàn bộ thiết bị mà driver này đang biết — dùng cho dropdown chọn thiết bị
+     * (SmartActionFormSheet qua DynamicOptionRegistry) và các nơi khác cần hiển thị danh
+     * sách thiết bị theo protocol, để KHÔNG nơi nào phải query thẳng DAO cụ thể của từng
+     * hãng (TuyaDeviceDao, MqttDeviceDao...) nữa — mọi truy vấn danh sách thiết bị đi qua
+     * đây, giống hệt turnOn/turnOff/getStatus.
+     */
+    suspend fun listDevices(): List<DeviceSummary>
 }
+
+/**
+ * Tóm tắt 1 thiết bị — đủ để hiển thị trong dropdown/danh sách chọn, không mang theo
+ * field đặc thù giao thức (localKey, mqttTopic...). Cần chi tiết hơn thì gọi getStatus()
+ * riêng cho đúng id đã chọn.
+ */
+data class DeviceSummary(
+    val id: String,
+    val displayName: String
+)
 
 /**
  * Định danh giao thức — dùng làm giá trị cột `protocol` trong DB và key trong DeviceRegistry.
