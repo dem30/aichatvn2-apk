@@ -728,6 +728,16 @@ class TuyaManager @Inject constructor(
         return true
     }
 
+    // ✅ MỚI: wrapper PUBLIC cho ensureLocalControlReady() (vốn private, chỉ tự chạy ngầm mỗi
+    // lần turnOn()/turnOff()) — để UI (nút "Bật điều khiển nhanh" trong TuyaScreen, hoặc từ
+    // màn "Sức khoẻ hệ thống") có thể chủ động kích hoạt điều khiển local NGAY, không cần đợi
+    // người dùng bật/tắt thiết bị 1 lần trước đó. KHÔNG lặp lại logic fetchLocalKey/discoverIp
+    // — gọi thẳng hàm private đã có, cùng 1 nguồn sự thật duy nhất.
+    suspend fun enableLocalControl(deviceId: String): Boolean = withContext(Dispatchers.IO) {
+        val entity = ensureLocalControlReady(deviceId)
+        entity != null && !entity.localKey.isNullOrBlank() && !entity.lastKnownIp.isNullOrBlank()
+    }
+
     suspend fun turnOn(deviceName: String) = withContext(Dispatchers.IO) {
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, true)

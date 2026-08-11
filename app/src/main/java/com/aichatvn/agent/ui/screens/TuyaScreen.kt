@@ -292,6 +292,33 @@ class TuyaViewModel @Inject constructor(
         }
     }
 
+    // ✅ MỚI: kích hoạt điều khiển local NGAY cho 1 thiết bị (thay vì đợi bật/tắt 1 lần để
+    // TuyaManager tự chuẩn bị ngầm) — dùng cho nút "Bật điều khiển nhanh" trong
+    // TuyaDeviceCard, và là đích đến khi người dùng bấm "Đi tới cài đặt" từ màn "Sức khoẻ
+    // hệ thống" (mục CONFLICT "Điều khiển nhanh cho ..."). Dùng chung _loadingDevices theo
+    // deviceId — đúng pattern toggleDevice()/deleteDevice() đã có, để Card tự hiện spinner.
+    fun enableLocalControl(device: TuyaDeviceEntity) {
+        viewModelScope.launch {
+            _loadingDevices.value = _loadingDevices.value + device.id
+            try {
+                val success = withContext(Dispatchers.IO) {
+                    tuyaManager.enableLocalControl(device.id)
+                }
+                _message.value = if (success) {
+                    "⚡ \"${device.name}\" đã sẵn sàng điều khiển nhanh qua mạng nhà."
+                } else {
+                    "⚠️ Không thể bật điều khiển nhanh cho \"${device.name}\" — thiết bị có thể không cùng mạng Wi-Fi, hoặc chưa online."
+                }
+                loadDevices()
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi bật điều khiển nhanh: ${e.message}"
+                logger.e("TuyaViewModel", "enableLocalControl error", e)
+            } finally {
+                _loadingDevices.value = _loadingDevices.value - device.id
+            }
+        }
+    }
+
 
 
     
@@ -588,7 +615,8 @@ fun TuyaScreen(
                         onTurnOff = { viewModel.toggleDevice(device, false) },
                         onRefresh = { viewModel.refreshStatus(device) },
                         onDelete = { deviceToDelete = device },
-                        onConfigureGuard = { guardTargetDevice = device }
+                        onConfigureGuard = { guardTargetDevice = device },
+                        onEnableLocalControl = { viewModel.enableLocalControl(device) }
                     )
                 }
                 item { Spacer(Modifier.height(80.dp)) }
@@ -607,7 +635,8 @@ private fun TuyaDeviceCard(
     onTurnOff: () -> Unit,
     onRefresh: () -> Unit,
     onDelete: () -> Unit,
-    onConfigureGuard: () -> Unit
+    onConfigureGuard: () -> Unit,
+    onEnableLocalControl: () -> Unit
 ) {
     // Bóc tách chuỗi khóa bảo vệ theo định dạng "camera.id.state_scheduleId=value"
     val friendlyGuardLabel = remember(currentGuard, allSchedules) {
@@ -757,6 +786,51 @@ private fun TuyaDeviceCard(
             ) {
                 InfoChip(label = "Loại", value = device.category.ifBlank { "—" })
                 InfoChip(label = "ID", value = device.id.take(12) + "…")
+            }
+
+            // ✅ MỚI: chưa có localKey/lastKnownIp — thiết bị đang điều khiển hoàn toàn qua
+            // Cloud API. Cho phép người dùng chủ động kích hoạt điều khiển nhanh qua mạng nhà
+            // ngay tại đây, thay vì chỉ chờ TuyaManager tự chuẩn bị ngầm ở lần bật/tắt đầu
+            // tiên. Đây cũng chính là đích đến khi bấm "Đi tới cài đặt" từ màn "Sức khoẻ hệ
+            // thống" (mục CONFLICT tương ứng, xem SystemAuditor.auditTuyaDevices()).
+            if (device.localKey.isNullOrBlank() || device.lastKnownIp.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xFFFFF3E0),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = Color(0xFFFFA000)
+                            )
+                            Text(
+                                text = "Đang điều khiển qua Internet",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFE65100)
+                            )
+                        }
+                        TextButton(
+                            onClick = onEnableLocalControl,
+                            enabled = !isLoading,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("Bật nhanh", fontSize = 12.sp)
+                        }
+                    }
+                }
             }
 
             Spacer(Modifier.height(12.dp))
