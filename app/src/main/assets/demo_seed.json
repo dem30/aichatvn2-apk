@@ -1,0 +1,2363 @@
+{
+  "export_version": 4,
+  "exported_at": 1786416853051,
+  "settings": {
+    "groq_api_key": "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",
+    "resend_api_key": "re_QLXxr3Y4_JJbQ2uNGfogRtTSzDinw2W27",
+    "resend_sender": "onboarding@resend.dev",
+    "tuya_client_id": "7e39n3rcnxu5jhqm9n5u",
+    "tuya_client_secret": "76a10d15580e4f36b5d62c8f6f55904f",
+    "tuya_uid": "sg1783475127576wA4LW",
+    "dark_mode": false
+  },
+  "data": {
+    "customers": [
+      {
+        "id": "KH",
+        "name": "khách",
+        "email": "email_cua_toi@abcd.com",
+        "address": "",
+        "note": "",
+        "createdAt": 1786078591198
+      }
+    ],
+    "customer_settings": [
+      {
+        "customerId": "KH",
+        "smartMode": 0,
+        "isActive": 1,
+        "updatedAt": 1786078592906,
+        "timestamp": 1786078592906,
+        "lastFacebookPageId": null
+      }
+    ],
+    "cameras": [
+      {
+        "id": "testdemo",
+        "customerId": "KH",
+        "customername": "khách",
+        "customeremail": "email_cua_toi@abcd.com",
+        "snapshoturl": "https:\/\/picsum.photos\/800\/600",
+        "landinfo": "",
+        "snapshotPath": null,
+        "timestamp": 1786078680484,
+        "status": "online",
+        "isOnline": 1,
+        "manualOff": 0,
+        "smartMode": 1,
+        "aiPrompt": "Camera giám sát thửa đất. Hãy xem có người\/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
+        "aiPositiveKeywords": "cảnh báo",
+        "aiNegativeKeywords": "bình thường,người,xe ô tô,xe máy\/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi\/hành lý,tòa nhà\/phòng,ngoài trời\/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
+        "enableCooldown": 0,
+        "enableNotification": 1,
+        "alertActions": "[]",
+        "snapshotUsername": null,
+        "snapshotPassword": null,
+        "snapshotUrlRemote": null,
+        "enableAlarmPush": 0,
+        "alarmSecret": null,
+        "onvifSupported": 0,
+        "onvifEventUrl": null,
+        "onvifEnabled": 0,
+        "rtspSupported": 0,
+        "rtspUrl": null,
+        "rtspEnabled": 0
+      }
+    ],
+    "tuya_devices": [
+      {
+        "id": "a34cdf547a30852c36egoe",
+        "name": "Ổ cắm thông minh ",
+        "online": 0,
+        "category": "cz",
+        "productName": "Ổ cắm thông minh ",
+        "lastSeen": 1786416607768,
+        "localKey": null,
+        "lastKnownIp": null,
+        "protocolVersion": null,
+        "localSwitchDpId": null
+      }
+    ],
+    "facebook_pages": [],
+    "qa_data": [
+      {
+        "id": "a0dbd624-c9ef-45f0-808f-955d92219554",
+        "question": "xin chào",
+        "answer": "Chào bạn! Mình là trợ lý AI của AIChatVN2 – ứng dụng quản gia thông minh giúp bạn giám sát camera, điều khiển thiết bị nhà thông minh, đặt lịch tự động và trò chuyện hỏi đáp ngay trên điện thoại. Bạn cần mình hỗ trợ gì hôm nay?",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348076,
+        "timestamp": 1786101348076
+      },
+      {
+        "id": "abf0d630-488e-456a-af7b-aa312e621765",
+        "question": "chào bạn",
+        "answer": "Chào bạn! Mình là trợ lý AI của AIChatVN2 – ứng dụng quản gia thông minh giúp bạn giám sát camera, điều khiển thiết bị nhà thông minh, đặt lịch tự động và trò chuyện hỏi đáp ngay trên điện thoại. Bạn cần mình hỗ trợ gì hôm nay?",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348123,
+        "timestamp": 1786101348123
+      },
+      {
+        "id": "23eeaf91-18d7-40c2-82c4-f659892c34f6",
+        "question": "hi",
+        "answer": "Chào bạn! Mình là trợ lý AI của AIChatVN2. Mình có thể giúp bạn xem camera, điều khiển thiết bị, đặt lịch tự động và giải đáp thắc mắc. Bạn cần gì cứ hỏi mình nhé.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348153,
+        "timestamp": 1786101348153
+      },
+      {
+        "id": "d1789abd-7ee4-4449-9df6-20feb0a98b53",
+        "question": "app này là gì",
+        "answer": "AIChatVN2 là ứng dụng quản gia thông minh chạy trên Android, tích hợp AI để giám sát camera, điều khiển thiết bị nhà thông minh (công tắc, ổ cắm...), đặt lịch tự động và trò chuyện hỏi đáp trực tiếp qua chat.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348172,
+        "timestamp": 1786101348172
+      },
+      {
+        "id": "37e0b971-8bc8-4c81-9700-74c1b93f59c2",
+        "question": "bạn là ai",
+        "answer": "Mình là trợ lý AI được tích hợp trong ứng dụng AIChatVN2, giúp bạn giám sát nhà cửa, điều khiển thiết bị thông minh và trả lời các câu hỏi liên quan đến ứng dụng.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348193,
+        "timestamp": 1786101348193
+      },
+      {
+        "id": "84a5f2db-39ac-405d-b77e-c968f94c7e89",
+        "question": "ai tạo ra app này",
+        "answer": "AIChatVN2 do anh Thái Vinh phát triển. Mọi nhu cầu về hỗ trợ kỹ thuật, xin mã kích hoạt, hay sử dụng cho mục đích kinh doanh, bạn liên hệ trực tiếp qua Zalo 0944121150.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348213,
+        "timestamp": 1786101348213
+      },
+      {
+        "id": "38620a0f-aebd-41c2-bd8e-ba7b097b5323",
+        "question": "tác giả app là ai",
+        "answer": "Tác giả của AIChatVN2 là anh Thái Vinh, liên hệ qua Zalo 0944121150 để được hỗ trợ, cấp mã kích hoạt hoặc tư vấn sử dụng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348227,
+        "timestamp": 1786101348227
+      },
+      {
+        "id": "06d9c7ba-9ec9-47e5-a888-5a0baa1d0947",
+        "question": "liên hệ tác giả như thế nào",
+        "answer": "Bạn liên hệ anh Thái Vinh qua Zalo theo số 0944121150 để được hỗ trợ, cấp file cài đặt, mã kích hoạt hoặc tư vấn sử dụng riêng nhé.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348235,
+        "timestamp": 1786101348235
+      },
+      {
+        "id": "6e09d63a-9358-41a1-9457-01d7ca418bed",
+        "question": "app có những tính năng gì",
+        "answer": "AIChatVN2 gồm các tính năng chính: giám sát camera (có thể bật AI phát hiện bất thường hoặc chỉ xem trực tiếp), điều khiển thiết bị thông minh (công tắc, ổ cắm Tuya...), đặt lịch tự động cho các thiết bị\/chức năng, gọi thoại\/video, và trò chuyện hỏi đáp thông minh ngay trong app.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348248,
+        "timestamp": 1786101348248
+      },
+      {
+        "id": "2735e6d1-cd23-4d3c-965d-d703ac74d3ef",
+        "question": "app dùng để làm gì",
+        "answer": "App giúp bạn quản lý và giám sát ngôi nhà từ xa: xem camera, bật\/tắt thiết bị điện, hẹn giờ tự động cho các thiết bị, và hỏi đáp trực tiếp với trợ lý AI mọi lúc mọi nơi.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348260,
+        "timestamp": 1786101348260
+      },
+      {
+        "id": "12623e0d-8114-4732-b28c-be949be333fa",
+        "question": "làm sao để dùng app",
+        "answer": "App không phát hành qua Play Store, nên bạn cần liên hệ Zalo 0944121150 để được gửi file cài đặt và mã kích hoạt (mã mời 8 ký tự). Sau khi cài xong, nhập mã ở màn hình chào mừng đầu tiên là dùng được.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348269,
+        "timestamp": 1786101348269
+      },
+      {
+        "id": "c3b2921d-f516-41e9-98cb-074d09bdd345",
+        "question": "mã giới thiệu là gì",
+        "answer": "Đó là mã mời gồm 8 ký tự, dùng để kích hoạt ứng dụng ở màn hình chào mừng đầu tiên. Mã này do admin cấp, bạn liên hệ Zalo 0944121150 để xin file cài đặt và mã kích hoạt.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348281,
+        "timestamp": 1786101348281
+      },
+      {
+        "id": "029ae110-df0b-4ff8-9344-5f81c3ad7bc9",
+        "question": "lấy mã giới thiệu ở đâu",
+        "answer": "Bạn liên hệ trực tiếp qua Zalo 0944121150 để được gửi file cài đặt và cấp mã mời (mã kích hoạt) 8 ký tự.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348298,
+        "timestamp": 1786101348298
+      },
+      {
+        "id": "1e7c6598-900f-4341-ba7d-18fb4dbcebe1",
+        "question": "app có tốn phí không",
+        "answer": "Dùng cho cá nhân\/học tập thì được cấp mã miễn phí. Nếu bạn dùng app cho mục đích kinh doanh (VD: cung cấp lại dịch vụ giám sát\/nhà thông minh cho khách hàng của mình), sẽ có điều khoản và chi phí riêng theo thoả thuận. Liên hệ Zalo 0944121150 để được tư vấn cụ thể theo mục đích sử dụng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348310,
+        "timestamp": 1786101348310
+      },
+      {
+        "id": "29cca5ca-dbe2-402b-8624-459e9e5aeac3",
+        "question": "dùng app để kinh doanh có được không",
+        "answer": "Được, nhưng bạn cần liên hệ trực tiếp anh Thái Vinh qua Zalo 0944121150 để trao đổi điều khoản và chi phí sử dụng cho mục đích kinh doanh — giống như xin cấp phép sử dụng vậy.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348317,
+        "timestamp": 1786101348317
+      },
+      {
+        "id": "b6fe8713-b8c5-4659-9e92-e3844f91d76a",
+        "question": "server có ổn định không",
+        "answer": "Hiện app dùng chung một server nên có lúc bị quá tải, dẫn đến không dùng được tạm thời. Khi gặp tình trạng này, bạn liên hệ Zalo 0944121150 để được hỗ trợ. Nếu cần trải nghiệm ổn định hơn, có thể trao đổi thêm với admin về việc dùng riêng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348330,
+        "timestamp": 1786101348330
+      },
+      {
+        "id": "3a8e5f4f-4c37-4dcb-b951-bf05857bf3b3",
+        "question": "vì sao app không dùng được",
+        "answer": "Có thể do server chung đang quá tải nên tạm thời gián đoạn. Bạn liên hệ Zalo 0944121150 để được admin hỗ trợ kiểm tra và cấp lại file\/mã nếu cần.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348337,
+        "timestamp": 1786101348337
+      },
+      {
+        "id": "c4da91e8-ffcf-424f-9dc0-e18d91921a0d",
+        "question": "app có xem camera được không",
+        "answer": "Có. App hỗ trợ xem camera trực tiếp ngay sau khi cài đặt – bạn chỉ cần gắn link camera vào là dùng được, không bắt buộc phải bật AI.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348347,
+        "timestamp": 1786101348347
+      },
+      {
+        "id": "202624e5-3f11-406f-88f4-aaef2069c82a",
+        "question": "cài camera thế nào",
+        "answer": "Bạn chỉ cần cài app xong, sau đó gắn link\/luồng camera của mình vào là có thể xem ngay – không cần bật AI cho phần xem camera cơ bản.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348353,
+        "timestamp": 1786101348353
+      },
+      {
+        "id": "21c2099b-2aa8-4dce-b831-e22d81277944",
+        "question": "xem camera có cần AI không",
+        "answer": "Không bắt buộc. Nếu chỉ cần xem camera giám sát bình thường thì không cần AI, cài xong gắn link camera là dùng được ngay. AI chỉ cần thiết khi bạn muốn tự động phát hiện bất thường và các chức năng nâng cao khác.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348361,
+        "timestamp": 1786101348361
+      },
+      {
+        "id": "817694c0-66dc-4d7d-a2fc-e8c850c65b0e",
+        "question": "cảm ơn",
+        "answer": "Không có gì, rất vui được hỗ trợ bạn! Nếu cần thêm thông tin gì cứ nhắn cho mình nhé.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348369,
+        "timestamp": 1786101348369
+      },
+      {
+        "id": "cbecf730-c2ee-43ed-b821-a43d8e00b1ec",
+        "question": "tạm biệt",
+        "answer": "Tạm biệt bạn! Hẹn gặp lại, cần gì cứ quay lại hỏi mình nhé.",
+        "category": "general",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101348380,
+        "timestamp": 1786101348380
+      },
+      {
+        "id": "205dbd25-7fa7-4643-82ad-d9176b3bf01e",
+        "question": "app xem camera như thế nào",
+        "answer": "Bạn vào tab \"chat\" hoặc mục Camera trong app, \ngõ lệnh Quét camera \nhoặc nút lệnh.\nứng dụng sẽ lấy hình ảnh mới nhất từ camera gửi  cho bạn.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594630,
+        "timestamp": 1786102086173
+      },
+      {
+        "id": "a47a2cee-4655-41dd-bcb2-7bf16a0be11a",
+        "question": "làm sao thêm camera vào app",
+        "answer": "Bạn vào mục Camera, thêm camera mới và nhập link\/luồng camera của bạn vào là xong, không cần cấu hình gì thêm nếu chỉ xem bình thường.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594639,
+        "timestamp": 1786101594639
+      },
+      {
+        "id": "41b8c593-f718-4d43-b0b6-6bb04b156e5f",
+        "question": "camera có tự động phát hiện bất thường không",
+        "answer": "Có, nếu bạn bật \"Chế độ AI thông minh\" (Smart Mode) cho camera đó. AI sẽ phân tích ảnh và tự nhận diện có người lạ, chuyển động bất thường... rồi báo động cho bạn. Nếu không bật, camera chỉ hoạt động như giám sát thường, Có cảnh báo nhưng không có não.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594651,
+        "timestamp": 1786101895601
+      },
+      {
+        "id": "5ec02c12-18e2-414b-a525-524eb592d634",
+        "question": "bật AI cho camera thế nào",
+        "answer": "Vào phần chi tiết camera đó, bật công tắc \"Smart Mode\" (chế độ AI). Sau khi bật, camera sẽ được AI phân tích ảnh mỗi lần quét để phát hiện bất thường.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594665,
+        "timestamp": 1786101594665
+      },
+      {
+        "id": "7e4c9245-4df5-471a-a6cc-35ec68804524",
+        "question": "camera báo động giả liên tục phải làm sao",
+        "answer": "Bạn có thể đánh dấu \"báo động giả\" ngay trên cảnh báo đó trong lịch sử cảnh báo. Hệ thống sẽ tự học và nâng ngưỡng nhạy cảm theo khung giờ ngày\/đêm để giảm báo giả về sau. Nếu muốn làm lại từ đầu, có nút \"Reset học tập\" để đưa ngưỡng về mặc định.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594676,
+        "timestamp": 1786101594676
+      },
+      {
+        "id": "26cbf63b-7120-45c8-9fc5-b2b1d0440a71",
+        "question": "làm sao xem lại cảnh báo cũ",
+        "answer": "Vào mục Lịch sử cảnh báo, bạn có thể xem\/lọc cảnh báo theo từng camera hoặc xem tất cả. Bấm vào cảnh báo để xem chi tiết, hoặc xoá từng cảnh báo\/xoá toàn bộ nếu muốn dọn dẹp.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594689,
+        "timestamp": 1786101594689
+      },
+      {
+        "id": "d7eeeb9f-b299-4041-b430-e5fb4d23a918",
+        "question": "camera có báo cho tôi khi có động không",
+        "answer": "Có, khi camera đang bật Chế độ AI thông minh và phát hiện bất thường, app sẽ gửi thông báo đẩy cho bạn ngay lập tức.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594702,
+        "timestamp": 1786101594702
+      },
+      {
+        "id": "7e08ba61-7033-4661-9338-737de90d58e1",
+        "question": "có thể tắt camera tạm thời không",
+        "answer": "Được. Bạn vào chi tiết camera và tắt công tắc giám sát (set_active) để tạm dừng camera đó, bật lại bất cứ lúc nào.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594712,
+        "timestamp": 1786101594712
+      },
+      {
+        "id": "a9607037-2c08-4ffb-a05a-3408a2622be7",
+        "question": "camera có tự động làm gì khi phát hiện bất thường không",
+        "answer": "Có thể. Bạn có thể cấu hình \"chuỗi hành động cảnh báo\" cho từng camera — ví dụ tự bật đèn dọa, gửi thông báo, quét lại camera sau ít giây, hoặc bật còi báo động nếu vẫn còn nghi vấn. Việc này tuỳ chỉnh riêng theo nhu cầu, bạn liên hệ Zalo 0944121150 nếu cần được hỗ trợ thiết lập.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594721,
+        "timestamp": 1786101594721
+      },
+      {
+        "id": "0829ca86-eff5-49d7-934e-656db99f75a3",
+        "question": "AI camera nhận diện dựa vào đâu",
+        "answer": "AI phân tích hình ảnh camera theo mô tả bạn thiết lập (ví dụ \"có người\/xe lạ trong sân\" là bất thường) và từ khoá cảnh báo\/bình thường bạn khai báo, nên có thể tuỳ chỉnh riêng cho từng góc camera, từng nhu cầu giám sát.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594742,
+        "timestamp": 1786101594742
+      },
+      {
+        "id": "039ea519-ab3b-4eba-8dfe-c092c686c028",
+        "question": "xem camera có tốn dữ liệu server không",
+        "answer": "Chức năng xem camera thường (không AI) hoạt động cục bộ, không cần server riêng nên không phát sinh chi phí. Chỉ khi bật chế độ AI phân tích (Smart Mode) mới cần xử lý qua server\/AI.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594753,
+        "timestamp": 1786101594753
+      },
+      {
+        "id": "795177e6-5f59-4034-8787-c163170ef862",
+        "question": "một app quản lý được nhiều camera không",
+        "answer": "Được, app hỗ trợ quản lý nhiều camera cùng lúc, mỗi camera có thể bật\/tắt AI, cấu hình riêng và xem trạng thái độc lập với nhau.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594760,
+        "timestamp": 1786101594760
+      },
+      {
+        "id": "91dd9cd6-7747-4643-9430-55f2709bad2d",
+        "question": "camera bị lỗi liên tục thì sao",
+        "answer": "Bạn có thể vào mục chẩn đoán để reset lại camera (Circuit Breaker), hoặc thử \"Test ngay\" để quét thử. Nếu vẫn không được, liên hệ Zalo 0944121150 để được hỗ trợ kiểm tra.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786101594767,
+        "timestamp": 1786101594767
+      },
+      {
+        "id": "f18ea699-d448-4f77-a65c-5c39041451d9",
+        "question": "app điều khiển được những thiết bị gì",
+        "answer": "App điều khiển được các thiết bị đóng\/ngắt thông minh chạy nền tảng Tuya: đèn, ổ cắm, quạt, máy bơm, máy giặt, điều hoà, máy hút bụi, tủ lạnh, bình nóng lạnh... Bạn chỉ cần nói \"bật đèn\", \"tắt quạt\"... là app hiểu và điều khiển ngay.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110511,
+        "timestamp": 1786102110511
+      },
+      {
+        "id": "0320bd95-b355-4e7e-ae6a-3aef2ebf6d6b",
+        "question": "làm sao thêm thiết bị mới vào app",
+        "answer": "Bạn vào mục Thiết bị & Tự động hoá, chọn quét thiết bị mới — app sẽ tự dò các thiết bị Tuya có trong tài khoản của bạn và thêm vào danh sách để điều khiển.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110522,
+        "timestamp": 1786102110522
+      },
+      {
+        "id": "50363a6e-6cc7-442b-bced-fe6ec8861ce8",
+        "question": "thiết bị báo mất kết nối phải làm sao",
+        "answer": "Bạn thử bấm làm mới (refresh) trên Dashboard để app kiểm tra lại trạng thái thật từ Tuya Cloud. Nếu vẫn báo mất kết nối, kiểm tra lại nguồn điện\/wifi của thiết bị hoặc liên hệ Zalo 0944121150 để được hỗ trợ.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110537,
+        "timestamp": 1786102110537
+      },
+      {
+        "id": "9d23b8e2-971a-47d7-b025-c841ae043ddd",
+        "question": "điều khiển thiết bị có cần internet không",
+        "answer": "Có. Vì thiết bị kết nối qua nền tảng Tuya Cloud nên cả app và thiết bị đều cần có internet hoạt động để bật\/tắt và cập nhật trạng thái.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110551,
+        "timestamp": 1786102110551
+      },
+      {
+        "id": "9d95995d-2a92-4ac4-8839-6ef369e89f5b",
+        "question": "app có tự động ngăn bật thiết bị nguy hiểm không",
+        "answer": "Có. App có cơ chế khoá bảo vệ theo điều kiện — ví dụ chỉ cho bật máy bơm khi camera sân sau đang bình thường, hoặc tự chặn thiết bị gây ồn (còi, loa, TV) vào ban đêm, chặn bình nóng lạnh\/máy bơm khi bạn đang bật chế độ vắng nhà. Đây là lớp an toàn tự động giúp tránh bật nhầm khi có rủi ro.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110577,
+        "timestamp": 1786102110577
+      },
+      {
+        "id": "cc077b62-3d34-4ebf-83cf-08e18162735f",
+        "question": "đặt khoá bảo vệ cho thiết bị thế nào",
+        "answer": "Bạn vào chi tiết thiết bị và thiết lập điều kiện khoá — ví dụ chỉ cho phép bật khi một camera khác đang ở trạng thái bình thường. Sau khi đặt, app sẽ tự kiểm tra điều kiện này trước khi cho bật\/tắt.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110588,
+        "timestamp": 1786102110588
+      },
+      {
+        "id": "def7b3d0-cebb-4093-924e-5dbf2b0907e0",
+        "question": "app xem được trạng thái bật tắt của thiết bị không",
+        "answer": "Có, bạn hỏi \"trạng thái đèn\" hoặc \"kiểm tra quạt\"... là app trả lời ngay thiết bị đó đang bật hay tắt.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110603,
+        "timestamp": 1786102110603
+      },
+      {
+        "id": "9d6ae95a-3d2e-4ce1-a55f-a87178aaaa7d",
+        "question": "quản lý thiết bị trên sơ đồ nhà có được không",
+        "answer": "Được. App có sơ đồ 2D căn hộ, bạn tải ảnh mặt bằng nhà lên rồi kéo thả từng thiết bị vào đúng vị trí, sau đó điều khiển trực tiếp ngay trên sơ đồ.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102110614,
+        "timestamp": 1786102110614
+      },
+      {
+        "id": "9307afb1-6e17-4341-9a06-b22b4c0fd181",
+        "question": "app có đặt lịch tự động được không",
+        "answer": "Có. Bạn có thể đặt lịch để app tự động thực hiện một hành động (bật\/tắt thiết bị, quét camera...) vào giờ cố định hằng ngày hoặc lặp lại theo khoảng thời gian bạn chọn.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247466,
+        "timestamp": 1786102247466
+      },
+      {
+        "id": "193566bc-4cc8-41dc-974f-d1d043f824b8",
+        "question": "làm sao đặt lịch bật tắt thiết bị",
+        "answer": "Bạn vào mục Lịch trình, chọn thêm lịch mới, chọn thiết bị\/chức năng muốn hẹn giờ, rồi chọn giờ cố định hoặc khoảng lặp lại (ví dụ mỗi 30 phút). Bạn cũng có thể đặt tên gợi nhớ cho lịch để dễ quản lý.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247490,
+        "timestamp": 1786102247490
+      },
+      {
+        "id": "618cac9a-8a48-4f4e-a7f0-2948c14df131",
+        "question": "lịch trình có lặp lại được không",
+        "answer": "Được. Bạn có thể chọn chạy theo giờ cố định mỗi ngày (kiểu \"7 giờ sáng\") hoặc lặp lại theo khoảng phút (ví dụ mỗi 15 phút một lần), tuỳ vào chức năng bạn muốn tự động hoá.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247508,
+        "timestamp": 1786102247508
+      },
+      {
+        "id": "7ba7db8c-9569-4011-bf47-32ff7f2e9e28",
+        "question": "sửa lịch trình đã tạo thế nào",
+        "answer": "Bạn vào danh sách lịch trình, chọn lịch cần sửa và cập nhật lại giờ, khoảng lặp hoặc tham số — phần nào bạn không đổi thì app sẽ tự giữ nguyên giá trị cũ.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247520,
+        "timestamp": 1786102247520
+      },
+      {
+        "id": "f047f32d-5fb3-43c3-94ca-79081bc8a776",
+        "question": "tắt tạm thời một lịch trình có được không",
+        "answer": "Được, bạn không cần xoá lịch — chỉ cần bật\/tắt (bật lại lúc nào cũng được) ngay trong danh sách lịch trình.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247541,
+        "timestamp": 1786102247541
+      },
+      {
+        "id": "1ab9aed5-340f-479b-baef-a34dfabf55a3",
+        "question": "xoá lịch trình thế nào",
+        "answer": "Bạn vào danh sách lịch trình, chọn lịch muốn xoá theo tên gợi nhớ hoặc số thứ tự rồi xoá — thao tác này xoá hẳn, không khôi phục lại được.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247574,
+        "timestamp": 1786102247574
+      },
+      {
+        "id": "c80694cd-aaa8-44d1-b2ad-7959c4ea46d9",
+        "question": "app có tạo lịch trùng lặp không",
+        "answer": "Không, app tự kiểm tra và chặn tạo lịch trùng — nếu bạn tạo một lịch giống hệt lịch đã có (cùng chức năng, cùng giờ\/khoảng lặp, cùng thiết bị), app sẽ báo là đã tồn tại thay vì tạo thêm bản trùng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247587,
+        "timestamp": 1786102247587
+      },
+      {
+        "id": "9c8dd9d5-8190-4283-bf5d-d0c1500c7565",
+        "question": "app có tự đề xuất lịch trình theo thói quen không",
+        "answer": "Có. App tự học thói quen sử dụng của bạn trong 7 ngày gần nhất (ví dụ bạn hay bật đèn sân vào một giờ cố định), sau đó đề xuất tạo lịch tự động cho thói quen đó. Bạn chỉ cần duyệt \"Phê duyệt\" là lịch được tạo chính thức, hoặc bỏ qua nếu không cần.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102247597,
+        "timestamp": 1786102247597
+      },
+      {
+        "id": "5c5ab77e-b3d9-495b-a82b-acc7b7f45c48",
+        "question": "quản gia thông minh là gì",
+        "answer": "Quản gia thông minh là bộ não trung tâm của app, tự động phân tích tình trạng ngôi nhà từ camera, thiết bị và tin nhắn để đưa ra đánh giá an ninh, đề xuất thói quen tự động hoá, và chạy các kịch bản bảo vệ nhà khi có bất thường.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329932,
+        "timestamp": 1786102329932
+      },
+      {
+        "id": "f320d94d-5ca9-4ca8-9388-e16413681f84",
+        "question": "chế độ vắng nhà là gì",
+        "answer": "Đây là chế độ dành cho khi bạn đi vắng dài ngày. Khi bật chế độ vắng nhà, app sẽ tự chặn không cho bật các thiết bị rủi ro như bình nóng lạnh, máy bơm — tránh sự cố khi không có ai ở nhà theo dõi.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329945,
+        "timestamp": 1786102329945
+      },
+      {
+        "id": "dbde6c88-04d6-470a-9d92-a2d3f1c88cca",
+        "question": "bật chế độ vắng nhà thế nào",
+        "answer": "Bạn vào mục Quản gia thông minh, bật công tắc \"Chế độ vắng nhà\". Khi bật, các thiết bị rủi ro cao sẽ bị chặn tự động cho tới khi bạn tắt chế độ này.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329963,
+        "timestamp": 1786102329963
+      },
+      {
+        "id": "7a0516a2-d83a-4d05-9746-94c873ad1b97",
+        "question": "ban đêm app có tự chặn thiết bị ồn không",
+        "answer": "Có. Vào khung giờ ngủ đã cài đặt (mặc định 22h–6h, bạn chỉnh được), app sẽ tự chặn các thiết bị gây ồn như còi, loa, TV để không làm phiền giấc ngủ.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329971,
+        "timestamp": 1786102329971
+      },
+      {
+        "id": "39a30db4-20ba-440c-bdb7-d08768b36d56",
+        "question": "đổi giờ ngủ trong app thế nào",
+        "answer": "Bạn vào mục Quản gia thông minh, chỉnh khung giờ ngủ theo ý muốn (mặc định là 22h tối đến 6h sáng) — app sẽ áp dụng chính sách chặn thiết bị ồn theo đúng khung giờ này.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329977,
+        "timestamp": 1786102329977
+      },
+      {
+        "id": "577796b9-d408-4e6f-a394-de7d089c60e0",
+        "question": "app có tự học thói quen của tôi không",
+        "answer": "Có. App phân tích dữ liệu 7 ngày gần nhất, nếu phát hiện bạn hay bật\/tắt một thiết bị vào cùng một khung giờ nhiều lần, app sẽ đề xuất tạo lịch tự động cho thói quen đó. Bạn chỉ cần duyệt \"Phê duyệt\" hoặc bỏ qua.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329983,
+        "timestamp": 1786102329983
+      },
+      {
+        "id": "fac13611-dfff-4a0f-b07c-144033baa0b4",
+        "question": "app có tự chạy kịch bản khi có bất thường không",
+        "answer": "Có. Bạn có thể tạo \"Nhóm kịch bản\" tự chọn ngòi nổ (ví dụ camera phát hiện bất thường, thiết bị đổi trạng thái) và chuỗi hành động tự động tiếp theo — như bật đèn, gửi thông báo\/email, chờ vài giây rồi kiểm tra lại, bật còi nếu vẫn còn nghi vấn.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329989,
+        "timestamp": 1786102329989
+      },
+      {
+        "id": "d1ed10fe-c896-44a1-b702-39ac587b0477",
+        "question": "tạo kịch bản tự động ở đâu",
+        "answer": "Bạn vào mục Quản gia thông minh, chọn tạo Nhóm kịch bản mới, chọn nguồn kích hoạt (camera, thiết bị, hay tin nhắn khẩn cấp) và thêm các bước hành động muốn app tự thực hiện theo thứ tự.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102329999,
+        "timestamp": 1786102329999
+      },
+      {
+        "id": "5416da80-75a8-43cd-bd0f-a0a8bcb319ea",
+        "question": "app có đánh giá mức độ an toàn của nhà không",
+        "answer": "Có. App tổng hợp trạng thái camera, thiết bị và tin nhắn chưa phản hồi để đưa ra tâm trạng ngôi nhà (bình thường, ban đêm, đang ngủ, có cảnh báo, vắng nhà, bận rộn) cùng cấp độ an ninh, giúp bạn nắm nhanh tình hình nhà mình.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102330007,
+        "timestamp": 1786102330007
+      },
+      {
+        "id": "0c92c387-4937-420d-9c8d-af20d540e1a9",
+        "question": "app nhắn tin được qua những kênh nào",
+        "answer": "App hỗ trợ nhắn tin đa kênh: trò chuyện ngay trong app, Facebook Messenger, Telegram và widget chat trên website — tất cả tin nhắn đều gom về chung một nơi để bạn quản lý dễ dàng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338029,
+        "timestamp": 1786102338029
+      },
+      {
+        "id": "acc1ba95-cace-47ff-b116-a14c42530a1f",
+        "question": "gắn app vào fanpage facebook được không",
+        "answer": "Được. Bạn kết nối Facebook theo hình thức đăng nhập 1 chạm (OAuth) trong phần Cài đặt, sau đó tin nhắn từ Fanpage sẽ tự động đổ về app để AI trả lời hoặc bạn trực tiếp trả lời khách.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338040,
+        "timestamp": 1786102338040
+      },
+      {
+        "id": "e1168c76-d156-424a-9242-cf2ccc361582",
+        "question": "app có gắn được lên website không",
+        "answer": "Có, app hỗ trợ nhúng widget chat trực tiếp lên website của bạn, khách truy cập web có thể chat và được AI hỗ trợ giống như chat trong app hoặc Facebook.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338048,
+        "timestamp": 1786102338048
+      },
+      {
+        "id": "6a503fb3-93a0-4f0d-a6c0-54b743dc2e98",
+        "question": "AI trả lời khách hay là tôi tự trả lời",
+        "answer": "Cả hai. Mặc định AI tự động trả lời khách theo tri thức đã huấn luyện. Nếu muốn tự tay trả lời một đoạn hội thoại nào đó, bạn có thể \"cướp quyền trực\" để tạm dừng AI và trực tiếp nhắn cho khách.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338062,
+        "timestamp": 1786102338062
+      },
+      {
+        "id": "680f2c91-549e-41d8-a110-54f1bd9efff5",
+        "question": "app có nói chuyện bằng giọng nói không",
+        "answer": "Có, app hỗ trợ trợ lý giọng nói tiếng Việt — bạn nói, app sẽ nhận diện và hiển thị văn bản gần như ngay lập tức, sau đó trả lời lại như một cuộc trò chuyện bình thường.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338070,
+        "timestamp": 1786102338070
+      },
+      {
+        "id": "2e22c677-6175-49f8-a0b9-4661b4a3e072",
+        "question": "gửi ảnh cho AI xem được không",
+        "answer": "Được. Bạn gửi ảnh trong khung chat, app sẽ tự nén tối ưu rồi gửi cho AI phân tích và trả lời dựa trên nội dung hình ảnh đó.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338076,
+        "timestamp": 1786102338076
+      },
+      {
+        "id": "975623b6-202a-41a1-ac90-7fed10d0f17b",
+        "question": "AI trả lời dựa vào đâu",
+        "answer": "AI có thể trả lời tự do (dựa trên kiến thức chung), hoặc trả lời theo đúng tri thức bạn đã huấn luyện riêng (Q&A), hoặc kết hợp cả hai — tuỳ theo chế độ trả lời bạn thiết lập cho từng kênh.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338087,
+        "timestamp": 1786102338087
+      },
+      {
+        "id": "c5971ef4-c1d6-42bd-9093-cc99b32fabd0",
+        "question": "làm sao biết có tin nhắn mới chưa đọc",
+        "answer": "App có huy hiệu thông báo hiển thị tổng số tin nhắn chưa đọc của tất cả khách hàng trên mọi kênh, giúp bạn không bỏ sót hội thoại nào.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102338093,
+        "timestamp": 1786102338093
+      },
+      {
+        "id": "e933c7b7-c1e2-4a79-ba14-87a706809219",
+        "question": "app có gọi video được không",
+        "answer": "Có. App hỗ trợ gọi thoại và gọi video trực tiếp giữa 2 máy cài AIChatVN2 với nhau, không cần cài thêm ứng dụng gọi nào khác.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346319,
+        "timestamp": 1786102346319
+      },
+      {
+        "id": "070dd716-d5d9-42b8-afa9-182bfb2e821c",
+        "question": "gọi cho người khác qua app thế nào",
+        "answer": "Bạn cần biết mã máy 8 ký tự của người muốn gọi (họ xem trong mục \"Mã máy của tôi\"), sau đó bấm gọi tới mã đó — có thể chọn gọi thoại hoặc gọi video.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346328,
+        "timestamp": 1786102346328
+      },
+      {
+        "id": "b4925888-7411-4bcc-8128-07f2dbc89dc1",
+        "question": "mã máy của tôi ở đâu",
+        "answer": "Bạn vào mục Gọi thoại\/video trong app để xem mã máy 8 ký tự của mình — gửi mã này cho người khác để họ gọi tới máy bạn.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346337,
+        "timestamp": 1786102346337
+      },
+      {
+        "id": "7ab1da79-0da9-4251-98de-91e794ecfcb2",
+        "question": "lưu số liên hệ trong app được không",
+        "answer": "Được. Bạn có thể lưu mã máy của người khác kèm tên gợi nhớ vào danh bạ, lần sau gọi không cần nhớ lại mã 8 ký tự nữa.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346366,
+        "timestamp": 1786102346366
+      },
+      {
+        "id": "9211c7fb-5419-47d0-b964-931510a2af7a",
+        "question": "app có lưu lịch sử cuộc gọi không",
+        "answer": "Có. App tự ghi lại lịch sử mọi cuộc gọi — gọi thành công, gọi nhỡ, bị từ chối, hay lỗi kết nối — kèm thời lượng cuộc gọi thực tế.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346382,
+        "timestamp": 1786102346382
+      },
+      {
+        "id": "3101ad92-2ea0-423c-a392-1a7a3109512c",
+        "question": "gọi điện qua app có tốn phí server không",
+        "answer": "Cuộc gọi kết nối trực tiếp giữa 2 máy (P2P) thông qua kênh báo hiệu có sẵn của app, không cần server gọi riêng nên không phát sinh thêm chi phí cho phần này.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346388,
+        "timestamp": 1786102346388
+      },
+      {
+        "id": "e66f2e3c-1624-48bb-8ca7-c5f9ccbef228",
+        "question": "gọi video cần internet mạnh không",
+        "answer": "Cuộc gọi cần cả hai máy có kết nối internet ổn định để đàm phán kết nối trực tiếp; nếu mạng yếu, cuộc gọi có thể giật hoặc bị ngắt giữa chừng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102346401,
+        "timestamp": 1786102346401
+      },
+      {
+        "id": "00423d8c-e79a-4859-919f-7660a8257da2",
+        "question": "cài đặt app ở đâu",
+        "answer": "Bạn vào tab \"Khác\" rồi chọn \"Cấu hình hệ thống\" (Settings). Đây là nơi khai báo các khóa kết nối (Groq AI, Tuya, Resend email), quản lý kênh chat, sao lưu\/phục hồi dữ liệu và một số tùy chọn khác.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357896,
+        "timestamp": 1786102357896
+      },
+      {
+        "id": "0bcb51e9-35a0-4e4d-89a9-d7d4abad8f4b",
+        "question": "groq api key là gì lấy ở đâu",
+        "answer": "Groq API Key là khóa kết nối để app dùng AI phân tích chat\/hình ảnh camera. Bạn đăng ký tài khoản Groq, tạo API Key rồi dán vào ô \"Groq API Key\" trong Cấu hình hệ thống, sau đó bấm \"Kiểm tra kết nối Groq\" để xác nhận đã đúng.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357911,
+        "timestamp": 1786102357911
+      },
+      {
+        "id": "9e64560e-5931-4309-a942-987c29d7dee2",
+        "question": "không có groq api key thì app dùng được không",
+        "answer": "Một số chức năng AI (chat thông minh, phân tích camera) cần Groq API Key mới hoạt động đầy đủ. Nếu chưa có khóa, bạn liên hệ Zalo 0944121150 để được hướng dẫn lấy khóa hoặc dùng khóa chung tạm thời (server chia sẻ).",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357923,
+        "timestamp": 1786102357923
+      },
+      {
+        "id": "7f57815a-6d02-4fcb-92f0-f515d61109d3",
+        "question": "kết nối tuya thế nào",
+        "answer": "Bạn đăng ký tài khoản miễn phí tại developer.tuya.com, tạo Cloud Project và liên kết với app Smart Life của bạn để lấy Client ID, Client Secret và UID. Sau đó vào Cấu hình hệ thống, mục Tuya Smart Life, điền 3 thông tin này rồi bấm \"Thử kết nối\" để xác nhận.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357940,
+        "timestamp": 1786102357940
+      },
+      {
+        "id": "21a0d734-d1fb-4079-a9f9-fde144b7c897",
+        "question": "tuya uid lấy ở đâu",
+        "answer": "Vào Cloud Project trên developer.tuya.com → Devices → Manage Devices → bấm vào tài khoản Smart Life đã liên kết (Automatic Link) để xem UID (dạng bắt đầu bằng \"ay...\").",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357956,
+        "timestamp": 1786102357956
+      },
+      {
+        "id": "d1a5758d-b4f4-4607-96ac-fbf5f20016cf",
+        "question": "gửi email cảnh báo thế nào",
+        "answer": "App dùng dịch vụ Resend để gửi email cảnh báo. Bạn đăng ký tài khoản tại resend.com, tạo API Key rồi điền vào Cấu hình hệ thống cùng địa chỉ email gửi đi (From) — lưu ý địa chỉ gửi phải dùng domain đã xác minh trên Resend. Tài khoản miễn phí giới hạn khoảng 3.000 email\/tháng, tối đa 100 email\/ngày.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357967,
+        "timestamp": 1786102357967
+      },
+      {
+        "id": "7591a396-9356-409c-8a9b-a08c8ee4d672",
+        "question": "làm sao thử gửi email xem có hoạt động không",
+        "answer": "Sau khi điền Resend API Key và địa chỉ gửi đi, bạn nhập một email nhận thử vào ô \"Email nhận thử nghiệm\" rồi bấm \"Gửi Email thử nghiệm\" để kiểm tra ngay.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357985,
+        "timestamp": 1786102357985
+      },
+      {
+        "id": "7b2885ae-4104-49d8-943d-f1caedf849af",
+        "question": "gắn chat lên website của tôi thế nào",
+        "answer": "Vào Cấu hình hệ thống, mục Website Chat Widget, bấm \"Sao chép mã nhúng Website\" rồi dán đoạn mã đó vào trang web của bạn — khách truy cập web sẽ chat được với AI ngay trên site.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102357997,
+        "timestamp": 1786102357997
+      },
+      {
+        "id": "d8b3a81a-64db-4439-9cf6-bb31b1ac50a2",
+        "question": "kết nối fanpage facebook thế nào",
+        "answer": "Vào Cấu hình hệ thống, mục kênh chat, chọn \"Kết nối Fanpage Facebook\" — chỉ cần đăng nhập 1 chạm (1-Click OAuth) là fanpage của bạn được liên kết, tin nhắn khách gửi tới sẽ tự động đổ về app.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102358007,
+        "timestamp": 1786102358007
+      },
+      {
+        "id": "3e1fabb5-a8d2-4543-9f99-e489aea903b0",
+        "question": "sao lưu dữ liệu app thế nào",
+        "answer": "Vào Cấu hình hệ thống, mục \"Sao lưu & Phục hồi dữ liệu\", bấm \"Xuất file (Export)\" — app sẽ đóng gói toàn bộ dữ liệu quan trọng (khách hàng, camera, thiết bị, lịch trình, Q&A, cấu hình...) thành 1 file JSON lưu trong thư mục Downloads.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102358016,
+        "timestamp": 1786102358016
+      },
+      {
+        "id": "b9fb0f10-857a-4630-a99d-4f55170b1980",
+        "question": "khôi phục dữ liệu đã sao lưu thế nào",
+        "answer": "Vào Cấu hình hệ thống, mục \"Sao lưu & Phục hồi dữ liệu\", bấm \"Nhập file (Import)\" rồi chọn đúng file JSON đã xuất trước đó — app tự phục hồi lại toàn bộ dữ liệu, kể cả file sao lưu từ phiên bản cũ hơn cũng dùng lại được.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102358025,
+        "timestamp": 1786102358025
+      },
+      {
+        "id": "790a3c80-b8f3-4d1e-8f79-3b170db93fe2",
+        "question": "cuộc gọi đến không tự sáng màn hình phải làm sao",
+        "answer": "Bạn vào Cấu hình hệ thống, mục \"Cuộc gọi đến (Full-screen)\", bấm \"Mở cài đặt để bật\" và cấp quyền hiển thị toàn màn hình cho app. Nếu chưa bật, chuông và rung vẫn hoạt động bình thường, chỉ là máy sẽ không tự sáng màn hình khi đang khoá.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102358032,
+        "timestamp": 1786102358032
+      },
+      {
+        "id": "f365432c-b7eb-4671-9a4d-66071b757ff7",
+        "question": "đổi giao diện tối sáng thế nào",
+        "answer": "Vào Cấu hình hệ thống, bật\/tắt công tắc \"Chế độ tối (Dark Mode)\" là đổi giao diện ngay.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102358039,
+        "timestamp": 1786102358039
+      },
+      {
+        "id": "b5a5333c-bbb2-4cd1-ac6f-abb05146a764",
+        "question": "app dùng hết bao nhiêu token AI",
+        "answer": "Trong Cấu hình hệ thống có mục \"Nhật ký cuộc gọi Groq\" cho biết tổng số token đã dùng của các cuộc gọi AI gần nhất (lưu tối đa 10 cuộc gần nhất trong bộ nhớ tạm). Bạn có thể xuất log này ra file để xem chi tiết đầy đủ hơn.",
+        "category": "faq",
+        "type": "alias",
+        "createdBy": "default_user",
+        "createdAt": 1786102358047,
+        "timestamp": 1786102358047
+      },
+      {
+        "id": "9360e159-6a2b-49e3-be05-cb2cd8eb2206",
+        "question": "quét camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"scan\",\"params\":{\"cameraId\":\"\",\"force\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343368,
+        "timestamp": 1786369343368
+      },
+      {
+        "id": "52c85bcb-f39b-40cd-94b6-b98439c451c9",
+        "question": "chụp ảnh camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"scan\",\"params\":{\"cameraId\":\"\",\"force\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343414,
+        "timestamp": 1786369343414
+      },
+      {
+        "id": "a5744463-2738-4ecd-aa5b-f5f91c5cde59",
+        "question": "trạng thái camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"cameraId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343430,
+        "timestamp": 1786369343430
+      },
+      {
+        "id": "a765b9ff-31b3-4485-a83e-8c3228d8bf69",
+        "question": "kiểm tra camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"cameraId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343439,
+        "timestamp": 1786369343439
+      },
+      {
+        "id": "210d4689-2689-4724-96d4-bfae22fd9659",
+        "question": "bật camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set_active\",\"params\":{\"cameraId\":\"\",\"active\":true}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343449,
+        "timestamp": 1786369343449
+      },
+      {
+        "id": "c0a1422f-88b6-479a-bb08-4b412bc9997f",
+        "question": "tắt camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set_active\",\"params\":{\"cameraId\":\"\",\"active\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343462,
+        "timestamp": 1786369343462
+      },
+      {
+        "id": "27a3c11e-905c-4078-803e-4fa1e7386066",
+        "question": "báo động giả camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"mark_false_positive\",\"params\":{\"cameraId\":\"\",\"alertId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343471,
+        "timestamp": 1786369343471
+      },
+      {
+        "id": "1a510eff-e6ef-4c5c-b94f-a7f581e5e2fa",
+        "question": "không có trộm camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"mark_false_positive\",\"params\":{\"cameraId\":\"\",\"alertId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343481,
+        "timestamp": 1786369343481
+      },
+      {
+        "id": "aaf28f73-e16a-443e-a98d-1d6b57c55503",
+        "question": "báo giả",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"mark_false_positive\",\"params\":{\"cameraId\":\"\",\"alertId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343490,
+        "timestamp": 1786369343490
+      },
+      {
+        "id": "7ff0b468-cf08-4d8c-9c9b-c6c86f72bd17",
+        "question": "xem camera trực tiếp",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"open_live_view\",\"params\":{\"cameraId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343503,
+        "timestamp": 1786369343503
+      },
+      {
+        "id": "caf2f449-53d4-4a55-be7e-f4089dcacc97",
+        "question": "cho xem camera phòng khách",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"open_live_view\",\"params\":{\"cameraId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343514,
+        "timestamp": 1786369343514
+      },
+      {
+        "id": "3b081575-1047-4159-bbe6-cf53125ab76b",
+        "question": "ghi hình camera phòng khách",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"record\",\"params\":{\"cameraId\":\"\",\"durationSec\":0}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343528,
+        "timestamp": 1786369343528
+      },
+      {
+        "id": "dd79078a-bab5-4ddd-bb77-be1d007f1914",
+        "question": "quay camera 1 phút",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"record\",\"params\":{\"cameraId\":\"\",\"durationSec\":0}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343537,
+        "timestamp": 1786369343537
+      },
+      {
+        "id": "d76d6757-a86d-42a2-93f7-1a9b413d831d",
+        "question": "dừng ghi hình camera",
+        "answer": "{\"plugin\":\"camera\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"stop_record\",\"params\":{\"cameraId\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343547,
+        "timestamp": 1786369343547
+      },
+      {
+        "id": "86f16c52-ed0c-471d-af4d-cf41ebff6548",
+        "question": "bật đèn",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":true}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343556,
+        "timestamp": 1786369343556
+      },
+      {
+        "id": "7a28d5b6-eb9f-4743-9907-e12d7f40327b",
+        "question": "tắt đèn",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343566,
+        "timestamp": 1786369343566
+      },
+      {
+        "id": "f9f382dd-add9-4124-a0cc-5a15d2d925be",
+        "question": "bật ổ cắm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":true}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343578,
+        "timestamp": 1786369343578
+      },
+      {
+        "id": "39f189c8-1883-405b-82e4-0dc9e8016689",
+        "question": "tắt ổ cắm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343587,
+        "timestamp": 1786369343587
+      },
+      {
+        "id": "86b66520-0f0a-49b5-845a-f149af021a46",
+        "question": "bật quạt",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":true}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343597,
+        "timestamp": 1786369343597
+      },
+      {
+        "id": "9059c210-987d-465f-9979-7b0f5abb887f",
+        "question": "tắt quạt",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343605,
+        "timestamp": 1786369343605
+      },
+      {
+        "id": "9c46e1fc-d81e-4a83-aab0-32111b8e8dcf",
+        "question": "bật máy bơm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":true}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343615,
+        "timestamp": 1786369343615
+      },
+      {
+        "id": "74b63c22-7dad-4604-8e67-16a5c244de3f",
+        "question": "tắt máy bơm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"set\",\"params\":{\"device\":\"\",\"state\":false}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343623,
+        "timestamp": 1786369343623
+      },
+      {
+        "id": "a6f1a0b8-dc37-4a2d-b7f0-88a0d9cd5fbf",
+        "question": "trạng thái đèn",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343633,
+        "timestamp": 1786369343633
+      },
+      {
+        "id": "05aa37ab-5674-4935-b4b2-3d605e774956",
+        "question": "kiểm tra đèn",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343645,
+        "timestamp": 1786369343645
+      },
+      {
+        "id": "74fb969c-e240-470a-8f11-66f165779cad",
+        "question": "trạng thái ổ cắm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343653,
+        "timestamp": 1786369343653
+      },
+      {
+        "id": "496ad8d3-2130-434b-9588-c17e3e038f2c",
+        "question": "kiểm tra ổ cắm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343663,
+        "timestamp": 1786369343663
+      },
+      {
+        "id": "abd78abd-a1c4-4b5e-a28e-286066193bc4",
+        "question": "trạng thái quạt",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343671,
+        "timestamp": 1786369343671
+      },
+      {
+        "id": "b2faf0b4-f063-4b79-9774-67f4eb2a58d3",
+        "question": "kiểm tra quạt",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343680,
+        "timestamp": 1786369343680
+      },
+      {
+        "id": "9affbec2-b9f9-4369-9916-fd56f8f56892",
+        "question": "trạng thái máy bơm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343688,
+        "timestamp": 1786369343688
+      },
+      {
+        "id": "3318b57d-0198-4e15-8593-e80001529488",
+        "question": "kiểm tra máy bơm",
+        "answer": "{\"plugin\":\"smart_switch\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"status\",\"params\":{\"device\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343698,
+        "timestamp": 1786369343698
+      },
+      {
+        "id": "65d7e77a-3b2b-44ca-b888-cef807254d7b",
+        "question": "gửi email",
+        "answer": "{\"plugin\":\"email\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"send\",\"params\":{\"to\":\"\",\"subject\":\"\",\"body\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343717,
+        "timestamp": 1786369343717
+      },
+      {
+        "id": "e63640eb-be9c-4104-ad1c-79283fda28c7",
+        "question": "soạn email",
+        "answer": "{\"plugin\":\"email\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"send\",\"params\":{\"to\":\"\",\"subject\":\"\",\"body\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343727,
+        "timestamp": 1786369343727
+      },
+      {
+        "id": "8f879999-5e1e-4dca-b167-681bb78d81c2",
+        "question": "gửi email test",
+        "answer": "{\"plugin\":\"email\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"test\",\"params\":{\"to\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343735,
+        "timestamp": 1786369343735
+      },
+      {
+        "id": "e8d5e0bf-432a-4fe9-b0af-aa8cf1eb789a",
+        "question": "gửi thông báo",
+        "answer": "{\"plugin\":\"notification\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"send\",\"params\":{\"title\":\"\",\"message\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343748,
+        "timestamp": 1786369343748
+      },
+      {
+        "id": "1b706d71-bbb2-4a59-8c9d-91dcffc2d18f",
+        "question": "gửi cảnh báo",
+        "answer": "{\"plugin\":\"notification\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"send\",\"params\":{\"title\":\"\",\"message\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343756,
+        "timestamp": 1786369343756
+      },
+      {
+        "id": "77c539e2-8b9c-42c6-a0df-1ddfe69a3e52",
+        "question": "đặt lịch",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"add\",\"params\":{\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343767,
+        "timestamp": 1786369343767
+      },
+      {
+        "id": "e8366f27-35dc-4474-9629-5f131488a4de",
+        "question": "tạo lịch",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"add\",\"params\":{\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343779,
+        "timestamp": 1786369343779
+      },
+      {
+        "id": "a20b0e63-b225-41ea-8c86-7369e0e728e3",
+        "question": "lên lịch",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"add\",\"params\":{\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343790,
+        "timestamp": 1786369343790
+      },
+      {
+        "id": "e67e2cc3-b5b5-4027-80f8-752acf2ebe3f",
+        "question": "thêm lịch",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"add\",\"params\":{\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343800,
+        "timestamp": 1786369343800
+      },
+      {
+        "id": "ceab3604-3298-456b-8a66-06c1d5f06010",
+        "question": "sửa lịch trình",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"update\",\"params\":{\"id\":\"\",\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343813,
+        "timestamp": 1786369343813
+      },
+      {
+        "id": "fcfe7ca6-cdd1-4376-9555-ef6e349694d0",
+        "question": "cập nhật lịch trình",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"update\",\"params\":{\"id\":\"\",\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343825,
+        "timestamp": 1786369343825
+      },
+      {
+        "id": "df86cb8a-b2f0-4ed9-ac67-6fc48793b6e6",
+        "question": "thay đổi lịch trình",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"update\",\"params\":{\"id\":\"\",\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343838,
+        "timestamp": 1786369343838
+      },
+      {
+        "id": "dfe7c2dd-fdf3-4108-bf51-d1b237724580",
+        "question": "đặt lại lịch",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"update\",\"params\":{\"id\":\"\",\"pluginId\":\"\",\"action\":\"\",\"cron\":\"\",\"intervalMinutes\":0,\"params\":\"\",\"label\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343849,
+        "timestamp": 1786369343849
+      },
+      {
+        "id": "394f6a5d-1301-40a4-b7b0-0e57d1dee641",
+        "question": "xóa lịch trình",
+        "answer": "{\"plugin\":\"schedule\",\"pluginVersion\":\"1.0.0\",\"schemaVersion\":\"1.0.0\",\"action\":\"delete\",\"params\":{\"id\":\"\"}}",
+        "category": "auto_init_incomplete",
+        "type": "intent",
+        "createdBy": "default_user",
+        "createdAt": 1786369343865,
+        "timestamp": 1786369343865
+      }
+    ],
+    "schedules": [
+      {
+        "id": "21902194-4365-4a5c-bc85-25a49e0f9ff9",
+        "pluginId": "camera",
+        "action": "scan",
+        "params": "{\"cameraId\":\"testdemo\",\"scheduleId\":\"21902194-4365-4a5c-bc85-25a49e0f9ff9\",\"force\":false}",
+        "cron": "",
+        "intervalMinutes": 5,
+        "enabled": 1,
+        "lastRunAt": 1786416845869,
+        "label": "lịch quét camera 5 phut",
+        "createdAt": 1786078757275
+      }
+    ],
+    "app_config": [
+      {
+        "key": "global.memory_query_keywords",
+        "value": "mấy hôm trước,hôm qua,hôm nay,gần đây,vừa rồi,lúc nãy,lịch sử,nhật ký,hoạt động,đã làm gì,đã xảy ra,có ai gọi,có ai nhắn,tin nhắn gì,cuộc gọi,bỏ lỡ,chưa đọc,mấy ngày nay,tuần trước,tuần này,trước đó,sự kiện,biến cố,cảnh báo,báo cáo,camera,thiết bị",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá kích hoạt tra cứu lịch sử (Memory Recall)",
+        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn bạn gõ chứa 1 trong các từ này, hệ thống sẽ tự tra lại nhật ký (chat, cuộc gọi, camera, thiết bị) để trả lời chính xác thay vì để AI tự đoán\/bịa. Thêm từ khoá riêng của bạn vào cuối danh sách (vd: 'nãy giờ', 'khách nào') nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
+        "updatedAt": 1785893813053
+      },
+      {
+        "key": "website.widget_key",
+        "value": "56bd7bab70864670ae398d07e6e95b4d",
+        "type": "string",
+        "pluginId": "website",
+        "label": "Widget Key (Mã nhúng công khai)",
+        "description": "Tự động sinh khi app kết nối Cloud Gateway lần đầu. An toàn để lộ công khai trên website — KHÁC với Gateway Token bí mật.",
+        "updatedAt": 1785893813065
+      },
+      {
+        "key": "local.device_id",
+        "value": "090bcf72-5e89-46c2-93cf-bf8a3f11907f",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1785893813069
+      },
+      {
+        "key": "local.activation_status",
+        "value": "true",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1785893813071
+      },
+      {
+        "key": "device.role",
+        "value": "client",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Vai trò của máy này",
+        "description": "\"client\" = máy mang theo người (mặc định, không đổi hành vi hiện tại). \"camera_node\" = máy đặt cố định ở nhà, tự động nhận lệnh điều khiển thiết bị (Tuya, camera...) khi máy Client ở ngoài mạng LAN gửi tới.",
+        "updatedAt": 1786369340417
+      },
+      {
+        "key": "device.home_camera_node_code",
+        "value": "",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Mã Camera Node ở nhà",
+        "description": "Nhập mã deviceCode (8 ký tự) của máy đặt cố định ở nhà — xem mã này trong Cài đặt trên chính máy đó. Chỉ cần thiết lập trên máy đóng vai trò Client.",
+        "updatedAt": 1786369340417
+      },
+      {
+        "key": "device.local_only_mode_enabled",
+        "value": "false",
+        "type": "boolean",
+        "pluginId": "global",
+        "label": "Chế độ Local-only (tắt Cloud dự phòng)",
+        "description": "Khi bật: điều khiển thiết bị Tuya khi Local (LAN) thất bại sẽ chuyển sang gửi lệnh qua Gateway tới Camera Node ở nhà, KHÔNG bao giờ gọi Cloud API để điều khiển hàng ngày nữa. Yêu cầu đã nhập Mã Camera Node ở nhà trước khi bật.",
+        "updatedAt": 1786369340417
+      },
+      {
+        "key": "device.camera_alarm_notify_device_code",
+        "value": "",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Mã máy cần báo khi ONVIF phát hiện chuyển động",
+        "description": "Chỉ cần thiết lập trên máy đóng vai trò Camera Node. Nhập deviceCode (8 ký tự) của máy CẦN ĐƯỢC BÁO khi ONVIF phát hiện chuyển động (thường là máy bạn mang theo người) — xem mã này trong Cài đặt trên chính máy đó. Để trống = tự báo về CHÍNH máy Camera Node này.",
+        "updatedAt": 1786369340417
+      },
+      {
+        "key": "global.external_chat_mode",
+        "value": "QA",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Chế độ chat mặc định (Khách ngoại kênh)",
+        "description": "Chế độ trả lời chung cho khách Facebook\/Telegram\/Website: GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên.",
+        "updatedAt": 1786369342867
+      },
+      {
+        "key": "global.gateway_url",
+        "value": "https:\/\/aichatvn2-apk-gateway.onrender.com",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Cổng đám mây (Cloud Gateway URL)",
+        "description": "Địa chỉ máy chủ trung gian cố định trên Render.com để nhận Webhook.",
+        "updatedAt": 1786369342874
+      },
+      {
+        "key": "global.gateway_token",
+        "value": "aichatvn_secret_token_1234",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Mã xác thực Gateway (Gateway Token)",
+        "description": "Mật khẩu bảo mật dùng chung để xác thực kết nối giữa điện thoại và Render Gateway.",
+        "updatedAt": 1786369342880
+      },
+      {
+        "key": "call.turn_metered_domain",
+        "value": "",
+        "type": "string",
+        "pluginId": "call",
+        "label": "Metered Domain (TURN Server)",
+        "description": "Tên domain dạng \"xxxx.metered.live\" — lấy từ Dashboard metered.ca -> Developers. Để trống nếu chưa đăng ký, cuộc gọi sẽ chỉ dùng STUN công khai (có thể lúc được lúc không tùy mạng).",
+        "updatedAt": 1786369342884
+      },
+      {
+        "key": "call.turn_metered_api_key",
+        "value": "",
+        "type": "string",
+        "pluginId": "call",
+        "label": "Metered API Key (TURN Server)",
+        "description": "API Key hiển thị cùng credential trên Dashboard metered.ca -> TURN Server -> credential đầu tiên. Đây là API Key scoped-theo-credential, an toàn dùng trực tiếp trên máy (KHÔNG phải Secret Key).",
+        "updatedAt": 1786369342891
+      },
+      {
+        "key": "facebook.page_access_token",
+        "value": "",
+        "type": "string",
+        "pluginId": "facebook",
+        "label": "Facebook Page Access Token",
+        "description": "Mã token kết nối của Fanpage Facebook dùng để gửi tin nhắn phản hồi cho người dùng.",
+        "updatedAt": 1786369342897
+      },
+      {
+        "key": "telegram.bot_token",
+        "value": "",
+        "type": "string",
+        "pluginId": "telegram",
+        "label": "Telegram Bot Token",
+        "description": "Mã token của Bot Telegram (do @BotFather cấp) dùng để kết nối nhận\/gửi tin nhắn.",
+        "updatedAt": 1786369342900
+      },
+      {
+        "key": "website.allowed_origins",
+        "value": "*",
+        "type": "string",
+        "pluginId": "website",
+        "label": "Allowed Origins (Tên miền được phép nhúng)",
+        "description": "Danh sách tên miền được phép nhúng khát chat (cách nhau bởi dấu phẩy, để dấu * là cho phép tất cả).",
+        "updatedAt": 1786369342907
+      },
+      {
+        "key": "groq.model_text",
+        "value": "openai\/gpt-oss-120b",
+        "type": "string",
+        "pluginId": "groq",
+        "label": "Model chat chính",
+        "description": "Model Groq dùng cho hội thoại văn bản (chat, QA). Thay đổi nếu model bị khát.",
+        "updatedAt": 1786369342934
+      },
+      {
+        "key": "groq.model_vision",
+        "value": "qwen\/qwen3.6-27b",
+        "type": "string",
+        "pluginId": "groq",
+        "label": "Model vision (phân tích ảnh)",
+        "description": "Model Groq dùng khi người dùng gửi ảnh hoặc camera gửi ảnh để phân tích.",
+        "updatedAt": 1786369342937
+      },
+      {
+        "key": "groq.model_router",
+        "value": "openai\/gpt-oss-20b",
+        "type": "string",
+        "pluginId": "groq",
+        "label": "Model router (phân loại lệnh)",
+        "description": "Model nhỏ, nhanh, rẻ để phân loại intent (là lệnh thiết bị hay chat thường).",
+        "updatedAt": 1786369342946
+      },
+      {
+        "key": "groq.max_tokens_chat",
+        "value": "1000",
+        "type": "int",
+        "pluginId": "groq",
+        "label": "Max tokens – chat",
+        "description": "Số token tối đa model text trả về mỗi lượt chat. Tăng nếu câu trả lời bị cắt.",
+        "updatedAt": 1786369342949
+      },
+      {
+        "key": "groq.max_tokens_vision",
+        "value": "800",
+        "type": "int",
+        "pluginId": "groq",
+        "label": "Max tokens – vision",
+        "description": "Số token tối đa model vision trả về khi phân tích ảnh camera. Schema objects càng nhiều vật thể\/trường càng cần token lớn hơn để không bị cắt cụt trước khi tới phần mô tả.",
+        "updatedAt": 1786369342953
+      },
+      {
+        "key": "groq.max_tokens_router",
+        "value": "500",
+        "type": "int",
+        "pluginId": "groq",
+        "label": "Max tokens – router",
+        "description": "Số token tối đa model router trả về khi phân loại lệnh.",
+        "updatedAt": 1786369342957
+      },
+      {
+        "key": "camera.default_ai_prompt",
+        "value": "Camera giám sát thửa đất. Hãy xem có người\/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
+        "type": "string",
+        "pluginId": "camera",
+        "label": "Prompt AI mặc định",
+        "description": "Prompt gửi đến Groq khi camera chưa được cấu hình prompt riêng.",
+        "updatedAt": 1786369342961
+      },
+      {
+        "key": "camera.default_positive_keywords",
+        "value": "cảnh báo",
+        "type": "string",
+        "pluginId": "camera",
+        "label": "Từ khoá cảnh báo mặc định",
+        "description": "Danh sách từ khoá (cách nhau bằng dấu phẩy) QUYẾT ĐỊNH báo động — dùng cho cả 2 nguồn: (1) văn bản mô tả của Groq AI (mặc định \"cảnh báo\", đúng theo prompt yêu cầu AI tự viết chữ này khi phát hiện bất thường), và (2) nhãn vật thể do ML Kit local nhận diện (vd \"người\", \"xe ô tô\" — copy từ danh sách tham khảo ở CAMERA_DEFAULT_NEGATIVE_KW sang đây). CHỈ báo động khi khớp đúng 1 từ khoá trong danh sách này — để trống hoặc không khớp gì = không bao giờ báo động (an toàn mặc định, không tốn quota AI). Dùng cho camera chưa cấu hình riêng.",
+        "updatedAt": 1786369342964
+      },
+      {
+        "key": "camera.default_negative_keywords",
+        "value": "bình thường,người,xe ô tô,xe máy\/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi\/hành lý,tòa nhà\/phòng,ngoài trời\/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
+        "type": "string",
+        "pluginId": "camera",
+        "label": "Từ khoá bình thường mặc định (danh sách tham khảo nhãn)",
+        "description": "KHÔNG còn dùng để loại trừ báo động — đây là DANH SÁCH THAM KHẢO gồm \"bình thường\" (chữ Groq AI tự viết khi không có gì bất thường) + toàn bộ nhãn tiếng Việt mà ML Kit local có thể trả về (xem mapLabelToVietnamese() trong LocalVisionTool.kt). Vì người dùng không biết chính xác ML Kit sẽ phân loại ra nhãn gì, họ chỉ cần COPY đúng từ danh sách này sang ô \"Từ khoá cảnh báo\" (CAMERA_DEFAULT_POSITIVE_KW \/ aiPositiveKeywords) để bật báo động cho nhãn đó. Dùng cho camera chưa cấu hình riêng.",
+        "updatedAt": 1786369342968
+      },
+      {
+        "key": "camera.cooldown_ms",
+        "value": "10800000",
+        "type": "long",
+        "pluginId": "camera",
+        "label": "Cooldown giữa 2 cảnh báo (ms)",
+        "description": "Thời gian chờ tối thiểu (milli-giây) giữa 2 lần gửi cảnh báo cho cùng 1 camera. Mặc định 3 giờ = 10800000 ms.",
+        "updatedAt": 1786369342971
+      },
+      {
+        "key": "camera.max_daily_events",
+        "value": "50",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Sự kiện tối đa \/ ngày \/ camera",
+        "description": "Giới hạn số sự kiện ghi nhận mỗi ngày trên 1 camera để tránh spam alert.",
+        "updatedAt": 1786369342976
+      },
+      {
+        "key": "camera.circuit_breaker_threshold",
+        "value": "3",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Circuit breaker – ngưỡng offline",
+        "description": "Số lần fetch liên tiếp thất bại trước khi camera bị đánh dấu offline (circuit breaker mở).",
+        "updatedAt": 1786369342983
+      },
+      {
+        "key": "camera.circuit_breaker_reset_ms",
+        "value": "1800000",
+        "type": "long",
+        "pluginId": "camera",
+        "label": "Circuit breaker – reset (ms)",
+        "description": "Thời gian (ms) sau khi circuit breaker mở thì thử kết nối lại. Mặc định 30 phút.",
+        "updatedAt": 1786369342987
+      },
+      {
+        "key": "camera.daily_report_hour",
+        "value": "20",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Giờ gửi báo cáo ngày",
+        "description": "Giờ trong ngày (0–23) để gửi báo cáo tổng hợp. Mặc định 20 giờ (8 PM).",
+        "updatedAt": 1786369342990
+      },
+      {
+        "key": "camera.day_start_hour",
+        "value": "6",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Giờ bắt đầu ban ngày (camera)",
+        "description": "Giờ trong ngày (0–23) camera bắt đầu tính là 'ban ngày' — dùng để tách riêng ngưỡng học báo giả (deltaTrigger\/absDiffTrigger\/baseline) giữa ban ngày và ban đêm, tránh cú sốc IR ban đêm làm ngưỡng ban ngày bị kẹt cao. Mặc định 6h sáng.",
+        "updatedAt": 1786369342995
+      },
+      {
+        "key": "camera.night_start_hour",
+        "value": "18",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Giờ bắt đầu ban đêm (camera)",
+        "description": "Giờ trong ngày (0–23) camera bắt đầu tính là 'ban đêm'. Từ giờ này đến trước giờ bắt đầu ban ngày, hệ thống dùng riêng bộ ngưỡng học báo giả cho ban đêm. Mặc định 18h (6 giờ tối).",
+        "updatedAt": 1786369342998
+      },
+      {
+        "key": "camera.alert_retention_days",
+        "value": "30",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Lưu lịch sử cảnh báo (ngày)",
+        "description": "Số ngày giữ lại bản ghi cảnh báo + ảnh đính kèm trước khi tự xóa. Tăng lên nếu máy còn nhiều bộ nhớ.",
+        "updatedAt": 1786369343002
+      },
+      {
+        "key": "camera.event_log_retention_days",
+        "value": "30",
+        "type": "int",
+        "pluginId": "camera",
+        "label": "Lưu nhật ký sự kiện (ngày)",
+        "description": "Số ngày giữ lại nhật ký sự kiện (event_logs) dùng cho Chat trả lời câu hỏi quá khứ. Chỉ là text nên có thể để dài hơn retention ảnh mà không tốn nhiều dung lượng.",
+        "updatedAt": 1786369343007
+      },
+      {
+        "key": "camera.alert_merge_window_ms",
+        "value": "300000",
+        "type": "long",
+        "pluginId": "camera",
+        "label": "Cửa sổ gộp cảnh báo liên tiếp (ms)",
+        "description": "Nếu 2 cảnh báo cùng camera, cùng trạng thái xảy ra cách nhau dưới thời gian này thì gộp thành 1 sự kiện kéo dài (start-end) thay vì tạo bản ghi mới. Mặc định 5 phút = 300000 ms.",
+        "updatedAt": 1786369343012
+      },
+      {
+        "key": "email.subject_prefix",
+        "value": "🚨 CẢNH BÁO AN NINH",
+        "type": "string",
+        "pluginId": "email",
+        "label": "Tiền tố tiêu đề email cảnh báo",
+        "description": "Chuỗi đứng đầu subject của email cảnh báo camera.",
+        "updatedAt": 1786369343016
+      },
+      {
+        "key": "email.max_attachments",
+        "value": "10",
+        "type": "int",
+        "pluginId": "email",
+        "label": "Số ảnh đính kèm tối đa",
+        "description": "Số ảnh bằng chứng đính kèm tối đa mỗi email cảnh báo.",
+        "updatedAt": 1786369343020
+      },
+      {
+        "key": "house_manager.workflows",
+        "value": "[\n  {\n    \"id\": \"wf_security\",\n    \"label\": \"Kịch bản Bảo vệ an ninh Sân trước\",\n    \"triggerSource\": \"camera.cam_01.state=suspicious\",\n    \"enabled\": true,\n    \"steps\": [\n      {\"pluginId\":\"smart_switch\", \"action\":\"set\", \"params\":{\"device\":\"đèn sân trước\", \"state\":\"true\"}},\n      {\"pluginId\":\"notification\", \"action\":\"send\", \"params\":{\"title\":\"🚨 PHÁT HIỆN NGHI VẤN SÂN TRƯỚC\", \"message\":\"Quản gia đã phát hiện bất thường và đang kích hoạt các kịch bản an toàn.\"}},\n      {\"pluginId\":\"house_manager\", \"action\":\"delay\", \"params\":{\"delayMs\":\"30000\"}},\n      {\"pluginId\":\"camera\", \"action\":\"scan\", \"params\":{\"cameraId\":\"cam_01\", \"force\":\"true\"}},\n      {\"pluginId\":\"house_manager\", \"action\":\"delay\", \"params\":{\"delayMs\":\"5000\"}},\n      {\"pluginId\":\"house_manager\", \"action\":\"check_precondition\", \"params\":{\"source\":\"camera\", \"camera\":\"cam_01\", \"attribute\":\"state\", \"expected\":\"suspicious\"}},\n      {\"pluginId\":\"smart_switch\", \"action\":\"set\", \"params\":{\"device\":\"còi báo động\", \"state\":\"true\"}},\n      {\"pluginId\":\"house_manager\", \"action\":\"delay\", \"params\":{\"delayMs\":\"60000\"}},\n      {\"pluginId\":\"smart_switch\", \"action\":\"set\", \"params\":{\"device\":\"còi báo động\", \"state\":\"false\"}}\n    ]\n  }\n]",
+        "type": "string",
+        "pluginId": "house_manager",
+        "label": "Các nhóm kịch bản điều hành Quản gia",
+        "description": "JSON chứa danh sách các nhóm kịch bản liên hoàn được Quản gia tự học hoặc chủ nhà tự xây. Mẫu seed dùng camera 'cam_01' làm ví dụ — chỉnh lại triggerSource cho khớp camera\/thiết bị thật của bạn.",
+        "updatedAt": 1786369343024
+      },
+      {
+        "key": "house_manager.sleep_start_hour",
+        "value": "22",
+        "type": "int",
+        "pluginId": "house_manager",
+        "label": "Giờ bắt đầu ngủ",
+        "description": "Giờ trong ngày (0-23) mà Quản gia bắt đầu coi là 'giờ ngủ' để chuyển Mood sang Đang ngủ\/Ban đêm và áp dụng Chính sách ban đêm yên tĩnh. Mặc định 22h, giữ đúng hành vi cũ khi chưa cấu hình.",
+        "updatedAt": 1786369343028
+      },
+      {
+        "key": "house_manager.sleep_end_hour",
+        "value": "6",
+        "type": "int",
+        "pluginId": "house_manager",
+        "label": "Giờ thức dậy",
+        "description": "Giờ trong ngày (0-23) mà Quản gia coi là kết thúc 'giờ ngủ'. Mặc định 6h sáng, giữ đúng hành vi cũ khi chưa cấu hình.",
+        "updatedAt": 1786369343031
+      },
+      {
+        "key": "global.fuzzy_threshold",
+        "value": "0.5",
+        "type": "float",
+        "pluginId": "global",
+        "label": "Ngưỡng fuzzy match (Fuzzy Threshold)",
+        "description": "full Threshold.",
+        "updatedAt": 1786369343035
+      },
+      {
+        "key": "global.alias_threshold",
+        "value": "0.5",
+        "type": "float",
+        "pluginId": "global",
+        "label": "Ngưỡng alias gửi LLM (Alias Threshold)",
+        "description": "Alias.",
+        "updatedAt": 1786369343039
+      },
+      {
+        "key": "global.chat_qa_threshold",
+        "value": "0.8",
+        "type": "float",
+        "pluginId": "global",
+        "label": "Ngưỡng khớp câu hỏi Chat (Chat QA Threshold)",
+        "description": "Độ tương tự tối thiểu (0.0–1.0) để 1 câu trong catalogue Chat ",
+        "updatedAt": 1786369343044
+      },
+      {
+        "key": "global.tier2_high_confidence",
+        "value": "0.95",
+        "type": "float",
+        "pluginId": "global",
+        "label": "Ngưỡng tin cậy Tầng 2 (High Confidence)",
+        "description": "Điểm của Tầng 2 phải đạt tối thiểu từ mức này trở lên mới thực thi trực tiếp không qua LLM. 0.0–1.0. Thấp = dễ thực thi trực tiếp hơn. Cao = phải khớp rất sát. Mặc định 0.95.",
+        "updatedAt": 1786369343047
+      },
+      {
+        "key": "global.block_external_device_control",
+        "value": "true",
+        "type": "boolean",
+        "pluginId": "global",
+        "label": "Chặn điều khiển thiết bị từ kênh ngoài",
+        "description": "Mặc định BẬT (an toàn): khách chat từ Facebook\/Telegram\/Website chỉ được trả lời QA\/AI thông thường, KHÔNG được kích hoạt bất kỳ lệnh điều khiển thiết bị nào. TẮT switch này để cấp cho khách ngoại kênh quyền điều khiển ngang với chat nội bộ. Không ảnh hưởng đến chat nội bộ (default_user), luôn có đầy đủ quyền.",
+        "updatedAt": 1786369343050
+      },
+      {
+        "key": "global.max_memory_logs",
+        "value": "30",
+        "type": "int",
+        "pluginId": "global",
+        "label": "Số lượng nhật ký trí nhớ tối đa gửi lên AI",
+        "description": "Giới hạn số lượng dòng nhật ký sự kiện tối đa gửi làm ngữ cảnh cho AI để chống token bloat. Mặc định là 30 dòng.",
+        "updatedAt": 1786369343056
+      },
+      {
+        "key": "global.chat_max_sentences",
+        "value": "4",
+        "type": "int",
+        "pluginId": "global",
+        "label": "Số câu tối đa mỗi câu trả lời AI",
+        "description": "Hướng dẫn AI trả lời tối đa bao nhiêu câu mỗi lượt chat (chỉ là gợi ý trong prompt, không cắt cứng như max_tokens). Áp dụng CHUNG cho mọi kênh trò chuyện với AI: nội bộ, Facebook, Telegram, Website. Mặc định 4 câu.",
+        "updatedAt": 1786369343060
+      },
+      {
+        "key": "global.chat_system_prompt",
+        "value": "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.\n\n⚠️ Khi khách muốn đặt hàng\/hẹn lịch\/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý\/xác nhận đơn hàng\/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể.",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Prompt hệ thống cho AI chat (khi khách bị khoá điều khiển thiết bị)",
+        "description": "Toàn quyền tự viết persona, giọng điệu, quy tắc trả lời cho AI, bao gồm cả cảnh báo không tự nhận xử lý đơn hàng\/hẹn lịch — hệ thống KHÔNG còn tự thêm quy tắc nào khác ngoài phần này. Xoá dòng cảnh báo ⚠️ nếu bạn chấp nhận rủi ro AI có thể tự nhận đã xử lý đơn hàng\/lịch hẹn dù thực tế không làm được. Chỉ khi cần tra catalogue, hệ thống mới tự nối thêm chỉ thị kỹ thuật gọi tool (JSON schema cố định, không chỉnh được) vào cuối prompt này.",
+        "updatedAt": 1786369343064
+      },
+      {
+        "key": "global.tool_guard_rules",
+        "value": "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ\/chung\/sản phẩm\/giá\/chính sách → qa.\ntarget: tên\/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\nkeyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật\/tắt\/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera không có keywords → để trống.\nstate: category=tuya, hỏi rõ bật\/tắt → on|off. Không rõ → để trống.\ncall_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\ntimeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch\/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → hôm nay.\nobject: person|car|motorbike|dog|cat|package|all.\ngranularity: summary|detail.\nThiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\nlưu ý: Chưa có data thật ở lượt này → không bịa nội dung\/giờ\/chi tiết...",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Luật diễn giải ý định (Tool Guard Rules)",
+        "description": "Quy tắc hướng dẫn AI điền các field category\/target\/keyword\/state\/call_status\/timeframe\/object\/granularity khi gọi db_search. Sửa câu chữ ở đây thoải mái. KHÔNG đụng vào tên field JSON ({\"tool\":\"db_search\",...}) — phần đó cố định trong code, sửa sai tên sẽ khiến hệ thống không đọc được kết quả AI trả về. Dòng \"📷 Camera:\/🔌 Thiết bị:\/...\" không nằm ở đây vì luôn tự lấy danh sách thật mới nhất từ dữ liệu app.",
+        "updatedAt": 1786369343067
+      },
+      {
+        "key": "global.pass2_memory_instruction",
+        "value": "Dùng dữ liệu trên để trả lời. Không bịa đặt. Không trả JSON gọi tool nữa. Trả lời ngắn gọn, tự nhiên, đi thẳng vào trọng tâm câu hỏi.\n🚨 BẮT BUỘC: Sau khi bạn trả lời cho người dùng xong, \nNếu có dữ liệu  camera, THÊM 1 DÒNG CUỐI CÙNG DUY NHẤT theo đúng định dạng: [REF_TIMESTAMPS: hh:mm:ss dd\/MM\/yyyy, hh:mm:ss dd\/MM\/yyyy, ...] — liệt kê CHÍNH XÁC để kiểm chứng dữ liệu cho câu trả lời của bạn.\n[REF_TIMESTAMPS: ]. Dòng này LUÔN ở cuối cùng, không viết gì sau nó.",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Chỉ thị SYSTEM_MEMORY ở Pass 2 (khi đã có dữ liệu thật)",
+        "description": "Câu chữ hướng dẫn AI sau khi đã tra được dữ liệu thật (camera\/thiết bị\/tin nhắn\/cuộc gọi) ở lượt gọi thứ 2 — vd đổi giọng điệu, độ dài câu trả lời mong muốn. CHỈ áp dụng Pass 2, không ảnh hưởng Pass 1 (Luật diễn giải ý định ở trên). ⚠️ Muốn giữ tính năng tự động đính kèm ảnh camera đúng dòng dữ liệu đã nhắc tới, PHẢI giữ nguyên literal \"[REF_TIMESTAMPS: ...]\" trong câu chữ — đây là marker cố định hệ thống dò tìm bằng regex trong câu trả lời của AI, đổi tên sẽ làm mất khả năng đính kèm ảnh (không lỗi, chỉ đơn giản là không có ảnh).",
+        "updatedAt": 1786369343071
+      },
+      {
+        "key": "global.confirm_yes_keywords",
+        "value": "co,dung,u,ok,dong y,chuan,phai,co nhe,co chu,dung roi",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá xác nhận \"Có\"",
+        "description": "Từ khoá (không dấu, cách nhau bằng dấu phẩy) được hiểu là ĐỒNG Ý khi hệ thống hỏi lại (vd: xác nhận khoá điều khiển 1 thiết bị riêng). Thêm từ khoá riêng vào cuối nếu bạn hay trả lời theo cách khác.",
+        "updatedAt": 1786369343074
+      },
+      {
+        "key": "global.confirm_no_keywords",
+        "value": "khong,khoi,thoi,huy,sai,khong dau,khong nhe,bo qua",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá xác nhận \"Không\"",
+        "description": "Từ khoá (không dấu, cách nhau bằng dấu phẩy) được hiểu là TỪ CHỐI khi hệ thống hỏi lại. Thêm từ khoá riêng vào cuối nếu bạn hay trả lời theo cách khác.",
+        "updatedAt": 1786369343078
+      },
+      {
+        "key": "global.exit_lock_phrases",
+        "value": "thoat dieu khien,ra khoi dieu khien,ket thuc dieu khien,thoat",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Câu lệnh thoát chế độ điều khiển riêng",
+        "description": "Câu (không dấu, cách nhau bằng dấu phẩy) mà khi bạn gõ KHỚP TOÀN BỘ câu sẽ thoát chế độ khoá điều khiển riêng cho 1 thiết bị\/plugin. Thêm câu riêng vào cuối nếu muốn dùng cách nói khác.",
+        "updatedAt": 1786369343082
+      },
+      {
+        "key": "global.clause_filler_words",
+        "value": "giúp tôi,giúp mình,hộ tôi,hộ mình,dùm tôi,dùm mình,luôn,dùm,nha,nhé,nhá,thôi,nè,ạ",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ đệm bị lọc bỏ khi phân tích câu lệnh",
+        "description": "Từ đệm\/lịch sự (giữ nguyên dấu, cách nhau bằng dấu phẩy) sẽ bị loại khỏi câu trước khi tách mệnh đề và nhận diện lệnh điều khiển thiết bị. Thêm từ đệm bạn hay dùng vào cuối danh sách nếu hệ thống chưa nhận ra.",
+        "updatedAt": 1786369343085
+      },
+      {
+        "key": "global.call_keywords",
+        "value": "cuộc gọi,gọi nhỡ,gọi đến,gọi đi,ai gọi,ai gọi nhỡ,bỏ lỡ cuộc gọi,goi nho,cuoc goi",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá nhận diện câu hỏi về Cuộc gọi",
+        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy (,). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền 'cuộc gọi' — sẽ tra đúng nhật ký cuộc gọi (nguồn 'call') thay vì lẫn vào camera\/thiết bị, và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
+        "updatedAt": 1786369343089
+      },
+      {
+        "key": "global.camera_keywords",
+        "value": "camera,cam,canh bao,phat hien,nguoi la,xam nhap",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá nhận diện câu hỏi về Camera",
+        "description": "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền camera và cho phép AI gọi tool tra cứu nhật ký. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
+        "updatedAt": 1786369343093
+      },
+      {
+        "key": "global.device_keywords",
+        "value": "dieu hoa,thiet bi,đèn,cửa,quạt,bật,tắt,quay",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá nhận diện câu hỏi về Thiết bị",
+        "description": "Danh sách từ khoá, cách nhau bằng dấu phẩy. LƯU Ý: khác các danh sách khác, danh sách này được so khớp trên văn bản GỐC CÒN DẤU (không qua chuẩn hoá bỏ dấu), để tránh nhầm lẫn giữa các từ gần giống nhau (vd 'đèn'\/'đến'). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền thiết bị Tuya và cho phép AI gọi tool tra cứu.",
+        "updatedAt": 1786369343097
+      },
+      {
+        "key": "global.chat_keywords",
+        "value": "tin nhan,nhan tin,facebook,telegram,website,chat",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Từ khoá nhận diện câu hỏi về Kênh chat",
+        "description": "Danh sách từ khoá (không dấu, cách nhau bằng dấu phẩy). Khi tin nhắn chứa 1 trong các từ này, hệ thống coi đây là câu hỏi thuộc miền chat đa kênh (facebook\/telegram\/website) và cho phép AI gọi tool tra cứu. Thêm từ khoá riêng vào cuối danh sách nếu muốn hỏi theo cách khác mà hệ thống chưa nhận ra — không cần sửa code.",
+        "updatedAt": 1786369343101
+      },
+      {
+        "key": "call.device_code",
+        "value": "E632B256",
+        "type": "string",
+        "pluginId": "call",
+        "label": "Mã thiết bị cuộc gọi (Device Code)",
+        "description": "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại\/video P2P từ các thiết bị khác.",
+        "updatedAt": 1786369343104
+      },
+      {
+        "key": "layout_x_testdemo",
+        "value": "-20.0",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786369343108
+      },
+      {
+        "key": "layout_y_testdemo",
+        "value": "-100.0",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786369343112
+      },
+      {
+        "key": "global.admin_chat_mode",
+        "value": "QA",
+        "type": "string",
+        "pluginId": "global",
+        "label": "Chế độ chat mặc định (Admin)",
+        "description": "Chế độ trả lời cho chat nội bộ (default_user): GROQ | QA | COMBINED. Giá trị này được lưu lại mỗi khi bạn đổi mode trên màn hình Chat, khởi động lại app vẫn giữ nguyên.",
+        "updatedAt": 1786369343115
+      },
+      {
+        "key": "layout_x_a34cdf547a30852c36egoe",
+        "value": "560.0",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786369808498
+      },
+      {
+        "key": "layout_y_a34cdf547a30852c36egoe",
+        "value": "-100.0",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786369808540
+      },
+      {
+        "key": "dashboard_viewport_zoom",
+        "value": "0.62175375",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786416608949
+      },
+      {
+        "key": "dashboard_viewport_pan_x",
+        "value": "-53.101562",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786416608965
+      },
+      {
+        "key": "dashboard_viewport_pan_y",
+        "value": "39.503906",
+        "type": "string",
+        "pluginId": "global",
+        "label": "",
+        "description": "",
+        "updatedAt": 1786416608980
+      }
+    ],
+    "event_logs": [
+      {
+        "id": "eb5ce498-b6ec-41ae-9d7d-8a4477d32243",
+        "timestamp": 1786084961931,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/64140f9e-372f-4852-95dd-3a6ccbfee13c.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "f76b2d8b-2acb-4086-912b-4588ff511460",
+        "timestamp": 1786085264520,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời — màu chủ đạo: đỏ [objects: bầu trời]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/d1a53a97-1fbd-4346-92c1-9dcd574fa7d7.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "d48fdbfb-7587-4576-9993-4337c93f7d0a",
+        "timestamp": 1786100564005,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/e3ea6967-64c6-4012-a6dc-e7301974305a.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "c18653da-5cf2-43bc-a39d-b7f125c7c603",
+        "timestamp": 1786100896924,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, mèo, chó — màu chủ đạo: xám\/trắng [objects: bầu trời,mèo,chó]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/1fbaa7b0-a4e4-437d-a962-92a0eeaffd25.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "fa4cad09-4dad-4272-8c6d-de1f8f59cdb2",
+        "timestamp": 1786101199766,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, cây cối — màu chủ đạo: đỏ [objects: bầu trời,cây cối]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/8134cc99-68eb-45db-a777-d59c7f7f0fd2.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "a0a62199-8f83-43be-991c-325ca9df2fa5",
+        "timestamp": 1786101501229,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "4985224d-b84c-4749-a4be-45665fbe8b87",
+        "timestamp": 1786101802412,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "878d2cd1-d09a-46d4-a2db-f7ca4ea3e89c",
+        "timestamp": 1786102103573,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "132769f7-4792-4651-bec4-194a5ef5a422",
+        "timestamp": 1786369353969,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/0d225b00-c73c-4e11-868a-4857eb958821.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "8855dee2-ed4a-47f8-be01-e2da107979e3",
+        "timestamp": 1786369789527,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): thực phẩm, cây cối, đồ nội thất, chó — màu chủ đạo: xám\/trắng [objects: thực phẩm,cây cối,đồ nội thất,chó]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/309313be-01be-41c7-9c7d-360fb8e83487.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "2e9bd030-0588-43ee-97ed-56820a694adc",
+        "timestamp": 1786370854270,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời — màu chủ đạo: xanh dương [objects: bầu trời]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/34492484-3a13-4699-a182-9e18b66777ea.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "f6be53b9-0a28-4472-bde0-b3724ba6695c",
+        "timestamp": 1786401570515,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/74b2e095-dbe1-4199-ab25-673ed3ea106f.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "9fa8579b-b3c5-4b4a-8101-f95d26b360b5",
+        "timestamp": 1786401943088,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/afb682ca-d7f7-4f2f-af97-f3f1d4ae3ba1.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "ce0fcade-ceab-4596-a6c3-d176b51e7e9e",
+        "timestamp": 1786403212469,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/b3061f8e-258c-410b-a269-e865256237f1.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "26a9aab9-3a99-4be5-8bb5-74432548609a",
+        "timestamp": 1786403656354,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, cây cối, tòa nhà\/phòng, ngoài trời\/đường, xe ô tô, thực phẩm — màu chủ đạo: xanh lá [objects: bầu trời,cây cối,tòa nhà\/phòng,ngoài trời\/đường,xe ô tô,thực phẩm]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/cf92120c-d83a-415a-ae83-8d21dc30656d.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "960d4226-3007-4bf4-b065-dc43ee52362c",
+        "timestamp": 1786404297403,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): đồ nội thất, thực phẩm — màu chủ đạo: đỏ [objects: đồ nội thất,thực phẩm]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/3e307ad4-4d9e-41dd-b3b7-54560df2f4e3.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "116654ad-39c2-43ce-a9f9-4cdf5118cf3b",
+        "timestamp": 1786404476882,
+        "source": "tuya",
+        "sourceId": "Ổ cắm thông minh ",
+        "eventType": "state_change",
+        "value": "false",
+        "summary": "Thiết bị Tuya Ổ cắm thông minh  đã được chuyển sang trạng thái: Tắt thành công qua ứng dụng.",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "0fbe9e93-b46d-4e5a-9d71-543ea1395403",
+        "timestamp": 1786404531927,
+        "source": "tuya",
+        "sourceId": "Ổ cắm thông minh ",
+        "eventType": "state_change",
+        "value": "false",
+        "summary": "Thiết bị Tuya Ổ cắm thông minh  đã được chuyển sang trạng thái: Tắt thành công qua ứng dụng.",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "18b726f3-9d26-47ea-bd89-4669de10a1e0",
+        "timestamp": 1786404535454,
+        "source": "tuya",
+        "sourceId": "Ổ cắm thông minh ",
+        "eventType": "state_change",
+        "value": "true",
+        "summary": "Thiết bị Tuya Ổ cắm thông minh  đã được chuyển sang trạng thái: Bật thành công qua ứng dụng.",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "d0146f65-cb31-4479-8597-18c2d23839e9",
+        "timestamp": 1786404540793,
+        "source": "tuya",
+        "sourceId": "Ổ cắm thông minh ",
+        "eventType": "state_change",
+        "value": "false",
+        "summary": "Thiết bị Tuya Ổ cắm thông minh  đã được chuyển sang trạng thái: Tắt thành công qua ứng dụng.",
+        "imagePath": null,
+        "analysisSource": null
+      },
+      {
+        "id": "da29a070-e3f9-4081-8f20-fb58a5d0aff2",
+        "timestamp": 1786405387188,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/82c74c84-16ba-4595-975f-89f70c523536.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "c8004a3e-13a8-47e1-b657-f5cb1f69efb1",
+        "timestamp": 1786405795540,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): bầu trời, chó — màu chủ đạo: đỏ [objects: bầu trời,chó]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/9e12b626-b6b9-4bcf-b161-ac0d76de6732.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "97798b93-0429-4058-a8ed-1c4782c05a6f",
+        "timestamp": 1786414145318,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Bình thường",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/be46de9f-1291-4072-bf0b-1eb94cf383e1.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "6b126ab6-bd2c-41b3-8cc1-89a88a68138f",
+        "timestamp": 1786416536545,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): thực phẩm, bầu trời, đồ nội thất, cây cối, tòa nhà\/phòng, xe ô tô — màu chủ đạo: đỏ [objects: thực phẩm,bầu trời,đồ nội thất,cây cối,tòa nhà\/phòng,xe ô tô]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/6700f9a3-9a7c-4145-89be-fc409f9ccdf1.jpg",
+        "analysisSource": null
+      },
+      {
+        "id": "84287448-7b2c-435c-ae50-ce381393ebaa",
+        "timestamp": 1786416846867,
+        "source": "camera",
+        "sourceId": "testdemo",
+        "eventType": "state_change",
+        "value": "Bình thường",
+        "summary": "Camera khách (testdemo): Phát hiện cục bộ (ML Kit, chế độ AI tắt): xe ô tô, cây cối, tòa nhà\/phòng, bầu trời — màu chủ đạo: xám\/trắng [objects: xe ô tô,cây cối,tòa nhà\/phòng,bầu trời]",
+        "imagePath": "\/data\/user\/0\/com.aichatvn.agent\/files\/chat_images\/1f56f4a4-e6f6-404a-a69b-fb53ac21cb57.jpg",
+        "analysisSource": null
+      }
+    ],
+    "world_state": [
+      {
+        "id": "tuya:a34cdf547a30852c36egoe",
+        "source": "tuya",
+        "sourceId": "a34cdf547a30852c36egoe",
+        "attributesJson": "{\"state\":\"false\"}",
+        "updatedAt": 1786404540798
+      },
+      {
+        "id": "smart_switch:set",
+        "source": "smart_switch",
+        "sourceId": "set",
+        "attributesJson": "{\"last_action\":\"set\",\"status\":\"success\",\"timestamp\":1786404540815,\"device\":\"a34cdf547a30852c36egoe\",\"state\":\"false\"}",
+        "updatedAt": 1786404540815
+      },
+      {
+        "id": "smart_switch:status",
+        "source": "smart_switch",
+        "sourceId": "status",
+        "attributesJson": "{\"last_action\":\"status\",\"status\":\"success\",\"timestamp\":1786404625661,\"device\":\"a34cdf547a30852c36egoe\"}",
+        "updatedAt": 1786404625661
+      },
+      {
+        "id": "system:cam_learning_testdemo",
+        "source": "system",
+        "sourceId": "cam_learning_testdemo",
+        "attributesJson": "{\"state\":\"{\\\"realEvents\\\":0,\\\"day\\\":{\\\"deltaTrigger\\\":25,\\\"absDiffTrigger\\\":35,\\\"falseDeltas\\\":[30,32],\\\"falseDiffs\\\":[30,32],\\\"falseSampleTimestamps\\\":[1786403656354,1786416536545]},\\\"night\\\":{\\\"deltaTrigger\\\":25,\\\"absDiffTrigger\\\":35,\\\"falseDeltas\\\":[33],\\\"falseDiffs\\\":[33],\\\"falseSampleTimestamps\\\":[1786369789527]}}\"}",
+        "updatedAt": 1786416538434
+      },
+      {
+        "id": "camera:testdemo",
+        "source": "camera",
+        "sourceId": "testdemo",
+        "attributesJson": "{\"state\":\"normal\",\"objects\":\"[\\\"xe ô tô\\\",\\\"cây cối\\\",\\\"tòa nhà\\\\\\\/phòng\\\",\\\"bầu trời\\\"]\",\"state_21902194-4365-4a5c-bc85-25a49e0f9ff9\":\"normal\"}",
+        "updatedAt": 1786416849366
+      },
+      {
+        "id": "camera:scan",
+        "source": "camera",
+        "sourceId": "scan",
+        "attributesJson": "{\"last_action\":\"scan\",\"status\":\"success\",\"timestamp\":1786416849396,\"cameraId\":\"testdemo\",\"scheduleId\":\"21902194-4365-4a5c-bc85-25a49e0f9ff9\",\"force\":\"false\"}",
+        "updatedAt": 1786416849396
+      },
+      {
+        "id": "system:brain",
+        "source": "system",
+        "sourceId": "brain",
+        "attributesJson": "{\"mood\":\"NORMAL\",\"security_level\":0,\"owner_present\":true,\"active_devices_count\":0,\"unread_chats_count\":2,\"summary\":\"Nhà đang ở chế độ Bình thường. An toàn mức 0.\"}",
+        "updatedAt": 1786416849486
+      }
+    ],
+    "call_contacts": []
+  }
+}
