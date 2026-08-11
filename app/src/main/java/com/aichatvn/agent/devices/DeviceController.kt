@@ -84,6 +84,16 @@ interface DeviceController {
      * đây, giống hệt turnOn/turnOff/getStatus.
      */
     suspend fun listDevices(): List<DeviceSummary>
+
+    /**
+     * Xoá 1 thiết bị khỏi registry nội bộ (DB local của app) — KHÔNG phải "tắt thiết bị",
+     * mà là "app ngừng biết tới thiết bị này". Có giá trị mặc định (Failure) vì không phải
+     * giao thức nào cũng cho phép người dùng tự xoá qua app (vd 1 số nguồn chỉ đọc/broker-
+     * managed) — driver nào hỗ trợ thì override, driver nào không thì giữ mặc định, không
+     * bắt buộc implement.
+     */
+    suspend fun deleteDevice(deviceId: String): DeviceActionResult =
+        DeviceActionResult.Failure("Giao thức này không hỗ trợ xoá thiết bị qua app")
 }
 
 /**

@@ -35,6 +35,9 @@ import com.aichatvn.agent.skills.TuyaManager
 import com.aichatvn.agent.tools.tuya.TuyaLocalController
 import com.aichatvn.agent.tools.tuya.TuyaLocalDiscovery
 import com.aichatvn.agent.ui.dashboard.DeviceRegistry
+import com.aichatvn.agent.devices.DeviceActionResult
+import com.aichatvn.agent.devices.DeviceProtocol
+import com.aichatvn.agent.devices.DeviceRegistry as DeviceControlRegistry
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -61,17 +64,29 @@ data class TuyaLocalLabState(
 @HiltViewModel
 class TuyaViewModel @Inject constructor(
     private val database: AppDatabase,
+    // ✅ SỬA (Tầng 2b): giữ lại CHỈ để gọi scanDevices() (khám phá thiết bị mới từ tài khoản
+    // Tuya Cloud) — cùng lý do đã áp dụng cho SmartSwitchSkill: "quét/khám phá" không thuộc
+    // hợp đồng DeviceController (interface cố tình không có method này).
     private val tuyaManager: TuyaManager,
     private val tuyaLocalController: TuyaLocalController,
     private val smartSwitchSkill: SmartSwitchSkill,
-    private val deviceRegistry: DeviceRegistry,
+    // ✅ SỬA: đổi tên rõ ràng — registry NODE cho sơ đồ Dashboard (dùng cho unregisterNode()
+    // khi xoá thiết bị), khác hẳn deviceControlRegistry bên dưới. Hành vi giữ nguyên 100%,
+    // chỉ đổi tên biến để không còn 2 thứ trùng tên "DeviceRegistry".
+    private val dashboardDeviceRegistry: DeviceRegistry,
     private val configProvider: AppConfigProvider,
+    // ✅ MỚI: registry thật của kiến trúc DeviceController — dùng cho deleteDevice() bên
+    // dưới, thay vì gọi thẳng tuyaManager.deleteDevice() như trước.
+    private val deviceControlRegistry: DeviceControlRegistry,
     // ✅ SỬA: cần AgentKernel để đi qua IntentExecutor.checkDeviceWorldStateGuard() —
     // gọi thẳng smartSwitchSkill.execute() trước đây khiến khóa an toàn (Precondition
     // Guard) bị bỏ qua hoàn toàn khi bật/tắt bằng nút trên màn hình Tuya.
     private val agentKernel: AgentKernel,
     private val logger: Logger
 ) : ViewModel() {
+
+    // ✅ MỚI: 1 điểm tra cứu duy nhất cho controller Tuya trong file này.
+    private fun tuyaController() = deviceControlRegistry.controllerFor(DeviceProtocol.TUYA_CLOUD)
 
     private val _devices = MutableStateFlow<List<TuyaDeviceEntity>>(emptyList())
     val devices: StateFlow<List<TuyaDeviceEntity>> = _devices.asStateFlow()
@@ -340,10 +355,18 @@ class TuyaViewModel @Inject constructor(
         viewModelScope.launch {
             _loadingDevices.value = _loadingDevices.value + device.id
             try {
-                withContext(Dispatchers.IO) {
-                    tuyaManager.deleteDevice(device.id)
+                // ✅ SỬA (Tầng 2b): gọi qua controller.deleteDevice() thay vì
+                // tuyaManager.deleteDevice() thẳng — controller vẫn delegate nguyên vẹn qua
+                // TuyaManager bên trong (xem TuyaDeviceController.kt), chỉ đổi đường đi.
+                val controller = tuyaController()
+                    ?: throw Exception("Chưa có driver điều khiển cho thiết bị Tuya")
+                val result = withContext(Dispatchers.IO) {
+                    controller.deleteDevice(device.id)
                 }
-                deviceRegistry.unregisterNode(device.id)
+                if (result is DeviceActionResult.Failure) {
+                    throw Exception(result.reason)
+                }
+                dashboardDeviceRegistry.unregisterNode(device.id)
                 _message.value = "🗑️ Đã xoá thiết bị \"${device.name}\""
                 loadDevices()
             } catch (e: Exception) {

@@ -91,6 +91,19 @@ class TuyaDeviceController @Inject constructor(
         }
     }
 
+    // ✅ MỚI: delegate qua tuyaManager.deleteDevice() — nhất quán với turnOn/turnOff/
+    // getStatus ở trên (lớp này CHỈ bọc, không tự ý thay logic thật). Nếu TuyaManager.
+    // deleteDevice() có gọi thêm API Cloud để huỷ liên kết thiết bị (ngoài xoá DB local),
+    // logic đó vẫn chạy nguyên vẹn — file này không biết và không cần biết bên trong.
+    override suspend fun deleteDevice(deviceId: String): DeviceActionResult {
+        return try {
+            tuyaManager.deleteDevice(deviceId)
+            DeviceActionResult.Success
+        } catch (e: Exception) {
+            DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi xoá thiết bị")
+        }
+    }
+
     private suspend fun resolveName(deviceId: String): String? {
         return tuyaDeviceDao.getDeviceById(deviceId)?.name
     }
