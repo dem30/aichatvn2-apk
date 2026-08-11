@@ -182,22 +182,38 @@ class TuyaLocalController @Inject constructor(
     }
 
     private fun parseBroadcastPacket(raw: ByteArray, encrypted: Boolean): JSONObject? {
-        return try {
-            if (raw.size < 28) return null
-            // ⚠️ SỬA (xác nhận qua log debug thực tế: size=172, port=6667): gói broadcast MÃ HOÁ
-            // (cổng 6667) có thêm 4 byte "retcode" xen giữa 16-byte header (prefix+seq+cmd+len)
-            // và phần payload thật đem đi mã hoá AES — khác gói KHÔNG mã hoá (cổng 6666) chỉ có
-            // đúng 16 byte header rồi tới payload luôn. Trước đây dùng chung offset 16 cho cả 2,
-            // khiến nhánh 6667 luôn bóc thiếu 4 byte đầu: 172-16-8=148 byte, KHÔNG chia hết cho
-            // block size AES (16) → aesEcbDecrypt() luôn ném exception → parse luôn null dù gói
-            // nhận được hoàn toàn hợp lệ. Offset 20 cho 172-20-8=144 byte = đúng bội số 16.
-            val headerSize = if (encrypted) 20 else 16
-            val payload = raw.copyOfRange(headerSize, raw.size - 8)
-            val jsonBytes = if (encrypted) aesEcbDecrypt(payload, UDP_BROADCAST_KEY) else payload
-            JSONObject(String(jsonBytes, Charsets.UTF_8).trim(Char(0)))
-        } catch (e: Exception) {
-            null
+        if (raw.size < 24) return null
+        if (!encrypted) {
+            return try {
+                val payload = raw.copyOfRange(16, raw.size - 8)
+                JSONObject(String(payload, Charsets.UTF_8).trim(Char(0)))
+            } catch (e: Exception) {
+                logger.i("TuyaLocalController", "🔧 DEBUG parse plaintext (6666) lỗi: ${e.javaClass.simpleName}: ${e.message}")
+                null
+            }
         }
+        // 🔧 DEBUG TẠM: bản trước đoán offset 20 là đúng nhưng vẫn lỗi giống hệt offset 16 —
+        // nghĩa là chưa chắc do offset. Giờ thử LẦN LƯỢT cả 2 offset khả dĩ, log rõ ĐÚNG loại
+        // exception (IllegalBlockSizeException = sai độ dài payload/không phải bội số 16;
+        // BadPaddingException = độ dài đúng nhưng sai offset bắt đầu/sai key -> nội dung giải
+        // mã ra rác) + kích thước payload từng lần thử, để biết chính xác đang sai ở đâu thay
+        // vì chỉ thấy "decrypt/JSON lỗi" chung chung như trước.
+        for (headerSize in intArrayOf(20, 16)) {
+            if (raw.size - headerSize - 8 <= 0) continue
+            val payload = raw.copyOfRange(headerSize, raw.size - 8)
+            try {
+                val jsonBytes = aesEcbDecrypt(payload, UDP_BROADCAST_KEY)
+                val json = JSONObject(String(jsonBytes, Charsets.UTF_8).trim(Char(0)))
+                logger.i("TuyaLocalController", "🔧 DEBUG parse OK với headerSize=$headerSize payloadSize=${payload.size} json=$json")
+                return json
+            } catch (e: Exception) {
+                logger.i(
+                    "TuyaLocalController",
+                    "🔧 DEBUG headerSize=$headerSize payloadSize=${payload.size} (mod16=${payload.size % 16}) lỗi: ${e.javaClass.simpleName}: ${e.message}"
+                )
+            }
+        }
+        return null
     }
 
     // ═══════════════════════════════ ĐIỀU KHIỂN — PROTOCOL 3.3 ═══════════════════════════════
