@@ -183,9 +183,16 @@ class TuyaLocalController @Inject constructor(
 
     private fun parseBroadcastPacket(raw: ByteArray, encrypted: Boolean): JSONObject? {
         return try {
-            if (raw.size < 24) return null
-            // Bỏ 16 byte header (prefix 4 + seq 4 + cmd 4 + len 4) và 8 byte cuối (crc 4 + suffix 4).
-            val payload = raw.copyOfRange(16, raw.size - 8)
+            if (raw.size < 28) return null
+            // ⚠️ SỬA (xác nhận qua log debug thực tế: size=172, port=6667): gói broadcast MÃ HOÁ
+            // (cổng 6667) có thêm 4 byte "retcode" xen giữa 16-byte header (prefix+seq+cmd+len)
+            // và phần payload thật đem đi mã hoá AES — khác gói KHÔNG mã hoá (cổng 6666) chỉ có
+            // đúng 16 byte header rồi tới payload luôn. Trước đây dùng chung offset 16 cho cả 2,
+            // khiến nhánh 6667 luôn bóc thiếu 4 byte đầu: 172-16-8=148 byte, KHÔNG chia hết cho
+            // block size AES (16) → aesEcbDecrypt() luôn ném exception → parse luôn null dù gói
+            // nhận được hoàn toàn hợp lệ. Offset 20 cho 172-20-8=144 byte = đúng bội số 16.
+            val headerSize = if (encrypted) 20 else 16
+            val payload = raw.copyOfRange(headerSize, raw.size - 8)
             val jsonBytes = if (encrypted) aesEcbDecrypt(payload, UDP_BROADCAST_KEY) else payload
             JSONObject(String(jsonBytes, Charsets.UTF_8).trim(Char(0)))
         } catch (e: Exception) {
