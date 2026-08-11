@@ -96,6 +96,9 @@ class TuyaLocalController @Inject constructor(
     // withTimeoutOrNull() hết giờ, để finally{} chạy và đóng socket kịp thời.
     private suspend fun listenBroadcast(targetGwId: String): TuyaLocalDiscovery? {
         var result: TuyaLocalDiscovery? = null
+        // 🔧 DEBUG TẠM: đếm tổng số gói nhận được (dù match hay không) — log ra khi hàm kết
+        // thúc (finally) để biết ngay 0 gói (network/OS chặn) hay có gói nhưng không khớp.
+        var debugPacketCount = 0
         val sockets = mutableListOf<DatagramSocket>()
         val multicastLock = runCatching {
             (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
@@ -131,8 +134,22 @@ class TuyaLocalController @Inject constructor(
                         val packet = DatagramPacket(buffer, buffer.size)
                         socket.receive(packet)
                         val raw = packet.data.copyOfRange(0, packet.length)
-                        val json = parseBroadcastPacket(raw, encrypted) ?: continue
+                        // 🔧 DEBUG TẠM: log MỌI gói nhận được bất kể có parse/match được hay không —
+                        // để phân biệt "không có gói nào tới" (network/OS chặn) với "có gói nhưng
+                        // gwId khác/parse lỗi" (thiết bị broadcast ID khác hoặc key/format sai).
+                        // Xoá khối log này sau khi chẩn đoán xong.
+                        debugPacketCount++
+                        logger.i(
+                            "TuyaLocalController",
+                            "🔧 DEBUG raw packet #$debugPacketCount from=${packet.address?.hostAddress} port=${if (encrypted) UDP_PORT_ENCRYPTED else UDP_PORT_UNENCRYPTED} size=${raw.size}"
+                        )
+                        val json = parseBroadcastPacket(raw, encrypted)
+                        if (json == null) {
+                            logger.i("TuyaLocalController", "🔧 DEBUG parseBroadcastPacket() trả null (decrypt/JSON lỗi) từ ${packet.address?.hostAddress}")
+                            continue
+                        }
                         val gwId = json.optString("gwId")
+                        logger.i("TuyaLocalController", "🔧 DEBUG parsed gwId=$gwId (đang tìm targetGwId=$targetGwId) raw json=$json")
                         if (gwId.isNotBlank() && gwId == targetGwId) {
                             result = TuyaLocalDiscovery(
                                 gwId = gwId,
@@ -154,6 +171,10 @@ class TuyaLocalController @Inject constructor(
         } catch (e: Exception) {
             logger.d("TuyaLocalController", "listenBroadcast lỗi: ${e.message}")
         } finally {
+            // 🔧 DEBUG TẠM: kết luận nhanh — 0 gói = mạng/OS chặn broadcast tới máy (kiểm tra
+            // pin nền MIUI, AP isolation trên router). Có gói nhưng result vẫn null = thiết bị
+            // đang broadcast gwId KHÁC targetGwId, hoặc parse lỗi (xem log parse null ở trên).
+            logger.i("TuyaLocalController", "🔧 DEBUG listenBroadcast kết thúc: tổng $debugPacketCount gói nhận được, targetGwId=$targetGwId, found=${result != null}")
             sockets.forEach { runCatching { it.close() } }
             runCatching { multicastLock?.release() }
         }
