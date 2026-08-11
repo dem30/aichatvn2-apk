@@ -478,17 +478,29 @@ class TuyaLocalController @Inject constructor(
         return buffer
     }
 
-    // Tuya dùng local_key (16 ký tự) LÀM THẲNG khoá AES-128, KHÔNG băm/derive thêm — và ECB không
-    // cần IV. Padding PKCS5/PKCS7 giống nhau với block size AES (16 byte) nên dùng thẳng
-    // "AES/ECB/PKCS5Padding" của JCE là đúng chuẩn.
+    // ⚠️ SỬA (xác nhận qua log debug: headerSize=20 đúng độ dài (mod16=0) nhưng vẫn
+    // BadPaddingException): Tuya dùng ĐỆM THỦ CÔNG bằng byte 0x00 cho đủ bội số 16 trước khi mã
+    // hoá — KHÔNG phải chuẩn PKCS5/PKCS7 (đó là lý do code ở nơi gọi đã có sẵn `.trim(Char(0))`
+    // sau khi decrypt, nhưng trước đây không bao giờ chạy tới được vì Cipher tự kiểm tra padding
+    // kiểu PKCS5 trên khối cuối và luôn thấy sai — toàn byte 0 không khớp định dạng PKCS5 (byte
+    // cuối phải lặp lại đúng N lần) → ném BadPaddingException dù nội dung giải mã ra thực chất
+    // đúng. Đổi sang NoPadding + tự đệm 0x00 tay cho ĐÚNG hành vi giao thức thật, không dựa vào
+    // JCE tự đệm/tự kiểm tra kiểu chuẩn Java. Ảnh hưởng CẢ broadcast decrypt LẪN mọi lệnh điều
+    // khiển local (sendCommand33/34, queryStatus33) vì dùng chung 2 hàm này.
+    private fun padToBlockSize(data: ByteArray, blockSize: Int = 16): ByteArray {
+        val remainder = data.size % blockSize
+        if (remainder == 0) return data
+        return data + ByteArray(blockSize - remainder) // đệm 0x00, không phải PKCS5
+    }
+
     private fun aesEcbEncrypt(data: ByteArray, key: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+        val cipher = Cipher.getInstance("AES/ECB/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"))
-        return cipher.doFinal(data)
+        return cipher.doFinal(padToBlockSize(data))
     }
 
     private fun aesEcbDecrypt(data: ByteArray, key: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+        val cipher = Cipher.getInstance("AES/ECB/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"))
         return cipher.doFinal(data)
     }
