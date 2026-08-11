@@ -7,6 +7,12 @@
     <!-- ✅ MỚI: CameraAutoDiscoveryTool cần đọc IP Wi-Fi hiện tại (wifiManager.connectionInfo)
          để suy ra dải mạng LAN cần quét khi dò tìm camera tự động. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- ✅ MỚI: bắt buộc để TuyaLocalController.listenBroadcast() nhận được gói UDP broadcast
+         dò thiết bị Tuya trong LAN. Thiếu quyền này, WifiManager.MulticastLock.acquire() ném
+         SecurityException (bị runCatching{}.getOrNull() nuốt âm thầm, không log lỗi rõ ràng),
+         khiến Android lọc bỏ MỌI gói broadcast/multicast tới app để tiết kiệm pin — "Dò LAN"
+         và "Bật nhanh" sẽ luôn timeout dù điện thoại và thiết bị cùng mạng, cùng băng tần. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
