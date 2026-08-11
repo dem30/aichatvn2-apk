@@ -39,6 +39,10 @@ class TuyaDeviceController @Inject constructor(
     // giá trị này ở đây coi như đổi luôn "địa chỉ" mà mọi automation cũ đang trỏ tới.
     override val worldStateSource: String = "tuya"
 
+    // ✅ MỚI: nhãn y hệt text cũ đã hardcode trong DynamicOptionRegistry.precondition_source
+    // trước refactor — giữ nguyên để người dùng không thấy dropdown đổi chữ đột ngột.
+    override val displayName: String = "🔌 Thiết bị đóng ngắt Tuya"
+
     override suspend fun turnOn(deviceId: String): DeviceActionResult {
         val name = resolveName(deviceId)
             ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị Tuya id=$deviceId")

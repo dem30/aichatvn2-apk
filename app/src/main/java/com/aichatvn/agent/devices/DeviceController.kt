@@ -77,6 +77,19 @@ interface DeviceController {
     val worldStateSource: String
 
     /**
+     * Nhãn hiển thị thân thiện cho MỘT DANH MỤC thiết bị theo giao thức này (không phải tên
+     * riêng của 1 thiết bị cụ thể — xem DeviceSummary.displayName cho việc đó). Dùng làm
+     * label trong dropdown "Nguồn" của Precondition Guard (DynamicOptionRegistry case
+     * "precondition_source") — nơi người dùng chọn "thiết bị Tuya" hay "thiết bị MQTT" làm
+     * điều kiện, không chọn từng thiết bị cụ thể ở bước đó.
+     *
+     * Có default dựa trên worldStateSource để không bắt buộc driver nào cũng phải override —
+     * nhưng nên viết đè để có icon/tên tiếng Việt thân thiện hơn (xem TuyaDeviceController).
+     */
+    val displayName: String
+        get() = "Thiết bị $worldStateSource"
+
+    /**
      * Liệt kê toàn bộ thiết bị mà driver này đang biết — dùng cho dropdown chọn thiết bị
      * (SmartActionFormSheet qua DynamicOptionRegistry) và các nơi khác cần hiển thị danh
      * sách thiết bị theo protocol, để KHÔNG nơi nào phải query thẳng DAO cụ thể của từng

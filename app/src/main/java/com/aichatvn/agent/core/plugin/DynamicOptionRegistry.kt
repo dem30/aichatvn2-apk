@@ -5,6 +5,7 @@ package com.aichatvn.agent.core.plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.HouseMood
 import com.aichatvn.agent.data.model.displayName
+import com.aichatvn.agent.devices.DeviceRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -36,7 +37,13 @@ class DynamicOptionRegistry @Inject constructor(
     // plugin_id/action_id bên dưới — dùng lại đúng multibinding Set<Plugin> đã có sẵn qua
     // các @IntoSet trong AppModule.kt (đã dùng cho AgentKernel), không cần khai báo gì thêm
     // ở tầng DI.
-    private val plugins: Set<@JvmSuppressWildcards Plugin>
+    private val plugins: Set<@JvmSuppressWildcards Plugin>,
+    // ✅ MỚI (Tầng 2c — đồng bộ kiến trúc DeviceController): dùng cho case "device" và
+    // "precondition_source"/"precondition_attribute"/"precondition_expected" bên dưới, thay
+    // vì query thẳng database.tuyaDeviceDao() và hardcode ["camera","tuya","chat"]. Thêm
+    // driver mới (MQTT...) qua DeviceModule.kt sẽ tự xuất hiện ở mọi dropdown liên quan
+    // trong file này — KHÔNG cần sửa lại file này lần nữa.
+    private val deviceRegistry: DeviceRegistry
 ) {
     suspend fun getOptions(
         semanticType: String?,
@@ -63,9 +70,15 @@ class DynamicOptionRegistry @Inject constructor(
                     ?.map { OptionItem(it.name, it.description) }
                     ?: emptyList()
             }
+            // ✅ SỬA (Tầng 2c): gộp thiết bị từ MỌI driver đã đăng ký (Tuya, MQTT sau này...)
+            // qua deviceRegistry.all() thay vì query thẳng database.tuyaDeviceDao() — file
+            // này không còn nơi nào biết "Tuya" là gì nữa, giống hệt nguyên tắc đã áp dụng
+            // cho SmartSwitchSkill/TuyaViewModel ở Tầng 2b.
             "device" -> {
-                database.tuyaDeviceDao().getAllDevices().map { dev ->
-                    OptionItem(dev.id.trim(), "${dev.name} (${dev.id.takeLast(4)})")
+                deviceRegistry.all().flatMap { controller ->
+                    controller.listDevices().map { dev ->
+                        OptionItem(dev.id.trim(), "${dev.displayName} (${dev.id.takeLast(4)})")
+                    }
                 }
             }
             "camera" -> {
@@ -148,29 +161,41 @@ class DynamicOptionRegistry @Inject constructor(
                         OptionItem(state.sourceId.trim(), "$rawId [$platform]")
                     }
             }
+            // ✅ SỬA (Tầng 2c): gộp "camera" (tĩnh) + mọi protocol thiết bị đã đăng ký (Tuya,
+            // MQTT sau này...) qua deviceRegistry.all() + "chat" (tĩnh) — thay vì hardcode
+            // ["camera","tuya","chat"]. Thêm driver mới tự xuất hiện ở dropdown "Nguồn" của
+            // Precondition Guard mà không cần sửa file này.
             "precondition_source" -> {
-                listOf(
-                    OptionItem("camera", "📷 Mắt quét Camera"),
-                    OptionItem("tuya", "🔌 Thiết bị đóng ngắt Tuya"),
-                    OptionItem("chat", "💬 Hội thoại Đa kênh")
-                )
+                listOf(OptionItem("camera", "📷 Mắt quét Camera")) +
+                    deviceRegistry.all().map { controller ->
+                        OptionItem(controller.worldStateSource, controller.displayName)
+                    } +
+                    listOf(OptionItem("chat", "💬 Hội thoại Đa kênh"))
             }
+            // ✅ SỬA (Tầng 2c): nhánh "tuya" cứng trước đây đổi thành nhánh chung cho MỌI
+            // protocol thiết bị đã đăng ký — Tuya và MQTT (theo SHAS_INTEGRATION_GUIDE.md,
+            // MQTT chỉ có capability REALTIME_STATUS, cùng ngữ nghĩa on/off) dùng CHUNG 1 case
+            // "state" boolean, không nhân bản switch theo từng protocol. Chỉ nên tách case
+            // riêng khi có protocol với capability THỰC SỰ khác boolean (vd dimmer %).
             "precondition_attribute" -> {
-                when (currentValues["source"]) {
-                    "camera" -> listOf(
+                val source = currentValues["source"]
+                when {
+                    source == "camera" -> listOf(
                         OptionItem("state", "Trạng thái an ninh (state)"),
                         OptionItem("objects", "Vật thể phát hiện (objects)")
                     )
-                    "tuya" -> listOf(
-                        OptionItem("state", "Trạng thái đóng ngắt (bật/tắt)")
-                    )
-                    "chat" -> listOf(
+                    source == "chat" -> listOf(
                         OptionItem("session_status", "Trạng thái phiên chat"),
                         OptionItem("unread_count", "Số tin chưa đọc")
+                    )
+                    source != null && deviceRegistry.all().any { it.worldStateSource == source } -> listOf(
+                        OptionItem("state", "Trạng thái đóng ngắt (bật/tắt)")
                     )
                     else -> listOf(OptionItem("state", "Trạng thái hoạt động"))
                 }
             }
+            // ✅ SỬA (Tầng 2c): cùng nguyên tắc — "true"/"false" cho MỌI protocol thiết bị đã
+            // đăng ký khi attribute="state", không riêng "tuya".
             "precondition_expected" -> {
                 val source = currentValues["source"]
                 val attr = currentValues["attribute"]
@@ -178,10 +203,6 @@ class DynamicOptionRegistry @Inject constructor(
                     source == "camera" && attr == "state" -> listOf(
                         OptionItem("normal", "Bình thường (normal)"),
                         OptionItem("suspicious", "Cảnh báo / Bất thường (suspicious)")
-                    )
-                    source == "tuya" && attr == "state" -> listOf(
-                        OptionItem("true", "Đang BẬT (true)"),
-                        OptionItem("false", "Đang TẮT (false)")
                     )
                     source == "chat" && attr == "session_status" -> listOf(
                         OptionItem("waiting_agent", "Chờ người trực trả lời"),
@@ -192,6 +213,10 @@ class DynamicOptionRegistry @Inject constructor(
                         OptionItem("1", "1 tin nhắn"),
                         OptionItem("2", "2 tin nhắn"),
                         OptionItem("3", "3 tin nhắn")
+                    )
+                    source != null && attr == "state" && deviceRegistry.all().any { it.worldStateSource == source } -> listOf(
+                        OptionItem("true", "Đang BẬT (true)"),
+                        OptionItem("false", "Đang TẮT (false)")
                     )
                     else -> emptyList()
                 }
