@@ -3,7 +3,10 @@ package com.aichatvn.agent.tools.tuya
 import android.content.Context
 import android.net.wifi.WifiManager
 import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
@@ -78,7 +81,20 @@ class TuyaLocalController @Inject constructor(
             withTimeoutOrNull(timeoutMs) { listenBroadcast(gwId) }
         }
 
-    private fun listenBroadcast(targetGwId: String): TuyaLocalDiscovery? {
+    // ⚠️ SỬA (bug treo vô hạn): trước đây là `private fun` thường — vòng `while (result ==
+    // null)` bên dưới KHÔNG BAO GIỜ kiểm tra coroutine đã bị withTimeoutOrNull() hủy chưa,
+    // vì đây là hàm đồng bộ, không có suspend point nào để cancellation "chen vào". Khi
+    // timeoutMs hết giờ mà chưa tìm thấy gwId khớp, coroutine job bị đánh dấu cancelled
+    // NHƯNG vòng lặp vẫn chạy tiếp vô thời hạn — hàm không bao giờ return, `finally {
+    // sockets.forEach { close() } }` không bao giờ chạy tới, 2 cổng UDP 6666/6667 bị GIỮ
+    // VĨNH VIỄN. Mọi lần gọi discoverIp() sau đó (kể cả từ ensureLocalControlReady() tự
+    // động trong turnOn()/turnOff()) cố bind lại đúng 2 cổng đó sẽ bị chặn/treo theo —
+    // đây là nguyên nhân "quay vòng vòng, mất điều khiển" sau khi dùng Local Lab/Bật nhanh.
+    //
+    // Sửa: chuyển thành suspend fun + gọi ensureActive() mỗi vòng lặp — đây là điểm kiểm
+    // tra cancellation hợp tác chuẩn của coroutine, sẽ ném CancellationException đúng lúc
+    // withTimeoutOrNull() hết giờ, để finally{} chạy và đóng socket kịp thời.
+    private suspend fun listenBroadcast(targetGwId: String): TuyaLocalDiscovery? {
         var result: TuyaLocalDiscovery? = null
         val sockets = mutableListOf<DatagramSocket>()
         val multicastLock = runCatching {
@@ -105,6 +121,11 @@ class TuyaLocalController @Inject constructor(
             val buffer = ByteArray(2048)
 
             while (result == null) {
+                // ✅ MỚI: điểm kiểm tra cancellation — nếu withTimeoutOrNull() đã hết giờ,
+                // dòng này ném CancellationException ngay, thoát vòng lặp, chạy finally{}
+                // đóng socket. Không có dòng này, timeout bên ngoài vô nghĩa (xem giải thích
+                // ở doc-comment của hàm).
+                currentCoroutineContext().ensureActive()
                 for ((socket, encrypted) in listOf(socket6666 to false, socket6667 to true)) {
                     try {
                         val packet = DatagramPacket(buffer, buffer.size)
@@ -125,6 +146,11 @@ class TuyaLocalController @Inject constructor(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            // ✅ MỚI: KHÔNG nuốt — phải ném lại để withTimeoutOrNull() ở discoverIp() nhận
+            // biết đúng là đã hết giờ (không phải lỗi thật), coroutine machinery cần thấy
+            // exception này đi qua nguyên vẹn. finally{} bên dưới vẫn chạy để đóng socket.
+            throw e
         } catch (e: Exception) {
             logger.d("TuyaLocalController", "listenBroadcast lỗi: ${e.message}")
         } finally {
