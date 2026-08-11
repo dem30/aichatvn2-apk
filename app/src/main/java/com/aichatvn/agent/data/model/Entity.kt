@@ -41,6 +41,24 @@ data class TuyaDeviceEntity(
     val localSwitchDpId: String? = null
 )
 
+// ==================== MQTT DEVICE ====================
+
+// ✅ MỚI (Tầng 3 — bài kiểm tra kiến trúc DeviceController): bảng riêng cho thiết bị MQTT,
+// KHÔNG dùng chung tuya_devices — đúng khuyến nghị Bước 2 trong SHAS_INTEGRATION_GUIDE.md.
+@Entity(tableName = "mqtt_devices")
+data class MqttDeviceEntity(
+    @PrimaryKey
+    val id: String,          // Định danh nội bộ ổn định (KHÔNG phải topic — topic có thể đổi)
+    val name: String,        // Tên hiển thị người dùng đặt
+    val topic: String,       // Topic MQTT dùng để publish lệnh bật/tắt, vd "home/devices/<id>/set"
+    val online: Boolean = false,
+    // ✅ Trạng thái BẬT/TẮT cuối cùng nhận được qua subscribe — MQTT vốn mạnh ở nhận đẩy
+    // realtime (DeviceCapability.REALTIME_STATUS), khác Tuya phải chủ động poll/gọi API.
+    // getStatus() đọc thẳng cột này, KHÔNG có khái niệm "gọi API hỏi trạng thái" như Tuya.
+    val lastKnownState: Boolean = false,
+    val lastSeen: Long = System.currentTimeMillis()
+)
+
 // ==================== CHAT MESSAGE ====================
 
 @Entity(tableName = "chat_messages")

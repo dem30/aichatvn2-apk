@@ -26,9 +26,7 @@ abstract class DeviceModule {
     @IntoSet
     abstract fun bindTuyaDeviceController(impl: TuyaDeviceController): DeviceController
 
-    // Khi thêm MQTT, thêm đúng 1 hàm theo mẫu này — không đụng gì khác trong file:
-    //
-    // @Binds
-    // @IntoSet
-    // abstract fun bindMqttDeviceController(impl: MqttDeviceController): DeviceController
+    @Binds
+    @IntoSet
+    abstract fun bindMqttDeviceController(impl: MqttDeviceController): DeviceController
 }

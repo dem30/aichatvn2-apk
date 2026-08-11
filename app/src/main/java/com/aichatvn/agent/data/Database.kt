@@ -182,6 +182,34 @@ interface TuyaDeviceDao {
     suspend fun deleteAllDevices()
 }
 
+// ==================== MQTT DEVICE DAO ====================
+
+// ✅ MỚI (Tầng 3): CRUD tối thiểu — chỉ những gì MqttDeviceController.listDevices()/
+// deleteDevice()/getStatus() thật sự cần, theo đúng khuôn TuyaDeviceDao ở trên.
+@Dao
+interface MqttDeviceDao {
+    @Query("SELECT * FROM mqtt_devices ORDER BY name ASC")
+    fun getAllDevicesFlow(): Flow<List<MqttDeviceEntity>>
+
+    @Query("SELECT * FROM mqtt_devices ORDER BY name ASC")
+    suspend fun getAllDevices(): List<MqttDeviceEntity>
+
+    @Query("SELECT * FROM mqtt_devices WHERE id = :deviceId")
+    suspend fun getDeviceById(deviceId: String): MqttDeviceEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDevice(device: MqttDeviceEntity)
+
+    // ✅ Ghi trạng thái nhận được qua subscribe — tách riêng khỏi insertDevice() giống lý do
+    // TuyaDeviceDao.updateLocalControlInfo() tách riêng: tránh ghi đè mất topic/name nếu
+    // sau này có nơi khác insertDevice() lại với entity dựng thiếu field.
+    @Query("UPDATE mqtt_devices SET lastKnownState = :state, online = :online, lastSeen = :timestamp WHERE id = :deviceId")
+    suspend fun updateState(deviceId: String, state: Boolean, online: Boolean, timestamp: Long)
+
+    @Query("DELETE FROM mqtt_devices WHERE id = :deviceId")
+    suspend fun deleteDevice(deviceId: String)
+}
+
 // ==================== CAMERA DAO ====================
 
 @Dao
@@ -535,6 +563,26 @@ val MIGRATION_21_22 = object : Migration(21, 22) {
     }
 }
 
+// ✅ MỚI: version 23 — thêm bảng mqtt_devices (Tầng 3, xem MqttDeviceEntity/MqttDeviceDao).
+// Bảng mới hoàn toàn nên dùng CREATE TABLE, không phải ALTER TABLE ADD COLUMN như các
+// migration trước — không có dữ liệu cũ nào bị ảnh hưởng.
+val MIGRATION_22_23 = object : Migration(22, 23) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mqtt_devices (
+                id TEXT NOT NULL PRIMARY KEY,
+                name TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                online INTEGER NOT NULL DEFAULT 0,
+                lastKnownState INTEGER NOT NULL DEFAULT 0,
+                lastSeen INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -552,16 +600,15 @@ val MIGRATION_21_22 = object : Migration(21, 22) {
         EventLogEntity::class,   
         WorldStateEntity::class,
         CallContactEntity::class,
-        CallLogEntity::class
+        CallLogEntity::class,
+        MqttDeviceEntity::class
     ],
-    // bump 21 → 22 do TuyaDeviceEntity thêm 4 cột điều khiển LOCAL (localKey/lastKnownIp/
-    // protocolVersion/localSwitchDpId — xem MIGRATION_21_22). Trước đó bump 20 → 21 vá
-    // MIGRATION_20_21 còn thiếu cho 6 cột RTSP/ONVIF của CameraConfigEntity (đã tồn tại
-    // trong Entity.kt từ trước nhưng chưa từng có migration tương ứng).
-    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng MIGRATION_20_21 +
-    // MIGRATION_21_22 (ALTER TABLE ADD COLUMN) ở trên, KHÔNG được để
-    // fallbackToDestructiveMigration() xoá dữ liệu của họ.
-    version = 22,
+    // bump 22 → 23 để thêm bảng mqtt_devices (Tầng 3 — xem MIGRATION_22_23). Trước đó bump
+    // 21 → 22 do TuyaDeviceEntity thêm 4 cột điều khiển LOCAL (xem MIGRATION_21_22).
+    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→23
+    // (không chỉ riêng 22→23) ở trên, KHÔNG được để fallbackToDestructiveMigration() xoá dữ
+    // liệu của họ.
+    version = 23,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -580,7 +627,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun eventLogDao(): EventLogDao   
     abstract fun worldStateDao(): WorldStateDao 
     abstract fun callContactDao(): CallContactDao
-abstract fun callLogDao(): CallLogDao
+    abstract fun callLogDao(): CallLogDao
+    abstract fun mqttDeviceDao(): MqttDeviceDao
 
     companion object {
         @Volatile
@@ -598,7 +646,7 @@ abstract fun callLogDao(): CallLogDao
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
