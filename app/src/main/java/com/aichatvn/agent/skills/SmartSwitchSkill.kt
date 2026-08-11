@@ -15,7 +15,9 @@ import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction
-import com.aichatvn.agent.ui.dashboard.DeviceRegistry
+import com.aichatvn.agent.devices.DeviceActionResult
+import com.aichatvn.agent.devices.DeviceProtocol
+import com.aichatvn.agent.devices.DeviceRegistry as DeviceControlRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -25,15 +27,34 @@ import javax.inject.Singleton
 
 @Singleton
 class SmartSwitchSkill @Inject constructor(
+    // ✅ SỬA (Tầng 2b — đồng bộ kiến trúc DeviceController): giữ lại TuyaManager CHỈ để
+    // gọi scanDevices() (dò thiết bị mới từ tài khoản Tuya Cloud). "Quét/khám phá thiết bị"
+    // là hành vi khác hẳn "điều khiển 1 thiết bị đã biết" — DeviceController KHÔNG có (và
+    // cố tình không có) method này, vì MQTT không có khái niệm "quét tài khoản Cloud" giống
+    // Tuya (xem docstring DeviceController.kt). Mọi hành động ĐIỀU KHIỂN thật
+    // (turnOn/turnOff/getStatus/getStatusBatch) đã chuyển sang deviceControlRegistry bên dưới
+    // — đây là nơi DUY NHẤT trong file này còn gọi thẳng TuyaManager.
     private val tuyaManager: TuyaManager,
     private val database: AppDatabase,
-    private val deviceRegistry: DeviceRegistry,
+    // ✅ SỬA: đổi tên rõ ràng — đây là registry NODE cho sơ đồ Dashboard (DeviceNode, toạ độ,
+    // trạng thái hiển thị), hoàn toàn khác deviceControlRegistry bên dưới. Đổi tên biến để
+    // không còn 2 thứ trùng tên "DeviceRegistry" gây nhầm lẫn khi đọc code — hành vi giữ
+    // nguyên 100%, chỉ đổi cách gọi trong file.
+    private val dashboardDeviceRegistry: com.aichatvn.agent.ui.dashboard.DeviceRegistry,
     private val configProvider: AppConfigProvider,
+    // ✅ MỚI: registry thật của kiến trúc DeviceController (xem devices/DeviceRegistry.kt) —
+    // nơi DUY NHẤT tra cứu driver điều khiển thiết bị theo protocol, thay cho việc gọi thẳng
+    // TuyaManager.turnOn/turnOff/getStatus/getStatusBatch như trước.
+    private val deviceControlRegistry: DeviceControlRegistry,
     // ✅ MỚI: fallback gửi lệnh qua Gateway → Camera Node ở nhà khi Local thất bại và đang bật
     // Chế độ Local-only (LOCAL_ONLY_MODE_ENABLED) — xem handleSet().
     private val deviceCommandGatewayClient: DeviceCommandGatewayClient,
     logger: Logger
 ) : BaseSkill("smart_switch", "Điều khiển thiết bị đóng ngắt", logger), Plugin {
+
+    // ✅ MỚI: 1 điểm tra cứu duy nhất cho controller Tuya trong file này — tránh lặp lại
+    // deviceControlRegistry.controllerFor(DeviceProtocol.TUYA_CLOUD) ở 3-4 chỗ khác nhau.
+    private fun tuyaController() = deviceControlRegistry.controllerFor(DeviceProtocol.TUYA_CLOUD)
 
     override val manifest = PluginManifest(
         id = id,
@@ -147,8 +168,12 @@ class SmartSwitchSkill @Inject constructor(
         // online trước vòng lặp, các node bên dưới chỉ tra cứu trong map có sẵn — 1 call
         // (hoặc ceil(N/20) nếu >20 thiết bị) thay vì N call mỗi lần mở/làm mới Dashboard.
         val onlineDeviceIds = tuyaDevices.filter { it.online }.map { it.id }
+        // ✅ SỬA: gọi qua controller.getStatusBatch() (trả về Map<String, DeviceStatus>)
+        // thay vì tuyaManager.getStatusBatch() thẳng (trả về Map<String, Boolean>) — cùng 1
+        // API batch bên dưới (TuyaDeviceController.getStatusBatch() vẫn gọi
+        // tuyaManager.getStatusBatch() y hệt trước), chỉ đổi kiểu dữ liệu bọc ngoài.
         val batchStates = try {
-            tuyaManager.getStatusBatch(onlineDeviceIds)
+            tuyaController()?.getStatusBatch(onlineDeviceIds) ?: emptyMap()
         } catch (e: Exception) {
             logger.e("SmartSwitchSkill", "Lỗi lấy trạng thái hàng loạt cho Dashboard: ${e.message}")
             emptyMap()
@@ -169,7 +194,7 @@ class SmartSwitchSkill @Inject constructor(
                 // Thiếu key trong batchStates (offline, lỗi call, hoặc không dò được switch
                 // code) -> coi là tắt để hiển thị an toàn, giống hành vi cũ khi getStatus() lỗi.
                 val isDeviceOn = if (isOnline) {
-                    batchStates[dev.id] ?: false
+                    batchStates[dev.id]?.isOn ?: false
                 } else {
                     false
                 }
@@ -185,7 +210,14 @@ class SmartSwitchSkill @Inject constructor(
                 // vì lúc đó world_state đã khớp rồi).
                 if (isOnline) {
                     try {
-                        val existingState = database.worldStateDao().getState("tuya", dev.id)
+                        // ✅ SỬA: dùng controller.worldStateSource thay vì literal "tuya" —
+                        // với Tuya giá trị vẫn y hệt "tuya" (xem TuyaDeviceController.kt),
+                        // nên KHÔNG đổi hành vi/key nào đã lưu trong DB. Chỉ đổi nguồn sự
+                        // thật: nếu sau này driver Tuya đổi worldStateSource (không nên, xem
+                        // cảnh báo trong DeviceController.kt), chỗ này tự động theo, không
+                        // cần sửa lại file này lần nữa.
+                        val source = tuyaController()?.worldStateSource ?: "tuya"
+                        val existingState = database.worldStateDao().getState(source, dev.id)
                         val oldState = existingState?.let {
                             try {
                                 org.json.JSONObject(it.attributesJson).optString("state", "false")
@@ -196,13 +228,13 @@ class SmartSwitchSkill @Inject constructor(
 
                         if (isDeviceOn != oldState) {
                             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                                database.worldStateDao(), "tuya", dev.id, "state", isDeviceOn.toString()
+                                database.worldStateDao(), source, dev.id, "state", isDeviceOn.toString()
                             )
                             database.eventLogDao().insertLog(
                                 com.aichatvn.agent.data.model.EventLogEntity(
                                     id = java.util.UUID.randomUUID().toString(),
                                     timestamp = System.currentTimeMillis(),
-                                    source = "tuya",
+                                    source = source,
                                     sourceId = dev.id,
                                     eventType = "state_change",
                                     value = isDeviceOn.toString(),
@@ -269,7 +301,7 @@ class SmartSwitchSkill @Inject constructor(
     private suspend fun syncToDeviceRegistry() {
         try {
             val initialNodes = getDashboardNodes()
-            deviceRegistry.registerNodes(manifest.id, initialNodes)
+            dashboardDeviceRegistry.registerNodes(manifest.id, initialNodes)
             logger.i("SmartSwitchSkill", "Khởi tạo sơ đồ đèn lên bản sao số thành công.")
         } catch (e: Exception) {
             logger.e("SmartSwitchSkill", "Khởi tạo sơ đồ đèn lên bản sao số thất bại", e)
@@ -307,37 +339,47 @@ class SmartSwitchSkill @Inject constructor(
             val deviceId = deviceEntity.id
             val deviceName = deviceEntity.name
 
+            val controller = tuyaController()
+                ?: return failure("Chưa có driver điều khiển cho thiết bị Tuya")
+
             // ✅ MỚI: khi Chế độ Local-only đang bật, TuyaManager.turnOn()/turnOff() không còn
             // fallback Cloud nữa — nó throw thẳng nếu Local thất bại (xem TuyaManager.
-            // setDeviceState()). Bắt lỗi đó riêng ở đây để thử fallback THỨ HAI: gửi lệnh qua
-            // Gateway tới Camera Node ở nhà, CHỜ xác nhận thực thi thật (không chỉ "đã gửi") —
-            // xem DeviceCommandGatewayClient.sendDeviceCommandToHomeAndAwaitResult(). Camera Node
-            // tự gọi lại turnOn()/turnOff() của CHÍNH NÓ (đang cùng LAN với thiết bị), tức là lệnh
-            // vẫn được thực thi bằng đường LOCAL thật, chỉ có bước "chuyển tiếp" đi qua Gateway.
+            // setDeviceState()). Thử fallback THỨ HAI khi đó: gửi lệnh qua Gateway tới Camera
+            // Node ở nhà, CHỜ xác nhận thực thi thật (không chỉ "đã gửi") — xem
+            // DeviceCommandGatewayClient.sendDeviceCommandToHomeAndAwaitResult(). Camera Node
+            // tự gọi lại turnOn()/turnOff() của CHÍNH NÓ (đang cùng LAN với thiết bị), tức là
+            // lệnh vẫn được thực thi bằng đường LOCAL thật, chỉ có bước "chuyển tiếp" đi qua
+            // Gateway.
             //
             // Khi Local-only đang TẮT (mặc định), tuyaManager.turnOn()/turnOff() không đổi hành
-            // vi cũ (vẫn tự fallback Cloud như trước) — nhánh catch bên dưới trong trường hợp đó
-            // chỉ bắt lỗi thật sự (cả Local lẫn Cloud đều thất bại), không có gì để thử thêm qua
-            // gateway, nên ném lại lỗi gốc như hành vi cũ.
+            // vi cũ (vẫn tự fallback Cloud như trước) — nhánh Failure bên dưới trong trường hợp
+            // đó chỉ xảy ra khi lỗi thật sự (cả Local lẫn Cloud đều thất bại), không có gì để
+            // thử thêm qua gateway, nên trả lỗi gốc như hành vi cũ.
             var viaGateway = false
             // ✅ MỚI: chỉ có ý nghĩa khi viaGateway=true — true = Camera Node đã báo về xác nhận
             // thực thi thật; false = hết thời gian chờ mà chưa có xác nhận (lệnh CÓ THỂ vẫn đang
             // được xử lý, không phải chắc chắn thất bại).
             var gatewayConfirmed = true
-            try {
-                if (state) {
-                    tuyaManager.turnOn(deviceKey)
-                } else {
-                    tuyaManager.turnOff(deviceKey)
-                }
-            } catch (localOnlyFailure: Exception) {
+
+            // ✅ SỬA (Tầng 2b): trước đây bắt exception từ tuyaManager.turnOn()/turnOff() để
+            // quyết định fallback Gateway. DeviceController.turnOn()/turnOff() KHÔNG ném
+            // exception theo đúng thiết kế (xem DeviceController.kt — bọc lỗi mạng/offline
+            // thành DeviceActionResult.Failure thay vì crash), nên đổi điều kiện fallback từ
+            // "bắt được exception" sang "result là Failure" — TƯƠNG ĐƯƠNG 100% hành vi cũ, vì
+            // code cũ cũng chỉ dùng cờ LOCAL_ONLY_MODE_ENABLED để quyết định có thử Gateway
+            // hay không, không hề phân biệt loại exception nào ném ra.
+            val result = if (state) controller.turnOn(deviceId) else controller.turnOff(deviceId)
+
+            if (result is DeviceActionResult.Failure) {
                 val localOnlyEnabled = configProvider.getBoolean(AppConfigDefaults.LOCAL_ONLY_MODE_ENABLED)
-                if (!localOnlyEnabled) throw localOnlyFailure
+                if (!localOnlyEnabled) {
+                    return failure("Lỗi điều khiển thiết bị: ${result.reason}")
+                }
 
                 val homeDeviceCode = configProvider.getString(AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE).trim()
                 if (homeDeviceCode.isBlank()) {
-                    throw Exception(
-                        "Local thất bại và chưa cấu hình Mã Camera Node ở nhà để gửi lệnh dự phòng qua Gateway."
+                    return failure(
+                        "Lỗi điều khiển thiết bị: Local thất bại và chưa cấu hình Mã Camera Node ở nhà để gửi lệnh dự phòng qua Gateway."
                     )
                 }
 
@@ -353,7 +395,7 @@ class SmartSwitchSkill @Inject constructor(
                     // không tồn tại — timeout luôn trả success=true dè dặt, xem doc-comment
                     // sendDeviceCommandToHomeAndAwaitResult()), nên đây là thất bại THẬT: hoặc
                     // Gateway từ chối ngay, hoặc Camera Node đã báo về thực thi lỗi.
-                    throw Exception("Local thất bại, gửi qua Gateway cũng thất bại: ${gatewayResult.message}")
+                    return failure("Lỗi điều khiển thiết bị: Local thất bại, gửi qua Gateway cũng thất bại: ${gatewayResult.message}")
                 }
                 viaGateway = true
                 gatewayConfirmed = gatewayResult.confirmed
@@ -361,10 +403,11 @@ class SmartSwitchSkill @Inject constructor(
 
             val now = System.currentTimeMillis()
 
-            // ✅ SỬA: ghi world_state theo deviceId (trước đây ghi theo deviceName, khiến
-            // điều kiện "tuya.<id>.state=..." không bao giờ khớp được dữ liệu thật).
+            // ✅ SỬA: dùng controller.worldStateSource thay vì literal "tuya" — với Tuya giá
+            // trị vẫn y hệt "tuya" (xem TuyaDeviceController.kt), nên KHÔNG đổi key nào đã
+            // lưu trong DB (các precondition "tuya.<id>.state=..." vẫn khớp bình thường).
             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                database.worldStateDao(), "tuya", deviceId, "state", state.toString()
+                database.worldStateDao(), controller.worldStateSource, deviceId, "state", state.toString()
             )
 
             // ✅ MỚI (Tuần 5 - Active Logging): Ghi nhật ký sự kiện tương tác vật lý vào event_logs
@@ -372,7 +415,7 @@ class SmartSwitchSkill @Inject constructor(
                 com.aichatvn.agent.data.model.EventLogEntity(
                     id = java.util.UUID.randomUUID().toString(),
                     timestamp = now,
-                    source = "tuya",
+                    source = controller.worldStateSource,
                     sourceId = deviceName,
                     eventType = "state_change",
                     value = state.toString(),
@@ -390,7 +433,7 @@ class SmartSwitchSkill @Inject constructor(
             // ✅ SỬA (Bug D): DeviceRegistry.nodeMap được index theo dev.id — truyền
             // deviceName vào đây trước đây khiến updateNode() luôn no-op (không tìm thấy
             // node), nên trạng thái Dashboard không cập nhật tức thời sau khi bật/tắt.
-            deviceRegistry.updateNode(deviceId) { current ->
+            dashboardDeviceRegistry.updateNode(deviceId) { current ->
                 current.copy(
                     online = true,
                     status = if (state) "Đang bật" else "Đang tắt",
@@ -415,18 +458,36 @@ class SmartSwitchSkill @Inject constructor(
     
 
     private suspend fun handleStatus(params: Map<String, Any>): AgentKernel.PluginResult {
-        val deviceName = params["device"] as? String
+        val deviceKey = params["device"] as? String
             ?: return failure("Thiếu tên thiết bị")
 
         return try {
-            val status = tuyaManager.getStatus(deviceName)
-            success("Thiết bị $deviceName hiện đang ${if (status) "bật" else "tắt"}", mapOf("status" to status))
+            // ✅ SỬA (đồng bộ với handleSet): chuẩn hóa deviceKey (id hoặc tên) thành entity
+            // thật trước khi gọi controller — trước đây hàm này truyền thẳng deviceKey (chưa
+            // rõ id hay tên) vào tuyaManager.getStatus(), khác với handleSet() đã tự resolve
+            // từ Bug B+C+D. Giờ cả 2 hàm cùng 1 cách resolve, cùng gọi qua deviceId ổn định.
+            val deviceEntity = database.tuyaDeviceDao().getDeviceById(deviceKey)
+                ?: database.tuyaDeviceDao().getDeviceByName(deviceKey)
+                ?: return failure("Không tìm thấy thiết bị '$deviceKey'")
+
+            val controller = tuyaController()
+                ?: return failure("Chưa có driver điều khiển cho thiết bị Tuya")
+
+            val status = controller.getStatus(deviceEntity.id)
+                ?: return failure("Không lấy được trạng thái thiết bị '${deviceEntity.name}'")
+
+            success(
+                "Thiết bị ${deviceEntity.name} hiện đang ${if (status.isOn) "bật" else "tắt"}",
+                mapOf("status" to status.isOn)
+            )
         } catch (e: Exception) {
             failure("Lỗi lấy trạng thái: ${e.message}")
         }
     }
 
     private suspend fun handleScan(): AgentKernel.PluginResult {
+        // ⚠️ Cố tình vẫn gọi thẳng tuyaManager — xem comment ở constructor: "quét/khám phá
+        // thiết bị mới" không thuộc hợp đồng DeviceController.
         return try {
             val devices = tuyaManager.scanDevices()
             success("Đã quét hoàn tất mạng. Tìm thấy ${devices.size} thiết bị.")
