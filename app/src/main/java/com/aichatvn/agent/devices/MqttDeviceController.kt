@@ -1,83 +1,148 @@
+
 package com.aichatvn.agent.devices
 
+import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.MqttDeviceDao
+import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import org.eclipse.paho.client.mqttv3.MqttClient
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions
+import org.eclipse.paho.client.mqttv3.MqttMessage
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * MqttConfigKeys
+ *
+ * Key cấu hình broker — RAW STRING KEY đọc/ghi thẳng qua AppConfigProvider.getString/set(key,
+ * default), cùng quy ước "worldstate_guard_$deviceId" đã dùng trong TuyaScreen.kt — KHÔNG
+ * đăng ký trong AppConfigDefaults.kt. Lý do: cấu hình broker nằm ngay trong tab "MQTT" mới
+ * (mục 13.3 tài liệu kiến trúc), không qua SettingsScreen, nên không cần entry hiện ở đó.
+ * public (không phải private trong companion object của controller) để MqttViewModel dùng
+ * chung đúng 1 nguồn tên key, tránh gõ tay 2 chỗ dễ lệch.
+ */
+object MqttConfigKeys {
+    const val BROKER_URL = "mqtt.broker_url"
+    const val USERNAME = "mqtt.username"
+    const val PASSWORD = "mqtt.password"
+}
+
+/**
  * MqttDeviceController
  *
- * Tầng 3 — driver MQTT ĐẦU TIÊN, viết CHÍNH để kiểm chứng kiến trúc DeviceController sau
- * khi đã dọn Tuya (Tầng 2). File này CỐ TÌNH KHÔNG kết nối tới broker MQTT thật nào —
- * project chưa chọn thư viện MQTT client (Eclipse Paho, HiveMQ...), nên turnOn()/turnOff()
- * hiện chỉ CẬP NHẬT DB LOCAL (mqtt_devices.lastKnownState), không publish gì lên broker
- * thật. Đây là placeholder có chủ đích để kiểm tra 4 việc, KHÔNG phải để dùng thật ngoài đời:
+ * (Giai đoạn 2) Đã nối broker MQTT thật qua Eclipse Paho — thư viện ĐÃ CÓ SẴN trong
+ * build.gradle.kts từ trước (org.eclipse.paho.client.mqttv3:1.2.5), không thêm dependency mới.
+ * Dùng bản CORE (`MqttClient`, đồng bộ/blocking), KHÔNG dùng `org.eclipse.paho.android.service`
+ * (bản bọc Android Service, không cần thiết) — gọi trong withContext(Dispatchers.IO), đúng
+ * phong cách project đang dùng cho các lệnh gọi mạng blocking khác (vd okhttp trong
+ * CameraCapabilityProber, TuyaLocalController).
  *
- *   1. Thiết bị "mqtt" có tự xuất hiện trong dropdown "device" (SmartActionFormSheet) không?
- *   2. "mqtt" có tự xuất hiện trong dropdown "Nguồn" của Precondition Guard không?
- *   3. Chọn nguồn "mqtt" rồi chọn attribute="state" có tự hiện đúng 2 lựa chọn true/false
- *      (giống Tuya) mà KHÔNG cần sửa DynamicOptionRegistry.kt không?
- *   4. Bật/tắt 1 thiết bị mqtt giả có tự ghi đúng world_state key "mqtt.<id>.state=..."
- *      không, để về sau lên lịch/automation dùng được ngay?
- *
- * ⚠️ TRƯỚC KHI DÙNG THẬT: thay TODO trong turnOn()/turnOff() bằng lệnh publish thật qua
- * client MQTT đã chọn, và nối getStatus() với dữ liệu subscribe được (không đọc DB tĩnh
- * như hiện tại) — xem gợi ý interface MqttClient tối thiểu ở cuối file.
+ * Quản lý kết nối: 1 MqttClient singleton lười khởi tạo, dùng Mutex tránh 2 coroutine cùng
+ * connect — cùng pattern CallSkill.getOrCreateMyDeviceCode() đã dùng.
  */
 @Singleton
 class MqttDeviceController @Inject constructor(
-    private val mqttDeviceDao: MqttDeviceDao
-    // TODO: inject thêm 1 MqttClient thật khi đã chọn thư viện, vd:
-    //   private val mqttClient: MqttClient
+    private val mqttDeviceDao: MqttDeviceDao,
+    private val configProvider: AppConfigProvider,
+    private val logger: Logger,
 ) : DeviceController {
 
     override val protocol: DeviceProtocol = DeviceProtocol.MQTT
 
-    // ✅ MQTT vốn mạnh ở nhận đẩy trạng thái realtime qua subscribe, không cần chủ động gọi
-    // API hỏi trạng thái như Tuya (BATCH_STATUS không khai báo — dùng default tuần tự của
-    // interface, đủ dùng vì đọc thẳng DB, không tốn API call nào).
     override val capabilities: Set<DeviceCapability> = setOf(
         DeviceCapability.REALTIME_STATUS
     )
 
-    // ⚠️ Chọn khoá NGAY TỪ ĐẦU và KHÔNG đổi sau khi có người dùng thật lưu precondition với
-    // khoá này — cùng ràng buộc áp dụng cho worldStateSource="tuya" (xem DeviceController.kt).
     override val worldStateSource: String = "mqtt"
 
     override val displayName: String = "📡 Thiết bị MQTT"
 
-    override suspend fun turnOn(deviceId: String): DeviceActionResult {
-        val entity = mqttDeviceDao.getDeviceById(deviceId)
-            ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị MQTT id=$deviceId")
-        return try {
-            // TODO: publish thật lên broker, vd:
-            //   mqttClient.publish(entity.topic, payload = "ON")
-            // Hiện tại chỉ cập nhật cache local để luồng world_state/dropdown có dữ liệu
-            // thật để kiểm chứng — KHÔNG có tác dụng điều khiển thiết bị vật lý nào.
-            mqttDeviceDao.updateState(deviceId, state = true, online = true, timestamp = System.currentTimeMillis())
-            DeviceActionResult.Success
+    private val connectMutex = Mutex()
+    @Volatile private var client: MqttClient? = null
+
+    /**
+     * Đổi cấu hình broker giữa chừng (từ MqttViewModel, sau khi người dùng lưu ở tab MQTT) —
+     * ngắt kết nối cũ ngay, lần gọi turnOn/turnOff tiếp theo sẽ tự connect lại theo config mới
+     * thay vì lỡ dùng nhầm kết nối tới broker cũ đã đổi.
+     */
+    fun invalidateConnection() {
+        try {
+            client?.takeIf { it.isConnected }?.disconnect()
         } catch (e: Exception) {
-            DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi bật thiết bị MQTT")
+            logger.d("MqttDeviceController", "disconnect() khi đổi broker: ${e.message}")
+        } finally {
+            client = null
         }
     }
 
-    override suspend fun turnOff(deviceId: String): DeviceActionResult {
+    private suspend fun getOrConnect(): MqttClient? = connectMutex.withLock {
+        client?.takeIf { it.isConnected }?.let { return it }
+
+        val brokerUrl = configProvider.getString(MqttConfigKeys.BROKER_URL, "").trim()
+        if (brokerUrl.isBlank()) return null // chưa cấu hình — nghiệp vụ gọi tự xử lý null
+
+        return try {
+            val clientId = "aichatvn2_" + UUID.randomUUID().toString().take(8)
+            val newClient = MqttClient(brokerUrl, clientId, MemoryPersistence())
+            val options = MqttConnectOptions().apply {
+                isCleanSession = true
+                connectionTimeout = 10
+                val user = configProvider.getString(MqttConfigKeys.USERNAME, "").trim()
+                val pass = configProvider.getString(MqttConfigKeys.PASSWORD, "")
+                if (user.isNotBlank()) {
+                    userName = user
+                    password = pass.toCharArray()
+                }
+            }
+            newClient.connect(options)
+            client = newClient
+            newClient
+        } catch (e: Exception) {
+            logger.e("MqttDeviceController", "Kết nối broker lỗi: ${e.message}", e)
+            null
+        }
+    }
+
+    override suspend fun turnOn(deviceId: String): DeviceActionResult =
+        publish(deviceId, payload = "ON", newState = true)
+
+    override suspend fun turnOff(deviceId: String): DeviceActionResult =
+        publish(deviceId, payload = "OFF", newState = false)
+
+    private suspend fun publish(deviceId: String, payload: String, newState: Boolean): DeviceActionResult {
         val entity = mqttDeviceDao.getDeviceById(deviceId)
             ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị MQTT id=$deviceId")
-        return try {
-            // TODO: publish thật lên broker, vd:
-            //   mqttClient.publish(entity.topic, payload = "OFF")
-            mqttDeviceDao.updateState(deviceId, state = false, online = true, timestamp = System.currentTimeMillis())
-            DeviceActionResult.Success
-        } catch (e: Exception) {
-            DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi tắt thiết bị MQTT")
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val mqttClient = getOrConnect()
+                    ?: return@withContext DeviceActionResult.Failure(
+                        "Chưa cấu hình broker MQTT — vào tab MQTT để nhập địa chỉ broker."
+                    )
+                mqttClient.publish(entity.topic, MqttMessage(payload.toByteArray()))
+                // ✅ Cập nhật cache local ngay sau khi publish thành công — getStatus() vẫn đọc
+                // DB tĩnh (subscribe nhận trạng thái realtime CHƯA làm ở bước này, xem TODO
+                // cuối file), nên lệnh app tự gửi cần tự phản ánh vào DB để UI không lệch.
+                mqttDeviceDao.updateState(
+                    deviceId, state = newState, online = true, timestamp = System.currentTimeMillis()
+                )
+                DeviceActionResult.Success
+            } catch (e: Exception) {
+                logger.e("MqttDeviceController", "publish($deviceId) lỗi: ${e.message}", e)
+                DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi gửi lệnh MQTT")
+            }
         }
     }
 
     override suspend fun getStatus(deviceId: String): DeviceStatus? {
-        // TODO: khi có mqttClient thật, đọc từ cache đã nhận qua subscribe thay vì đọc DB
-        // tĩnh — DB hiện chỉ phản ánh lệnh BẬT/TẮT app tự gửi gần nhất, không phản ánh biến
-        // động vật lý ngoài ý muốn (mất điện, bật tay ở công tắc...) như Tuya poll được.
+        // TODO (chưa làm ở Giai đoạn 2): nối subscribe() thật để cache trạng thái realtime từ
+        // broker thay vì chỉ đọc lại đúng lệnh app tự gửi gần nhất — DB hiện KHÔNG phản ánh
+        // biến động vật lý ngoài ý muốn (mất điện, bật tay ở công tắc vật lý...).
         val entity = mqttDeviceDao.getDeviceById(deviceId) ?: return null
         return DeviceStatus(isOn = entity.lastKnownState, isOnline = entity.online)
     }
@@ -97,14 +162,3 @@ class MqttDeviceController @Inject constructor(
         }
     }
 }
-
-/*
- * Gợi ý interface tối thiểu cho bước nối broker thật (KHÔNG phải code chạy được, chỉ để
- * tham khảo hình dạng — viết ở file riêng khi thật sự bắt tay làm, đừng paste thẳng vào đây):
- *
- * interface MqttClient {
- *     fun connect(brokerUrl: String, clientId: String)
- *     fun publish(topic: String, payload: String)
- *     fun subscribe(topic: String, onMessage: (payload: String) -> Unit)
- * }
- */
