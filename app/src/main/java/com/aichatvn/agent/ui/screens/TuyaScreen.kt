@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -2045,14 +2046,20 @@ private fun ScanTopicsDialog(
  * Chỉ 2 trường — tên hiển thị + topic — khớp đúng field MqttDeviceEntity thật cần khi tạo
  * (id tự sinh UUID trong MqttViewModel.addDevice(), online/lastKnownState/lastSeen dùng giá
  * trị mặc định của Entity, chưa có gì để nhập ở bước thêm mới).
+ *
+ * ✅ MỚI: initialTopic — prefill từ ScanTopicsDialog khi người dùng chạm 1 topic vừa quét được
+ * (xem TuyaScreen: showAddMqttDialog gọi kèm scanResultTopic). Vẫn để người dùng SỬA được, không
+ * khoá field — topic quét ra có thể chỉ là 1 topic con (vd "tele/...LWT") không hẳn đúng topic
+ * lệnh thật (thường là "cmnd/.../POWER"), nên không ép người dùng phải giữ nguyên.
  */
 @Composable
 private fun AddMqttDeviceDialog(
+    initialTopic: String = "",
     onDismiss: () -> Unit,
     onSave: (name: String, topic: String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var topic by remember { mutableStateOf("") }
+    var topic by remember { mutableStateOf(initialTopic) }
     val canSave = name.isNotBlank() && topic.isNotBlank()
 
     AlertDialog(
