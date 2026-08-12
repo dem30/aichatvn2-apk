@@ -17,12 +17,19 @@ package com.aichatvn.agent.data.model
  * - CONFLICT: cần người dùng tự quyết định (vd bật "Báo động camera" sinh secret mới,
  *   hoặc chọn giữa 2 lựa chọn loại trừ nhau) — SystemAutoConfigurer TUYỆT ĐỐI không tự áp dụng.
  * - UNSUPPORTED: đã kiểm tra và xác nhận không hỗ trợ / không áp dụng được cho mục này.
+ * - DEGRADED (✅ MỚI — Giai đoạn 3, mục 19 Bước 3): khả năng THẬT đã được xác nhận (probe/dò
+ *   LAN thành công trước đó, cấu hình đúng) nhưng đang không dùng được vì điện thoại hiện
+ *   không ở cùng subnet Wi-Fi đã lưu lúc probe — trạng thái RUNTIME tạm thời, không phải lỗi
+ *   cấu hình. Khác CONFLICT: không cần người dùng làm gì, tự hết khi điện thoại về lại mạng
+ *   nhà. SystemAutoConfigurer không có gì để "áp dụng" cho trạng thái này (safeToAutoApply
+ *   luôn false, giống UNSUPPORTED/CONFLICT).
  */
 enum class HealthStatus {
     OPTIMIZED,
     IMPROVABLE,
     CONFLICT,
-    UNSUPPORTED
+    UNSUPPORTED,
+    DEGRADED
 }
 
 /**

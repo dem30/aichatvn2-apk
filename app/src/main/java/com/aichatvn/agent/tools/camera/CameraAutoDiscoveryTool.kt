@@ -1,9 +1,7 @@
 package com.aichatvn.agent.tools.camera
 
-import android.content.Context
-import android.net.wifi.WifiManager
 import com.aichatvn.agent.utils.Logger
-import dagger.hilt.android.qualifiers.ApplicationContext
+import com.aichatvn.agent.utils.NetworkContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -44,8 +42,14 @@ data class DiscoveredCamera(
  */
 @Singleton
 class CameraAutoDiscoveryTool @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val logger: Logger,
+    // ✅ MỚI (Giai đoạn 3, mục 19 Bước 1): getLocalSubnetPrefix() cũ đã chuyển sang đây
+    // (NetworkContext.getCurrentWifiSubnet()) để SystemAuditor dùng chung — hành vi giữ
+    // nguyên 100%, chỉ đổi chỗ ở. @ApplicationContext Context không còn dùng trực tiếp ở
+    // class này nữa (chỉ NetworkContext cần nó) nên đã gỡ khỏi constructor — Hilt tự cung
+    // cấp NetworkContext (đã có @Singleton @Inject constructor riêng), không cần khai báo gì
+    // thêm ở DeviceModule/AppModule.
+    private val networkContext: NetworkContext,
 ) {
     companion object {
         // Timeout ngắn cho bước quét port sống — mục đích chỉ lọc nhanh IP "có vẻ có thiết bị
@@ -118,7 +122,7 @@ class CameraAutoDiscoveryTool @Inject constructor(
         onProgress: ((current: Int, total: Int) -> Unit)? = null
     ): List<DiscoveredCamera> = withContext(Dispatchers.IO) {
         try {
-            val subnetPrefix = getLocalSubnetPrefix()
+            val subnetPrefix = networkContext.getCurrentWifiSubnet()
             if (subnetPrefix == null) {
                 logger.w("CameraAutoDiscoveryTool", "⚠️ Không lấy được subnet LAN — có đang kết nối Wi-Fi không?")
                 return@withContext emptyList()
@@ -144,34 +148,6 @@ class CameraAutoDiscoveryTool @Inject constructor(
         } catch (e: Exception) {
             logger.e("CameraAutoDiscoveryTool", "discoverCameras lỗi: ${e.message}", e)
             emptyList()
-        }
-    }
-
-    /**
-     * Lấy dải IP LAN hiện tại (vd "192.168.1") dựa vào IP của chính điện thoại trên Wi-Fi.
-     * Giả định subnet /24 (255.255.255.0) — đúng với tuyệt đại đa số modem/router gia đình.
-     */
-    private fun getLocalSubnetPrefix(): String? {
-        return try {
-            @Suppress("DEPRECATION")
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-                ?: return null
-            @Suppress("DEPRECATION")
-            val ipInt = wifiManager.connectionInfo?.ipAddress ?: return null
-            if (ipInt == 0) return null // chưa kết nối Wi-Fi
-
-            // ipAddress trả về little-endian trên Android — tách từng byte đúng thứ tự hiển thị.
-            val ip = String.format(
-                "%d.%d.%d.%d",
-                ipInt and 0xff,
-                ipInt shr 8 and 0xff,
-                ipInt shr 16 and 0xff,
-                ipInt shr 24 and 0xff
-            )
-            ip.substringBeforeLast(".")
-        } catch (e: Exception) {
-            logger.e("CameraAutoDiscoveryTool", "getLocalSubnetPrefix lỗi: ${e.message}", e)
-            null
         }
     }
 

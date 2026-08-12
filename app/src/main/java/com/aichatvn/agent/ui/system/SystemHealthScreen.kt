@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -216,6 +217,15 @@ private fun StatusIcon(status: HealthStatus) {
             Icons.Filled.Warning,
             contentDescription = "Cần bạn quyết định",
             tint = Color(0xFFFFA000)
+        )
+        // ✅ MỚI (Giai đoạn 3): khả năng thật đã xác nhận (probe/dò LAN thành công trước đó)
+        // nhưng đang không dùng được vì điện thoại hiện ngoài mạng nhà — trạng thái RUNTIME,
+        // không phải lỗi cấu hình. Màu xám để phân biệt rõ với CONFLICT (màu cam, cần người
+        // dùng quyết định) — DEGRADED không cần ai làm gì, tự hết khi về lại mạng nhà.
+        HealthStatus.DEGRADED -> Icon(
+            Icons.Filled.WifiOff,
+            contentDescription = "Đang ngoài mạng nhà",
+            tint = Color(0xFF9E9E9E)
         )
         HealthStatus.UNSUPPORTED -> {
             // Không hiển thị (đã return sớm ở HealthItemRow) — nhánh này giữ để when

@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -28,6 +29,7 @@ import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.TuyaDeviceEntity
+import com.aichatvn.agent.data.model.MqttDeviceEntity
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.ScheduleEntity
 import com.aichatvn.agent.skills.SmartSwitchSkill
@@ -38,6 +40,8 @@ import com.aichatvn.agent.ui.dashboard.DeviceRegistry
 import com.aichatvn.agent.devices.DeviceActionResult
 import com.aichatvn.agent.devices.DeviceProtocol
 import com.aichatvn.agent.devices.DeviceRegistry as DeviceControlRegistry
+import com.aichatvn.agent.devices.MqttDeviceController
+import com.aichatvn.agent.devices.MqttConfigKeys
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -408,13 +412,152 @@ class TuyaViewModel @Inject constructor(
     fun clearMessage() { _message.value = null }
 }
 
+// ─── MQTT ViewModel (Giai đoạn 2) ──────────────────────────────────────────────
+
+/**
+ * MqttViewModel
+ *
+ * Cùng khuôn TuyaViewModel: `database.mqttDeviceDao()` để đọc DANH SÁCH hiển thị (cần đủ
+ * field topic/online/lastKnownState, DeviceController.listDevices() chỉ trả DeviceSummary rút
+ * gọn) — turnOn/turnOff đi qua agentKernel.executePluginAction() (guard + world_state nhất
+ * quán với đường chat/Dashboard), deleteDevice() đi qua deviceControlRegistry (world_state
+ * dọn đúng qua DeviceController.deleteDevice()).
+ *
+ * addDevice() ghi THẲNG qua MqttDeviceDao, không qua DeviceController — interface đó cố tình
+ * không có method "tạo mới" (xem DeviceController.kt: không có scan/discover, MQTT không có
+ * khái niệm "quét" như Tuya Cloud). Đây là ngoại lệ có chủ đích, cùng loại với
+ * TuyaViewModel.scanDevices() gọi thẳng tuyaManager — không phải sai sót kiến trúc.
+ *
+ * ⚠️ CHƯA XÁC NHẬN: toggleDevice() giả định SmartSwitchSkill.handleSet() đã tra cứu controller
+ * theo đúng protocol của device (không hardcode Tuya) — đúng theo tài liệu kiến trúc đã đối
+ * chiếu ("thêm MQTT không cần sửa SmartSwitchSkill.kt"), nhưng chưa đọc trực tiếp
+ * SmartSwitchSkill.kt để soi dòng code thật. Nếu nút Bật/Tắt MQTT báo lỗi "không tìm thấy
+ * thiết bị" dù đã thêm đúng, khả năng cao là chỗ này cần sửa lại thành gọi thẳng
+ * mqttController()?.turnOn()/turnOff() (mất checkDeviceWorldStateGuard(), vẫn điều khiển được).
+ */
+@HiltViewModel
+class MqttViewModel @Inject constructor(
+    private val database: AppDatabase,
+    private val deviceControlRegistry: DeviceControlRegistry,
+    private val agentKernel: AgentKernel,
+    private val configProvider: AppConfigProvider,
+    private val logger: Logger
+) : ViewModel() {
+
+    private fun mqttController() = deviceControlRegistry.controllerFor(DeviceProtocol.MQTT)
+
+    private val _devices = MutableStateFlow<List<MqttDeviceEntity>>(emptyList())
+    val devices: StateFlow<List<MqttDeviceEntity>> = _devices.asStateFlow()
+
+    private val _loadingDevices = MutableStateFlow<Set<String>>(emptySet())
+    val loadingDevices: StateFlow<Set<String>> = _loadingDevices.asStateFlow()
+
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    private val _brokerUrl = MutableStateFlow("")
+    val brokerUrl: StateFlow<String> = _brokerUrl.asStateFlow()
+
+    init {
+        loadDevices()
+        loadBrokerConfig()
+    }
+
+    fun loadDevices() {
+        viewModelScope.launch {
+            _devices.value = withContext(Dispatchers.IO) { database.mqttDeviceDao().getAllDevices() }
+        }
+    }
+
+    fun loadBrokerConfig() {
+        viewModelScope.launch {
+            _brokerUrl.value = configProvider.getString(MqttConfigKeys.BROKER_URL, "")
+        }
+    }
+
+    fun saveBrokerConfig(brokerUrl: String, username: String, password: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                configProvider.set(MqttConfigKeys.BROKER_URL, brokerUrl.trim())
+                configProvider.set(MqttConfigKeys.USERNAME, username.trim())
+                configProvider.set(MqttConfigKeys.PASSWORD, password)
+            }
+            // ✅ Ngắt kết nối cũ ngay khi đổi broker — tránh MqttDeviceController lỡ dùng
+            // kết nối tới broker cũ cho lần bật/tắt tiếp theo.
+            mqttController()?.let { (it as? MqttDeviceController)?.invalidateConnection() }
+            _brokerUrl.value = brokerUrl.trim()
+            _message.value = "✅ Đã lưu cấu hình broker MQTT"
+        }
+    }
+
+    fun addDevice(name: String, topic: String) {
+        viewModelScope.launch {
+            val entity = MqttDeviceEntity(
+                id = java.util.UUID.randomUUID().toString(),
+                name = name.trim(),
+                topic = topic.trim()
+            )
+            withContext(Dispatchers.IO) { database.mqttDeviceDao().insertDevice(entity) }
+            _message.value = "✅ Đã thêm thiết bị \"${entity.name}\""
+            loadDevices()
+        }
+    }
+
+    fun toggleDevice(device: MqttDeviceEntity, turnOn: Boolean) {
+        viewModelScope.launch {
+            _loadingDevices.value = _loadingDevices.value + device.id
+            try {
+                val params = mapOf("device" to device.id, "state" to turnOn)
+                val result = withContext(Dispatchers.IO) {
+                    agentKernel.executePluginAction("smart_switch", "set", params)
+                }
+                when (result) {
+                    is PluginResult.Success -> {
+                        _message.value = if (turnOn) "💡 Đã bật ${device.name}" else "🔌 Đã tắt ${device.name}"
+                        loadDevices()
+                    }
+                    is PluginResult.Failure -> _message.value = "❌ ${result.error}"
+                    else -> {}
+                }
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi: ${e.message}"
+                logger.e("MqttViewModel", "toggleDevice error", e)
+            } finally {
+                _loadingDevices.value = _loadingDevices.value - device.id
+            }
+        }
+    }
+
+    fun deleteDevice(device: MqttDeviceEntity) {
+        viewModelScope.launch {
+            _loadingDevices.value = _loadingDevices.value + device.id
+            try {
+                val controller = mqttController()
+                    ?: throw Exception("Chưa có driver điều khiển cho thiết bị MQTT")
+                val result = withContext(Dispatchers.IO) { controller.deleteDevice(device.id) }
+                if (result is DeviceActionResult.Failure) throw Exception(result.reason)
+                _message.value = "🗑️ Đã xoá thiết bị \"${device.name}\""
+                loadDevices()
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi xoá thiết bị: ${e.message}"
+                logger.e("MqttViewModel", "deleteDevice error", e)
+            } finally {
+                _loadingDevices.value = _loadingDevices.value - device.id
+            }
+        }
+    }
+
+    fun clearMessage() { _message.value = null }
+}
+
 // ─── Screen ──────────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TuyaScreen(
     navController: NavController,
-    viewModel: TuyaViewModel = hiltViewModel()
+    viewModel: TuyaViewModel = hiltViewModel(),
+    mqttViewModel: MqttViewModel = hiltViewModel()
 ) {
     val devices by viewModel.devices.collectAsState()
     val activeCameras by viewModel.activeCameras.collectAsState()
@@ -424,6 +567,16 @@ fun TuyaScreen(
     val loadingDevices by viewModel.loadingDevices.collectAsState()
     val message by viewModel.message.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // ✅ MỚI (Giai đoạn 2): tab MQTT cạnh Tuya — theo đúng mục 13.3 tài liệu kiến trúc.
+    var selectedTab by remember { mutableStateOf(0) }
+    val mqttDevices by mqttViewModel.devices.collectAsState()
+    val mqttLoadingDevices by mqttViewModel.loadingDevices.collectAsState()
+    val mqttMessage by mqttViewModel.message.collectAsState()
+    val mqttBrokerUrl by mqttViewModel.brokerUrl.collectAsState()
+    var showAddMqttDialog by remember { mutableStateOf(false) }
+    var showBrokerConfigDialog by remember { mutableStateOf(false) }
+    var mqttDeviceToDelete by remember { mutableStateOf<MqttDeviceEntity?>(null) }
 
     var deviceToDelete by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
     var guardTargetDevice by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
@@ -436,6 +589,52 @@ fun TuyaScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.clearMessage()
         }
+    }
+
+    LaunchedEffect(mqttMessage) {
+        mqttMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            mqttViewModel.clearMessage()
+        }
+    }
+
+    if (mqttDeviceToDelete != null) {
+        val target = mqttDeviceToDelete!!
+        AlertDialog(
+            onDismissRequest = { mqttDeviceToDelete = null },
+            title = { Text("Xoá thiết bị?") },
+            text = { Text("Thiết bị \"${target.name}\" sẽ bị xoá khỏi danh sách.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    mqttViewModel.deleteDevice(target)
+                    mqttDeviceToDelete = null
+                }) { Text("Xoá", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { mqttDeviceToDelete = null }) { Text("Huỷ") }
+            }
+        )
+    }
+
+    if (showAddMqttDialog) {
+        AddMqttDeviceDialog(
+            onDismiss = { showAddMqttDialog = false },
+            onSave = { name, topic ->
+                mqttViewModel.addDevice(name, topic)
+                showAddMqttDialog = false
+            }
+        )
+    }
+
+    if (showBrokerConfigDialog) {
+        MqttBrokerConfigDialog(
+            currentBrokerUrl = mqttBrokerUrl,
+            onDismiss = { showBrokerConfigDialog = false },
+            onSave = { url, username, password ->
+                mqttViewModel.saveBrokerConfig(url, username, password)
+                showBrokerConfigDialog = false
+            }
+        )
     }
 
     if (deviceToDelete != null) {
@@ -550,76 +749,159 @@ fun TuyaScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Thiết bị Tuya") },
-                // Tuya là 1 tab gốc trong bottom-nav (ngang hàng Dashboard/Chat/...),
+                // ✅ MỚI (Giai đoạn 2): tiêu đề đổi theo tab đang chọn.
+                title = { Text(if (selectedTab == 0) "Thiết bị Tuya" else "Thiết bị MQTT") },
+                // Tuya/MQTT là 1 tab gốc trong bottom-nav (ngang hàng Dashboard/Chat/...),
                 // không có màn hình cha, nên không cần nút back ở đây.
                 navigationIcon = {},
                 actions = {
-                    IconButton(onClick = { showLocalLab = true }) {
-                        Icon(Icons.Default.BugReport, contentDescription = "Tuya Local Lab")
-                    }
-                    IconButton(onClick = { viewModel.scanDevices() }, enabled = !isScanning) {
-                        if (isScanning) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Search, contentDescription = "Quét thiết bị")
+                    if (selectedTab == 0) {
+                        IconButton(onClick = { showLocalLab = true }) {
+                            Icon(Icons.Default.BugReport, contentDescription = "Tuya Local Lab")
                         }
-                    }
-                    IconButton(onClick = { viewModel.loadDevices() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Làm mới")
+                        IconButton(onClick = { viewModel.scanDevices() }, enabled = !isScanning) {
+                            if (isScanning) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Search, contentDescription = "Quét thiết bị")
+                            }
+                        }
+                        IconButton(onClick = { viewModel.loadDevices() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Làm mới")
+                        }
+                    } else {
+                        // ✅ MỚI (Giai đoạn 2): actions riêng cho tab MQTT — không có khái niệm
+                        // "quét" như Tuya Cloud (MQTT không có Cloud login để liệt kê thiết bị
+                        // sẵn có), chỉ có cấu hình broker + làm mới danh sách đã lưu trong DB.
+                        IconButton(onClick = { showBrokerConfigDialog = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "Cấu hình Broker MQTT")
+                        }
+                        IconButton(onClick = { mqttViewModel.loadDevices() }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Làm mới")
+                        }
                     }
                 }
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { viewModel.scanDevices() },
-                icon = { Icon(Icons.Default.Search, contentDescription = null) },
-                text = { Text("Quét thiết bị") },
-                containerColor = MaterialTheme.colorScheme.primary
-            )
+            if (selectedTab == 0) {
+                ExtendedFloatingActionButton(
+                    onClick = { viewModel.scanDevices() },
+                    icon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    text = { Text("Quét thiết bị") },
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            } else {
+                // ✅ MỚI (Giai đoạn 2): MQTT không "quét" được (không có Cloud login để liệt
+                // kê) — người dùng tự nhập tên + topic đã publish sẵn từ phía thiết bị/gateway
+                // MQTT của họ, xem AddMqttDeviceDialog.
+                ExtendedFloatingActionButton(
+                    onClick = { showAddMqttDialog = true },
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("Thêm thiết bị") },
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     ) { padding ->
-        if (devices.isEmpty()) {
-            EmptyTuyaState(
-                isScanning = isScanning,
-                onScan = { viewModel.scanDevices() },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                item {
-                    Text(
-                        text = "${devices.size} thiết bị",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            // ✅ MỚI (Giai đoạn 2, mục 13.3): TabRow Tuya/MQTT thật — trước đây biến
+            // `selectedTab` chỉ được khai báo (remember { mutableStateOf(0) }) nhưng không có
+            // UI nào đổi giá trị, khiến toàn bộ nhánh MQTT (ViewModel, dialog, danh sách thiết
+            // bị) không có đường vào từ màn hình dù logic đã viết đầy đủ.
+            TabRow(selectedTabIndex = selectedTab) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("Tuya") }
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("MQTT") }
+                )
+            }
+
+            if (selectedTab == 0) {
+                if (devices.isEmpty()) {
+                    EmptyTuyaState(
+                        isScanning = isScanning,
+                        onScan = { viewModel.scanDevices() },
+                        modifier = Modifier.fillMaxSize()
                     )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        item {
+                            Text(
+                                text = "${devices.size} thiết bị",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                        items(devices, key = { it.id }) { device ->
+                            TuyaDeviceCard(
+                                device = device,
+                                isLoading = device.id in loadingDevices,
+                                currentGuard = deviceGuards[device.id],
+                                allSchedules = allSchedules, // ✅ Truyền kèm danh sách lịch để phân giải nhãn hiển thị thân thiện
+                                onTurnOn = { viewModel.toggleDevice(device, true) },
+                                onTurnOff = { viewModel.toggleDevice(device, false) },
+                                onRefresh = { viewModel.refreshStatus(device) },
+                                onDelete = { deviceToDelete = device },
+                                onConfigureGuard = { guardTargetDevice = device },
+                                onEnableLocalControl = { viewModel.enableLocalControl(device) }
+                            )
+                        }
+                        item { Spacer(Modifier.height(80.dp)) }
+                    }
                 }
-                items(devices, key = { it.id }) { device ->
-                    TuyaDeviceCard(
-                        device = device,
-                        isLoading = device.id in loadingDevices,
-                        currentGuard = deviceGuards[device.id],
-                        allSchedules = allSchedules, // ✅ Truyền kèm danh sách lịch để phân giải nhãn hiển thị thân thiện
-                        onTurnOn = { viewModel.toggleDevice(device, true) },
-                        onTurnOff = { viewModel.toggleDevice(device, false) },
-                        onRefresh = { viewModel.refreshStatus(device) },
-                        onDelete = { deviceToDelete = device },
-                        onConfigureGuard = { guardTargetDevice = device },
-                        onEnableLocalControl = { viewModel.enableLocalControl(device) }
+            } else {
+                // ✅ MỚI (Giai đoạn 2): render danh sách thiết bị MQTT — trước đây
+                // `mqttDevices` được collectAsState() nhưng không hiển thị ở đâu trong cây UI.
+                if (mqttDevices.isEmpty()) {
+                    EmptyMqttState(
+                        brokerConfigured = mqttBrokerUrl.isNotBlank(),
+                        onAddDevice = { showAddMqttDialog = true },
+                        onConfigureBroker = { showBrokerConfigDialog = true },
+                        modifier = Modifier.fillMaxSize()
                     )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        item {
+                            Text(
+                                text = "${mqttDevices.size} thiết bị" +
+                                    if (mqttBrokerUrl.isBlank()) " · Chưa cấu hình broker" else "",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                        }
+                        items(mqttDevices, key = { it.id }) { device ->
+                            MqttDeviceCard(
+                                device = device,
+                                isLoading = device.id in mqttLoadingDevices,
+                                onTurnOn = { mqttViewModel.toggleDevice(device, true) },
+                                onTurnOff = { mqttViewModel.toggleDevice(device, false) },
+                                onDelete = { mqttDeviceToDelete = device }
+                            )
+                        }
+                        item { Spacer(Modifier.height(80.dp)) }
+                    }
                 }
-                item { Spacer(Modifier.height(80.dp)) }
             }
         }
     }
@@ -1247,6 +1529,305 @@ private fun EmptyTuyaState(
             }
         }
     }
+}
+
+// ─── MQTT UI (Giai đoạn 2) ─────────────────────────────────────────────────
+
+/**
+ * MqttDeviceCard
+ *
+ * Cùng tinh thần TuyaDeviceCard nhưng đơn giản hơn — MqttDeviceEntity chỉ có
+ * id/name/topic/online/lastKnownState/lastSeen (không có category/productName/guard/local
+ * control như Tuya), nên không cần các phần Khóa bảo vệ / "Bật nhanh qua LAN" / nút "Trạng
+ * thái" (MQTT không có khái niệm chủ động poll trạng thái — chỉ nhận đẩy qua subscribe, xem
+ * ghi chú DeviceCapability.REALTIME_STATUS trong MqttDeviceController.kt).
+ */
+@Composable
+private fun MqttDeviceCard(
+    device: MqttDeviceEntity,
+    isLoading: Boolean,
+    onTurnOn: () -> Unit,
+    onTurnOff: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (device.online)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else
+                                    MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(text = "📡", fontSize = 22.sp)
+                    }
+                    Column {
+                        Text(
+                            text = device.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = device.topic,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        color = if (device.online) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                        contentColor = if (device.online) Color(0xFF2E7D32) else Color(0xFFC62828),
+                        shape = CircleShape
+                    ) {
+                        Text(
+                            text = if (device.online) "ONLINE" else "OFFLINE",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Xoá thiết bị",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            InfoChip(
+                label = "Lệnh cuối gửi đi",
+                value = if (device.lastKnownState) "Bật" else "Tắt"
+            )
+
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Spacer(Modifier.height(12.dp))
+
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onTurnOn,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    ) {
+                        Text("💡 Bật", maxLines = 1)
+                    }
+                    Button(
+                        onClick = onTurnOff,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("🔌 Tắt", maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyMqttState(
+    brokerConfigured: Boolean,
+    onAddDevice: () -> Unit,
+    onConfigureBroker: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("📡", fontSize = 64.sp)
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = "Chưa có thiết bị MQTT",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            // ✅ MQTT không có "quét" tự động (không có Cloud login để liệt kê) — cần cấu hình
+            // broker trước, sau đó tự thêm từng thiết bị theo tên + topic đã publish sẵn.
+            text = if (brokerConfigured)
+                "Nhấn \"Thêm thiết bị\" và nhập tên + topic đã publish từ thiết bị/gateway của bạn"
+            else
+                "Cấu hình broker trước, sau đó thêm thiết bị theo tên + topic",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 32.dp)
+        )
+        Spacer(Modifier.height(24.dp))
+        if (!brokerConfigured) {
+            Button(onClick = onConfigureBroker) {
+                Icon(Icons.Default.Settings, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Cấu hình Broker")
+            }
+        } else {
+            Button(onClick = onAddDevice) {
+                Icon(Icons.Default.Add, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Thêm thiết bị")
+            }
+        }
+    }
+}
+
+/**
+ * AddMqttDeviceDialog
+ *
+ * Chỉ 2 trường — tên hiển thị + topic — khớp đúng field MqttDeviceEntity thật cần khi tạo
+ * (id tự sinh UUID trong MqttViewModel.addDevice(), online/lastKnownState/lastSeen dùng giá
+ * trị mặc định của Entity, chưa có gì để nhập ở bước thêm mới).
+ */
+@Composable
+private fun AddMqttDeviceDialog(
+    onDismiss: () -> Unit,
+    onSave: (name: String, topic: String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var topic by remember { mutableStateOf("") }
+    val canSave = name.isNotBlank() && topic.isNotBlank()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Thêm thiết bị MQTT") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Tên thiết bị") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = topic,
+                    onValueChange = { topic = it },
+                    label = { Text("Topic MQTT") },
+                    placeholder = { Text("vd: home/devices/den_phong_khach/set") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "Topic phải khớp đúng topic thiết bị/gateway của bạn đang lắng nghe " +
+                        "để nhận lệnh bật/tắt.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(name, topic) }, enabled = canSave) {
+                Text("Thêm")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Huỷ") }
+        }
+    )
+}
+
+/**
+ * MqttBrokerConfigDialog
+ *
+ * ⚠️ Username/password KHÔNG được prefill lại từ AppConfigProvider (chỉ brokerUrl có, qua
+ * MqttViewModel.loadBrokerConfig()) — tránh hiện mật khẩu cũ dạng plaintext ngay khi mở dialog.
+ * Để trống nghĩa là "giữ nguyên giá trị cũ đã lưu" chỉ ĐÚNG nếu MqttViewModel.saveBrokerConfig()
+ * được sửa để không ghi đè khi rỗng; hiện tại saveBrokerConfig() ghi đè thẳng nên để trống ở
+ * đây nghĩa là XOÁ username/password cũ — cần người dùng nhập lại đầy đủ mỗi lần đổi broker.
+ */
+@Composable
+private fun MqttBrokerConfigDialog(
+    currentBrokerUrl: String,
+    onDismiss: () -> Unit,
+    onSave: (url: String, username: String, password: String) -> Unit
+) {
+    var url by remember { mutableStateOf(currentBrokerUrl) }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    val canSave = url.isNotBlank()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cấu hình Broker MQTT") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("Broker URL") },
+                    placeholder = { Text("tcp://broker.example.com:1883") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("Username (tuỳ chọn)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password (tuỳ chọn)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "Để trống Username/Password nếu broker không yêu cầu đăng nhập.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(url, username, password) }, enabled = canSave) {
+                Text("Lưu")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Huỷ") }
+        }
+    )
 }
 
 private fun categoryIcon(category: String): String = when (category.lowercase()) {
