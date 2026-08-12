@@ -1,18 +1,20 @@
-
 package com.aichatvn.agent.devices
 
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.MqttDeviceDao
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.eclipse.paho.client.mqttv3.IMqttMessageListener
 import org.eclipse.paho.client.mqttv3.MqttClient
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -106,6 +108,70 @@ class MqttDeviceController @Inject constructor(
             logger.e("MqttDeviceController", "Kết nối broker lỗi: ${e.message}", e)
             null
         }
+    }
+
+    /**
+     * scanTopics ("Quét nhanh")
+     *
+     * MQTT thuần KHÔNG có API "liệt kê thiết bị" chuẩn hoá (khác Tuya Cloud có thể query danh
+     * sách qua tài khoản) — broker chỉ route message theo topic, không biết gì về "thiết bị".
+     * Cách khả thi duy nhất không phụ thuộc vendor: LẮNG NGHE THỤ ĐỘNG mọi topic có publish
+     * trong lúc quét, KHÔNG chủ động "hỏi" broker. Vì vậy:
+     * - Thiết bị/gateway PHẢI tự publish trong đúng cửa sổ [timeoutMs] mới xuất hiện (vd
+     *   Tasmota với Home Assistant Discovery bật, Zigbee2MQTT bridge, ESPHome birth message,
+     *   hoặc bất kỳ firmware nào publish định kỳ/khi khởi động).
+     * - Danh sách rỗng KHÔNG phải lỗi — chỉ là không có gì publish trong lúc quét. Nơi gọi
+     *   (MqttViewModel) cần tự fallback về AddMqttDeviceDialog (nhập tay tên+topic) như
+     *   phương án dự phòng, đúng như luồng "Kết nối" hiện có.
+     *
+     * Dùng subscribe("#", ...) — một số broker (đặc biệt Cloud có ACL giới hạn theo tài khoản,
+     * vd HiveMQ Cloud free tier) có thể TỪ CHỐI subscribe wildcard toàn cục này. Bắt riêng
+     * Exception ở đây, trả về rỗng thay vì để lỗi rơi ra ngoài — coi như một kết quả "quét
+     * không ra gì" bình thường, không phải sự cố kết nối.
+     *
+     * Paho core MqttClient (bản đồng bộ đang dùng trong file này) VẪN hỗ trợ
+     * subscribe(topicFilter, qos, IMqttMessageListener) — không cần đổi sang MqttAsyncClient.
+     * Callback messageArrived chạy trên thread nội bộ của Paho (không phải thread gọi hàm
+     * này), nên dùng ConcurrentHashMap.newKeySet() để gom topic an toàn giữa các thread, thay
+     * vì MutableSet/HashSet thường (không thread-safe, có thể mất dữ liệu hoặc crash ngầm khi
+     * nhiều topic tới dồn dập cùng lúc).
+     */
+    suspend fun scanTopics(timeoutMs: Long = 8000L): List<String> = withContext(Dispatchers.IO) {
+        val mqttClient = getOrConnect()
+            ?: run {
+                logger.d("MqttDeviceController", "scanTopics(): chưa cấu hình broker, bỏ qua")
+                return@withContext emptyList()
+            }
+
+        val found = ConcurrentHashMap.newKeySet<String>()
+        val listener = IMqttMessageListener { topic, _ -> found.add(topic) }
+
+        try {
+            mqttClient.subscribe("#", 0, listener)
+        } catch (e: Exception) {
+            // Broker chặn subscribe "#" (ACL) — không phải lỗi kết nối, coi như quét ra rỗng.
+            logger.e(
+                "MqttDeviceController",
+                "scanTopics(): broker từ chối subscribe '#' (có thể do ACL giới hạn): ${e.message}",
+                e
+            )
+            return@withContext emptyList()
+        }
+
+        try {
+            delay(timeoutMs)
+        } finally {
+            // LUÔN unsubscribe dù delay bị huỷ giữa chừng (vd người dùng thoát màn hình sớm)
+            // — tránh rò rỉ subscription "#" chạy nền vô thời hạn trên kết nối singleton dùng
+            // chung cho cả turnOn/turnOff sau đó.
+            try {
+                mqttClient.unsubscribe("#")
+            } catch (e: Exception) {
+                logger.d("MqttDeviceController", "scanTopics(): unsubscribe('#') lỗi (bỏ qua): ${e.message}")
+            }
+        }
+
+        found.toList().sorted()
     }
 
     override suspend fun turnOn(deviceId: String): DeviceActionResult =

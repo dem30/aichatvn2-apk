@@ -458,6 +458,16 @@ class MqttViewModel @Inject constructor(
     private val _brokerUrl = MutableStateFlow("")
     val brokerUrl: StateFlow<String> = _brokerUrl.asStateFlow()
 
+    // ✅ MỚI: "Quét nhanh" — lắng nghe thụ động wildcard "#" qua
+    // MqttDeviceController.scanTopics(), xem docstring ở đó để biết vì sao KHÔNG có API
+    // "liệt kê thiết bị" chuẩn hoá trong MQTT. discoveredTopics đã LỌC bỏ topic trùng với
+    // thiết bị đã thêm (_devices.value) — UI chỉ cần hiển thị thẳng, không cần lọc lại.
+    private val _discoveredTopics = MutableStateFlow<List<String>>(emptyList())
+    val discoveredTopics: StateFlow<List<String>> = _discoveredTopics.asStateFlow()
+
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
     // ✅ MỚI: khóa an toàn (Precondition Guard) cho thiết bị MQTT — cùng khuôn
     // TuyaViewModel.deviceGuards/loadDeviceGuards()/saveDeviceGuard()/removeDeviceGuard(),
     // dùng chung key "worldstate_guard_<id>" trong AppConfigProvider nên không đụng độ với
@@ -523,6 +533,44 @@ class MqttViewModel @Inject constructor(
             _brokerUrl.value = brokerUrl.trim()
             _message.value = "✅ Đã lưu cấu hình broker MQTT"
         }
+    }
+
+    /**
+     * scanTopics ("Quét nhanh")
+     *
+     * Gọi thẳng MqttDeviceController.scanTopics() (KHÔNG qua agentKernel — cùng ngoại lệ có
+     * chủ đích như addDevice()/TuyaViewModel.scanDevices(), đây là thao tác cấu hình/khám phá
+     * thiết bị, không phải hành động điều khiển cần qua guard/world_state). Cast an toàn qua
+     * `as?` giống đúng pattern saveBrokerConfig() đã dùng ở trên.
+     */
+    fun scanTopics() {
+        viewModelScope.launch {
+            val controller = mqttController() as? MqttDeviceController
+            if (controller == null) {
+                _message.value = "❌ Chưa có driver MQTT — kiểm tra lại cấu hình broker"
+                return@launch
+            }
+            _isScanning.value = true
+            _discoveredTopics.value = emptyList()
+            try {
+                val knownTopics = _devices.value.map { it.topic }.toSet()
+                val topics = withContext(Dispatchers.IO) { controller.scanTopics() }
+                _discoveredTopics.value = topics.filter { it !in knownTopics }
+                if (_discoveredTopics.value.isEmpty()) {
+                    _message.value = "🔍 Không phát hiện topic nào trong lúc quét — thiết bị " +
+                        "có thể không tự publish, hãy thử \"Thêm thiết bị\" và nhập tay topic"
+                }
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi quét: ${e.message}"
+                logger.e("MqttViewModel", "scanTopics error", e)
+            } finally {
+                _isScanning.value = false
+            }
+        }
+    }
+
+    fun clearDiscoveredTopics() {
+        _discoveredTopics.value = emptyList()
     }
 
     fun addDevice(name: String, topic: String) {
@@ -611,8 +659,18 @@ fun TuyaScreen(
     val mqttBrokerUrl by mqttViewModel.brokerUrl.collectAsState()
     // ✅ MỚI: khóa an toàn cho thiết bị MQTT — dùng chung PreconditionGuardDialog với Tuya.
     val mqttDeviceGuards by mqttViewModel.deviceGuards.collectAsState()
+    // ✅ MỚI: "Quét nhanh" — lắng nghe thụ động wildcard "#" trong ít giây, xem
+    // MqttDeviceController.scanTopics() để biết vì sao đây là cách duy nhất khả thi (MQTT
+    // không có API "liệt kê thiết bị"). scanResultTopic giữ topic người dùng vừa chạm trong
+    // ScanTopicsDialog để prefill sang AddMqttDeviceDialog — null nghĩa là mở dialog thêm tay
+    // bình thường (nút "Thêm thiết bị" cũ), khác null nghĩa là mở dialog thêm với topic đã
+    // khoá sẵn (luồng "chạm kết quả quét").
+    val mqttDiscoveredTopics by mqttViewModel.discoveredTopics.collectAsState()
+    val mqttIsScanning by mqttViewModel.isScanning.collectAsState()
     var showAddMqttDialog by remember { mutableStateOf(false) }
     var showBrokerConfigDialog by remember { mutableStateOf(false) }
+    var showScanDialog by remember { mutableStateOf(false) }
+    var scanResultTopic by remember { mutableStateOf<String?>(null) }
     var mqttDeviceToDelete by remember { mutableStateOf<MqttDeviceEntity?>(null) }
 
     var deviceToDelete by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
@@ -657,10 +715,15 @@ fun TuyaScreen(
 
     if (showAddMqttDialog) {
         AddMqttDeviceDialog(
-            onDismiss = { showAddMqttDialog = false },
+            initialTopic = scanResultTopic ?: "",
+            onDismiss = {
+                showAddMqttDialog = false
+                scanResultTopic = null
+            },
             onSave = { name, topic ->
                 mqttViewModel.addDevice(name, topic)
                 showAddMqttDialog = false
+                scanResultTopic = null
             }
         )
     }
@@ -672,6 +735,36 @@ fun TuyaScreen(
             onSave = { url, username, password ->
                 mqttViewModel.saveBrokerConfig(url, username, password)
                 showBrokerConfigDialog = false
+            }
+        )
+    }
+
+    // ✅ MỚI: mở là quét ngay — gọi scanTopics() 1 LẦN đúng lúc dialog xuất hiện (không phải
+    // mỗi lần recompose), Unit làm key vì chỉ cần chạy lại khi dialog đóng-rồi-mở lại (đổi
+    // showScanDialog false→true tạo key mới đúng bằng chính LaunchedEffect(showScanDialog)).
+    if (showScanDialog) {
+        LaunchedEffect(showScanDialog) {
+            mqttViewModel.scanTopics()
+        }
+        ScanTopicsDialog(
+            topics = mqttDiscoveredTopics,
+            isScanning = mqttIsScanning,
+            onRescan = { mqttViewModel.scanTopics() },
+            onTopicSelected = { topic ->
+                scanResultTopic = topic
+                showScanDialog = false
+                mqttViewModel.clearDiscoveredTopics()
+                showAddMqttDialog = true
+            },
+            onAddManually = {
+                showScanDialog = false
+                mqttViewModel.clearDiscoveredTopics()
+                scanResultTopic = null
+                showAddMqttDialog = true
+            },
+            onDismiss = {
+                showScanDialog = false
+                mqttViewModel.clearDiscoveredTopics()
             }
         )
     }
@@ -816,9 +909,18 @@ fun TuyaScreen(
                             Icon(Icons.Default.Refresh, contentDescription = "Làm mới")
                         }
                     } else {
-                        // ✅ MỚI (Giai đoạn 2): actions riêng cho tab MQTT — không có khái niệm
-                        // "quét" như Tuya Cloud (MQTT không có Cloud login để liệt kê thiết bị
-                        // sẵn có), chỉ có cấu hình broker + làm mới danh sách đã lưu trong DB.
+                        // ✅ SỬA (Quét nhanh): MQTT KHÔNG có Cloud login để chủ động "hỏi" broker
+                        // liệt kê thiết bị như Tuya — nhưng CÓ THỂ lắng nghe thụ động wildcard
+                        // "#" trong ít giây để tự phát hiện topic đang publish, xem
+                        // MqttDeviceController.scanTopics(). Chỉ bật nút này khi đã cấu hình
+                        // broker (mqttBrokerUrl không rỗng) — quét khi chưa cấu hình chắc chắn
+                        // ra rỗng, mở dialog chỉ gây khó hiểu.
+                        IconButton(
+                            onClick = { showScanDialog = true },
+                            enabled = mqttBrokerUrl.isNotBlank()
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = "Quét nhanh")
+                        }
                         IconButton(onClick = { showBrokerConfigDialog = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Cấu hình Broker MQTT")
                         }
@@ -917,6 +1019,7 @@ fun TuyaScreen(
                 if (mqttDevices.isEmpty()) {
                     EmptyMqttState(
                         brokerConfigured = mqttBrokerUrl.isNotBlank(),
+                        onScan = { showScanDialog = true },
                         onAddDevice = { showAddMqttDialog = true },
                         onConfigureBroker = { showBrokerConfigDialog = true },
                         modifier = Modifier.fillMaxSize()
@@ -1791,6 +1894,7 @@ private fun MqttDeviceCard(
 @Composable
 private fun EmptyMqttState(
     brokerConfigured: Boolean,
+    onScan: () -> Unit,
     onAddDevice: () -> Unit,
     onConfigureBroker: () -> Unit,
     modifier: Modifier = Modifier
@@ -1809,12 +1913,15 @@ private fun EmptyMqttState(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            // ✅ MQTT không có "quét" tự động (không có Cloud login để liệt kê) — cần cấu hình
-            // broker trước, sau đó tự thêm từng thiết bị theo tên + topic đã publish sẵn.
+            // ✅ SỬA (Quét nhanh): MQTT không có Cloud login để CHỦ ĐỘNG hỏi broker liệt kê
+            // thiết bị như Tuya, nhưng có thể lắng nghe thụ động ít giây để tự phát hiện topic
+            // — xem MqttDeviceController.scanTopics(). Nếu quét không ra gì (thiết bị không tự
+            // publish), người dùng vẫn thêm tay được như trước, không mất phương án cũ.
             text = if (brokerConfigured)
-                "Nhấn \"Thêm thiết bị\" và nhập tên + topic đã publish từ thiết bị/gateway của bạn"
+                "Nhấn \"Quét nhanh\" để tự phát hiện topic đang publish, hoặc thêm tay nếu " +
+                    "thiết bị của bạn không tự gửi dữ liệu"
             else
-                "Cấu hình broker trước, sau đó thêm thiết bị theo tên + topic",
+                "Cấu hình broker trước, sau đó quét nhanh hoặc thêm thiết bị theo tên + topic",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 32.dp)
@@ -1827,13 +1934,106 @@ private fun EmptyMqttState(
                 Text("Cấu hình Broker")
             }
         } else {
-            Button(onClick = onAddDevice) {
+            Button(onClick = onScan) {
+                Icon(Icons.Default.Search, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Quét nhanh")
+            }
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onAddDevice) {
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Thêm thiết bị")
+                Text("Thêm thiết bị (nhập tay)")
             }
         }
     }
+}
+
+/**
+ * ScanTopicsDialog ("Quét nhanh")
+ *
+ * Hiển thị KHI ĐANG quét (CircularProgressIndicator + đếm ngược cảm tính, không có số giây
+ * chính xác vì delay(timeoutMs) chạy trong ViewModel, dialog chỉ biết isScanning true/false)
+ * và SAU khi quét xong (danh sách topic phát hiện được, đã lọc bỏ trùng thiết bị đã thêm —
+ * xem MqttViewModel.scanTopics()). Rỗng sau khi quét xong KHÔNG phải lỗi, chỉ là không có gì
+ * publish trong lúc quét — hiển thị gợi ý "Thêm tay" ngay tại đây thay vì bắt người dùng tự
+ * đóng dialog rồi tìm nút khác.
+ */
+@Composable
+private fun ScanTopicsDialog(
+    topics: List<String>,
+    isScanning: Boolean,
+    onRescan: () -> Unit,
+    onTopicSelected: (String) -> Unit,
+    onAddManually: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Quét nhanh MQTT") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (isScanning) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text(
+                            "Đang lắng nghe broker... thiết bị/gateway của bạn cần tự gửi dữ " +
+                                "liệu trong lúc này mới xuất hiện được.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else if (topics.isEmpty()) {
+                    Text(
+                        "Không phát hiện topic nào. Thiết bị có thể không tự publish định kỳ — " +
+                            "hãy thử quét lại đúng lúc thiết bị hoạt động (vd bật/tắt công tắc " +
+                            "vật lý), hoặc thêm tay nếu bạn đã biết topic.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        "Tìm thấy ${topics.size} topic. Chạm 1 topic để đặt tên và thêm làm thiết bị:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        topics.forEach { topic ->
+                            Surface(
+                                onClick = { onTopicSelected(topic) },
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = topic,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onRescan, enabled = !isScanning) { Text("Quét lại") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onAddManually) { Text("Thêm tay") }
+                TextButton(onClick = onDismiss) { Text("Đóng") }
+            }
+        }
+    )
 }
 
 /**
