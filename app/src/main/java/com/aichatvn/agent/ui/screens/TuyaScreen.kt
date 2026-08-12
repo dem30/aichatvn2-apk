@@ -458,6 +458,13 @@ class MqttViewModel @Inject constructor(
     private val _brokerUrl = MutableStateFlow("")
     val brokerUrl: StateFlow<String> = _brokerUrl.asStateFlow()
 
+    // ✅ MỚI: khóa an toàn (Precondition Guard) cho thiết bị MQTT — cùng khuôn
+    // TuyaViewModel.deviceGuards/loadDeviceGuards()/saveDeviceGuard()/removeDeviceGuard(),
+    // dùng chung key "worldstate_guard_<id>" trong AppConfigProvider nên không đụng độ với
+    // Tuya (id UUID không trùng nhau giữa 2 bảng).
+    private val _deviceGuards = MutableStateFlow<Map<String, String>>(emptyMap())
+    val deviceGuards: StateFlow<Map<String, String>> = _deviceGuards.asStateFlow()
+
     init {
         loadDevices()
         loadBrokerConfig()
@@ -466,6 +473,34 @@ class MqttViewModel @Inject constructor(
     fun loadDevices() {
         viewModelScope.launch {
             _devices.value = withContext(Dispatchers.IO) { database.mqttDeviceDao().getAllDevices() }
+            loadDeviceGuards()
+        }
+    }
+
+    fun loadDeviceGuards() {
+        viewModelScope.launch {
+            val guards = mutableMapOf<String, String>()
+            _devices.value.forEach { dev ->
+                val guardVal = configProvider.getString("worldstate_guard_${dev.id}", "")
+                if (guardVal.isNotBlank()) guards[dev.id] = guardVal
+            }
+            _deviceGuards.value = guards
+        }
+    }
+
+    fun saveDeviceGuard(deviceId: String, precondition: String) {
+        viewModelScope.launch {
+            configProvider.set("worldstate_guard_$deviceId", precondition)
+            _message.value = "🔒 Đã thiết lập khóa bảo vệ vật lý"
+            loadDeviceGuards()
+        }
+    }
+
+    fun removeDeviceGuard(deviceId: String) {
+        viewModelScope.launch {
+            configProvider.delete("worldstate_guard_$deviceId")
+            _message.value = "🔓 Đã gỡ bỏ khóa bảo vệ vật lý"
+            loadDeviceGuards()
         }
     }
 
@@ -574,12 +609,16 @@ fun TuyaScreen(
     val mqttLoadingDevices by mqttViewModel.loadingDevices.collectAsState()
     val mqttMessage by mqttViewModel.message.collectAsState()
     val mqttBrokerUrl by mqttViewModel.brokerUrl.collectAsState()
+    // ✅ MỚI: khóa an toàn cho thiết bị MQTT — dùng chung PreconditionGuardDialog với Tuya.
+    val mqttDeviceGuards by mqttViewModel.deviceGuards.collectAsState()
     var showAddMqttDialog by remember { mutableStateOf(false) }
     var showBrokerConfigDialog by remember { mutableStateOf(false) }
     var mqttDeviceToDelete by remember { mutableStateOf<MqttDeviceEntity?>(null) }
 
     var deviceToDelete by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
-    var guardTargetDevice by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
+    // ✅ SỬA: trước đây kiểu TuyaDeviceEntity? — khiến chỉ thiết bị Tuya có thể mở dialog
+    // khóa an toàn. Đổi sang cặp (id, name) trung lập giao thức để MQTT dùng chung được.
+    var guardTargetDevice by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showLocalLab by remember { mutableStateOf(false) }
     var localLabDevice by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
     val localLab by viewModel.localLab.collectAsState()
@@ -656,20 +695,27 @@ fun TuyaScreen(
     }
 
     if (guardTargetDevice != null) {
-        val target = guardTargetDevice!!
+        val (targetId, targetName) = guardTargetDevice!!
+        // ✅ MỚI: thiết bị đang cấu hình khóa thuộc Tuya hay MQTT — quyết định gọi
+        // ViewModel nào để lưu/xoá/đọc precondition hiện tại (2 bảng DB tách biệt).
+        val isTuyaTarget = devices.any { it.id == targetId }
         PreconditionGuardDialog(
-            targetDevice = target,
-            currentPrecondition = deviceGuards[target.id] ?: "",
+            targetDeviceId = targetId,
+            targetDeviceName = targetName,
+            currentPrecondition = (if (isTuyaTarget) deviceGuards[targetId] else mqttDeviceGuards[targetId]) ?: "",
             activeCameras = activeCameras,
             allSchedules = allSchedules,
             tuyaDevices = devices,
+            mqttDevices = mqttDevices,
             onDismiss = { guardTargetDevice = null },
             onSave = { precondition ->
-                viewModel.saveDeviceGuard(target.id, precondition)
+                if (isTuyaTarget) viewModel.saveDeviceGuard(targetId, precondition)
+                else mqttViewModel.saveDeviceGuard(targetId, precondition)
                 guardTargetDevice = null
             },
             onDelete = {
-                viewModel.removeDeviceGuard(target.id)
+                if (isTuyaTarget) viewModel.removeDeviceGuard(targetId)
+                else mqttViewModel.removeDeviceGuard(targetId)
                 guardTargetDevice = null
             }
         )
@@ -858,7 +904,7 @@ fun TuyaScreen(
                                 onTurnOff = { viewModel.toggleDevice(device, false) },
                                 onRefresh = { viewModel.refreshStatus(device) },
                                 onDelete = { deviceToDelete = device },
-                                onConfigureGuard = { guardTargetDevice = device },
+                                onConfigureGuard = { guardTargetDevice = device.id to device.name },
                                 onEnableLocalControl = { viewModel.enableLocalControl(device) }
                             )
                         }
@@ -894,9 +940,11 @@ fun TuyaScreen(
                             MqttDeviceCard(
                                 device = device,
                                 isLoading = device.id in mqttLoadingDevices,
+                                currentGuard = mqttDeviceGuards[device.id],
                                 onTurnOn = { mqttViewModel.toggleDevice(device, true) },
                                 onTurnOff = { mqttViewModel.toggleDevice(device, false) },
-                                onDelete = { mqttDeviceToDelete = device }
+                                onDelete = { mqttDeviceToDelete = device },
+                                onConfigureGuard = { guardTargetDevice = device.id to device.name }
                             )
                         }
                         item { Spacer(Modifier.height(80.dp)) }
@@ -1160,11 +1208,17 @@ private fun TuyaDeviceCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PreconditionGuardDialog(
-    targetDevice: TuyaDeviceEntity,
+    targetDeviceId: String,
+    targetDeviceName: String,
     currentPrecondition: String,
     activeCameras: List<CameraConfigEntity>,
     allSchedules: List<ScheduleEntity>,
     tuyaDevices: List<TuyaDeviceEntity>,
+    // ✅ MỚI: cho phép chọn 1 thiết bị MQTT làm điều kiện — trước đây dialog chỉ biết
+    // "camera" và "tuya" (worldStateSource="tuya" hardcode trong 2 FilterChip), MQTT không
+    // có cách nào được dùng làm nguồn precondition dù MqttDeviceController.worldStateSource
+    // đã sẵn là "mqtt" và world_state đã ghi đúng qua đó.
+    mqttDevices: List<MqttDeviceEntity>,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
     onDelete: () -> Unit
@@ -1178,7 +1232,10 @@ fun PreconditionGuardDialog(
 
     var selectedSourceType by remember { mutableStateOf(initialSource) }
     var selectedCameraId by remember { mutableStateOf(if (initialSource == "camera") initialSourceId else activeCameras.firstOrNull()?.id ?: "") }
-    var selectedTuyaId by remember { mutableStateOf(if (initialSource == "tuya") initialSourceId else tuyaDevices.firstOrNull { it.id != targetDevice.id }?.id ?: "") }
+    var selectedTuyaId by remember { mutableStateOf(if (initialSource == "tuya") initialSourceId else tuyaDevices.firstOrNull { it.id != targetDeviceId }?.id ?: "") }
+    // ✅ MỚI: cùng khuôn selectedTuyaId — loại chính thiết bị đang cấu hình khỏi danh sách
+    // chọn (không thể tự làm điều kiện cho chính mình).
+    var selectedMqttId by remember { mutableStateOf(if (initialSource == "mqtt") initialSourceId else mqttDevices.firstOrNull { it.id != targetDeviceId }?.id ?: "") }
 
     // Lọc chính xác theo tham số ID của Camera trong map params của Lịch trình
     val cameraSchedules = remember(selectedCameraId, allSchedules) {
@@ -1217,6 +1274,7 @@ fun PreconditionGuardDialog(
 
     var cameraExpanded by remember { mutableStateOf(false) }
     var tuyaExpanded by remember { mutableStateOf(false) }
+    var mqttExpanded by remember { mutableStateOf(false) }
     var scheduleExpanded by remember { mutableStateOf(false) }
     var expectedExpanded by remember { mutableStateOf(false) }
 
@@ -1231,7 +1289,7 @@ fun PreconditionGuardDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Thiết bị '${targetDevice.name}' sẽ chỉ được phép Bật/Tắt khi điều kiện thực tế dưới đây thỏa mãn:",
+                    text = "Thiết bị '${targetDeviceName}' sẽ chỉ được phép Bật/Tắt khi điều kiện thực tế dưới đây thỏa mãn:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1257,6 +1315,15 @@ fun PreconditionGuardDialog(
                             expectedValue = "true"
                         },
                         label = { Text("Ổ cắm Tuya") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedSourceType == "mqtt",
+                        onClick = {
+                            selectedSourceType = "mqtt"
+                            expectedValue = "true"
+                        },
+                        label = { Text("Thiết bị MQTT") },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1345,7 +1412,7 @@ fun PreconditionGuardDialog(
                             color = MaterialTheme.colorScheme.error
                         )
                     }
-                } else {
+                } else if (selectedSourceType == "tuya") {
                     Text("2. Chọn Ổ cắm thông minh", style = MaterialTheme.typography.labelMedium)
                     ExposedDropdownMenuBox(
                         expanded = tuyaExpanded,
@@ -1363,7 +1430,7 @@ fun PreconditionGuardDialog(
                             expanded = tuyaExpanded,
                             onDismissRequest = { tuyaExpanded = false }
                         ) {
-                            val otherTuyaDevices = tuyaDevices.filter { it.id != targetDevice.id }
+                            val otherTuyaDevices = tuyaDevices.filter { it.id != targetDeviceId }
                             if (otherTuyaDevices.isEmpty()) {
                                 DropdownMenuItem(
                                     text = { Text("⚠️ Không có ổ cắm Tuya nào khác để chọn (không thể chọn chính thiết bị đang cấu hình)") },
@@ -1377,6 +1444,46 @@ fun PreconditionGuardDialog(
                                         onClick = {
                                             selectedTuyaId = dev.id
                                             tuyaExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // ✅ MỚI: nhánh MQTT — cùng khuôn với nhánh Tuya ở trên, chỉ đổi nguồn
+                    // dữ liệu sang mqttDevices/selectedMqttId/mqttExpanded.
+                    Text("2. Chọn thiết bị MQTT", style = MaterialTheme.typography.labelMedium)
+                    ExposedDropdownMenuBox(
+                        expanded = mqttExpanded,
+                        onExpandedChange = { mqttExpanded = it }
+                    ) {
+                        val devName = mqttDevices.find { it.id == selectedMqttId }?.name ?: selectedMqttId
+                        OutlinedTextField(
+                            value = devName.ifBlank { "Chọn thiết bị..." },
+                            onValueChange = {},
+                            readOnly = true,
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = mqttExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = mqttExpanded,
+                            onDismissRequest = { mqttExpanded = false }
+                        ) {
+                            val otherMqttDevices = mqttDevices.filter { it.id != targetDeviceId }
+                            if (otherMqttDevices.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("⚠️ Không có thiết bị MQTT nào khác để chọn (không thể chọn chính thiết bị đang cấu hình)") },
+                                    onClick = {},
+                                    enabled = false
+                                )
+                            } else {
+                                otherMqttDevices.forEach { dev ->
+                                    DropdownMenuItem(
+                                        text = { Text(dev.name) },
+                                        onClick = {
+                                            selectedMqttId = dev.id
+                                            mqttExpanded = false
                                         }
                                     )
                                 }
@@ -1456,13 +1563,16 @@ fun PreconditionGuardDialog(
                             } else {
                                 "camera.$selectedCameraId.state=$expectedValue"
                             }
-                        } else {
+                        } else if (selectedSourceType == "tuya") {
                             "tuya.$selectedTuyaId.state=$expectedValue"
+                        } else {
+                            "mqtt.$selectedMqttId.state=$expectedValue"
                         }
                         onSave(finalPrecondition)
                     },
                     enabled = (selectedSourceType == "camera" && selectedCameraId.isNotBlank()) ||
-                              (selectedSourceType == "tuya" && selectedTuyaId.isNotBlank())
+                              (selectedSourceType == "tuya" && selectedTuyaId.isNotBlank()) ||
+                              (selectedSourceType == "mqtt" && selectedMqttId.isNotBlank())
                 ) {
                     Text("Lưu")
                 }
@@ -1546,9 +1656,15 @@ private fun EmptyTuyaState(
 private fun MqttDeviceCard(
     device: MqttDeviceEntity,
     isLoading: Boolean,
+    // ✅ MỚI: precondition hiện có (nếu có) cho thiết bị này — chỉ dùng để tô màu icon khóa,
+    // cùng ý nghĩa currentGuard trong TuyaDeviceCard.
+    currentGuard: String?,
     onTurnOn: () -> Unit,
     onTurnOff: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    // ✅ MỚI: mở PreconditionGuardDialog cho thiết bị MQTT này — trước đây MQTT không có
+    // đường nào để bị đặt làm điều kiện hay được gán khóa an toàn.
+    onConfigureGuard: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1609,6 +1725,17 @@ private fun MqttDeviceCard(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
+                    // ✅ MỚI: cùng nút khóa an toàn như TuyaDeviceCard — trước đây MQTT không
+                    // có nút này, khiến không thể đặt điều kiện an toàn cho thiết bị MQTT.
+                    IconButton(onClick = onConfigureGuard, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Cấu hình khóa an toàn",
+                            modifier = Modifier.size(18.dp),
+                            tint = if (!currentGuard.isNullOrBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                         Icon(
                             imageVector = Icons.Default.Delete,

@@ -16,7 +16,9 @@ import com.aichatvn.agent.ui.dashboard.DeviceNode
 import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.ui.dashboard.DeviceAction
 import com.aichatvn.agent.devices.DeviceActionResult
+import com.aichatvn.agent.devices.DeviceController
 import com.aichatvn.agent.devices.DeviceProtocol
+import com.aichatvn.agent.devices.DeviceSummary
 import com.aichatvn.agent.devices.DeviceRegistry as DeviceControlRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -54,7 +56,33 @@ class SmartSwitchSkill @Inject constructor(
 
     // ✅ MỚI: 1 điểm tra cứu duy nhất cho controller Tuya trong file này — tránh lặp lại
     // deviceControlRegistry.controllerFor(DeviceProtocol.TUYA_CLOUD) ở 3-4 chỗ khác nhau.
+    // CHỈ dùng cho handleScan() (quét/khám phá thiết bị mới — hành vi cố tình chỉ có ở Tuya,
+    // xem docstring DeviceController.kt). handleSet()/handleStatus() KHÔNG dùng hàm này nữa —
+    // xem resolveDevice() bên dưới.
     private fun tuyaController() = deviceControlRegistry.controllerFor(DeviceProtocol.TUYA_CLOUD)
+
+    /**
+     * ⚠️ SỬA LỖI KIẾN TRÚC: trước đây handleSet()/handleStatus() chỉ tra
+     * database.tuyaDeviceDao() và chỉ gọi tuyaController() — khiến plugin "smart_switch" (tên
+     * gọi ngụ ý dùng chung MỌI giao thức thiết bị đóng ngắt) thực chất chỉ điều khiển được
+     * Tuya. Thiết bị MQTT gọi qua đây (MqttViewModel.toggleDevice() →
+     * agentKernel.executePluginAction("smart_switch","set",...)) luôn nhận
+     * "Không tìm thấy thiết bị" dù đã thêm đúng.
+     *
+     * Sửa lại đúng theo thiết kế gốc của DeviceController.kt: tra thiết bị theo id HOẶC tên
+     * hiển thị bằng cách lặp deviceControlRegistry.all() — CÙNG pattern
+     * DynamicOptionRegistry.kt (case "device"/"precondition_source") đã dùng — để thêm
+     * protocol mới sau này (Zigbee2MQTT, ESPHome...) không phải sửa lại file này lần nữa.
+     */
+    private suspend fun resolveDevice(deviceKey: String): Pair<DeviceSummary, DeviceController>? {
+        for (controller in deviceControlRegistry.all()) {
+            val devices = try { controller.listDevices() } catch (e: Exception) { emptyList() }
+            val match = devices.find { it.id == deviceKey }
+                ?: devices.find { it.displayName.equals(deviceKey, ignoreCase = true) }
+            if (match != null) return match to controller
+        }
+        return null
+    }
 
     override val manifest = PluginManifest(
         id = id,
@@ -328,19 +356,17 @@ class SmartSwitchSkill @Inject constructor(
             ?: return failure("Thiếu trạng thái")
 
         return try {
-            // ✅ SỬA (Bug B+C+D): chuẩn hóa deviceKey (có thể là id hoặc tên, tùy nơi gọi)
-            // thành entity thật NGAY từ đầu — để world_state và DeviceRegistry luôn dùng
-            // đúng MỘT định danh (id), khớp với "tuya.<id>.state=..." mà
-            // PreconditionGuardDialog lưu, và khớp với key trong DeviceRegistry.nodeMap
-            // (vốn được index theo dev.id, không phải theo tên).
-            val deviceEntity = database.tuyaDeviceDao().getDeviceById(deviceKey)
-                ?: database.tuyaDeviceDao().getDeviceByName(deviceKey)
+            // ✅ SỬA (Bug B+C+D, rồi tổng quát hoá đa giao thức): chuẩn hóa deviceKey (có thể
+            // là id hoặc tên, tùy nơi gọi) thành (DeviceSummary, controller đúng giao thức)
+            // NGAY từ đầu qua resolveDevice() — để world_state và DeviceRegistry luôn dùng
+            // đúng MỘT định danh (id), khớp với "<worldStateSource>.<id>.state=..." mà
+            // PreconditionGuardDialog lưu, và khớp với key trong DeviceRegistry.nodeMap (vốn
+            // được index theo dev.id, không phải theo tên). KHÔNG còn hardcode tuyaDeviceDao —
+            // thiết bị MQTT (hay giao thức mới sau này) resolve đúng qua đây.
+            val (summary, controller) = resolveDevice(deviceKey)
                 ?: return failure("Không tìm thấy thiết bị '$deviceKey'")
-            val deviceId = deviceEntity.id
-            val deviceName = deviceEntity.name
-
-            val controller = tuyaController()
-                ?: return failure("Chưa có driver điều khiển cho thiết bị Tuya")
+            val deviceId = summary.id
+            val deviceName = summary.displayName
 
             // ✅ MỚI: khi Chế độ Local-only đang bật, TuyaManager.turnOn()/turnOff() không còn
             // fallback Cloud nữa — nó throw thẳng nếu Local thất bại (xem TuyaManager.
@@ -371,6 +397,18 @@ class SmartSwitchSkill @Inject constructor(
             val result = if (state) controller.turnOn(deviceId) else controller.turnOff(deviceId)
 
             if (result is DeviceActionResult.Failure) {
+                // ✅ MỚI: Gateway relay CHỈ có nhánh xử lý cho Tuya —
+                // WebhookGatewayService.handleIncomingDeviceCommand() hiện chỉ
+                // when("tuya" -> ...) (mục 5.3/9.1 tài liệu kiến trúc). Giao thức khác (MQTT,
+                // OEM sau này...) chưa có nhánh Gateway relay — thử gọi vẫn sẽ chỉ nhận về
+                // "device_type không được hỗ trợ" từ Gateway, nên trả lỗi gốc thẳng luôn thay
+                // vì tốn 1 round-trip mạng vô ích. Khi ai đó thêm nhánh MQTT vào
+                // WebhookGatewayService (xem mục 9.3 tài liệu), điều kiện dưới đây tự mở ra
+                // nếu đổi thành so khớp danh sách protocol hỗ trợ thay vì == TUYA_CLOUD.
+                if (controller.protocol != DeviceProtocol.TUYA_CLOUD) {
+                    return failure("Lỗi điều khiển thiết bị: ${result.reason}")
+                }
+
                 val localOnlyEnabled = configProvider.getBoolean(AppConfigDefaults.LOCAL_ONLY_MODE_ENABLED)
                 if (!localOnlyEnabled) {
                     return failure("Lỗi điều khiển thiết bị: ${result.reason}")
@@ -405,7 +443,8 @@ class SmartSwitchSkill @Inject constructor(
 
             // ✅ SỬA: dùng controller.worldStateSource thay vì literal "tuya" — với Tuya giá
             // trị vẫn y hệt "tuya" (xem TuyaDeviceController.kt), nên KHÔNG đổi key nào đã
-            // lưu trong DB (các precondition "tuya.<id>.state=..." vẫn khớp bình thường).
+            // lưu trong DB (các precondition "tuya.<id>.state=..." vẫn khớp bình thường); với
+            // MQTT giá trị là "mqtt" (xem MqttDeviceController.worldStateSource).
             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                 database.worldStateDao(), controller.worldStateSource, deviceId, "state", state.toString()
             )
@@ -419,20 +458,24 @@ class SmartSwitchSkill @Inject constructor(
                     sourceId = deviceName,
                     eventType = "state_change",
                     value = state.toString(),
+                    // ✅ SỬA: bỏ chữ "Tuya" cứng trong câu tóm tắt — plugin này giờ dùng chung
+                    // cho mọi giao thức, không riêng Tuya.
                     summary = when {
                         viaGateway && gatewayConfirmed ->
-                            "Thiết bị Tuya $deviceName đã được Camera Node ở nhà xác nhận chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} (qua Gateway, Local trực tiếp thất bại)."
+                            "Thiết bị $deviceName đã được Camera Node ở nhà xác nhận chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} (qua Gateway, Local trực tiếp thất bại)."
                         viaGateway ->
-                            "Thiết bị Tuya $deviceName: đã gửi lệnh ${if (state) "Bật" else "Tắt"} qua Gateway tới Camera Node ở nhà (Local trực tiếp thất bại) — CHƯA có xác nhận thực thi thật, có thể vẫn đang xử lý."
+                            "Thiết bị $deviceName: đã gửi lệnh ${if (state) "Bật" else "Tắt"} qua Gateway tới Camera Node ở nhà (Local trực tiếp thất bại) — CHƯA có xác nhận thực thi thật, có thể vẫn đang xử lý."
                         else ->
-                            "Thiết bị Tuya $deviceName đã được chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} thành công qua ứng dụng."
+                            "Thiết bị $deviceName đã được chuyển sang trạng thái: ${if (state) "Bật" else "Tắt"} thành công qua ứng dụng."
                     }
                 )
             )
             
             // ✅ SỬA (Bug D): DeviceRegistry.nodeMap được index theo dev.id — truyền
             // deviceName vào đây trước đây khiến updateNode() luôn no-op (không tìm thấy
-            // node), nên trạng thái Dashboard không cập nhật tức thời sau khi bật/tắt.
+            // node), nên trạng thái Dashboard không cập nhật tức thời sau khi bật/tắt. Với
+            // thiết bị chưa từng lên Dashboard (vd MQTT — xem getDashboardNodes() chỉ đọc
+            // tuyaDeviceDao(), ngoài phạm vi sửa lần này), updateNode() no-op an toàn, không lỗi.
             dashboardDeviceRegistry.updateNode(deviceId) { current ->
                 current.copy(
                     online = true,
@@ -462,22 +505,17 @@ class SmartSwitchSkill @Inject constructor(
             ?: return failure("Thiếu tên thiết bị")
 
         return try {
-            // ✅ SỬA (đồng bộ với handleSet): chuẩn hóa deviceKey (id hoặc tên) thành entity
-            // thật trước khi gọi controller — trước đây hàm này truyền thẳng deviceKey (chưa
-            // rõ id hay tên) vào tuyaManager.getStatus(), khác với handleSet() đã tự resolve
-            // từ Bug B+C+D. Giờ cả 2 hàm cùng 1 cách resolve, cùng gọi qua deviceId ổn định.
-            val deviceEntity = database.tuyaDeviceDao().getDeviceById(deviceKey)
-                ?: database.tuyaDeviceDao().getDeviceByName(deviceKey)
+            // ✅ SỬA (đồng bộ với handleSet): resolveDevice() thay cho tra thẳng
+            // tuyaDeviceDao() — cùng 1 cách resolve cho cả 2 hàm, cùng hoạt động đúng với
+            // mọi giao thức đã đăng ký (Tuya, MQTT...), không riêng Tuya.
+            val (summary, controller) = resolveDevice(deviceKey)
                 ?: return failure("Không tìm thấy thiết bị '$deviceKey'")
 
-            val controller = tuyaController()
-                ?: return failure("Chưa có driver điều khiển cho thiết bị Tuya")
-
-            val status = controller.getStatus(deviceEntity.id)
-                ?: return failure("Không lấy được trạng thái thiết bị '${deviceEntity.name}'")
+            val status = controller.getStatus(summary.id)
+                ?: return failure("Không lấy được trạng thái thiết bị '${summary.displayName}'")
 
             success(
-                "Thiết bị ${deviceEntity.name} hiện đang ${if (status.isOn) "bật" else "tắt"}",
+                "Thiết bị ${summary.displayName} hiện đang ${if (status.isOn) "bật" else "tắt"}",
                 mapOf("status" to status.isOn)
             )
         } catch (e: Exception) {

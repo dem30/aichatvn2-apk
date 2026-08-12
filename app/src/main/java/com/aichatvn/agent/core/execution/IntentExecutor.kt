@@ -31,7 +31,12 @@ class IntentExecutor @Inject constructor(
     // 🌟 MỚI: Một nguồn duy nhất cho MỌI picker (device/camera/call/customer/house_policy/
     // plugin_id/action_id/...) — dùng chung với SmartActionFormSheet (form UI), thay cho các
     // nhánh "if (actualKey == ...)" hardcode riêng lẻ từng loại đã có trước đây.
-    private val optionRegistry: DynamicOptionRegistry
+    private val optionRegistry: DynamicOptionRegistry,
+    // ✅ MỚI: dùng trong checkDeviceWorldStateGuard() bên dưới để tra thiết bị theo id/tên
+    // qua MỌI giao thức đã đăng ký (Tuya, MQTT...) thay vì chỉ database.tuyaDeviceDao() —
+    // cùng cách resolveDevice() đã sửa trong SmartSwitchSkill.kt, cùng pattern
+    // DynamicOptionRegistry.kt đã dùng (deviceRegistry.all()).
+    private val deviceControlRegistry: com.aichatvn.agent.devices.DeviceRegistry
 ) {
 
     suspend fun executeIntent(
@@ -259,12 +264,26 @@ class IntentExecutor @Inject constructor(
     ): PluginResult.Failure? {
         if (pluginId == "smart_switch" && action == "set") {
             val rawDeviceKey = params["device"]?.toString() ?: params["device_id"]?.toString() ?: params["deviceId"]?.toString() ?: ""
-            val deviceEntity = if (rawDeviceKey.isNotEmpty()) {
-                database.tuyaDeviceDao().getDeviceById(rawDeviceKey)
-                    ?: database.tuyaDeviceDao().getDeviceByName(rawDeviceKey)
-            } else null
-            val deviceId = deviceEntity?.id ?: rawDeviceKey
-            val displayName = deviceEntity?.name ?: rawDeviceKey
+            // ✅ SỬA: trước đây chỉ tra database.tuyaDeviceDao() — với thiết bị MQTT, lookup
+            // luôn miss (deviceEntity == null) nên code cũ fallback deviceId = rawDeviceKey,
+            // vẫn TÌNH CỜ đúng vì rawDeviceKey chính là id thật (guard vẫn hoạt động), nhưng
+            // displayName hiển thị trong thông báo lỗi bị lộ ra là UUID thô thay vì tên thiết
+            // bị. Sửa lại tra đúng qua mọi giao thức để displayName luôn đúng, đồng thời nhất
+            // quán với resolveDevice() trong SmartSwitchSkill.kt.
+            var deviceId = rawDeviceKey
+            var displayName = rawDeviceKey
+            if (rawDeviceKey.isNotEmpty()) {
+                for (controller in deviceControlRegistry.all()) {
+                    val devices = try { controller.listDevices() } catch (e: Exception) { emptyList() }
+                    val match = devices.find { it.id == rawDeviceKey }
+                        ?: devices.find { it.displayName.equals(rawDeviceKey, ignoreCase = true) }
+                    if (match != null) {
+                        deviceId = match.id
+                        displayName = match.displayName
+                        break
+                    }
+                }
+            }
             if (deviceId.isNotEmpty()) {
                 val guardKey = "worldstate_guard_$deviceId"
                 val precondition = configProvider.getString(guardKey, "")
