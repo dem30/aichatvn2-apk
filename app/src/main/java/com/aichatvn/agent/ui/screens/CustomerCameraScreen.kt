@@ -37,6 +37,10 @@ class CustomerCameraViewModel @Inject constructor(
     private val database: AppDatabase,
     private val cameraSkill: CameraSkill,
     private val deviceRegistry: DeviceRegistry,
+    // ✅ MỚI (Giai đoạn 1 — gộp luồng thêm Camera): dò RTSP/ONVIF ngay sau khi lưu, không
+    // cần người dùng tự vào Camera Detail bấm nút probe. @Singleton, inject thẳng được,
+    // không cần @Provides riêng — cùng instance CameraDetailViewModel đang dùng.
+    private val capabilityProber: com.aichatvn.agent.tools.camera.CameraCapabilityProber,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -111,11 +115,61 @@ class CustomerCameraViewModel @Inject constructor(
     fun saveCamera(config: Map<String, Any>) {
         viewModelScope.launch {
             _isLoading.value = true
-            withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 cameraSkill.saveCameraConfig(config)
+            }
+            // ✅ MỚI (Giai đoạn 1 — gộp luồng thêm Camera, mục 13.2/16.2 tài liệu kiến trúc):
+            // lưu xong tự động dò RTSP/ONVIF ngay trong cùng tác vụ, không cần người dùng tự
+            // nhớ vào Camera Detail bấm nút "🔍 Kiểm tra khả năng RTSP/ONVIF". An toàn theo
+            // đúng nguyên tắc SHAS: chỉ cập nhật cờ *Supported (đọc, do probe thật xác nhận),
+            // KHÔNG tự bật onvifEnabled/rtspEnabled — người dùng vẫn tự bật ở Camera Detail.
+            // Chạy lại mỗi lần lưu (kể cả sửa camera đã có) không hại gì — cùng tác dụng như
+            // người dùng tự bấm probe thủ công, chỉ tốn thêm 1 lần gọi mạng.
+            if (result is com.aichatvn.agent.core.AgentKernel.PluginResult.Success) {
+                val cameraId = (config["id"] as? String)?.trim()
+                if (!cameraId.isNullOrBlank()) {
+                    withContext(Dispatchers.IO) { probeAfterSave(cameraId) }
+                }
             }
             load()
             _isLoading.value = false
+        }
+    }
+
+    /**
+     * Dò RTSP/ONVIF ngay sau khi lưu camera — cùng logic với
+     * CameraDetailViewModel.probeCapabilities(), tách riêng ở đây vì saveCamera() không
+     * scope theo 1 cameraId cố định qua SavedStateHandle như CameraDetailViewModel (màn
+     * này quản lý danh sách nhiều camera của 1 khách hàng). Lỗi ở đây (URL sai, mạng lỗi,
+     * camera đời cũ không hỗ trợ...) chỉ log lại, KHÔNG chặn luồng lưu camera — người dùng
+     * vẫn tự probe lại thủ công ở Camera Detail được nếu bước tự động này thất bại.
+     */
+    private suspend fun probeAfterSave(cameraId: String) {
+        try {
+            val cam = database.cameraDao().getCameraById(cameraId) ?: return
+            val uri = try { java.net.URI(cam.snapshoturl) } catch (e: Exception) { null }
+            val host = uri?.host
+            if (host.isNullOrBlank()) {
+                logger.w("CustomerCameraViewModel", "probeAfterSave: không xác định được IP từ snapshotUrl, bỏ qua probe tự động cameraId=$cameraId")
+                return
+            }
+            val port = if (uri.port > 0) uri.port else 80
+            val probeResult = capabilityProber.probe(host, port, cam.snapshotUsername, cam.snapshotPassword)
+            database.cameraDao().updateCamera(
+                cam.copy(
+                    onvifSupported = if (probeResult.onvifSupported) 1 else 0,
+                    onvifEventUrl = probeResult.onvifEventUrl,
+                    rtspSupported = if (probeResult.rtspSupported) 1 else 0,
+                    rtspUrl = probeResult.rtspUrl
+                    // rtspEnabled/onvifEnabled KHÔNG đổi ở đây — cùng nguyên tắc
+                    // CameraDetailViewModel.probeCapabilities(): probe chỉ cập nhật "có hỗ
+                    // trợ", bật thật vẫn qua toggleRtspEnabled()/toggleOnvifEnabled() do
+                    // người dùng tự bấm ở Camera Detail.
+                )
+            )
+            logger.i("CustomerCameraViewModel", "probeAfterSave OK cameraId=$cameraId rtsp=${probeResult.rtspSupported} onvif=${probeResult.onvifSupported}")
+        } catch (e: Exception) {
+            logger.e("CustomerCameraViewModel", "probeAfterSave lỗi: ${e.message}", e)
         }
     }
 

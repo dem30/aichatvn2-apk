@@ -45,6 +45,7 @@ class SystemAuditor @Inject constructor(
 
         items += auditCameras()
         items += auditTuyaDevices()
+        items += auditMqttDevices()
         items += auditInfra()
 
         logger.i(TAG, "✅ Audit xong: ${items.size} mục (${items.count { it.status == HealthStatus.IMPROVABLE }} có thể cải thiện)")
@@ -148,6 +149,47 @@ class SystemAuditor @Inject constructor(
                 // route "tuya" (Screen.Tuya) — màn danh sách thiết bị, nơi người dùng tự bấm
                 // "Bật điều khiển nhanh" cho từng thiết bị (xem TuyaScreen.kt).
                 manualActionRoute = if (hasLocalInfo) null else "tuya"
+            )
+        }
+    }
+
+    // ==================== MQTT ====================
+
+    /**
+     * Audit thiết bị MQTT — thuần qua DeviceController interface (listDevices()/getStatus()),
+     * KHÔNG đọc thẳng MqttDeviceDao. Khác với auditTuyaDevices(): Tuya có khái niệm
+     * "local_key/lastKnownIp đã dò được chưa" (field riêng của Tuya, không nằm trong
+     * DeviceController), nên không thể gộp chung 1 hàm mà không phá nguyên tắc "không import
+     * driver cụ thể" (xem ghi chú đầu file). MQTT (REALTIME_STATUS, không có LOCAL_CONTROL)
+     * chỉ cần biết thiết bị có đang online (đã nhận trạng thái mới nhất qua broker) hay
+     * không — đủ thông tin lấy được thuần qua interface chung.
+     *
+     * Lưu ý: MqttDeviceController hiện còn là stub (chưa nối broker MQTT thật — xem TODO
+     * trong file đó), nên getStatus() vẫn đọc DB tĩnh. Mục CONFLICT ở đây có ý nghĩa đầy đủ
+     * hơn sau khi nối broker thật (Giai đoạn 2); không sai khi thêm ngay từ bây giờ, không
+     * cần sửa lại hàm này khi Giai đoạn 2 xong.
+     */
+    private suspend fun auditMqttDevices(): List<HealthItem> {
+        val controller = deviceRegistry.controllerFor(DeviceProtocol.MQTT) ?: return emptyList()
+        val devices = controller.listDevices()
+
+        return devices.map { summary ->
+            val status = controller.getStatus(summary.id)
+            val online = status?.isOnline == true
+            HealthItem(
+                id = "mqtt_device_${summary.id}",
+                category = HealthCategory.DEVICE,
+                status = if (online) HealthStatus.OPTIMIZED else HealthStatus.CONFLICT,
+                title = "Thiết bị MQTT \"${summary.displayName}\"",
+                description = if (online)
+                    "Thiết bị đang kết nối và báo trạng thái bình thường."
+                else
+                    "Chưa nhận được trạng thái từ thiết bị này — kiểm tra kết nối broker.",
+                relatedEntityId = summary.id,
+                // CONFLICT, không IMPROVABLE: mất kết nối MQTT không phải cờ có thể tự bật
+                // được — cần người dùng tự kiểm tra broker/thiết bị vật lý.
+                safeToAutoApply = false,
+                manualActionRoute = null
             )
         }
     }
