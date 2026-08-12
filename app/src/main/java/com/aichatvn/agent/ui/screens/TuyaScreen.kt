@@ -1,5 +1,7 @@
 package com.aichatvn.agent.ui.screens
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -2099,6 +2102,12 @@ private fun AddMqttDeviceDialog(
  * Để trống nghĩa là "giữ nguyên giá trị cũ đã lưu" chỉ ĐÚNG nếu MqttViewModel.saveBrokerConfig()
  * được sửa để không ghi đè khi rỗng; hiện tại saveBrokerConfig() ghi đè thẳng nên để trống ở
  * đây nghĩa là XOÁ username/password cũ — cần người dùng nhập lại đầy đủ mỗi lần đổi broker.
+ *
+ * ✅ MỚI: gợi ý broker free cho người chưa có broker nào — chỉ mở trình duyệt tới trang đăng ký
+ * (KHÔNG tự động tạo tài khoản hộ, không có API "1-click" thật nào cho việc này ở HiveMQ Cloud/
+ * EMQX Cloud). Đây là bản thử nghiệm dùng broker ngoài, KHÁC HẲN hướng Embedded Broker
+ * (MQTT_EMBEDDED_BROKER_PLAN.md) — không xoá bỏ hướng đó, chỉ là 1 con đường tạm để kiểm thử
+ * nhanh toàn bộ luồng Quét nhanh/Thêm thiết bị trước khi đầu tư Embedded Broker.
  */
 @Composable
 private fun MqttBrokerConfigDialog(
@@ -2106,6 +2115,7 @@ private fun MqttBrokerConfigDialog(
     onDismiss: () -> Unit,
     onSave: (url: String, username: String, password: String) -> Unit
 ) {
+    val context = LocalContext.current
     var url by remember { mutableStateOf(currentBrokerUrl) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -2116,11 +2126,48 @@ private fun MqttBrokerConfigDialog(
         title = { Text("Cấu hình Broker MQTT") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // ✅ MỚI: gợi ý cho người chưa có broker nào — chỉ hiện khi ô URL còn rỗng,
+                // tránh làm phiền người đã có broker đang dùng tốt.
+                if (url.isBlank()) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "Chưa có broker? Đăng ký miễn phí trong vài phút:",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            TextButton(
+                                onClick = {
+                                    val intent = Intent(
+                                        Intent.ACTION_VIEW,
+                                        Uri.parse("https://www.hivemq.com/mqtt-cloud-broker/")
+                                    )
+                                    context.startActivity(intent)
+                                },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) {
+                                Text("→ HiveMQ Cloud (free tier)")
+                            }
+                            Text(
+                                text = "Sau khi tạo cluster, HiveMQ cấp cho bạn 1 Broker URL dạng " +
+                                    "\"xxxxx.s1.eu.hivemq.cloud\" — dán vào ô dưới kèm giao thức " +
+                                    "\"ssl://\" và cổng 8883, vd: ssl://xxxxx.s1.eu.hivemq.cloud:8883",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = url,
                     onValueChange = { url = it },
                     label = { Text("Broker URL") },
-                    placeholder = { Text("tcp://broker.example.com:1883") },
+                    placeholder = { Text("ssl://xxxxx.s1.eu.hivemq.cloud:8883") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2140,7 +2187,9 @@ private fun MqttBrokerConfigDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    text = "Để trống Username/Password nếu broker không yêu cầu đăng nhập.",
+                    text = "Để trống Username/Password nếu broker không yêu cầu đăng nhập. " +
+                        "Lưu ý: lưu lại sẽ GHI ĐÈ username/password cũ nếu để trống — nhập lại " +
+                        "đầy đủ nếu bạn chỉ muốn đổi Broker URL.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
