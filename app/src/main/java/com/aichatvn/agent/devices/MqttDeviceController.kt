@@ -32,6 +32,112 @@ object MqttConfigKeys {
     const val BROKER_URL = "mqtt.broker_url"
     const val USERNAME = "mqtt.username"
     const val PASSWORD = "mqtt.password"
+
+    // ✅ MỚI (track Cloud Broker V1): Port/TLS tách riêng khỏi Broker URL để UI "Kiểm tra kết
+    // nối" hiện được form rõ ràng hơn thay vì bắt người dùng tự gõ đúng scheme "ssl://host:port".
+    // KHÔNG dùng để override nếu Broker URL người dùng dán vào đã có sẵn scheme+port riêng —
+    // xem MqttDeviceController.buildBrokerUri(): chỉ áp dụng khi Broker URL là bare host.
+    const val PORT = "mqtt.port"           // mặc định 8883 (TLS) nếu chưa cấu hình
+    const val USE_TLS = "mqtt.use_tls"     // mặc định true
+}
+
+/**
+ * MqttBrokerProvider
+ *
+ * ✅ MỚI (track Cloud Broker V1, xem MQTT_CLOUD_BROKER_PLAN.md mục 0.4a): tách "kết nối tới đâu"
+ * ra khỏi MqttDeviceController — controller chỉ biết gọi connect(), không tự quyết định là nối
+ * Cloud hay (sau này) nối Embedded Broker chạy trên Camera Node. Ở V1 chỉ có 1 implementation
+ * (CloudMqttBrokerProvider). Khi làm Embedded Broker (V2, hiện đang HOÃN), thêm
+ * EmbeddedCameraNodeBrokerProvider cùng interface này — KHÔNG cần sửa lại MqttDeviceController.
+ */
+interface MqttBrokerProvider {
+    val brokerType: BrokerType
+    suspend fun connect(): MqttClient?
+}
+
+enum class BrokerType { CLOUD, EMBEDDED_CAMERA_NODE }
+
+/**
+ * CloudMqttBrokerProvider
+ *
+ * Implementation duy nhất ở V1 — đọc cấu hình broker cloud (HiveMQ/EMQX...) đã lưu qua
+ * AppConfigProvider, dựng MqttClient + connect. Logic thực chất y hệt getOrConnect() cũ trước
+ * khi tách, chỉ chuyển chỗ ở.
+ */
+@Singleton
+class CloudMqttBrokerProvider @Inject constructor(
+    private val configProvider: AppConfigProvider,
+    private val logger: Logger,
+) : MqttBrokerProvider {
+
+    override val brokerType: BrokerType = BrokerType.CLOUD
+
+    /**
+     * buildBrokerUri
+     *
+     * Nếu người dùng dán nguyên 1 URI đầy đủ (có scheme "tcp://"/"ssl://" và port, vd dán thẳng
+     * "ssl://xxxxx.s1.eu.hivemq.cloud:8883" theo đúng gợi ý trong MqttBrokerConfigDialog) —
+     * DÙNG NGUYÊN, không đụng vào. Chỉ tự ráp URI từ PORT/USE_TLS khi Broker URL đã lưu là bare
+     * host (không có "://") — tránh ghi đè lựa chọn port/scheme người dùng đã cố ý chọn khác mặc
+     * định (mục 1.2 kế hoạch: "Không tự đặt mặc định nếu người dùng dán URL đã có sẵn scheme").
+     */
+    private fun buildBrokerUri(rawBrokerUrl: String): String {
+        if (rawBrokerUrl.contains("://")) return rawBrokerUrl
+
+        val useTls = configProvider.getString(MqttConfigKeys.USE_TLS, "true").toBooleanStrictOrNull() ?: true
+        val port = configProvider.getString(MqttConfigKeys.PORT, "").trim()
+            .toIntOrNull() ?: if (useTls) 8883 else 1883
+        val scheme = if (useTls) "ssl" else "tcp"
+        return "$scheme://$rawBrokerUrl:$port"
+    }
+
+    override suspend fun connect(): MqttClient? {
+        val rawBrokerUrl = configProvider.getString(MqttConfigKeys.BROKER_URL, "").trim()
+        if (rawBrokerUrl.isBlank()) return null // chưa cấu hình — nghiệp vụ gọi tự xử lý null
+
+        return try {
+            val brokerUri = buildBrokerUri(rawBrokerUrl)
+            val clientId = "aichatvn2_" + UUID.randomUUID().toString().take(8)
+            val newClient = MqttClient(brokerUri, clientId, MemoryPersistence())
+            val options = MqttConnectOptions().apply {
+                isCleanSession = true
+                connectionTimeout = 10
+                val user = configProvider.getString(MqttConfigKeys.USERNAME, "").trim()
+                val pass = configProvider.getString(MqttConfigKeys.PASSWORD, "")
+                if (user.isNotBlank()) {
+                    userName = user
+                    password = pass.toCharArray()
+                }
+            }
+            newClient.connect(options)
+            newClient
+        } catch (e: Exception) {
+            logger.e("CloudMqttBrokerProvider", "Kết nối broker lỗi: ${e.message}", e)
+            null
+        }
+    }
+}
+
+/**
+ * MqttBrokerModule
+ *
+ * ⚠️ BẮT BUỘC: MqttBrokerProvider là interface — khác với các class cụ thể có @Singleton +
+ * @Inject constructor (Hilt tự resolve được), interface CẦN khai báo rõ implementation nào qua
+ * @Binds, nếu không build sẽ lỗi "Cannot provide MqttBrokerProvider" ở bước Hilt xử lý
+ * (kspDebugKotlin), không phải lỗi compileDebugKotlin — dễ nhầm hướng debug nếu không để ý.
+ *
+ * Đặt @InstallIn(SingletonComponent::class) — giữ đúng scope với @Singleton của
+ * CloudMqttBrokerProvider và MqttDeviceController. Nếu project có sẵn 1 module chung khác
+ * (vd DeviceModule/AppModule) đã @InstallIn(SingletonComponent::class), NÊN gộp @Binds này vào
+ * đó thay vì để module riêng — chỉ tách ra đây vì không có sẵn file module nào được cung cấp để
+ * biết chính xác nên gộp vào đâu. Khi ghép vào project thật, cân nhắc di chuyển đoạn @Binds bên
+ * dưới sang đúng module hiện có, xoá phần khai báo module thừa ở đây.
+ */
+@dagger.Module
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+abstract class MqttBrokerModule {
+    @dagger.Binds
+    abstract fun bindMqttBrokerProvider(impl: CloudMqttBrokerProvider): MqttBrokerProvider
 }
 
 /**
@@ -46,11 +152,15 @@ object MqttConfigKeys {
  *
  * Quản lý kết nối: 1 MqttClient singleton lười khởi tạo, dùng Mutex tránh 2 coroutine cùng
  * connect — cùng pattern CallSkill.getOrCreateMyDeviceCode() đã dùng.
+ *
+ * ✅ SỬA (track Cloud Broker V1): việc "kết nối tới đâu" giờ uỷ quyền cho MqttBrokerProvider
+ * (đang inject CloudMqttBrokerProvider) — controller chỉ giữ vòng đời client (singleton + Mutex),
+ * không tự biết chi tiết broker URL/port/TLS nữa.
  */
 @Singleton
 class MqttDeviceController @Inject constructor(
     private val mqttDeviceDao: MqttDeviceDao,
-    private val configProvider: AppConfigProvider,
+    private val brokerProvider: MqttBrokerProvider,
     private val logger: Logger,
 ) : DeviceController {
 
@@ -84,30 +194,9 @@ class MqttDeviceController @Inject constructor(
 
     private suspend fun getOrConnect(): MqttClient? = connectMutex.withLock {
         client?.takeIf { it.isConnected }?.let { return it }
-
-        val brokerUrl = configProvider.getString(MqttConfigKeys.BROKER_URL, "").trim()
-        if (brokerUrl.isBlank()) return null // chưa cấu hình — nghiệp vụ gọi tự xử lý null
-
-        return try {
-            val clientId = "aichatvn2_" + UUID.randomUUID().toString().take(8)
-            val newClient = MqttClient(brokerUrl, clientId, MemoryPersistence())
-            val options = MqttConnectOptions().apply {
-                isCleanSession = true
-                connectionTimeout = 10
-                val user = configProvider.getString(MqttConfigKeys.USERNAME, "").trim()
-                val pass = configProvider.getString(MqttConfigKeys.PASSWORD, "")
-                if (user.isNotBlank()) {
-                    userName = user
-                    password = pass.toCharArray()
-                }
-            }
-            newClient.connect(options)
-            client = newClient
-            newClient
-        } catch (e: Exception) {
-            logger.e("MqttDeviceController", "Kết nối broker lỗi: ${e.message}", e)
-            null
-        }
+        val newClient = brokerProvider.connect() ?: return null
+        client = newClient
+        newClient
     }
 
     /**
@@ -175,14 +264,22 @@ class MqttDeviceController @Inject constructor(
     }
 
     override suspend fun turnOn(deviceId: String): DeviceActionResult =
-        publish(deviceId, payload = "ON", newState = true)
+        publish(deviceId, newState = true)
 
     override suspend fun turnOff(deviceId: String): DeviceActionResult =
-        publish(deviceId, payload = "OFF", newState = false)
+        publish(deviceId, newState = false)
 
-    private suspend fun publish(deviceId: String, payload: String, newState: Boolean): DeviceActionResult {
+    /**
+     * ✅ SỬA (track Cloud Broker V1): payload không còn hardcode "ON"/"OFF" ở turnOn/turnOff nữa
+     * — mỗi thiết bị có thể có onPayload/offPayload riêng (mục 3 kế hoạch, vd thiết bị theo
+     * convention khác dùng "1"/"0" hoặc "true"/"false"). Cần đọc entity TRƯỚC mới biết payload
+     * đúng, nên publish() giờ nhận `newState: Boolean` thay vì `payload: String` cố định, tự
+     * chọn entity.onPayload/entity.offPayload sau khi đã lấy được entity.
+     */
+    private suspend fun publish(deviceId: String, newState: Boolean): DeviceActionResult {
         val entity = mqttDeviceDao.getDeviceById(deviceId)
             ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị MQTT id=$deviceId")
+        val payload = if (newState) entity.onPayload else entity.offPayload
 
         return withContext(Dispatchers.IO) {
             try {
@@ -190,7 +287,10 @@ class MqttDeviceController @Inject constructor(
                     ?: return@withContext DeviceActionResult.Failure(
                         "Chưa cấu hình broker MQTT — vào tab MQTT để nhập địa chỉ broker."
                     )
-                mqttClient.publish(entity.topic, MqttMessage(payload.toByteArray()))
+                // ✅ SỬA (track Cloud Broker V1): dùng commandTopic (cột mới, mọi thiết bị đều
+                // có giá trị nhờ MIGRATION_23_24 copy từ topic cũ) thay vì topic — topic giữ lại
+                // trong Entity chỉ để tương thích hiển thị UI, KHÔNG còn là nguồn thật cho publish.
+                mqttClient.publish(entity.commandTopic, MqttMessage(payload.toByteArray()))
                 // ✅ Cập nhật cache local ngay sau khi publish thành công — getStatus() vẫn đọc
                 // DB tĩnh (subscribe nhận trạng thái realtime CHƯA làm ở bước này, xem TODO
                 // cuối file), nên lệnh app tự gửi cần tự phản ánh vào DB để UI không lệch.

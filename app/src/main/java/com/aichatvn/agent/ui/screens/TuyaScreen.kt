@@ -445,6 +445,12 @@ class MqttViewModel @Inject constructor(
     private val deviceControlRegistry: DeviceControlRegistry,
     private val agentKernel: AgentKernel,
     private val configProvider: AppConfigProvider,
+    // ✅ MỚI (track Cloud Broker V1): dùng riêng cho testConnection() — KHÔNG dùng chung
+    // MqttDeviceController.getOrConnect() vì đó là kết nối singleton phục vụ publish() thật, còn
+    // đây chỉ là kết nối thử tạm thời rồi disconnect ngay. Cùng CloudMqttBrokerProvider nhưng
+    // instance khác nhau (Hilt @Singleton trả về cùng 1 instance CloudMqttBrokerProvider, nhưng
+    // .connect() ở đây tạo MqttClient MỚI, không đụng tới MqttDeviceController.client đang giữ).
+    private val cloudMqttBrokerProvider: CloudMqttBrokerProvider,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -461,6 +467,16 @@ class MqttViewModel @Inject constructor(
 
     private val _brokerUrl = MutableStateFlow("")
     val brokerUrl: StateFlow<String> = _brokerUrl.asStateFlow()
+
+    // ✅ MỚI (track Cloud Broker V1, mục 1.2 kế hoạch): trạng thái nút "Kiểm tra kết nối" trong
+    // MqttBrokerConfigDialog — thử connect thật (KHÔNG publish gì) trước khi cho phép Lưu, để
+    // người dùng biết ngay Broker URL/Username/Password đúng hay sai thay vì phải chờ tới lúc
+    // bấm Bật/Tắt 1 thiết bị mới phát hiện ra lỗi.
+    private val _isTestingConnection = MutableStateFlow(false)
+    val isTestingConnection: StateFlow<Boolean> = _isTestingConnection.asStateFlow()
+
+    private val _connectionTestResult = MutableStateFlow<Boolean?>(null) // null = chưa test
+    val connectionTestResult: StateFlow<Boolean?> = _connectionTestResult.asStateFlow()
 
     // ✅ MỚI: "Quét nhanh" — lắng nghe thụ động wildcard "#" qua
     // MqttDeviceController.scanTopics(), xem docstring ở đó để biết vì sao KHÔNG có API
@@ -524,19 +540,68 @@ class MqttViewModel @Inject constructor(
         }
     }
 
-    fun saveBrokerConfig(brokerUrl: String, username: String, password: String) {
+    fun saveBrokerConfig(brokerUrl: String, username: String, password: String, port: String, useTls: Boolean) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 configProvider.set(MqttConfigKeys.BROKER_URL, brokerUrl.trim())
                 configProvider.set(MqttConfigKeys.USERNAME, username.trim())
                 configProvider.set(MqttConfigKeys.PASSWORD, password)
+                configProvider.set(MqttConfigKeys.PORT, port.trim())
+                configProvider.set(MqttConfigKeys.USE_TLS, useTls.toString())
             }
             // ✅ Ngắt kết nối cũ ngay khi đổi broker — tránh MqttDeviceController lỡ dùng
             // kết nối tới broker cũ cho lần bật/tắt tiếp theo.
             mqttController()?.let { (it as? MqttDeviceController)?.invalidateConnection() }
             _brokerUrl.value = brokerUrl.trim()
+            _connectionTestResult.value = null // config vừa đổi — kết quả test cũ không còn đúng
             _message.value = "✅ Đã lưu cấu hình broker MQTT"
         }
+    }
+
+    /**
+     * testConnection ("Kiểm tra kết nối")
+     *
+     * ✅ MỚI (track Cloud Broker V1, mục 1.2 kế hoạch): dùng TRỰC TIẾP giá trị người dùng vừa gõ
+     * trong dialog (chưa lưu vào AppConfigProvider) — không phải cấu hình đã lưu trước đó. Ghi
+     * TẠM vào configProvider, gọi thử connect() qua CloudMqttBrokerProvider (dùng lại đúng
+     * MqttBrokerProvider đã tách trong MqttDeviceController.kt, không viết lại logic connect
+     * riêng), rồi disconnect ngay — KHÔNG publish gì, không lưu lại thành cấu hình chính thức nếu
+     * người dùng chưa bấm "Lưu" (dialog tự gọi saveBrokerConfig() riêng khi bấm Lưu thật).
+     */
+    fun testConnection(brokerUrl: String, username: String, password: String, port: String, useTls: Boolean) {
+        viewModelScope.launch {
+            _isTestingConnection.value = true
+            _connectionTestResult.value = null
+            try {
+                withContext(Dispatchers.IO) {
+                    configProvider.set(MqttConfigKeys.BROKER_URL, brokerUrl.trim())
+                    configProvider.set(MqttConfigKeys.USERNAME, username.trim())
+                    configProvider.set(MqttConfigKeys.PASSWORD, password)
+                    configProvider.set(MqttConfigKeys.PORT, port.trim())
+                    configProvider.set(MqttConfigKeys.USE_TLS, useTls.toString())
+                }
+                val client = withContext(Dispatchers.IO) { cloudMqttBrokerProvider.connect() }
+                if (client != null) {
+                    _connectionTestResult.value = true
+                    try {
+                        withContext(Dispatchers.IO) { client.disconnect() }
+                    } catch (e: Exception) {
+                        logger.d("MqttViewModel", "testConnection(): disconnect() sau test lỗi (bỏ qua): ${e.message}")
+                    }
+                } else {
+                    _connectionTestResult.value = false
+                }
+            } catch (e: Exception) {
+                _connectionTestResult.value = false
+                logger.e("MqttViewModel", "testConnection error", e)
+            } finally {
+                _isTestingConnection.value = false
+            }
+        }
+    }
+
+    fun clearConnectionTestResult() {
+        _connectionTestResult.value = null
     }
 
     /**
@@ -557,7 +622,7 @@ class MqttViewModel @Inject constructor(
             _isScanning.value = true
             _discoveredTopics.value = emptyList()
             try {
-                val knownTopics = _devices.value.map { it.topic }.toSet()
+                val knownTopics = _devices.value.map { it.commandTopic }.toSet()
                 val topics = withContext(Dispatchers.IO) { controller.scanTopics() }
                 _discoveredTopics.value = topics.filter { it !in knownTopics }
                 if (_discoveredTopics.value.isEmpty()) {
@@ -579,10 +644,19 @@ class MqttViewModel @Inject constructor(
 
     fun addDevice(name: String, topic: String) {
         viewModelScope.launch {
+            val trimmedTopic = topic.trim()
             val entity = MqttDeviceEntity(
                 id = java.util.UUID.randomUUID().toString(),
                 name = name.trim(),
-                topic = topic.trim()
+                // ✅ SỬA (track Cloud Broker V1): ghi CẢ HAI cột `topic` (cũ, giữ để UI nào còn
+                // đọc trực tiếp — vd dòng hiển thị "device.topic" — không bị trống) VÀ
+                // `commandTopic` (mới, cột thật MqttDeviceController.publish() sẽ dùng từ nay).
+                // discoverySource = "manual" vì AddMqttDeviceDialog hiện tại là nhập tay/prefill
+                // từ Quét nhanh (Generic Fallback thô, chưa phải Home Assistant Discovery thật —
+                // xem MQTT_CLOUD_BROKER_PLAN.md mục 2.2/2.3 khi 2 tầng discovery đó được nối vào
+                // đây, cần đổi discoverySource cho đúng theo tầng đã phát hiện ra thiết bị).
+                topic = trimmedTopic,
+                commandTopic = trimmedTopic
             )
             withContext(Dispatchers.IO) { database.mqttDeviceDao().insertDevice(entity) }
             _message.value = "✅ Đã thêm thiết bị \"${entity.name}\""
@@ -733,11 +807,21 @@ fun TuyaScreen(
     }
 
     if (showBrokerConfigDialog) {
+        val mqttIsTestingConnection by mqttViewModel.isTestingConnection.collectAsState()
+        val mqttConnectionTestResult by mqttViewModel.connectionTestResult.collectAsState()
         MqttBrokerConfigDialog(
             currentBrokerUrl = mqttBrokerUrl,
-            onDismiss = { showBrokerConfigDialog = false },
-            onSave = { url, username, password ->
-                mqttViewModel.saveBrokerConfig(url, username, password)
+            isTestingConnection = mqttIsTestingConnection,
+            connectionTestResult = mqttConnectionTestResult,
+            onTestConnection = { url, username, password, port, useTls ->
+                mqttViewModel.testConnection(url, username, password, port, useTls)
+            },
+            onDismiss = {
+                showBrokerConfigDialog = false
+                mqttViewModel.clearConnectionTestResult()
+            },
+            onSave = { url, username, password, port, useTls ->
+                mqttViewModel.saveBrokerConfig(url, username, password, port, useTls)
                 showBrokerConfigDialog = false
             }
         )
@@ -2112,20 +2196,28 @@ private fun AddMqttDeviceDialog(
  *
  * ✅ MỚI: gợi ý broker free cho người chưa có broker nào — chỉ mở trình duyệt tới trang đăng ký
  * (KHÔNG tự động tạo tài khoản hộ, không có API "1-click" thật nào cho việc này ở HiveMQ Cloud/
- * EMQX Cloud). Đây là bản thử nghiệm dùng broker ngoài, KHÁC HẲN hướng Embedded Broker
- * (MQTT_EMBEDDED_BROKER_PLAN.md) — không xoá bỏ hướng đó, chỉ là 1 con đường tạm để kiểm thử
- * nhanh toàn bộ luồng Quét nhanh/Thêm thiết bị trước khi đầu tư Embedded Broker.
+ * EMQX Cloud). Đây là track Cloud Broker (MQTT_CLOUD_BROKER_PLAN.md) — khác Embedded Broker
+ * (MQTT_EMBEDDED_BROKER_PLAN.md, đang HOÃN, sẽ làm sau khi track này ổn định).
+ *
+ * ✅ MỚI (mục 1.2 kế hoạch): Port/TLS tách riêng (mặc định 8883/true, chỉ áp dụng khi Broker URL
+ * là bare host — xem CloudMqttBrokerProvider.buildBrokerUri()), cộng nút "Kiểm tra kết nối" thử
+ * connect thật trước khi cho phép Lưu.
  */
 @Composable
 private fun MqttBrokerConfigDialog(
     currentBrokerUrl: String,
+    isTestingConnection: Boolean,
+    connectionTestResult: Boolean?,
+    onTestConnection: (url: String, username: String, password: String, port: String, useTls: Boolean) -> Unit,
     onDismiss: () -> Unit,
-    onSave: (url: String, username: String, password: String) -> Unit
+    onSave: (url: String, username: String, password: String, port: String, useTls: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var url by remember { mutableStateOf(currentBrokerUrl) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("8883") }
+    var useTls by remember { mutableStateOf(true) }
     val canSave = url.isNotBlank()
 
     AlertDialog(
@@ -2133,7 +2225,7 @@ private fun MqttBrokerConfigDialog(
         title = { Text("Cấu hình Broker MQTT") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // ✅ MỚI: gợi ý cho người chưa có broker nào — chỉ hiện khi ô URL còn rỗng,
+                // ✅ gợi ý cho người chưa có broker nào — chỉ hiện khi ô URL còn rỗng,
                 // tránh làm phiền người đã có broker đang dùng tốt.
                 if (url.isBlank()) {
                     Surface(
@@ -2162,8 +2254,8 @@ private fun MqttBrokerConfigDialog(
                             }
                             Text(
                                 text = "Sau khi tạo cluster, HiveMQ cấp cho bạn 1 Broker URL dạng " +
-                                    "\"xxxxx.s1.eu.hivemq.cloud\" — dán vào ô dưới kèm giao thức " +
-                                    "\"ssl://\" và cổng 8883, vd: ssl://xxxxx.s1.eu.hivemq.cloud:8883",
+                                    "\"xxxxx.s1.eu.hivemq.cloud\" — dán vào ô Broker URL bên dưới " +
+                                    "(không cần gõ \"ssl://\" hay cổng, đã có sẵn Port/TLS riêng).",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
                             )
@@ -2172,12 +2264,36 @@ private fun MqttBrokerConfigDialog(
                 }
                 OutlinedTextField(
                     value = url,
-                    onValueChange = { url = it },
+                    onValueChange = {
+                        url = it
+                        // Config vừa đổi qua tay — kết quả test cũ (nếu có) không còn tin cậy,
+                        // để trạng thái quay lại "chưa kiểm tra" cho tới khi bấm test lại.
+                    },
                     label = { Text("Broker URL") },
-                    placeholder = { Text("ssl://xxxxx.s1.eu.hivemq.cloud:8883") },
+                    placeholder = { Text("xxxxx.s1.eu.hivemq.cloud") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = port,
+                        onValueChange = { port = it },
+                        label = { Text("Port") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("TLS", style = MaterialTheme.typography.bodySmall)
+                        Switch(checked = useTls, onCheckedChange = { useTls = it })
+                    }
+                }
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
@@ -2200,10 +2316,37 @@ private fun MqttBrokerConfigDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                OutlinedButton(
+                    onClick = { onTestConnection(url, username, password, port, useTls) },
+                    enabled = canSave && !isTestingConnection,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isTestingConnection) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Đang kiểm tra...")
+                    } else {
+                        Text("Kiểm tra kết nối")
+                    }
+                }
+                when (connectionTestResult) {
+                    true -> Text(
+                        text = "✅ Kết nối thành công",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    false -> Text(
+                        text = "❌ Không kết nối được — kiểm tra lại Broker URL/Port/Username/Password",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    null -> {}
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(url, username, password) }, enabled = canSave) {
+            TextButton(onClick = { onSave(url, username, password, port, useTls) }, enabled = canSave) {
                 Text("Lưu")
             }
         },

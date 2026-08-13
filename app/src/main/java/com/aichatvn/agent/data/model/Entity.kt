@@ -50,13 +50,37 @@ data class MqttDeviceEntity(
     @PrimaryKey
     val id: String,          // Định danh nội bộ ổn định (KHÔNG phải topic — topic có thể đổi)
     val name: String,        // Tên hiển thị người dùng đặt
-    val topic: String,       // Topic MQTT dùng để publish lệnh bật/tắt, vd "home/devices/<id>/set"
+    val topic: String,       // ⚠️ GIỮ NGUYÊN cho tương thích ngược (thiết bị thêm qua bản thử
+    // nghiệm cũ, trước khi có commandTopic riêng). Bản mới KHÔNG ghi cột này nữa — dùng
+    // commandTopic thay thế. Xem MIGRATION_23_24: dữ liệu cũ tự copy topic -> commandTopic.
     val online: Boolean = false,
     // ✅ Trạng thái BẬT/TẮT cuối cùng nhận được qua subscribe — MQTT vốn mạnh ở nhận đẩy
     // realtime (DeviceCapability.REALTIME_STATUS), khác Tuya phải chủ động poll/gọi API.
     // getStatus() đọc thẳng cột này, KHÔNG có khái niệm "gọi API hỏi trạng thái" như Tuya.
     val lastKnownState: Boolean = false,
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+
+    // ✅ MỚI (track Cloud Broker V1, xem MQTT_CLOUD_BROKER_PLAN.md mục 0.4b + mục 3):
+    // Chỉ giá trị hợp lệ ở V1 là "cloud". Cột có sẵn từ bây giờ để V2 (Embedded Broker trên
+    // Camera Node, đang HOÃN) không cần viết thêm 1 migration DB riêng khi thêm giá trị
+    // "embedded_camera_node" — chỉ cần đổi logic đọc cột này, không đổi schema.
+    val brokerSource: String = "cloud",
+
+    // "home_assistant" | "generic" | "manual" — biết thiết bị được phát hiện bằng cách nào,
+    // hữu ích khi debug hoặc hiển thị nhãn nguồn gốc trong UI sau này.
+    val discoverySource: String = "manual",
+
+    // Command Topic thật để publish lệnh — thay thế `topic` cũ. Bắt buộc phải có giá trị (không
+    // nullable) vì mọi thiết bị đều cần biết publish lệnh vào đâu, dù qua discovery hay nhập tay.
+    val commandTopic: String = "",
+
+    // State Topic — CÓ THỂ null nếu thiết bị chỉ nhận lệnh, không tự báo trạng thái ngược (vd
+    // qua Generic Fallback chỉ bắt được 1 chiều). null nghĩa là app tiếp tục dựa vào
+    // lastKnownState tự cập nhật sau publish (như hành vi hiện tại), không subscribe gì thêm.
+    val stateTopic: String? = null,
+
+    val onPayload: String = "ON",
+    val offPayload: String = "OFF"
 )
 
 // ==================== CHAT MESSAGE ====================

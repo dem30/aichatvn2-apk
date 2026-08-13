@@ -583,6 +583,25 @@ val MIGRATION_22_23 = object : Migration(22, 23) {
     }
 }
 
+// ✅ MỚI: version 24 — track Cloud Broker V1 (xem MQTT_CLOUD_BROKER_PLAN.md mục 3). Thêm cột
+// cho MqttDeviceEntity: brokerSource, discoverySource, commandTopic, stateTopic, onPayload,
+// offPayload. Giữ tương thích ngược với thiết bị đã thêm qua bản thử nghiệm trước (MIGRATION_22_23
+// — chỉ có cột `topic`, không có commandTopic riêng): copy topic -> commandTopic cho dữ liệu cũ,
+// gán discoverySource = 'manual' (đúng thực tế — bản cũ chỉ có nhập tay, không có discovery).
+val MIGRATION_23_24 = object : Migration(23, 24) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN brokerSource TEXT NOT NULL DEFAULT 'cloud'")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN discoverySource TEXT NOT NULL DEFAULT 'manual'")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN commandTopic TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN stateTopic TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN onPayload TEXT NOT NULL DEFAULT 'ON'")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN offPayload TEXT NOT NULL DEFAULT 'OFF'")
+        // Dữ liệu cũ: copy topic đã có sẵn sang commandTopic để không mất khả năng điều khiển
+        // thiết bị đã thêm từ trước khi có migration này.
+        db.execSQL("UPDATE mqtt_devices SET commandTopic = topic WHERE commandTopic = ''")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -603,12 +622,12 @@ val MIGRATION_22_23 = object : Migration(22, 23) {
         CallLogEntity::class,
         MqttDeviceEntity::class
     ],
-    // bump 22 → 23 để thêm bảng mqtt_devices (Tầng 3 — xem MIGRATION_22_23). Trước đó bump
-    // 21 → 22 do TuyaDeviceEntity thêm 4 cột điều khiển LOCAL (xem MIGRATION_21_22).
-    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→23
-    // (không chỉ riêng 22→23) ở trên, KHÔNG được để fallbackToDestructiveMigration() xoá dữ
-    // liệu của họ.
-    version = 23,
+    // bump 23 → 24 để track Cloud Broker V1 thêm cột MqttDeviceEntity (xem MIGRATION_23_24).
+    // Trước đó bump 22 → 23 để thêm bảng mqtt_devices (Tầng 3 — xem MIGRATION_22_23).
+    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→24
+    // (không chỉ riêng migration mới nhất) ở dưới, KHÔNG được để fallbackToDestructiveMigration()
+    // xoá dữ liệu của họ.
+    version = 24,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -646,7 +665,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
