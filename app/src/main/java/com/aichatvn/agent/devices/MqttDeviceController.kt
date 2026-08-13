@@ -2,13 +2,24 @@ package com.aichatvn.agent.devices
 
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.MqttDeviceDao
+import com.aichatvn.agent.devices.mqtt.MqttDiscoveryEngine
+import com.aichatvn.agent.devices.mqtt.DiscoveredMqttDevice
 import com.aichatvn.agent.utils.Logger
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
 import org.eclipse.paho.client.mqttv3.IMqttMessageListener
+import org.eclipse.paho.client.mqttv3.MqttCallbackExtended
 import org.eclipse.paho.client.mqttv3.MqttClient
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttMessage
@@ -44,11 +55,9 @@ object MqttConfigKeys {
 /**
  * MqttBrokerProvider
  *
- * ✅ MỚI (track Cloud Broker V1, xem MQTT_CLOUD_BROKER_PLAN.md mục 0.4a): tách "kết nối tới đâu"
- * ra khỏi MqttDeviceController — controller chỉ biết gọi connect(), không tự quyết định là nối
- * Cloud hay (sau này) nối Embedded Broker chạy trên Camera Node. Ở V1 chỉ có 1 implementation
- * (CloudMqttBrokerProvider). Khi làm Embedded Broker (V2, hiện đang HOÃN), thêm
- * EmbeddedCameraNodeBrokerProvider cùng interface này — KHÔNG cần sửa lại MqttDeviceController.
+ * Tách "kết nối tới đâu" ra khỏi MqttDeviceController — controller chỉ biết gọi connect(),
+ * không tự quyết định là nối Cloud hay (sau này, track khác — KHÔNG làm trong task này) nối
+ * Embedded Broker chạy trên Camera Node. Hiện chỉ có 1 implementation (CloudMqttBrokerProvider).
  */
 interface MqttBrokerProvider {
     val brokerType: BrokerType
@@ -60,9 +69,9 @@ enum class BrokerType { CLOUD, EMBEDDED_CAMERA_NODE }
 /**
  * CloudMqttBrokerProvider
  *
- * Implementation duy nhất ở V1 — đọc cấu hình broker cloud (HiveMQ/EMQX...) đã lưu qua
- * AppConfigProvider, dựng MqttClient + connect. Logic thực chất y hệt getOrConnect() cũ trước
- * khi tách, chỉ chuyển chỗ ở.
+ * Implementation duy nhất — đọc cấu hình broker cloud (HiveMQ/EMQX...) đã lưu qua
+ * AppConfigProvider, dựng MqttClient + connect. KHÔNG thay đổi so với bản trước — track
+ * "hoàn thiện Cloud MQTT" (realtime + discovery) không đụng tới logic connect/auth ở đây.
  */
 @Singleton
 class CloudMqttBrokerProvider @Inject constructor(
@@ -72,15 +81,6 @@ class CloudMqttBrokerProvider @Inject constructor(
 
     override val brokerType: BrokerType = BrokerType.CLOUD
 
-    /**
-     * buildBrokerUri
-     *
-     * Nếu người dùng dán nguyên 1 URI đầy đủ (có scheme "tcp://"/"ssl://" và port, vd dán thẳng
-     * "ssl://xxxxx.s1.eu.hivemq.cloud:8883" theo đúng gợi ý trong MqttBrokerConfigDialog) —
-     * DÙNG NGUYÊN, không đụng vào. Chỉ tự ráp URI từ PORT/USE_TLS khi Broker URL đã lưu là bare
-     * host (không có "://") — tránh ghi đè lựa chọn port/scheme người dùng đã cố ý chọn khác mặc
-     * định (mục 1.2 kế hoạch: "Không tự đặt mặc định nếu người dùng dán URL đã có sẵn scheme").
-     */
     private suspend fun buildBrokerUri(rawBrokerUrl: String): String {
         if (rawBrokerUrl.contains("://")) return rawBrokerUrl
 
@@ -91,6 +91,13 @@ class CloudMqttBrokerProvider @Inject constructor(
         return "$scheme://$rawBrokerUrl:$port"
     }
 
+    /**
+     * ✅ MỚI (track hoàn thiện Cloud MQTT — mục "Reconnect/resubscribe"): bật
+     * `isAutomaticReconnect` — Paho tự thử kết nối lại khi mất kết nối, KHÔNG cần
+     * MqttDeviceController tự viết vòng lặp retry riêng. Kèm `MqttCallbackExtended` (đăng ký ở
+     * MqttDeviceController, không đăng ký ở đây) là cơ chế bắt sự kiện "vừa kết nối lại xong" để
+     * gọi lại subscribe — xem MqttDeviceController.installRealtimeCallback().
+     */
     override suspend fun connect(): MqttClient? {
         val rawBrokerUrl = configProvider.getString(MqttConfigKeys.BROKER_URL, "").trim()
         if (rawBrokerUrl.isBlank()) return null // chưa cấu hình — nghiệp vụ gọi tự xử lý null
@@ -102,6 +109,10 @@ class CloudMqttBrokerProvider @Inject constructor(
             val options = MqttConnectOptions().apply {
                 isCleanSession = true
                 connectionTimeout = 10
+                // ✅ MỚI: cho phép Paho tự reconnect nền — điều kiện bắt buộc để
+                // MqttCallbackExtended.connectComplete(reconnect = true, ...) bắn ra sau khi
+                // mạng chập chờn rồi ổn định lại, không cần app tự polling kiểm tra isConnected.
+                isAutomaticReconnect = true
                 val user = configProvider.getString(MqttConfigKeys.USERNAME, "").trim()
                 val pass = configProvider.getString(MqttConfigKeys.PASSWORD, "")
                 if (user.isNotBlank()) {
@@ -118,21 +129,6 @@ class CloudMqttBrokerProvider @Inject constructor(
     }
 }
 
-/**
- * MqttBrokerModule
- *
- * ⚠️ BẮT BUỘC: MqttBrokerProvider là interface — khác với các class cụ thể có @Singleton +
- * @Inject constructor (Hilt tự resolve được), interface CẦN khai báo rõ implementation nào qua
- * @Binds, nếu không build sẽ lỗi "Cannot provide MqttBrokerProvider" ở bước Hilt xử lý
- * (kspDebugKotlin), không phải lỗi compileDebugKotlin — dễ nhầm hướng debug nếu không để ý.
- *
- * Đặt @InstallIn(SingletonComponent::class) — giữ đúng scope với @Singleton của
- * CloudMqttBrokerProvider và MqttDeviceController. Nếu project có sẵn 1 module chung khác
- * (vd DeviceModule/AppModule) đã @InstallIn(SingletonComponent::class), NÊN gộp @Binds này vào
- * đó thay vì để module riêng — chỉ tách ra đây vì không có sẵn file module nào được cung cấp để
- * biết chính xác nên gộp vào đâu. Khi ghép vào project thật, cân nhắc di chuyển đoạn @Binds bên
- * dưới sang đúng module hiện có, xoá phần khai báo module thừa ở đây.
- */
 @dagger.Module
 @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
 abstract class MqttBrokerModule {
@@ -141,26 +137,60 @@ abstract class MqttBrokerModule {
 }
 
 /**
+ * MqttDeviceRuntimeStatus
+ *
+ * ✅ MỚI (track hoàn thiện Cloud MQTT, mục "Realtime state/status"): trạng thái RUNTIME (không
+ * lưu DB) tách biệt khỏi cột `online`/`lastKnownState` tĩnh trong MqttDeviceEntity — 4 giá trị,
+ * KHÔNG rút gọn về 2 giá trị on/off như trước, để UI phân biệt được "chắc chắn đang tắt" với
+ * "không rõ vì chưa có message nào". Quy tắc chuyển trạng thái, xem installRealtimeCallback():
+ * - UNKNOWN: vừa subscribe xong, CHƯA nhận được message nào trên stateTopic của thiết bị này.
+ * - ON / OFF: đã nhận ít nhất 1 message trên stateTopic, payload khớp onPayload/offPayload.
+ * - OFFLINE: broker báo mất kết nối (connectionLost) — MỌI thiết bị đang theo dõi đều rơi về
+ *   OFFLINE cho tới khi reconnect + resubscribe xong (quay lại UNKNOWN, chờ message mới).
+ *
+ * Payload lạ (không khớp onPayload lẫn offPayload) được GIỮ NGUYÊN trạng thái cũ thay vì đoán —
+ * xem handleIncomingStateMessage().
+ */
+enum class MqttDeviceRuntimeStatus { UNKNOWN, ON, OFF, OFFLINE }
+
+data class MqttRealtimeState(
+    val deviceId: String,
+    val status: MqttDeviceRuntimeStatus,
+    val updatedAt: Long
+)
+
+/**
  * MqttDeviceController
  *
- * (Giai đoạn 2) Đã nối broker MQTT thật qua Eclipse Paho — thư viện ĐÃ CÓ SẴN trong
- * build.gradle.kts từ trước (org.eclipse.paho.client.mqttv3:1.2.5), không thêm dependency mới.
- * Dùng bản CORE (`MqttClient`, đồng bộ/blocking), KHÔNG dùng `org.eclipse.paho.android.service`
- * (bản bọc Android Service, không cần thiết) — gọi trong withContext(Dispatchers.IO), đúng
- * phong cách project đang dùng cho các lệnh gọi mạng blocking khác (vd okhttp trong
- * CameraCapabilityProber, TuyaLocalController).
+ * (Track hoàn thiện Cloud MQTT) Bổ sung so với bản trước:
+ * 1. Realtime state/status: subscribe stateTopic của mọi thiết bị đã lưu ngay sau khi connect
+ *    (và sau mỗi lần reconnect tự động), parse theo onPayload/offPayload riêng từng thiết bị,
+ *    phát ra qua `realtimeStates: StateFlow` để MqttViewModel/UI quan sát realtime — KHÔNG chỉ
+ *    đọc cache DB tĩnh như trước.
+ * 2. discoverDevices(): lớp discovery mới dùng MqttDiscoveryEngine (Home Assistant/Homie/
+ *    vendor adapter) — xem devices/mqtt/MqttDiscoveryEngine.kt. scanTopics() CŨ vẫn giữ nguyên
+ *    làm fallback quan sát thô, không xoá, không đổi hành vi.
  *
- * Quản lý kết nối: 1 MqttClient singleton lười khởi tạo, dùng Mutex tránh 2 coroutine cùng
- * connect — cùng pattern CallSkill.getOrCreateMyDeviceCode() đã dùng.
- *
- * ✅ SỬA (track Cloud Broker V1): việc "kết nối tới đâu" giờ uỷ quyền cho MqttBrokerProvider
- * (đang inject CloudMqttBrokerProvider) — controller chỉ giữ vòng đời client (singleton + Mutex),
- * không tự biết chi tiết broker URL/port/TLS nữa.
+ * KHÔNG đổi implements DeviceController — turnOn/turnOff/getStatus/listDevices/deleteDevice giữ
+ * nguyên chữ ký/hành vi bên ngoài, để không phá SmartSwitchSkill/DeviceControlRegistry đang gọi
+ * qua interface này. getStatus() vẫn trả DeviceStatus(isOn, isOnline) — hai field boolean đó ĐÃ
+ * ĐỦ để phản ánh "online + on/off" cho các bên tiêu thụ hiện có; phần 4 trạng thái chi tiết hơn
+ * (UNKNOWN riêng biệt với OFFLINE) chỉ dành cho UI mới qua `realtimeStates`, không đẩy ngược
+ * vào interface DeviceController dùng chung.
  */
+// ⚠️ GlobalScope: 2 chỗ dùng trong file này (installRealtimeCallback/handleIncomingStateMessage)
+// đều chạy TRÊN THREAD NỘI BỘ CỦA PAHO (connectComplete/messageArrived), không nằm trong bất kỳ
+// CoroutineScope nào của Android (không phải viewModelScope/lifecycleScope) — không có scope cha
+// hợp lý nào để gắn vào. Vì MqttDeviceController là @Singleton (sống suốt vòng đời app), dùng
+// GlobalScope ở đây là lựa chọn có chủ đích, không phải quên inject scope — nếu project đã có
+// sẵn 1 "ApplicationScope" tự định nghĩa (CoroutineScope(SupervisorJob() + Dispatchers.Default)
+// inject qua Hilt), NÊN đổi sang dùng scope đó thay vì GlobalScope khi ghép vào project thật.
+@OptIn(DelicateCoroutinesApi::class)
 @Singleton
 class MqttDeviceController @Inject constructor(
     private val mqttDeviceDao: MqttDeviceDao,
     private val brokerProvider: MqttBrokerProvider,
+    private val discoveryEngine: MqttDiscoveryEngine,
     private val logger: Logger,
 ) : DeviceController {
 
@@ -177,10 +207,20 @@ class MqttDeviceController @Inject constructor(
     private val connectMutex = Mutex()
     @Volatile private var client: MqttClient? = null
 
+    // ✅ MỚI: deviceId -> stateTopic đang thực sự có subscription sống trên client hiện tại.
+    // Dùng để refreshDeviceSubscriptions() biết topic nào cần subscribe thêm / unsubscribe bớt
+    // khi danh sách thiết bị đổi (thêm/xoá), tránh subscribe trùng hoặc rò rỉ subscription cũ
+    // của thiết bị đã bị xoá.
+    private val activeStateSubscriptions = ConcurrentHashMap<String, String>() // deviceId -> stateTopic
+
+    private val _realtimeStates = MutableStateFlow<Map<String, MqttRealtimeState>>(emptyMap())
+    /** Quan sát realtime cho UI (MqttViewModel) — KHÔNG phải nguồn thật cho DeviceController.getStatus(). */
+    val realtimeStates: StateFlow<Map<String, MqttRealtimeState>> = _realtimeStates.asStateFlow()
+
     /**
      * Đổi cấu hình broker giữa chừng (từ MqttViewModel, sau khi người dùng lưu ở tab MQTT) —
-     * ngắt kết nối cũ ngay, lần gọi turnOn/turnOff tiếp theo sẽ tự connect lại theo config mới
-     * thay vì lỡ dùng nhầm kết nối tới broker cũ đã đổi.
+     * ngắt kết nối cũ ngay, lần gọi turnOn/turnOff/subscribe tiếp theo sẽ tự connect + subscribe
+     * lại theo config mới thay vì lỡ dùng nhầm kết nối tới broker cũ đã đổi.
      */
     fun invalidateConnection() {
         try {
@@ -189,41 +229,211 @@ class MqttDeviceController @Inject constructor(
             logger.d("MqttDeviceController", "disconnect() khi đổi broker: ${e.message}")
         } finally {
             client = null
+            activeStateSubscriptions.clear()
+            // Config vừa đổi — trạng thái realtime cũ (nếu có) không còn tin cậy, về UNKNOWN hết
+            // cho tới khi kết nối lại + subscribe lại xong.
+            markAllUnknown()
         }
     }
 
     private suspend fun getOrConnect(): MqttClient? = connectMutex.withLock {
         client?.takeIf { it.isConnected }?.let { return it }
         val newClient = brokerProvider.connect() ?: return null
+        installRealtimeCallback(newClient)
         client = newClient
+        // Kết nối mới (không phải do Paho tự auto-reconnect gọi lại connectComplete) — chủ động
+        // subscribe ngay 1 lần ở đây, vì connectComplete(reconnect = false, ...) của lần connect
+        // ĐẦU TIÊN cũng bắn ra, nhưng để chắc chắn không phụ thuộc thời điểm callback thật sự
+        // chạy (chạy trên thread nội bộ Paho), gọi thêm 1 lần tường minh tại đây là vô hại
+        // (subscribeAllDeviceStates() tự bỏ qua topic đã có trong activeStateSubscriptions).
+        subscribeAllDeviceStates(newClient)
         newClient
     }
 
     /**
-     * scanTopics ("Quét nhanh")
+     * ✅ MỚI: đăng ký MqttCallbackExtended lên client — bắt 2 sự kiện:
+     * - connectionLost: mất kết nối (mạng rớt, broker restart...) — đánh dấu MỌI thiết bị đang
+     *   theo dõi realtime là OFFLINE ngay lập tức, không chờ timeout nào khác. Paho tự lo phần
+     *   reconnect nhờ isAutomaticReconnect = true đã bật ở CloudMqttBrokerProvider.
+     * - connectComplete(reconnect, ...): bắn ra cho CẢ lần connect đầu tiên (reconnect = false)
+     *   LẪN mọi lần Paho tự reconnect thành công (reconnect = true) — đây là nơi DUY NHẤT cần
+     *   gọi lại subscribeAllDeviceStates() để thoả yêu cầu "khi reconnect MQTT, phải subscribe
+     *   lại", không cần code gọi ngoài tự đoán khi nào đã reconnect xong.
      *
-     * MQTT thuần KHÔNG có API "liệt kê thiết bị" chuẩn hoá (khác Tuya Cloud có thể query danh
-     * sách qua tài khoản) — broker chỉ route message theo topic, không biết gì về "thiết bị".
-     * Cách khả thi duy nhất không phụ thuộc vendor: LẮNG NGHE THỤ ĐỘNG mọi topic có publish
-     * trong lúc quét, KHÔNG chủ động "hỏi" broker. Vì vậy:
-     * - Thiết bị/gateway PHẢI tự publish trong đúng cửa sổ [timeoutMs] mới xuất hiện (vd
-     *   Tasmota với Home Assistant Discovery bật, Zigbee2MQTT bridge, ESPHome birth message,
-     *   hoặc bất kỳ firmware nào publish định kỳ/khi khởi động).
-     * - Danh sách rỗng KHÔNG phải lỗi — chỉ là không có gì publish trong lúc quét. Nơi gọi
-     *   (MqttViewModel) cần tự fallback về AddMqttDeviceDialog (nhập tay tên+topic) như
-     *   phương án dự phòng, đúng như luồng "Kết nối" hiện có.
+     * messageArrived(topic, message) ở cấp callback toàn cục CHỈ được Paho gọi cho các
+     * subscription KHÔNG có IMqttMessageListener ring riêng — mọi subscribe(topic, qos, listener)
+     * trong file này (kể cả scanTopics() cũ) đều truyền listener riêng, nên implement rỗng ở đây
+     * là an toàn, không mất message nào.
+     */
+    private fun installRealtimeCallback(mqttClient: MqttClient) {
+        mqttClient.setCallback(object : MqttCallbackExtended {
+            override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+                logger.i(
+                    "MqttDeviceController",
+                    if (reconnect) "🔄 MQTT reconnect thành công ($serverURI) — subscribe lại state topics"
+                    else "✅ MQTT connect thành công ($serverURI)"
+                )
+                activeStateSubscriptions.clear()
+                markAllUnknown()
+                // setCallback chạy trên thread nội bộ Paho — subscribeAllDeviceStates() gọi
+                // mqttDeviceDao (Room, có thể block I/O) nên đẩy sang 1 coroutine IO riêng thay
+                // vì chạy thẳng trên thread callback của Paho.
+                GlobalScope.launch(Dispatchers.IO) {
+                    subscribeAllDeviceStates(mqttClient)
+                }
+            }
+
+            override fun connectionLost(cause: Throwable?) {
+                logger.w("MqttDeviceController", "⚠️ Mất kết nối MQTT: ${cause?.message}")
+                markAllOffline()
+            }
+
+            override fun messageArrived(topic: String?, message: MqttMessage?) {
+                // Không dùng — mọi subscribe() trong file này đều gắn listener riêng theo topic.
+            }
+
+            override fun deliveryComplete(token: IMqttDeliveryToken?) {
+                // Không cần theo dõi — publish() hiện tại là fire-and-forget (không QoS 2 chờ
+                // xác nhận 2 chiều), giữ đúng hành vi cũ.
+            }
+        })
+    }
+
+    private fun markAllUnknown() {
+        _realtimeStates.update { current ->
+            current.mapValues { (id, state) ->
+                if (state.status == MqttDeviceRuntimeStatus.OFFLINE)
+                    state.copy(status = MqttDeviceRuntimeStatus.UNKNOWN, updatedAt = System.currentTimeMillis())
+                else state
+            }
+        }
+    }
+
+    private fun markAllOffline() {
+        val now = System.currentTimeMillis()
+        _realtimeStates.update { current ->
+            current.mapValues { (_, state) -> state.copy(status = MqttDeviceRuntimeStatus.OFFLINE, updatedAt = now) }
+        }
+    }
+
+    /**
+     * subscribeAllDeviceStates
      *
-     * Dùng subscribe("#", ...) — một số broker (đặc biệt Cloud có ACL giới hạn theo tài khoản,
-     * vd HiveMQ Cloud free tier) có thể TỪ CHỐI subscribe wildcard toàn cục này. Bắt riêng
-     * Exception ở đây, trả về rỗng thay vì để lỗi rơi ra ngoài — coi như một kết quả "quét
-     * không ra gì" bình thường, không phải sự cố kết nối.
+     * Duyệt toàn bộ thiết bị đã lưu, subscribe `stateTopic` (bỏ qua thiết bị chưa có stateTopic
+     * — thiết bị nhập tay kiểu cũ trước khi có trường này chỉ điều khiển một chiều, không có gì
+     * để subscribe, KHÔNG coi là lỗi). Gọi lại an toàn nhiều lần (idempotent) nhờ
+     * activeStateSubscriptions — thiết bị đã subscribe rồi thì bỏ qua.
+     */
+    private suspend fun subscribeAllDeviceStates(mqttClient: MqttClient) {
+        val devices = try {
+            withContext(Dispatchers.IO) { mqttDeviceDao.getAllDevices() }
+        } catch (e: Exception) {
+            logger.e("MqttDeviceController", "subscribeAllDeviceStates(): đọc danh sách thiết bị lỗi: ${e.message}", e)
+            return
+        }
+
+        devices.forEach { entity ->
+            val stateTopic = entity.stateTopic?.trim().orEmpty()
+            if (stateTopic.isBlank()) return@forEach
+            if (activeStateSubscriptions[entity.id] == stateTopic) return@forEach // đã subscribe
+
+            // Khởi tạo UNKNOWN ngay khi bắt đầu theo dõi — CHƯA có message nào, không được suy ra OFF.
+            _realtimeStates.update { it + (entity.id to MqttRealtimeState(entity.id, MqttDeviceRuntimeStatus.UNKNOWN, System.currentTimeMillis())) }
+
+            try {
+                mqttClient.subscribe(stateTopic, 1, IMqttMessageListener { _, message ->
+                    handleIncomingStateMessage(entity.id, entity.onPayload, entity.offPayload, message?.payload)
+                })
+                activeStateSubscriptions[entity.id] = stateTopic
+            } catch (e: Exception) {
+                logger.e(
+                    "MqttDeviceController",
+                    "subscribeAllDeviceStates(): subscribe stateTopic='$stateTopic' cho thiết bị ${entity.id} lỗi: ${e.message}",
+                    e
+                )
+            }
+        }
+    }
+
+    /**
+     * refreshDeviceSubscriptions
      *
-     * Paho core MqttClient (bản đồng bộ đang dùng trong file này) VẪN hỗ trợ
-     * subscribe(topicFilter, qos, IMqttMessageListener) — không cần đổi sang MqttAsyncClient.
-     * Callback messageArrived chạy trên thread nội bộ của Paho (không phải thread gọi hàm
-     * này), nên dùng ConcurrentHashMap.newKeySet() để gom topic an toàn giữa các thread, thay
-     * vì MutableSet/HashSet thường (không thread-safe, có thể mất dữ liệu hoặc crash ngầm khi
-     * nhiều topic tới dồn dập cùng lúc).
+     * ✅ MỚI: gọi TỪ NGOÀI (MqttViewModel) ngay sau addDevice()/deleteDevice() — để thiết bị vừa
+     * thêm được subscribe state ngay, không phải đợi tới lần reconnect kế tiếp; và thiết bị vừa
+     * xoá được unsubscribe ngay, không rò rỉ subscription/entry cache của thiết bị không còn
+     * tồn tại. Không throw — publish/turnOn/turnOff không phụ thuộc hàm này, lỗi ở đây chỉ ảnh
+     * hưởng phần hiển thị realtime, không ảnh hưởng điều khiển.
+     */
+    suspend fun refreshDeviceSubscriptions() = withContext(Dispatchers.IO) {
+        val mqttClient = getOrConnect() ?: return@withContext
+        val currentDeviceIds = try {
+            mqttDeviceDao.getAllDevices().map { it.id }.toSet()
+        } catch (e: Exception) {
+            return@withContext
+        }
+
+        // Unsubscribe + dọn cache cho thiết bị đã bị xoá.
+        val removedIds = activeStateSubscriptions.keys - currentDeviceIds
+        removedIds.forEach { deviceId ->
+            val topic = activeStateSubscriptions.remove(deviceId)
+            try {
+                if (topic != null) mqttClient.unsubscribe(topic)
+            } catch (e: Exception) {
+                logger.d("MqttDeviceController", "refreshDeviceSubscriptions(): unsubscribe lỗi (bỏ qua): ${e.message}")
+            }
+            _realtimeStates.update { it - deviceId }
+        }
+
+        subscribeAllDeviceStates(mqttClient)
+    }
+
+    /**
+     * handleIncomingStateMessage
+     *
+     * So khớp payload nhận được với `onPayload`/`offPayload` RIÊNG của từng thiết bị (không
+     * hardcode "ON"/"OFF") — trim + so khớp nguyên văn (case-sensitive, vì nhiều firmware phân
+     * biệt hoa/thường, vd Tasmota trả đúng "ON"/"OFF" nhưng 1 số custom firmware có thể dùng
+     * "on"/"off" — KHÔNG tự ý lowercase để tránh đổi ý nghĩa payload người dùng đã cấu hình).
+     * Payload lạ (không khớp cả hai) GIỮ NGUYÊN trạng thái cũ thay vì đoán thành OFF — đúng yêu
+     * cầu "không tự đoán nguy hiểm từ topic MQTT thuần".
+     *
+     * Cập nhật 2 nơi khi khớp ON/OFF: (1) `_realtimeStates` — nguồn cho UI mới; (2)
+     * `mqttDeviceDao.updateState()` — cache DB cũ vẫn cần đúng vì DeviceController.getStatus()
+     * (dùng bởi SmartSwitchSkill, SystemAuditor...) đọc từ đây, KHÔNG đọc `_realtimeStates`.
+     */
+    private fun handleIncomingStateMessage(deviceId: String, onPayload: String, offPayload: String, rawPayload: ByteArray?) {
+        val payload = rawPayload?.toString(Charsets.UTF_8)?.trim() ?: return
+        val newStatus = when (payload) {
+            onPayload -> MqttDeviceRuntimeStatus.ON
+            offPayload -> MqttDeviceRuntimeStatus.OFF
+            else -> {
+                logger.d("MqttDeviceController", "handleIncomingStateMessage($deviceId): payload lạ '$payload' — giữ nguyên trạng thái cũ")
+                return
+            }
+        }
+        val now = System.currentTimeMillis()
+        _realtimeStates.update { it + (deviceId to MqttRealtimeState(deviceId, newStatus, now)) }
+
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                mqttDeviceDao.updateState(
+                    deviceId,
+                    state = newStatus == MqttDeviceRuntimeStatus.ON,
+                    online = true,
+                    timestamp = now
+                )
+            } catch (e: Exception) {
+                logger.e("MqttDeviceController", "handleIncomingStateMessage($deviceId): cập nhật DB lỗi: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * scanTopics ("Quét nhanh" — GIỮ NGUYÊN, không đổi hành vi)
+     *
+     * ✅ Theo yêu cầu track hoàn thiện Cloud MQTT: giữ hàm này làm fallback observer thô, KHÔNG
+     * còn là con đường discovery chính — xem discoverDevices() bên dưới cho luồng chuẩn mới.
+     * Docstring gốc giữ nguyên lý do kỹ thuật (MQTT không có API "liệt kê thiết bị" chuẩn hoá).
      */
     suspend fun scanTopics(timeoutMs: Long = 8000L): List<String> = withContext(Dispatchers.IO) {
         val mqttClient = getOrConnect()
@@ -238,7 +448,6 @@ class MqttDeviceController @Inject constructor(
         try {
             mqttClient.subscribe("#", 0, listener)
         } catch (e: Exception) {
-            // Broker chặn subscribe "#" (ACL) — không phải lỗi kết nối, coi như quét ra rỗng.
             logger.e(
                 "MqttDeviceController",
                 "scanTopics(): broker từ chối subscribe '#' (có thể do ACL giới hạn): ${e.message}",
@@ -250,9 +459,6 @@ class MqttDeviceController @Inject constructor(
         try {
             delay(timeoutMs)
         } finally {
-            // LUÔN unsubscribe dù delay bị huỷ giữa chừng (vd người dùng thoát màn hình sớm)
-            // — tránh rò rỉ subscription "#" chạy nền vô thời hạn trên kết nối singleton dùng
-            // chung cho cả turnOn/turnOff sau đó.
             try {
                 mqttClient.unsubscribe("#")
             } catch (e: Exception) {
@@ -263,19 +469,77 @@ class MqttDeviceController @Inject constructor(
         found.toList().sorted()
     }
 
+    /**
+     * discoverDevices ("Quét nhanh" chuẩn mới — track hoàn thiện Cloud MQTT)
+     *
+     * Lắng nghe thụ động "#" TRONG CÙNG 1 cửa sổ thời gian như scanTopics(), nhưng đưa từng cặp
+     * (topic, payload) qua `MqttDiscoveryEngine` (Home Assistant / Homie / vendor adapter) thay
+     * vì chỉ gom topic thô. Trả về CẢ HAI: danh sách thiết bị đã NHẬN DIỆN được (đủ tên gợi ý +
+     * command/state topic + payload — sẵn sàng cho UI xác nhận trước khi lưu) VÀ danh sách topic
+     * thô không adapter nào nhận diện được (dùng làm fallback y hệt scanTopics() cũ cho luồng
+     * "Thêm tay").
+     *
+     * dedupe theo `uniqueId` — 1 thiết bị Home Assistant Discovery thường publish lại retained
+     * message nhiều lần (mỗi lần app subscribe lại), không được hiện trùng trong danh sách.
+     */
+    suspend fun discoverDevices(timeoutMs: Long = 8000L): MqttDiscoveryScanResult = withContext(Dispatchers.IO) {
+        val mqttClient = getOrConnect()
+            ?: run {
+                logger.d("MqttDeviceController", "discoverDevices(): chưa cấu hình broker, bỏ qua")
+                return@withContext MqttDiscoveryScanResult(emptyList(), emptyList())
+            }
+
+        val recognized = ConcurrentHashMap<String, DiscoveredMqttDevice>() // uniqueId -> device
+        val rawTopics = ConcurrentHashMap.newKeySet<String>()
+
+        val listener = IMqttMessageListener { topic, message ->
+            rawTopics.add(topic)
+            val payload = try {
+                message?.payload?.toString(Charsets.UTF_8) ?: ""
+            } catch (e: Exception) {
+                ""
+            }
+            discoveryEngine.parse(topic, payload)?.let { device ->
+                recognized[device.uniqueId] = device
+            }
+        }
+
+        try {
+            mqttClient.subscribe("#", 0, listener)
+        } catch (e: Exception) {
+            logger.e(
+                "MqttDeviceController",
+                "discoverDevices(): broker từ chối subscribe '#' (có thể do ACL giới hạn): ${e.message}",
+                e
+            )
+            return@withContext MqttDiscoveryScanResult(emptyList(), emptyList())
+        }
+
+        try {
+            delay(timeoutMs)
+        } finally {
+            try {
+                mqttClient.unsubscribe("#")
+            } catch (e: Exception) {
+                logger.d("MqttDeviceController", "discoverDevices(): unsubscribe('#') lỗi (bỏ qua): ${e.message}")
+            }
+        }
+
+        // Loại khỏi rawTopics những topic đã được 1 adapter nhận diện thành công (đã có trong
+        // recognized) — tránh hiện trùng lặp giữa 2 danh sách trả về cho UI.
+        val recognizedTopics = recognized.values.mapNotNull { it.stateTopic } +
+            recognized.values.map { it.commandTopic }
+        val fallbackTopics = rawTopics.filterNot { it in recognizedTopics }.sorted()
+
+        MqttDiscoveryScanResult(recognized.values.toList(), fallbackTopics)
+    }
+
     override suspend fun turnOn(deviceId: String): DeviceActionResult =
         publish(deviceId, newState = true)
 
     override suspend fun turnOff(deviceId: String): DeviceActionResult =
         publish(deviceId, newState = false)
 
-    /**
-     * ✅ SỬA (track Cloud Broker V1): payload không còn hardcode "ON"/"OFF" ở turnOn/turnOff nữa
-     * — mỗi thiết bị có thể có onPayload/offPayload riêng (mục 3 kế hoạch, vd thiết bị theo
-     * convention khác dùng "1"/"0" hoặc "true"/"false"). Cần đọc entity TRƯỚC mới biết payload
-     * đúng, nên publish() giờ nhận `newState: Boolean` thay vì `payload: String` cố định, tự
-     * chọn entity.onPayload/entity.offPayload sau khi đã lấy được entity.
-     */
     private suspend fun publish(deviceId: String, newState: Boolean): DeviceActionResult {
         val entity = mqttDeviceDao.getDeviceById(deviceId)
             ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị MQTT id=$deviceId")
@@ -287,13 +551,11 @@ class MqttDeviceController @Inject constructor(
                     ?: return@withContext DeviceActionResult.Failure(
                         "Chưa cấu hình broker MQTT — vào tab MQTT để nhập địa chỉ broker."
                     )
-                // ✅ SỬA (track Cloud Broker V1): dùng commandTopic (cột mới, mọi thiết bị đều
-                // có giá trị nhờ MIGRATION_23_24 copy từ topic cũ) thay vì topic — topic giữ lại
-                // trong Entity chỉ để tương thích hiển thị UI, KHÔNG còn là nguồn thật cho publish.
                 mqttClient.publish(entity.commandTopic, MqttMessage(payload.toByteArray()))
-                // ✅ Cập nhật cache local ngay sau khi publish thành công — getStatus() vẫn đọc
-                // DB tĩnh (subscribe nhận trạng thái realtime CHƯA làm ở bước này, xem TODO
-                // cuối file), nên lệnh app tự gửi cần tự phản ánh vào DB để UI không lệch.
+                // Cập nhật cache local ngay sau khi publish thành công — nếu thiết bị CÓ
+                // stateTopic, message thật từ broker (qua handleIncomingStateMessage) sẽ ghi đè
+                // lại đúng giá trị thật ngay sau đó; dòng dưới chỉ là phản hồi lạc quan tức thời
+                // cho UI trong lúc chờ, không thay thế nguồn thật.
                 mqttDeviceDao.updateState(
                     deviceId, state = newState, online = true, timestamp = System.currentTimeMillis()
                 )
@@ -306,11 +568,24 @@ class MqttDeviceController @Inject constructor(
     }
 
     override suspend fun getStatus(deviceId: String): DeviceStatus? {
-        // TODO (chưa làm ở Giai đoạn 2): nối subscribe() thật để cache trạng thái realtime từ
-        // broker thay vì chỉ đọc lại đúng lệnh app tự gửi gần nhất — DB hiện KHÔNG phản ánh
-        // biến động vật lý ngoài ý muốn (mất điện, bật tay ở công tắc vật lý...).
+        // ✅ SỬA (track hoàn thiện Cloud MQTT): trước đây TODO — chỉ đọc lại DB tĩnh. Giờ ưu
+        // tiên đọc `_realtimeStates` (nếu thiết bị có stateTopic và đã nhận được ít nhất 1
+        // message) — đây mới là nguồn PHẢN ÁNH TRẠNG THÁI VẬT LÝ THẬT (mất điện, bật tay ở công
+        // tắc vật lý sẽ cập nhật qua đây). Fallback về DB tĩnh khi runtime state là UNKNOWN/chưa
+        // có (thiết bị không có stateTopic, hoặc vừa mới subscribe, chưa kịp nhận message nào) —
+        // giữ đúng hành vi cũ cho trường hợp đó thay vì trả null/lỗi.
+        //
+        // isOnline=false khi runtime OFFLINE (mất kết nối broker) — ĐÂY LÀ ĐIỂM DUY NHẤT tín
+        // hiệu OFFLINE/UNKNOWN "rò" ra ngoài interface DeviceController dùng chung (qua
+        // isOnline), vẫn đúng hợp đồng cũ (isOnline Boolean), không cần đổi interface.
         val entity = mqttDeviceDao.getDeviceById(deviceId) ?: return null
-        return DeviceStatus(isOn = entity.lastKnownState, isOnline = entity.online)
+        val runtime = _realtimeStates.value[deviceId]
+        return when (runtime?.status) {
+            MqttDeviceRuntimeStatus.ON -> DeviceStatus(isOn = true, isOnline = true)
+            MqttDeviceRuntimeStatus.OFF -> DeviceStatus(isOn = false, isOnline = true)
+            MqttDeviceRuntimeStatus.OFFLINE -> DeviceStatus(isOn = entity.lastKnownState, isOnline = false)
+            else -> DeviceStatus(isOn = entity.lastKnownState, isOnline = entity.online) // UNKNOWN hoặc chưa theo dõi — fallback DB cũ
+        }
     }
 
     override suspend fun listDevices(): List<DeviceSummary> {
@@ -322,9 +597,23 @@ class MqttDeviceController @Inject constructor(
     override suspend fun deleteDevice(deviceId: String): DeviceActionResult {
         return try {
             mqttDeviceDao.deleteDevice(deviceId)
+            // Dọn subscription + cache realtime của thiết bị vừa xoá ngay — không chờ tới lần
+            // reconnect kế tiếp mới dọn (xem refreshDeviceSubscriptions()).
+            client?.let { mqttClient ->
+                activeStateSubscriptions.remove(deviceId)?.let { topic ->
+                    try { mqttClient.unsubscribe(topic) } catch (e: Exception) { /* bỏ qua */ }
+                }
+            }
+            _realtimeStates.update { it - deviceId }
             DeviceActionResult.Success
         } catch (e: Exception) {
             DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi xoá thiết bị MQTT")
         }
     }
 }
+
+/** Kết quả 1 lần discoverDevices() — xem docstring hàm đó. */
+data class MqttDiscoveryScanResult(
+    val recognizedDevices: List<DiscoveredMqttDevice>,
+    val fallbackTopics: List<String>
+)

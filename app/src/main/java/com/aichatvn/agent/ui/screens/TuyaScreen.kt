@@ -47,6 +47,10 @@ import com.aichatvn.agent.devices.DeviceRegistry as DeviceControlRegistry
 import com.aichatvn.agent.devices.MqttDeviceController
 import com.aichatvn.agent.devices.MqttConfigKeys
 import com.aichatvn.agent.devices.CloudMqttBrokerProvider
+// ✅ MỚI (track hoàn thiện Cloud MQTT): realtime status 4 trạng thái (UNKNOWN/ON/OFF/OFFLINE) +
+// kết quả MqttDiscoveryEngine — xem MqttDeviceController.kt / devices/mqtt/MqttDiscoveryEngine.kt.
+import com.aichatvn.agent.devices.MqttDeviceRuntimeStatus
+import com.aichatvn.agent.devices.mqtt.DiscoveredMqttDevice
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -433,12 +437,11 @@ class TuyaViewModel @Inject constructor(
  * khái niệm "quét" như Tuya Cloud). Đây là ngoại lệ có chủ đích, cùng loại với
  * TuyaViewModel.scanDevices() gọi thẳng tuyaManager — không phải sai sót kiến trúc.
  *
- * ⚠️ CHƯA XÁC NHẬN: toggleDevice() giả định SmartSwitchSkill.handleSet() đã tra cứu controller
- * theo đúng protocol của device (không hardcode Tuya) — đúng theo tài liệu kiến trúc đã đối
- * chiếu ("thêm MQTT không cần sửa SmartSwitchSkill.kt"), nhưng chưa đọc trực tiếp
- * SmartSwitchSkill.kt để soi dòng code thật. Nếu nút Bật/Tắt MQTT báo lỗi "không tìm thấy
- * thiết bị" dù đã thêm đúng, khả năng cao là chỗ này cần sửa lại thành gọi thẳng
- * mqttController()?.turnOn()/turnOff() (mất checkDeviceWorldStateGuard(), vẫn điều khiển được).
+ * ✅ XÁC NHẬN (đã đọc SmartSwitchSkill.kt thật): toggleDevice() gọi agentKernel là ĐÚNG —
+ * SmartSwitchSkill.handleSet() dùng resolveDevice() tra cứu qua deviceControlRegistry.all(),
+ * không hardcode Tuya, nên hoạt động đúng cho cả MQTT lẫn Tuya. KHÔNG cần đổi sang gọi thẳng
+ * mqttController()?.turnOn()/turnOff() như ghi chú trước — giữ nguyên đường qua agentKernel để
+ * không mất checkDeviceWorldStateGuard().
  */
 @HiltViewModel
 class MqttViewModel @Inject constructor(
@@ -496,9 +499,33 @@ class MqttViewModel @Inject constructor(
     private val _deviceGuards = MutableStateFlow<Map<String, String>>(emptyMap())
     val deviceGuards: StateFlow<Map<String, String>> = _deviceGuards.asStateFlow()
 
+    // ✅ MỚI (track hoàn thiện Cloud MQTT, mục "Realtime state/status"): map deviceId ->
+    // MqttDeviceRuntimeStatus lấy TRỰC TIẾP từ MqttDeviceController.realtimeStates — UI (
+    // MqttDeviceCard) đọc từ đây để hiện đúng 4 trạng thái (UNKNOWN/ON/OFF/OFFLINE) thay vì chỉ
+    // đọc cột `online` tĩnh trong MqttDeviceEntity. Không tự suy luận gì thêm ở tầng ViewModel —
+    // chỉ copy nguyên StateFlow của controller sang dạng đơn giản hơn cho Compose.
+    private val _realtimeStatuses = MutableStateFlow<Map<String, MqttDeviceRuntimeStatus>>(emptyMap())
+    val realtimeStatuses: StateFlow<Map<String, MqttDeviceRuntimeStatus>> = _realtimeStatuses.asStateFlow()
+
+    // ✅ MỚI (track hoàn thiện Cloud MQTT, mục "Discovery Engine phổ quát"): kết quả 1 lần
+    // discoverDevices() — thiết bị ĐÃ NHẬN DIỆN được (Home Assistant/Homie/vendor adapter), CHƯA
+    // lưu DB, chờ người dùng xem + xác nhận (confirmDiscoveredDevice()) giống flow Camera
+    // Discovery. Tách biệt với `discoveredTopics` cũ (topic thô, vẫn giữ nguyên làm fallback).
+    private val _discoveredDevices = MutableStateFlow<List<DiscoveredMqttDevice>>(emptyList())
+    val discoveredDevices: StateFlow<List<DiscoveredMqttDevice>> = _discoveredDevices.asStateFlow()
+
     init {
         loadDevices()
         loadBrokerConfig()
+        // ✅ MỚI: quan sát realtime status của controller suốt vòng đời ViewModel — controller là
+        // Hilt @Singleton nên StateFlow này SỐNG XUYÊN SUỐT kể cả khi rời màn hình rồi quay lại,
+        // không mất dữ liệu đã có, không cần gọi lại gì thêm khi mở lại tab MQTT.
+        viewModelScope.launch {
+            val controller = mqttController() as? MqttDeviceController ?: return@launch
+            controller.realtimeStates.collect { states ->
+                _realtimeStatuses.value = states.mapValues { it.value.status }
+            }
+        }
     }
 
     fun loadDevices() {
@@ -643,25 +670,116 @@ class MqttViewModel @Inject constructor(
         _discoveredTopics.value = emptyList()
     }
 
-    fun addDevice(name: String, topic: String) {
+    /**
+     * discoverDevices ("Quét nhanh" chuẩn mới)
+     *
+     * ✅ MỚI (track hoàn thiện Cloud MQTT): thay scanTopics() làm đường CHÍNH cho "Quét nhanh" —
+     * gọi MqttDeviceController.discoverDevices() (Home Assistant/Homie/vendor adapter qua
+     * MqttDiscoveryEngine), nhận về CẢ thiết bị đã nhận diện được (_discoveredDevices — cần
+     * người dùng xác nhận trước khi lưu) LẪN topic thô không adapter nào hiểu (_discoveredTopics
+     * — dùng lại y hệt luồng "Thêm tay" cũ, không đổi UI ScanTopicsDialog phần đó).
+     */
+    fun discoverDevices() {
         viewModelScope.launch {
-            val trimmedTopic = topic.trim()
+            val controller = mqttController() as? MqttDeviceController
+            if (controller == null) {
+                _message.value = "❌ Chưa có driver MQTT — kiểm tra lại cấu hình broker"
+                return@launch
+            }
+            _isScanning.value = true
+            _discoveredTopics.value = emptyList()
+            _discoveredDevices.value = emptyList()
+            try {
+                val knownCommandTopics = _devices.value.map { it.commandTopic }.toSet()
+                val result = withContext(Dispatchers.IO) { controller.discoverDevices() }
+                _discoveredDevices.value = result.recognizedDevices.filter { it.commandTopic !in knownCommandTopics }
+                _discoveredTopics.value = result.fallbackTopics.filter { it !in knownCommandTopics }
+                if (_discoveredDevices.value.isEmpty() && _discoveredTopics.value.isEmpty()) {
+                    _message.value = "🔍 Không phát hiện thiết bị hay topic nào trong lúc quét — " +
+                        "thiết bị có thể không tự publish, hãy thử \"Thiết lập nhanh\" và nhập tay"
+                }
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi quét: ${e.message}"
+                logger.e("MqttViewModel", "discoverDevices error", e)
+            } finally {
+                _isScanning.value = false
+            }
+        }
+    }
+
+    fun clearDiscoveredDevices() {
+        _discoveredDevices.value = emptyList()
+    }
+
+    /**
+     * confirmDiscoveredDevice
+     *
+     * ✅ MỚI: lưu 1 thiết bị đã được MqttDiscoveryEngine nhận diện — CHỈ gọi SAU khi người dùng
+     * xem lại + xác nhận trên UI (finalName cho phép sửa tên gợi ý trước khi lưu), đúng yêu cầu
+     * "không tự động lưu, phải qua xác nhận giống Camera Discovery". discoverySource lấy nguyên
+     * từ adapter đã nhận diện (vd "home_assistant", "homie", "vendor:tasmota") — không phải
+     * "manual" như addDevice() nhập tay bên dưới.
+     */
+    fun confirmDiscoveredDevice(discovered: DiscoveredMqttDevice, finalName: String) {
+        viewModelScope.launch {
+            val entity = MqttDeviceEntity(
+                id = java.util.UUID.randomUUID().toString(),
+                name = finalName.trim().ifBlank { discovered.suggestedName },
+                topic = discovered.commandTopic, // cột cũ giữ để UI nào còn đọc trực tiếp không bị trống
+                commandTopic = discovered.commandTopic,
+                stateTopic = discovered.stateTopic,
+                onPayload = discovered.onPayload,
+                offPayload = discovered.offPayload,
+                discoverySource = discovered.discoverySource
+            )
+            withContext(Dispatchers.IO) { database.mqttDeviceDao().insertDevice(entity) }
+            _discoveredDevices.value = _discoveredDevices.value.filter { it.uniqueId != discovered.uniqueId }
+            _message.value = "✅ Đã thêm thiết bị \"${entity.name}\""
+            loadDevices()
+            // Subscribe stateTopic của thiết bị vừa thêm NGAY, không chờ tới lần reconnect kế
+            // tiếp — xem docstring refreshDeviceSubscriptions() trong MqttDeviceController.
+            (mqttController() as? MqttDeviceController)?.refreshDeviceSubscriptions()
+        }
+    }
+
+    /**
+     * addDevice ("Thiết lập nhanh" — thêm tay, dùng khi discovery không nhận diện được)
+     *
+     * ✅ SỬA (track hoàn thiện Cloud MQTT): trước đây chỉ nhận (name, topic) rồi gán cùng 1 giá
+     * trị cho cả `topic`/`commandTopic`, không có stateTopic/onPayload/offPayload riêng — nghĩa
+     * là thiết bị thêm tay CHỈ điều khiển được 1 chiều, không thể có realtime status. Giờ nhận
+     * đủ 5 trường đúng yêu cầu "Thiết lập nhanh": Tên, Command Topic, State Topic, ON payload,
+     * OFF payload — stateTopic để trống hợp lệ (thiết bị không có gì để đọc trạng thái ngược,
+     * vẫn điều khiển 1 chiều bình thường, KHÔNG bắt buộc phải có). onPayload/offPayload có mặc
+     * định "ON"/"OFF" (giữ tương thích ngược với hành vi cũ) nhưng người dùng sửa được — KHÔNG
+     * tự đoán payload nào khác dựa trên tên topic.
+     */
+    fun addDevice(
+        name: String,
+        commandTopic: String,
+        stateTopic: String = "",
+        onPayload: String = "ON",
+        offPayload: String = "OFF"
+    ) {
+        viewModelScope.launch {
+            val trimmedCommandTopic = commandTopic.trim()
+            val trimmedStateTopic = stateTopic.trim()
             val entity = MqttDeviceEntity(
                 id = java.util.UUID.randomUUID().toString(),
                 name = name.trim(),
-                // ✅ SỬA (track Cloud Broker V1): ghi CẢ HAI cột `topic` (cũ, giữ để UI nào còn
-                // đọc trực tiếp — vd dòng hiển thị "device.topic" — không bị trống) VÀ
-                // `commandTopic` (mới, cột thật MqttDeviceController.publish() sẽ dùng từ nay).
-                // discoverySource = "manual" vì AddMqttDeviceDialog hiện tại là nhập tay/prefill
-                // từ Quét nhanh (Generic Fallback thô, chưa phải Home Assistant Discovery thật —
-                // xem MQTT_CLOUD_BROKER_PLAN.md mục 2.2/2.3 khi 2 tầng discovery đó được nối vào
-                // đây, cần đổi discoverySource cho đúng theo tầng đã phát hiện ra thiết bị).
-                topic = trimmedTopic,
-                commandTopic = trimmedTopic
+                topic = trimmedCommandTopic,
+                commandTopic = trimmedCommandTopic,
+                stateTopic = trimmedStateTopic.ifBlank { null },
+                onPayload = onPayload.ifBlank { "ON" },
+                offPayload = offPayload.ifBlank { "OFF" },
+                discoverySource = "manual"
             )
             withContext(Dispatchers.IO) { database.mqttDeviceDao().insertDevice(entity) }
             _message.value = "✅ Đã thêm thiết bị \"${entity.name}\""
             loadDevices()
+            if (entity.stateTopic != null) {
+                (mqttController() as? MqttDeviceController)?.refreshDeviceSubscriptions()
+            }
         }
     }
 
@@ -696,6 +814,8 @@ class MqttViewModel @Inject constructor(
             try {
                 val controller = mqttController()
                     ?: throw Exception("Chưa có driver điều khiển cho thiết bị MQTT")
+                // ✅ MqttDeviceController.deleteDevice() (bản mới) tự dọn subscription/cache
+                // realtime của thiết bị này ngay trong hàm — không cần gọi thêm gì ở đây.
                 val result = withContext(Dispatchers.IO) { controller.deleteDevice(device.id) }
                 if (result is DeviceActionResult.Failure) throw Exception(result.reason)
                 _message.value = "🗑️ Đã xoá thiết bị \"${device.name}\""
@@ -746,10 +866,17 @@ fun TuyaScreen(
     // khoá sẵn (luồng "chạm kết quả quét").
     val mqttDiscoveredTopics by mqttViewModel.discoveredTopics.collectAsState()
     val mqttIsScanning by mqttViewModel.isScanning.collectAsState()
+    // ✅ MỚI (track hoàn thiện Cloud MQTT): thiết bị đã được MqttDiscoveryEngine nhận diện trong
+    // lần quét gần nhất (chờ xác nhận), và trạng thái realtime 4 mức cho từng thiết bị đã lưu.
+    val mqttDiscoveredDevices by mqttViewModel.discoveredDevices.collectAsState()
+    val mqttRealtimeStatuses by mqttViewModel.realtimeStatuses.collectAsState()
     var showAddMqttDialog by remember { mutableStateOf(false) }
     var showBrokerConfigDialog by remember { mutableStateOf(false) }
     var showScanDialog by remember { mutableStateOf(false) }
     var scanResultTopic by remember { mutableStateOf<String?>(null) }
+    // ✅ MỚI: thiết bị vừa chạm "Xác nhận" trong ScanTopicsDialog — mở DiscoveryConfirmDialog
+    // để người dùng xem lại/sửa tên trước khi thật sự lưu (confirmDiscoveredDevice()).
+    var pendingDiscoveredDevice by remember { mutableStateOf<DiscoveredMqttDevice?>(null) }
     var mqttDeviceToDelete by remember { mutableStateOf<MqttDeviceEntity?>(null) }
 
     var deviceToDelete by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
@@ -793,16 +920,35 @@ fun TuyaScreen(
     }
 
     if (showAddMqttDialog) {
+        // ✅ SỬA (track hoàn thiện Cloud MQTT, "Thiết lập nhanh"): AddMqttDeviceDialog giờ nhận
+        // đủ 5 trường (Tên/Command Topic/State Topic/ON payload/OFF payload) — xem docstring
+        // MqttViewModel.addDevice() bản mới. scanResultTopic (từ ScanTopicsDialog cũ, topic thô
+        // không adapter nào nhận diện) vẫn prefill vào đúng ô Command Topic như hành vi trước.
         AddMqttDeviceDialog(
-            initialTopic = scanResultTopic ?: "",
+            initialCommandTopic = scanResultTopic ?: "",
             onDismiss = {
                 showAddMqttDialog = false
                 scanResultTopic = null
             },
-            onSave = { name, topic ->
-                mqttViewModel.addDevice(name, topic)
+            onSave = { name, commandTopic, stateTopic, onPayload, offPayload ->
+                mqttViewModel.addDevice(name, commandTopic, stateTopic, onPayload, offPayload)
                 showAddMqttDialog = false
                 scanResultTopic = null
+            }
+        )
+    }
+
+    // ✅ MỚI (track hoàn thiện Cloud MQTT, "Discovery Engine phổ quát"): xác nhận trước khi lưu
+    // 1 thiết bị đã được nhận diện tự động — cùng tinh thần flow Camera Discovery hiện có.
+    if (pendingDiscoveredDevice != null) {
+        val target = pendingDiscoveredDevice!!
+        DiscoveryConfirmDialog(
+            discovered = target,
+            onDismiss = { pendingDiscoveredDevice = null },
+            onConfirm = { finalName ->
+                mqttViewModel.confirmDiscoveredDevice(target, finalName)
+                pendingDiscoveredDevice = null
+                showScanDialog = false
             }
         )
     }
@@ -832,28 +978,36 @@ fun TuyaScreen(
     // mỗi lần recompose), Unit làm key vì chỉ cần chạy lại khi dialog đóng-rồi-mở lại (đổi
     // showScanDialog false→true tạo key mới đúng bằng chính LaunchedEffect(showScanDialog)).
     if (showScanDialog) {
+        // ✅ SỬA (track hoàn thiện Cloud MQTT): gọi discoverDevices() (MqttDiscoveryEngine) thay
+        // vì scanTopics() thô — cùng 1 cửa sổ lắng nghe "#" nhưng giờ vừa nhận diện thiết bị vừa
+        // gom topic thô làm fallback, xem docstring MqttViewModel.discoverDevices().
         LaunchedEffect(showScanDialog) {
-            mqttViewModel.scanTopics()
+            mqttViewModel.discoverDevices()
         }
         ScanTopicsDialog(
+            recognizedDevices = mqttDiscoveredDevices,
             topics = mqttDiscoveredTopics,
             isScanning = mqttIsScanning,
-            onRescan = { mqttViewModel.scanTopics() },
+            onRescan = { mqttViewModel.discoverDevices() },
+            onDeviceSelected = { discovered -> pendingDiscoveredDevice = discovered },
             onTopicSelected = { topic ->
                 scanResultTopic = topic
                 showScanDialog = false
                 mqttViewModel.clearDiscoveredTopics()
+                mqttViewModel.clearDiscoveredDevices()
                 showAddMqttDialog = true
             },
             onAddManually = {
                 showScanDialog = false
                 mqttViewModel.clearDiscoveredTopics()
+                mqttViewModel.clearDiscoveredDevices()
                 scanResultTopic = null
                 showAddMqttDialog = true
             },
             onDismiss = {
                 showScanDialog = false
                 mqttViewModel.clearDiscoveredTopics()
+                mqttViewModel.clearDiscoveredDevices()
             }
         )
     }
@@ -1131,6 +1285,10 @@ fun TuyaScreen(
                         items(mqttDevices, key = { it.id }) { device ->
                             MqttDeviceCard(
                                 device = device,
+                                // ✅ MỚI: mặc định UNKNOWN nếu chưa có entry (thiết bị không có
+                                // stateTopic, hoặc vừa subscribe chưa kịp nhận message nào) —
+                                // KHÔNG mặc định OFF, đúng yêu cầu "không coi im lặng là OFF".
+                                runtimeStatus = mqttRealtimeStatuses[device.id] ?: MqttDeviceRuntimeStatus.UNKNOWN,
                                 isLoading = device.id in mqttLoadingDevices,
                                 currentGuard = mqttDeviceGuards[device.id],
                                 onTurnOn = { mqttViewModel.toggleDevice(device, true) },
@@ -1847,6 +2005,10 @@ private fun EmptyTuyaState(
 @Composable
 private fun MqttDeviceCard(
     device: MqttDeviceEntity,
+    // ✅ MỚI (track hoàn thiện Cloud MQTT): trạng thái realtime 4 mức — thay cho việc chỉ đọc
+    // device.online tĩnh. UNKNOWN hiện riêng biệt với OFF (xám thay vì đỏ) — không được phép để
+    // người dùng hiểu lầm "chưa nhận được message nào" = "đang tắt".
+    runtimeStatus: MqttDeviceRuntimeStatus,
     isLoading: Boolean,
     // ✅ MỚI: precondition hiện có (nếu có) cho thiết bị này — chỉ dùng để tô màu icon khóa,
     // cùng ý nghĩa currentGuard trong TuyaDeviceCard.
@@ -1881,7 +2043,7 @@ private fun MqttDeviceCard(
                             .size(44.dp)
                             .clip(CircleShape)
                             .background(
-                                if (device.online)
+                                if (runtimeStatus == MqttDeviceRuntimeStatus.ON)
                                     MaterialTheme.colorScheme.primaryContainer
                                 else
                                     MaterialTheme.colorScheme.surfaceVariant
@@ -1905,13 +2067,20 @@ private fun MqttDeviceCard(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        color = if (device.online) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
-                        contentColor = if (device.online) Color(0xFF2E7D32) else Color(0xFFC62828),
-                        shape = CircleShape
-                    ) {
+                    // ✅ SỬA (track hoàn thiện Cloud MQTT): 4 màu/nhãn riêng biệt — ON (xanh),
+                    // OFF (đỏ nhạt — CHẮC CHẮN đang tắt, có message thật xác nhận), OFFLINE (đỏ
+                    // đậm — mất kết nối broker), UNKNOWN (xám — chưa có message nào, KHÔNG phải
+                    // đang tắt). Đây là điểm khác biệt cốt lõi so với bản cũ (chỉ 2 màu ONLINE/
+                    // OFFLINE suy từ device.online tĩnh).
+                    val (bgColor, textColor, label) = when (runtimeStatus) {
+                        MqttDeviceRuntimeStatus.ON -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), "BẬT")
+                        MqttDeviceRuntimeStatus.OFF -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), "TẮT")
+                        MqttDeviceRuntimeStatus.OFFLINE -> Triple(Color(0xFFFFEBEE), Color(0xFF8B0000), "MẤT KẾT NỐI")
+                        MqttDeviceRuntimeStatus.UNKNOWN -> Triple(Color(0xFFF5F5F5), Color(0xFF757575), "CHƯA RÕ")
+                    }
+                    Surface(color = bgColor, contentColor = textColor, shape = CircleShape) {
                         Text(
-                            text = if (device.online) "ONLINE" else "OFFLINE",
+                            text = label,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -1940,8 +2109,11 @@ private fun MqttDeviceCard(
             }
 
             Spacer(Modifier.height(10.dp))
+            // ✅ SỬA (track hoàn thiện Cloud MQTT): đổi nhãn từ "Lệnh cuối gửi đi" — trước đây
+            // đây LÀ nguồn "trạng thái" duy nhất (chỉ đọc DB tĩnh), giờ badge phía trên mới là
+            // trạng thái thật realtime; dòng này chỉ còn ý nghĩa lịch sử "app từng gửi lệnh gì".
             InfoChip(
-                label = "Lệnh cuối gửi đi",
+                label = "Lệnh cuối app đã gửi",
                 value = if (device.lastKnownState) "Bật" else "Tắt"
             )
 
@@ -2002,15 +2174,15 @@ private fun EmptyMqttState(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            // ✅ SỬA (Quét nhanh): MQTT không có Cloud login để CHỦ ĐỘNG hỏi broker liệt kê
-            // thiết bị như Tuya, nhưng có thể lắng nghe thụ động ít giây để tự phát hiện topic
-            // — xem MqttDeviceController.scanTopics(). Nếu quét không ra gì (thiết bị không tự
-            // publish), người dùng vẫn thêm tay được như trước, không mất phương án cũ.
+            // ✅ SỬA (track hoàn thiện Cloud MQTT): "Quét nhanh" giờ vừa tự nhận diện thiết bị
+            // (Home Assistant/Homie/vendor adapter — MqttDiscoveryEngine) vừa gom topic thô làm
+            // fallback — xem MqttDeviceController.discoverDevices(). Không nhận diện được gì thì
+            // dùng "Thiết lập nhanh" nhập tay, không mất phương án cũ.
             text = if (brokerConfigured)
-                "Nhấn \"Quét nhanh\" để tự phát hiện topic đang publish, hoặc thêm tay nếu " +
-                    "thiết bị của bạn không tự gửi dữ liệu"
+                "Nhấn \"Quét nhanh\" để tự phát hiện thiết bị đang publish, hoặc \"Thiết lập " +
+                    "nhanh\" nếu thiết bị của bạn không tự gửi dữ liệu"
             else
-                "Cấu hình broker trước, sau đó quét nhanh hoặc thêm thiết bị theo tên + topic",
+                "Cấu hình broker trước, sau đó quét nhanh hoặc thiết lập nhanh theo tên + topic",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 32.dp)
@@ -2032,7 +2204,7 @@ private fun EmptyMqttState(
             TextButton(onClick = onAddDevice) {
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Thêm thiết bị (nhập tay)")
+                Text("Thiết lập nhanh")
             }
         }
     }
@@ -2050,9 +2222,15 @@ private fun EmptyMqttState(
  */
 @Composable
 private fun ScanTopicsDialog(
+    // ✅ MỚI (track hoàn thiện Cloud MQTT): thiết bị MqttDiscoveryEngine đã NHẬN DIỆN được
+    // (Home Assistant/Homie/vendor adapter) — hiện ưu tiên phía trên, mỗi thiết bị chỉ cần chạm
+    // 1 lần để mở DiscoveryConfirmDialog xác nhận, KHÔNG lưu thẳng ở đây.
+    recognizedDevices: List<DiscoveredMqttDevice>,
+    // Topic thô KHÔNG adapter nào nhận diện được — hành vi y hệt bản cũ, làm fallback.
     topics: List<String>,
     isScanning: Boolean,
     onRescan: () -> Unit,
+    onDeviceSelected: (DiscoveredMqttDevice) -> Unit,
     onTopicSelected: (String) -> Unit,
     onAddManually: () -> Unit,
     onDismiss: () -> Unit
@@ -2074,39 +2252,73 @@ private fun ScanTopicsDialog(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
-                } else if (topics.isEmpty()) {
+                } else if (recognizedDevices.isEmpty() && topics.isEmpty()) {
                     Text(
-                        "Không phát hiện topic nào. Thiết bị có thể không tự publish định kỳ — " +
-                            "hãy thử quét lại đúng lúc thiết bị hoạt động (vd bật/tắt công tắc " +
-                            "vật lý), hoặc thêm tay nếu bạn đã biết topic.",
+                        "Không phát hiện thiết bị hay topic nào. Thiết bị có thể không tự " +
+                            "publish định kỳ — hãy thử quét lại đúng lúc thiết bị hoạt động " +
+                            "(vd bật/tắt công tắc vật lý), hoặc dùng Thiết lập nhanh nếu bạn " +
+                            "đã biết topic.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
-                    Text(
-                        "Tìm thấy ${topics.size} topic. Chạm 1 topic để đặt tên và thêm làm thiết bị:",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 280.dp)
+                            .heightIn(max = 360.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        topics.forEach { topic ->
-                            Surface(
-                                onClick = { onTopicSelected(topic) },
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = topic,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.padding(12.dp)
-                                )
+                        if (recognizedDevices.isNotEmpty()) {
+                            Text(
+                                "Đã nhận diện ${recognizedDevices.size} thiết bị — chạm để xác nhận và đặt tên:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            recognizedDevices.forEach { discovered ->
+                                Surface(
+                                    onClick = { onDeviceSelected(discovered) },
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text(
+                                            text = discovered.suggestedName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "${discovered.discoverySource} · ${discovered.commandTopic}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                }
+                            }
+                            if (topics.isNotEmpty()) Spacer(Modifier.height(8.dp))
+                        }
+                        if (topics.isNotEmpty()) {
+                            Text(
+                                "Topic khác không nhận diện được (${topics.size}) — chạm để thêm tay:",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            topics.forEach { topic ->
+                                Surface(
+                                    onClick = { onTopicSelected(topic) },
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = topic,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -2118,7 +2330,7 @@ private fun ScanTopicsDialog(
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onAddManually) { Text("Thêm tay") }
+                TextButton(onClick = onAddManually) { Text("Thiết lập nhanh") }
                 TextButton(onClick = onDismiss) { Text("Đóng") }
             }
         }
@@ -2126,30 +2338,25 @@ private fun ScanTopicsDialog(
 }
 
 /**
- * AddMqttDeviceDialog
+ * DiscoveryConfirmDialog
  *
- * Chỉ 2 trường — tên hiển thị + topic — khớp đúng field MqttDeviceEntity thật cần khi tạo
- * (id tự sinh UUID trong MqttViewModel.addDevice(), online/lastKnownState/lastSeen dùng giá
- * trị mặc định của Entity, chưa có gì để nhập ở bước thêm mới).
- *
- * ✅ MỚI: initialTopic — prefill từ ScanTopicsDialog khi người dùng chạm 1 topic vừa quét được
- * (xem TuyaScreen: showAddMqttDialog gọi kèm scanResultTopic). Vẫn để người dùng SỬA được, không
- * khoá field — topic quét ra có thể chỉ là 1 topic con (vd "tele/...LWT") không hẳn đúng topic
- * lệnh thật (thường là "cmnd/.../POWER"), nên không ép người dùng phải giữ nguyên.
+ * ✅ MỚI (track hoàn thiện Cloud MQTT): xác nhận 1 thiết bị MqttDiscoveryEngine vừa nhận diện
+ * TRƯỚC KHI lưu — cùng tinh thần flow Camera Discovery hiện có. Hiện đủ thông tin đã suy ra
+ * (command/state topic, on/off payload, nguồn discovery) ở dạng chỉ-đọc để người dùng biết
+ * chính xác cái gì sắp được lưu — chỉ tên là sửa được, tránh dialog quá phức tạp; muốn sửa
+ * topic/payload thì dùng "Thiết lập nhanh" thêm tay thay vì sửa kết quả discovery.
  */
 @Composable
-private fun AddMqttDeviceDialog(
-    initialTopic: String = "",
+private fun DiscoveryConfirmDialog(
+    discovered: DiscoveredMqttDevice,
     onDismiss: () -> Unit,
-    onSave: (name: String, topic: String) -> Unit
+    onConfirm: (finalName: String) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var topic by remember { mutableStateOf(initialTopic) }
-    val canSave = name.isNotBlank() && topic.isNotBlank()
+    var name by remember { mutableStateOf(discovered.suggestedName) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Thêm thiết bị MQTT") },
+        title = { Text("Xác nhận thiết bị phát hiện được") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
@@ -2159,26 +2366,114 @@ private fun AddMqttDeviceDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                InfoChip(label = "Nguồn nhận diện", value = discovered.discoverySource)
+                InfoChip(label = "Command Topic", value = discovered.commandTopic)
+                InfoChip(label = "State Topic", value = discovered.stateTopic ?: "(không có)")
+                InfoChip(label = "Payload Bật / Tắt", value = "${discovered.onPayload} / ${discovered.offPayload}")
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Thêm") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Huỷ") }
+        }
+    )
+}
+
+/**
+ * AddMqttDeviceDialog ("Thiết lập nhanh" — thêm tay khi discovery không nhận diện được)
+ *
+ * ✅ SỬA (track hoàn thiện Cloud MQTT): mở rộng từ 2 trường (tên + 1 topic dùng chung) lên đúng
+ * 5 trường theo yêu cầu "Thiết lập nhanh": Tên, Command Topic, State Topic, ON payload, OFF
+ * payload — cho phép thiết bị thêm tay CŨNG có realtime status nếu người dùng biết state topic
+ * của thiết bị, thay vì trước đây chỉ điều khiển 1 chiều. State Topic để trống hợp lệ (không
+ * bắt buộc — vẫn điều khiển được, chỉ không có realtime status). On/Off payload mặc định
+ * "ON"/"OFF" (giữ tương thích hành vi cũ) nhưng SỬA được — KHÔNG tự đoán payload nào khác.
+ *
+ * initialCommandTopic — prefill từ ScanTopicsDialog khi người dùng chạm 1 topic THÔ (không được
+ * MqttDiscoveryEngine nhận diện) vừa quét được. Vẫn để người dùng SỬA được, không khoá field.
+ */
+@Composable
+private fun AddMqttDeviceDialog(
+    initialCommandTopic: String = "",
+    onDismiss: () -> Unit,
+    onSave: (name: String, commandTopic: String, stateTopic: String, onPayload: String, offPayload: String) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var commandTopic by remember { mutableStateOf(initialCommandTopic) }
+    var stateTopic by remember { mutableStateOf("") }
+    var onPayload by remember { mutableStateOf("ON") }
+    var offPayload by remember { mutableStateOf("OFF") }
+    val canSave = name.isNotBlank() && commandTopic.isNotBlank()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Thiết lập nhanh") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 OutlinedTextField(
-                    value = topic,
-                    onValueChange = { topic = it },
-                    label = { Text("Topic MQTT") },
-                    placeholder = { Text("vd: home/devices/den_phong_khach/set") },
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Tên thiết bị") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                OutlinedTextField(
+                    value = commandTopic,
+                    onValueChange = { commandTopic = it },
+                    label = { Text("Command Topic") },
+                    placeholder = { Text("vd: cmnd/den_phong_khach/POWER") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = stateTopic,
+                    onValueChange = { stateTopic = it },
+                    label = { Text("State Topic (tuỳ chọn)") },
+                    placeholder = { Text("vd: stat/den_phong_khach/RESULT") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = onPayload,
+                        onValueChange = { onPayload = it },
+                        label = { Text("Payload Bật") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = offPayload,
+                        onValueChange = { offPayload = it },
+                        label = { Text("Payload Tắt") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
                 Text(
-                    text = "Topic phải khớp đúng topic thiết bị/gateway của bạn đang lắng nghe " +
-                        "để nhận lệnh bật/tắt.",
+                    text = "Command Topic phải khớp đúng topic thiết bị/gateway của bạn đang " +
+                        "lắng nghe để nhận lệnh. Để trống State Topic nếu thiết bị không tự báo " +
+                        "trạng thái ngược — vẫn điều khiển được, chỉ không hiện Bật/Tắt/Mất kết " +
+                        "nối realtime.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(name, topic) }, enabled = canSave) {
-                Text("Thêm")
-            }
+            TextButton(
+                onClick = { onSave(name, commandTopic, stateTopic, onPayload, offPayload) },
+                enabled = canSave
+            ) { Text("Thêm") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Huỷ") }
