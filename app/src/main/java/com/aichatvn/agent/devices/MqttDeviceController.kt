@@ -81,7 +81,7 @@ class CloudMqttBrokerProvider @Inject constructor(
      * host (không có "://") — tránh ghi đè lựa chọn port/scheme người dùng đã cố ý chọn khác mặc
      * định (mục 1.2 kế hoạch: "Không tự đặt mặc định nếu người dùng dán URL đã có sẵn scheme").
      */
-    private fun buildBrokerUri(rawBrokerUrl: String): String {
+    private suspend fun buildBrokerUri(rawBrokerUrl: String): String {
         if (rawBrokerUrl.contains("://")) return rawBrokerUrl
 
         val useTls = configProvider.getString(MqttConfigKeys.USE_TLS, "true").toBooleanStrictOrNull() ?: true
