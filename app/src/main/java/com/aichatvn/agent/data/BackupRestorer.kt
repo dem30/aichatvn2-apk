@@ -88,7 +88,14 @@ class BackupRestorer @Inject constructor(
         // là bằng chứng "device_id NÀY đã activate", chỉ đúng cho đúng device_id của máy đó.
         // Copy sang máy khác vô nghĩa (chữ ký không khớp device_id mới), giữ nguyên lý do
         // loại trừ như local.device_id/local.activation_status ở trên.
-        "local.activation_token"
+        "local.activation_token",
+        // ✅ FIX: call.device_code cũng tự sinh riêng cho từng máy (CallSkill.getOrCreateMyDeviceCode()
+        // khi kết nối Gateway lần đầu), y hệt lý do local.device_id bị loại trừ ở trên. Trước đây
+        // KHÔNG có trong set này nên khi nạp demo_seed.json, mọi máy mới cài đều bị ghi đè cùng 1
+        // call.device_code của máy đã export — gây trùng định danh: Gateway route tín hiệu cuộc gọi
+        // (/register_device_code, /call_signal) sai máy, và device.home_camera_node_code trên máy
+        // Client có thể trỏ nhầm Camera Node nếu nhiều Camera Node ngoài đời thực bị trùng code.
+        "call.device_code"
     )
 
     /**
