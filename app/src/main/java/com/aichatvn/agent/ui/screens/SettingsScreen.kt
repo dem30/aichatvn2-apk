@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalContext
@@ -638,6 +639,13 @@ private fun PluginGroupCard(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
+    // ✅ MỚI (UX role/device-code): đọc vai trò hiện tại của máy để (1) chỉ hiện đúng 1 trong 2
+    // field "Mã Camera Node ở nhà" / "Mã máy cần báo khi ONVIF phát hiện chuyển động" — field
+    // còn lại không có tác dụng gì trên vai trò hiện tại nên gây hiểu lầm là trùng lặp (xem thảo
+    // luận trước); và (2) đổi field device.role từ ô nhập chữ tự do sang 2 nút chọn, tránh gõ sai
+    // chính tả "client"/"camera_node" làm sai lệch cả logic lọc lẫn logic gateway relay.
+    val deviceRole = allConfigs.firstOrNull { it.key == "device.role" }?.value?.trim()?.lowercase().orEmpty().ifBlank { "client" }
+
     val (icon, title) = when (pluginId) {
         "global"    -> Pair("🌐", "Cổng kết nối Gateway")
         "groq"      -> Pair("🤖", "Groq AI Cloud")
@@ -671,6 +679,43 @@ private fun PluginGroupCard(
 
             if (groupExpanded) {
                 Spacer(Modifier.height(4.dp))
+
+                if (pluginId == "global") {
+                    val roleEntity = items.firstOrNull { it.key == "device.role" }
+                    if (roleEntity != null) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("📱🏠 Vai trò của máy này", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(4.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    val isClient = deviceRole != "camera_node"
+                                    OutlinedButton(
+                                        onClick = { onSave("device.role", "client") },
+                                        modifier = Modifier.weight(1f),
+                                        colors = if (isClient) ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer) else ButtonDefaults.outlinedButtonColors()
+                                    ) { Text("📱 Client\n(mang theo người)", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center) }
+                                    OutlinedButton(
+                                        onClick = { onSave("device.role", "camera_node") },
+                                        modifier = Modifier.weight(1f),
+                                        colors = if (!isClient) ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer) else ButtonDefaults.outlinedButtonColors()
+                                    ) { Text("🏠 Camera Node\n(cố định ở nhà)", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center) }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    if (isClientRole(deviceRole))
+                                        "Máy này đang là Client — chỉ cần điền \"Mã Camera Node ở nhà\" bên dưới. Field \"Mã máy cần báo khi ONVIF phát hiện chuyển động\" không áp dụng cho vai trò này nên đã ẩn."
+                                    else
+                                        "Máy này đang là Camera Node — chỉ cần điền \"Mã máy cần báo khi ONVIF phát hiện chuyển động\" bên dưới (mã Device Code của máy Client). Field \"Mã Camera Node ở nhà\" không áp dụng cho vai trò này nên đã ẩn.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
 
                 if (pluginId == "website") {
                     val gatewayUrl = allConfigs.firstOrNull { it.key == AppConfigDefaults.GLOBAL_GATEWAY_URL }?.value ?: ""
@@ -833,8 +878,19 @@ private fun PluginGroupCard(
                 }
 
                 items.forEach { entity ->
-                    ConfigItemRow(entity = entity, onSave = onSave, onReset = onReset)
-                    Spacer(Modifier.height(8.dp))
+                    // ✅ MỚI (UX role/device-code): field device.role giờ đã có 2 nút chọn ở
+                    // card trên nên ẩn ô nhập chữ tự do trùng lặp; và chỉ 1 trong 2 field
+                    // "Mã Camera Node ở nhà" / "Mã máy cần báo khi ONVIF phát hiện chuyển động"
+                    // có tác dụng thật trên vai trò hiện tại — ẩn field còn lại để tránh hiểu lầm.
+                    val hiddenForGlobalRole = pluginId == "global" && (
+                        entity.key == AppConfigDefaults.DEVICE_ROLE ||
+                        (isClientRole(deviceRole) && entity.key == AppConfigDefaults.CAMERA_ALARM_NOTIFY_DEVICE_CODE) ||
+                        (!isClientRole(deviceRole) && entity.key == AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE)
+                    )
+                    if (!hiddenForGlobalRole) {
+                        ConfigItemRow(entity = entity, onSave = onSave, onReset = onReset)
+                        Spacer(Modifier.height(8.dp))
+                    }
                 }
             }
         }
@@ -1130,6 +1186,8 @@ private fun PromptLogCard(index: Int, entry: PromptLogEntry) {
         }
     }
 }
+
+private fun isClientRole(deviceRole: String): Boolean = deviceRole != "camera_node"
 
 private fun fmtTs(millis: Long): String {
     if (millis <= 0) return "—"
