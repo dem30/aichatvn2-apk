@@ -231,6 +231,22 @@ class TuyaLocalController @Inject constructor(
     // ═══════════════════════════════ ĐIỀU KHIỂN — PROTOCOL 3.3 ═══════════════════════════════
 
     /** Gửi lệnh set DP qua protocol 3.3. Trả về true nếu thiết bị xác nhận nhận lệnh. */
+    // ✅ SỬA (quan trọng): trước đây coi lệnh CONTROL là "gửi thất bại" bất cứ khi nào
+    // sendPacket33() trả null — nhưng sendPacket33() trả null trong 2 trường hợp có ý nghĩa
+    // KHÁC NHAU hoàn toàn: (1) readSocketFully() không nhận được byte hợp lệ nào — đây mới là
+    // network fail thật (không tới thiết bị / thiết bị không phản hồi gì); (2) đã nhận đủ raw
+    // bytes từ thiết bị (readSocketFully thành công) nhưng parseResponsePacket33() decrypt nội
+    // dung ACK thất bại — quan sát thực tế trên thiết bị thật: ACK của lệnh CONTROL đôi khi
+    // dùng định dạng/key khác với DP_QUERY khiến decrypt luôn lỗi ("Cipher functions:
+    // OPENSSL_internal..."), dù gói tin đã tới và thiết bị đã thực thi lệnh đúng (ổ cắm đổi
+    // trạng thái thật). Gộp chung 2 trường hợp này khiến lệnh CONTROL luôn bị coi là "thất bại"
+    // với những thiết bị có kiểu ACK này, buộc TuyaManager rơi xuống Cloud API mỗi lần dù Local
+    // đã thành công.
+    //
+    // Sửa lại: gọi thẳng readSocketFully() trước để biết CÓ nhận được phản hồi hay không — có
+    // (dù sau đó decrypt lỗi) nghĩa là gói tin CONTROL đã tới và được xử lý, coi là thành công.
+    // Chỉ khi hoàn toàn không nhận được gì (readSocketFully null — timeout/network fail thật)
+    // mới coi là thất bại thật sự.
     suspend fun sendCommand33(
         ip: String, localKey: String, deviceId: String, dps: Map<String, Any>
     ): Boolean = withContext(Dispatchers.IO) {
@@ -240,7 +256,7 @@ class TuyaLocalController @Inject constructor(
                 put("dps", JSONObject(dps as Map<*, *>))
                 put("t", (System.currentTimeMillis() / 1000).toString())
             }.toString()
-            sendPacket33(ip, localKey, CMD_CONTROL, payloadJson) != null
+            sendPacket33Raw(ip, localKey, CMD_CONTROL, payloadJson) != null
         } catch (e: Exception) {
             logger.d("TuyaLocalController", "sendCommand33($ip) lỗi: ${e.message}")
             false
@@ -268,6 +284,20 @@ class TuyaLocalController @Inject constructor(
     }
 
     private fun sendPacket33(ip: String, localKey: String, command: Int, payloadJson: String): JSONObject? {
+        val (responseRaw, keyBytes) = sendAndReceiveRaw33(ip, localKey, command, payloadJson) ?: return null
+        return parseResponsePacket33(responseRaw, keyBytes)
+    }
+
+    // ✅ MỚI: dùng cho sendCommand33 — chỉ cần biết THIẾT BỊ CÓ PHẢN HỒI GÌ HAY KHÔNG (raw bytes
+    // nhận được đầy đủ theo đúng cấu trúc header/len), KHÔNG quan tâm nội dung ACK có decrypt
+    // được hay không. Xem giải thích đầy đủ ở doc-comment sendCommand33 — với lệnh CONTROL, có
+    // phản hồi (dù không đọc được nội dung) đã là bằng chứng đủ mạnh cho thấy gói tin đã tới và
+    // được xử lý; parse nội dung ACK chỉ thật sự cần thiết cho DP_QUERY (sendPacket33 ở trên).
+    private fun sendPacket33Raw(ip: String, localKey: String, command: Int, payloadJson: String): ByteArray? {
+        return sendAndReceiveRaw33(ip, localKey, command, payloadJson)?.first
+    }
+
+    private fun sendAndReceiveRaw33(ip: String, localKey: String, command: Int, payloadJson: String): Pair<ByteArray, ByteArray>? {
         Socket().use { socket ->
             socket.connect(InetSocketAddress(ip, TCP_PORT), CONNECT_TIMEOUT_MS)
             socket.soTimeout = READ_TIMEOUT_MS
@@ -287,7 +317,7 @@ class TuyaLocalController @Inject constructor(
             }
 
             val responseRaw = readSocketFully(socket) ?: return null
-            return parseResponsePacket33(responseRaw, keyBytes)
+            return responseRaw to keyBytes
         }
     }
 
