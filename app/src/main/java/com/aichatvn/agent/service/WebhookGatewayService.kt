@@ -2025,10 +2025,14 @@ class WebhookGatewayService : Service() {
      * trên) — đó là hành động chủ động, không có nguy cơ N-way.
      */
     private fun notifyTuyaStateChangeFromSync(deviceId: String, deviceName: String, newState: Boolean) {
-        val deviceRole = configProvider.getString(AppConfigDefaults.DEVICE_ROLE, "client").trim()
-        if (deviceRole != "camera_node") return
-
+        // ✅ SỬA: configProvider.getString() là hàm suspend — không gọi được trực tiếp từ
+        // hàm thường (lỗi biên dịch "can only be called from a coroutine or another
+        // suspend function"). Chuyển việc đọc deviceRole vào trong serviceScope.launch,
+        // nơi đã là coroutine — logic gate không đổi, chỉ đổi chỗ gọi.
         serviceScope.launch(Dispatchers.IO) {
+            val deviceRole = configProvider.getString(AppConfigDefaults.DEVICE_ROLE, "client").trim()
+            if (deviceRole != "camera_node") return@launch
+
             householdEventPublisher.publishTuyaStateChange(deviceId, deviceName, newState)
         }
     }
