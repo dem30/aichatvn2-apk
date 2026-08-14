@@ -678,10 +678,22 @@ class TuyaManager @Inject constructor(
         }
     }
 
-    // ✅ MỚI: thử điều khiển LOCAL trước khi rơi về Cloud API. Trả về true nếu local thành công
-    // VÀ đã xác minh lại trạng thái thật khớp mong muốn — false trong MỌI trường hợp khác (kể cả
-    // lỗi mạng LAN, sai local_key, không cùng Wi-Fi...), để setDeviceState() tự nối tiếp bằng
-    // đường Cloud API cũ, không đổi hành vi bên ngoài của hàm turnOn()/turnOff().
+    // ✅ MỚI: thử điều khiển LOCAL trước khi rơi về Cloud API.
+    //
+    // ✅ SỬA (quan trọng): trước đây hàm này coi việc GỬI lệnh thành công (ACK) là CHƯA ĐỦ —
+    // bắt buộc phải query lại và khớp giá trị mới trả true, nếu không sẽ rơi xuống Cloud. Trên
+    // thực tế nhiều thiết bị Tuya giá rẻ không kịp accept 1 kết nối TCP MỚI (queryStatus33 mở
+    // Socket() riêng — xem TuyaLocalController.sendPacket33) ngay trong vài trăm ms sau khi vừa
+    // xử lý xong lệnh CONTROL, dẫn tới query timeout/null RẤT ĐỀU ĐẶN dù lệnh gửi đã thực thi
+    // đúng ngoài đời thật — quan sát được: ổ cắm đổi trạng thái chính xác MỌI LẦN, nhưng app vẫn
+    // báo lỗi Cloud mỗi lần vì cứ rơi xuống Cloud rồi Cloud mới là nơi thật sự fail.
+    //
+    // Sửa lại: coi ACK gửi lệnh (sendCommand33/34 trả true) là NGUỒN SỰ THẬT CHÍNH cho biết
+    // lệnh đã tới thiết bị — bước query lại giờ chỉ mang tính "xác minh thêm nếu có thể", KHÔNG
+    // còn là điều kiện bắt buộc để tránh rơi Cloud. Chỉ khi query THÀNH CÔNG (đọc được giá trị
+    // rõ ràng) và giá trị đó THỰC SỰ khác state mong muốn mới coi là bằng chứng thật của thất
+    // bại (ví dụ relay kẹt) và rơi xuống Cloud thử lại — query timeout/null (không đọc được gì)
+    // không còn tự động coi là thất bại nữa, vì không có gì để phủ nhận ACK.
     private suspend fun trySetDeviceStateLocal(deviceId: String, dpId: String, state: Boolean): Boolean {
         val entity = ensureLocalControlReady(deviceId) ?: return false
         val ip = entity.lastKnownIp ?: return false
@@ -700,8 +712,7 @@ class TuyaManager @Inject constructor(
 
         // ⚠️ Xác minh lại chỉ áp dụng cho 3.3 — 3.4 dùng session_key riêng theo từng phiên
         // (không phải local_key), TuyaLocalController hiện chưa có queryStatus34() nên KHÔNG
-        // gọi nhầm queryStatus33() ở đây (chắc chắn fail vì sai key, khiến local 3.4 luôn bị coi
-        // là thất bại dù gửi lệnh thực ra đã thành công). Với 3.4, tạm tin thẳng kết quả
+        // gọi nhầm queryStatus33() ở đây (chắc chắn fail vì sai key). Với 3.4, tin thẳng kết quả
         // sendCommand34() — chấp nhận rủi ro không xác minh được, nhất quán với cảnh báo "chưa
         // test với thiết bị thật" đã ghi trong TuyaLocalController.
         if (version == "3.4") {
@@ -709,19 +720,27 @@ class TuyaManager @Inject constructor(
             return true
         }
 
-        // Xác minh lại NGAY bằng chính đường local (không tốn thêm 1 round-trip cloud) — chỉ 1
-        // lần kiểm tra (khác verifyDeviceStateApplied() bên cloud retry nhiều lần), vì local
-        // round-trip nhanh hơn nhiều, độ trễ lan truyền DP gần như không đáng kể trên LAN.
+        // Xác minh THÊM nếu có thể — không phải điều kiện bắt buộc để trả true (xem giải thích
+        // ở doc-comment hàm). Query timeout/null (không đọc được gì): KHÔNG có bằng chứng nào
+        // phủ nhận ACK vừa nhận — tin ACK, coi là thành công.
         kotlinx.coroutines.delay(300)
-        val status = tuyaLocalController.queryStatus33(ip, localKey, deviceId) ?: return false
+        val status = tuyaLocalController.queryStatus33(ip, localKey, deviceId)
+        if (status == null) {
+            logger.i("TuyaManager", "⚡ ($deviceId) đã gửi lệnh LOCAL qua $ip, ACK nhận được (query xác minh lại timeout/null — tin ACK, không rơi Cloud).")
+            return true
+        }
         val actual = when (val v = status[dpId]) {
             is Boolean -> v
             is Int -> v == 1
             is String -> v == "true" || v == "1"
             else -> null
         }
-        if (actual != state) {
-            logger.d("TuyaManager", "trySetDeviceStateLocal($deviceId): gửi được nhưng xác minh không khớp (thực tế=$actual, mong muốn=$state) — fallback cloud.")
+        // actual == null: đọc được response nhưng không thấy đúng dpId trong đó — cũng không
+        // phải bằng chứng phủ nhận ACK (có thể dpId khác tên/khác cấu trúc ở nhánh query so với
+        // control) — vẫn tin ACK. CHỈ khi actual đọc được RÕ RÀNG và THỰC SỰ khác state mới coi
+        // là bằng chứng thật của thất bại (ví dụ relay kẹt, lệnh không có tác dụng ngoài đời).
+        if (actual != null && actual != state) {
+            logger.d("TuyaManager", "trySetDeviceStateLocal($deviceId): gửi được nhưng xác minh cho thấy KHÁC state mong muốn (thực tế=$actual, mong muốn=$state) — fallback cloud.")
             return false
         }
         logger.i("TuyaManager", "⚡ ($deviceId) điều khiển LOCAL thành công qua $ip — không cần gọi Cloud API.")
@@ -820,17 +839,62 @@ class TuyaManager @Inject constructor(
         return resolved
     }
 
-    // ✅ MỚI (tối ưu quota API): Tuya có endpoint /v1.0/iot-03/devices/status nhận TỐI ĐA 20
+    // ✅ MỚI: đọc trạng thái LOCAL cho 1 thiết bị đã có sẵn local_key+IP (từng điều khiển
+    // Local thành công ít nhất 1 lần) — dùng lại chính queryStatus33() mà
+    // trySetDeviceStateLocal() đang gọi để xác minh sau khi ghi, giờ tái dùng cho đường ĐỌC.
+    // Chỉ hỗ trợ 3.3 (giống trySetDeviceStateLocal — 3.4 chưa có queryStatus34()). Trả về
+    // null nếu thiếu dữ liệu cục bộ hoặc query thất bại (không cùng LAN, timeout...) — caller
+    // tự fallback Cloud, không throw để không làm gián đoạn luồng đọc trạng thái.
+    private suspend fun tryGetStatusLocal(entity: TuyaDeviceEntity): Boolean? {
+        val ip = entity.lastKnownIp ?: return null
+        val localKey = entity.localKey ?: return null
+        val dpId = entity.localSwitchDpId ?: return null
+        if ((entity.protocolVersion ?: "3.3") != "3.3") return null
+
+        val status = tuyaLocalController.queryStatus33(ip, localKey, entity.id) ?: return null
+        return when (val v = status[dpId]) {
+            is Boolean -> v
+            is Int -> v == 1
+            is String -> v == "true" || v == "1"
+            else -> null
+        }
+    }
+
+    // ✅ (tối ưu quota API): Tuya có endpoint /v1.0/iot-03/devices/status nhận TỐI ĐA 20
     // device_ids cùng lúc và trả trạng thái của tất cả trong 1 response — thay vì gọi
     // fetchDeviceStatusList() riêng cho từng thiết bị (N call), giờ chỉ tốn ceil(N/20) call.
     // Dùng cho cả vòng lặp nền (syncTuyaDeviceStates) lẫn Dashboard (getDashboardNodes) —
     // đây là 2 nơi tốn call nhiều nhất vì lặp qua từng thiết bị.
     //
+    // ✅ MỚI: giờ ưu tiên hỏi LOCAL trước cho thiết bị đã sẵn sàng (xem tryGetStatusLocal ở
+    // trên), chỉ những thiết bị Local không trả lời được mới rơi xuống Cloud batch bên dưới.
+    //
     // Trả về Map<deviceId, isOn>. Thiết bị không dò được switch code (model lạ, hoặc chưa
-    // từng bật/tắt lần nào) sẽ bị bỏ qua khỏi map — caller nên coi thiếu key là "không rõ",
-    // không phải false.
+    // từng bật/tắt lần nào) VÀ không đọc được qua Local sẽ bị bỏ qua khỏi map — caller nên
+    // coi thiếu key là "không rõ", không phải false.
     suspend fun getStatusBatch(deviceIds: List<String>): Map<String, Boolean> = withContext(Dispatchers.IO) {
         if (deviceIds.isEmpty()) return@withContext emptyMap()
+
+        val result = mutableMapOf<String, Boolean>()
+
+        // ✅ MỚI: ưu tiên hỏi LOCAL trước cho thiết bị đã có sẵn local_key+IP trong DB (không
+        // gọi ensureLocalControlReady() đầy đủ — đây là đường ĐỌC, không cần tốn thời gian dò
+        // IP mới cho thiết bị chưa từng điều khiển local; discoverIp mới chỉ chạy khi THỰC SỰ
+        // điều khiển, ở setDeviceState()). Thiết bị hỏi Local thành công sẽ KHÔNG nằm trong
+        // request Cloud batch bên dưới nữa — vừa nhanh hơn vừa đỡ tốn quota Cloud, và quan
+        // trọng nhất: vẫn phản ánh đúng trạng thái khi Cloud API die (clientId sai, mất mạng
+        // Cloud...) miễn thiết bị đó vẫn cùng LAN.
+        val remainingIds = mutableListOf<String>()
+        for (id in deviceIds) {
+            val entity = tuyaDeviceDao.getDeviceById(id)
+            val localValue = entity?.let { tryGetStatusLocal(it) }
+            if (localValue != null) {
+                result[id] = localValue
+            } else {
+                remainingIds.add(id)
+            }
+        }
+        if (remainingIds.isEmpty()) return@withContext result
 
         val token = getAccessToken()
         val prefs = context.dataStore.data.first()
@@ -838,11 +902,9 @@ class TuyaManager @Inject constructor(
         val clientSecret = prefs[CLIENT_SECRET] ?: ""
         val baseUrl = getApiBaseUrl()
 
-        val result = mutableMapOf<String, Boolean>()
-
         // Giới hạn cứng của Tuya: tối đa 20 device_ids/lần gọi -> chia batch nếu khách có
         // nhiều hơn 20 thiết bị (vẫn rẻ hơn rất nhiều so với gọi từng thiết bị một).
-        deviceIds.chunked(20).forEach { chunk ->
+        remainingIds.chunked(20).forEach { chunk ->
             val urlPath = "/v1.0/iot-03/devices/status?device_ids=${chunk.joinToString(",")}"
             val timestamp = System.currentTimeMillis()
             val nonce = UUID.randomUUID().toString()
