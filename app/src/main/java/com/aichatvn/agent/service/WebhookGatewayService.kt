@@ -57,6 +57,7 @@ import com.aichatvn.agent.skills.DeviceCommandGatewayClient
 // "Unresolved reference" -> kaptDebugKotlin fail hàng loạt, y hệt vụ DeviceCommandGatewayClient
 // trước đó — bài học: MỌI class mới ở package khác dùng trong file này đều phải có import riêng.
 import com.aichatvn.agent.skills.OnvifEventRelay
+import com.aichatvn.agent.skills.HouseholdEventPublisher
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
@@ -154,6 +155,12 @@ class WebhookGatewayService : Service() {
     @Inject
     lateinit var onvifEventRelay: OnvifEventRelay
 
+    // ✅ MỚI (Household Event Broadcast): publish tuya_state_change (khi CHÍNH Camera Node
+    // này thực thi lệnh relay từ Client — xem handleTuyaCommand()) và đọc bởi vòng poll
+    // syncTuyaDeviceStates(). Cùng singleton được SmartSwitchSkill/OnvifEventRelay dùng.
+    @Inject
+    lateinit var householdEventPublisher: HouseholdEventPublisher
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
@@ -184,7 +191,7 @@ class WebhookGatewayService : Service() {
     @Volatile private var pageMessageCall: okhttp3.Call? = null
     // ✅ MỚI: tham chiếu Call riêng cho kênh SSE "camera báo động"
     // (/camera/alarm/stream/{device_code}) — cùng lý do với các tham chiếu ở trên.
-    @Volatile private var cameraAlarmCall: okhttp3.Call? = null
+    @Volatile private var householdEventCall: okhttp3.Call? = null
     // ✅ MỚI: SSE tới /device/command/stream/{deviceCode} — kênh lệnh CHUNG cho mọi thiết bị
     // điều khiển từ xa (Tuya, và các loại khác sẽ tích hợp sau). Chỉ máy đóng vai trò "Camera
     // Node" (đặt cố định ở nhà) cần mở kênh này; máy "Client" (mang theo người, chỉ GỬI lệnh
@@ -208,7 +215,7 @@ class WebhookGatewayService : Service() {
         // ✅ MỚI: cùng lý do — kênh camera alarm cũng khóa theo device_code, ngắt luôn để
         // resync đồng thời, tránh kênh này treo với deviceCode cũ trong khi các kênh khác
         // đã chuyển sang deviceCode mới.
-        cameraAlarmCall?.cancel()
+        householdEventCall?.cancel()
         // ✅ MỚI: cùng lý do — kênh lệnh thiết bị cũng khóa theo device_code, ngắt luôn để
         // resync đồng thời với các kênh còn lại.
         deviceCommandCall?.cancel()
@@ -304,10 +311,12 @@ class WebhookGatewayService : Service() {
         // /page/inbox/{device_code}/{token} — tách hẳn khỏi /stream/{token} dùng chung.
         // Cùng lý do với startWebsiteMessageSSE() ở trên.
         startPageMessageSSE()
-        // ✅ MỚI: kênh SSE riêng biệt cho tín hiệu "camera báo động", kết nối tới
-        // /camera/alarm/stream/{device_code} — cho phép quét camera sớm hơn ngay khi
-        // camera tự phát hiện chuyển động, thay vì chỉ đợi lịch quét định kỳ.
-        startCameraAlarmSSE()
+        // ✅ MỚI (Household Event Broadcast): kênh SSE riêng biệt cho MỌI household event
+        // (camera báo động, Tuya đổi trạng thái...), kết nối tới
+        // /device/event/stream/{device_code} — cho phép quét camera sớm hơn ngay khi camera
+        // tự phát hiện chuyển động, và đồng bộ trạng thái Tuya giữa các máy trong household,
+        // thay vì chỉ đợi lịch quét/poll định kỳ.
+        startHouseholdEventSSE()
         // ✅ MỚI: kênh SSE riêng biệt cho LỆNH ĐIỀU KHIỂN THIẾT BỊ (Tuya, và các loại khác
         // sẽ tích hợp sau), kết nối tới /device/command/stream/{deviceCode}. Chỉ thực sự mở
         // kết nối nếu deviceRole = "camera_node" (xem điều kiện bên trong hàm) — máy "client"
@@ -568,10 +577,16 @@ class WebhookGatewayService : Service() {
                 // ✅ SỬA LỖI: gọi qua callSkill.getOrCreateMyDeviceCode() (có Mutex) thay vì
                 // tự đọc-rồi-tự-sinh riêng — xem giải thích đầy đủ ở khai báo field callSkill.
                 val deviceCode = callSkill.getOrCreateMyDeviceCode()
+                // ✅ MỚI (Household Event Broadcast): gửi kèm householdId hiện tại mỗi lần đăng
+                // ký lại — để trống nếu người dùng chưa cấu hình (server tự hiểu là "không thuộc
+                // household nào", xem register_device_code() phía app.py). Đọc lại mỗi lần gọi
+                // (không cache) vì người dùng có thể vừa đổi giá trị trong Settings.
+                val householdId = configProvider.getString(AppConfigDefaults.HOUSEHOLD_ID, "").trim()
 
                 val bodyJson = org.json.JSONObject().apply {
                     put("token", gatewayToken)
                     put("deviceCode", deviceCode)
+                    put("householdId", householdId)
                 }
 
                 val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -978,7 +993,11 @@ class WebhookGatewayService : Service() {
     // force=false (nghĩa là vẫn so pHash, vẫn tôn trọng cooldown y hệt 1 lượt quét nền
     // bình thường). Việc có gọi AI hay không vẫn hoàn toàn do logic sẵn có trong
     // scanCamera() quyết định — xem execute("scan", ...) trong CameraSkill.
-    private fun startCameraAlarmSSE() {
+    // ✅ MỚI (Household Event Broadcast — đổi tên từ startCameraAlarmSSE): kênh SSE CHUNG cho
+    // mọi household event, kết nối tới /device/event/stream/{device_code}. Payload giờ có
+    // "type" để phân biệt (camera_alarm | tuya_state_change | ...), khác với trước đây chỉ có
+    // đúng 1 loại tín hiệu camera_alarm.
+    private fun startHouseholdEventSSE() {
         serviceScope.launch(Dispatchers.IO) {
             var isOfflineLogged = false
 
@@ -989,7 +1008,7 @@ class WebhookGatewayService : Service() {
 
                 if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
                     if (!isOfflineLogged) {
-                        logger.w("CameraAlarmSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh báo động camera.")
+                        logger.w("HouseholdEventSSE", "⚠️ Thiếu cấu hình Gateway URL hoặc Token, tạm hoãn kênh household event.")
                         isOfflineLogged = true
                     }
                     delay(5000)
@@ -1004,18 +1023,18 @@ class WebhookGatewayService : Service() {
                 isOfflineLogged = false
 
                 try {
-                    logger.i("CameraAlarmSSE", "🔌 Đang thiết lập đường ống SSE báo động camera cho deviceCode=$deviceCode...")
+                    logger.i("HouseholdEventSSE", "🔌 Đang thiết lập đường ống SSE household event cho deviceCode=$deviceCode...")
 
                     val request = Request.Builder()
-                        .url("$gatewayUrl/camera/alarm/stream/$deviceCode")
+                        .url("$gatewayUrl/device/event/stream/$deviceCode")
                         .header("Accept", "text/event-stream")
                         .build()
 
                     val call = okHttpClient.newCall(request)
-                    cameraAlarmCall = call
+                    householdEventCall = call
                     call.execute().use { response ->
                         if (!response.isSuccessful) {
-                            logger.w("CameraAlarmSSE", "⚠️ Kết nối SSE báo động camera thất bại, mã lỗi HTTP: ${response.code}")
+                            logger.w("HouseholdEventSSE", "⚠️ Kết nối SSE household event thất bại, mã lỗi HTTP: ${response.code}")
                             delay(5000)
                             return@use
                         }
@@ -1024,7 +1043,7 @@ class WebhookGatewayService : Service() {
                         val reader = BufferedReader(InputStreamReader(body.byteStream()))
                         var line: String? = null
 
-                        logger.i("CameraAlarmSSE", "🟢 Đường ống SSE báo động camera đã mở, sẵn sàng nhận tín hiệu.")
+                        logger.i("HouseholdEventSSE", "🟢 Đường ống SSE household event đã mở, sẵn sàng nhận tín hiệu.")
 
                         while (isActive && reader.readLine().also { line = it } != null) {
                             val trimmedLine = line?.trim() ?: ""
@@ -1032,28 +1051,14 @@ class WebhookGatewayService : Service() {
                                 val rawData = trimmedLine.substring(5).trim()
                                 if (rawData.isNotEmpty()) {
                                     serviceScope.launch {
-                                        try {
-                                            val jsonObj = org.json.JSONObject(rawData)
-                                            val cameraId = jsonObj.optString("cameraId", "").trim()
-                                            if (cameraId.isNotEmpty()) {
-                                                logger.i("CameraAlarmSSE", "🚨 Camera $cameraId báo động, kích hoạt quét sớm (vẫn tôn trọng pHash/cooldown).")
-                                                // ✅ force=false: KHÔNG bypass cooldown/pHash — chỉ chạy sớm hơn lịch,
-                                                // logic quyết định có gọi AI hay không vẫn nằm nguyên trong scanCamera().
-                                                findPlugin("camera")?.execute(
-                                                    "scan",
-                                                    mapOf("cameraId" to cameraId, "force" to false)
-                                                )
-                                            }
-                                        } catch (e: Exception) {
-                                            logger.e("CameraAlarmSSE", "Lỗi giải mã tín hiệu báo động camera: ${e.message}")
-                                        }
+                                        handleIncomingHouseholdEvent(rawData)
                                     }
                                 }
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    logger.e("CameraAlarmSSE", "❌ Mất đường ống SSE báo động camera: ${e.message}. Đang thử kết nối lại sau 5 giây...")
+                    logger.e("HouseholdEventSSE", "❌ Mất đường ống SSE household event: ${e.message}. Đang thử kết nối lại sau 5 giây...")
                     forceResyncBothChannels()
                     delay(5000)
                 }
@@ -1061,9 +1066,59 @@ class WebhookGatewayService : Service() {
         }
     }
 
+    /**
+     * Diễn giải payload household event theo "type" — camera_alarm giữ nguyên hành vi cũ
+     * (kích hoạt quét sớm, vẫn tôn trọng pHash/cooldown); tuya_state_change (MỚI) cập nhật
+     * world_state CỤC BỘ của máy này để Dashboard/precondition luôn khớp với thay đổi vừa
+     * xảy ra ở máy khác trong household — KHÔNG gọi lại turnOn()/turnOff() (thiết bị đã đổi
+     * trạng thái thật ở nơi khác rồi, đây chỉ là đồng bộ hiển thị, gọi lại sẽ vô nghĩa/thừa).
+     */
+    private suspend fun handleIncomingHouseholdEvent(rawData: String) {
+        try {
+            val jsonObj = org.json.JSONObject(rawData)
+            val type = jsonObj.optString("type", "").trim()
+            val payload = jsonObj.optJSONObject("payload") ?: org.json.JSONObject()
+
+            when (type) {
+                "camera_alarm" -> {
+                    val cameraId = payload.optString("cameraId", "").trim()
+                    if (cameraId.isNotEmpty()) {
+                        logger.i("HouseholdEventSSE", "🚨 Camera $cameraId báo động, kích hoạt quét sớm (vẫn tôn trọng pHash/cooldown).")
+                        // ✅ force=false: KHÔNG bypass cooldown/pHash — chỉ chạy sớm hơn lịch,
+                        // logic quyết định có gọi AI hay không vẫn nằm nguyên trong scanCamera().
+                        findPlugin("camera")?.execute(
+                            "scan",
+                            mapOf("cameraId" to cameraId, "force" to false)
+                        )
+                    }
+                }
+                "tuya_state_change" -> {
+                    val deviceId = payload.optString("deviceId", "").trim()
+                    val newState = payload.optBoolean("newState", false)
+                    if (deviceId.isNotEmpty()) {
+                        logger.i("HouseholdEventSSE", "🔁 Đồng bộ trạng thái Tuya từ máy khác trong household: $deviceId -> $newState")
+                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                            database.worldStateDao(), "tuya", deviceId, "state", newState.toString()
+                        )
+                        deviceRegistry.updateNode(deviceId) { current ->
+                            current.copy(
+                                online = true,
+                                status = if (newState) "Đang bật" else "Đang tắt",
+                                lastSeen = System.currentTimeMillis()
+                            )
+                        }
+                    }
+                }
+                else -> logger.d("HouseholdEventSSE", "Bỏ qua household event không xác định, type=$type")
+            }
+        } catch (e: Exception) {
+            logger.e("HouseholdEventSSE", "Lỗi giải mã household event: ${e.message}")
+        }
+    }
+
     // ✅ MỚI: kênh SSE riêng biệt cho LỆNH ĐIỀU KHIỂN THIẾT BỊ (Tuya, và các loại khác sẽ
     // tích hợp sau — MQTT, Zigbee2MQTT...), kết nối tới /device/command/stream/{deviceCode}.
-    // Cùng mẫu với startCameraAlarmSSE() ở trên, khác ở 2 điểm:
+    // Cùng mẫu với startHouseholdEventSSE() ở trên, khác ở 2 điểm:
     // (1) chỉ khởi động nếu deviceRole = "camera_node" — máy "client" (mang theo người) không
     //     cần mở kênh này, nó chỉ CHỦ ĐỘNG GỬI lệnh qua sendDeviceCommand()/POST bên dưới, không
     //     bao giờ cần NHẬN lệnh;
@@ -1207,17 +1262,31 @@ class WebhookGatewayService : Service() {
         }
 
         return try {
-            when (action) {
-                "on" -> {
-                    tuyaManager.turnOn(deviceName)
-                    CommandExecutionResult(true, "Đã bật $deviceName")
-                }
-                "off" -> {
-                    tuyaManager.turnOff(deviceName)
-                    CommandExecutionResult(true, "Đã tắt $deviceName")
-                }
-                else -> CommandExecutionResult(false, "action không hợp lệ: '$action' (chỉ chấp nhận on/off)")
+            val newState = when (action) {
+                "on" -> true
+                "off" -> false
+                else -> return CommandExecutionResult(false, "action không hợp lệ: '$action' (chỉ chấp nhận on/off)")
             }
+            if (newState) tuyaManager.turnOn(deviceName) else tuyaManager.turnOff(deviceName)
+
+            // ✅ MỚI (Household Event Broadcast): cập nhật world_state của CHÍNH Camera Node
+            // ngay (lỗ hổng cũ — trước đây đường relay này bỏ qua bước này, phải đợi tới lần
+            // syncTuyaDeviceStates() kế tiếp), rồi publish cho cả household — CHÍNH Camera Node
+            // là originDeviceCode ở đây (tự động, xem HouseholdEventPublisher), KHÔNG phải
+            // Client đã gửi lệnh (Client nhận lại đúng thay đổi qua broadcast bình thường,
+            // không tự publish nữa — tránh phát trùng 2 lần cho cùng 1 hành động, xem
+            // SmartSwitchSkill.handleSet()).
+            val tuyaDeviceId = database.tuyaDeviceDao().getDeviceByName(deviceName)?.id
+            if (tuyaDeviceId != null) {
+                com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                    database.worldStateDao(), "tuya", tuyaDeviceId, "state", newState.toString()
+                )
+                householdEventPublisher.publishTuyaStateChange(tuyaDeviceId, deviceName, newState)
+            } else {
+                logger.w("DeviceCommandSSE", "⚠️ Không tra được deviceId Tuya từ tên '$deviceName' — bỏ qua cập nhật world_state/publish household event (lệnh vẫn đã thực thi thành công).")
+            }
+
+            CommandExecutionResult(true, if (newState) "Đã bật $deviceName" else "Đã tắt $deviceName")
         } catch (e: Exception) {
             CommandExecutionResult(false, "Lỗi điều khiển Tuya: ${e.message}")
         }
@@ -1933,6 +2002,8 @@ class WebhookGatewayService : Service() {
                     )
                 )
 
+                notifyTuyaStateChangeFromSync(cleanId, cloudDev.name, newState)
+
                 deviceRegistry.updateNode(cleanId) { current ->
                     current.copy(
                         online = true,
@@ -1941,6 +2012,24 @@ class WebhookGatewayService : Service() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * ✅ MỚI (Household Event Broadcast): publish tuya_state_change do TỰ PHÁT HIỆN lệch
+     * trạng thái qua polling định kỳ (syncTuyaDeviceStates()) — CHỦ Ý gate role=camera_node
+     * CHỈ ở đây: nếu bỏ gate, N máy trong nhà cùng tự poll Tuya Cloud độc lập có thể cùng
+     * publish trùng nhau mỗi vòng sync (bão sự kiện thừa — dù vô hại về mặt đúng-sai nhờ
+     * dedup eventId ở Gateway, vẫn lãng phí băng thông/pin). KHÔNG áp dụng gate này cho
+     * publish do lệnh vừa thành công (SmartSwitchSkill.handleSet() / handleTuyaCommand() ở
+     * trên) — đó là hành động chủ động, không có nguy cơ N-way.
+     */
+    private fun notifyTuyaStateChangeFromSync(deviceId: String, deviceName: String, newState: Boolean) {
+        val deviceRole = configProvider.getString(AppConfigDefaults.DEVICE_ROLE, "client").trim()
+        if (deviceRole != "camera_node") return
+
+        serviceScope.launch(Dispatchers.IO) {
+            householdEventPublisher.publishTuyaStateChange(deviceId, deviceName, newState)
         }
     }
 

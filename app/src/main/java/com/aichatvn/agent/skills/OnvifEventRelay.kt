@@ -19,7 +19,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -36,17 +35,21 @@ import javax.inject.Singleton
  *
  * Cách vá: ĐÚNG mẫu đã dùng cho Tuya khi Local-only bật (xem DeviceCommandGatewayClient.kt) — 1
  * máy CỐ ĐỊNH ở nhà, đặt deviceRole = "camera_node" (Cài đặt), tự subscribe ONVIF cục bộ (nó
- * LUÔN ở trong LAN nên gọi bình thường), rồi mỗi khi có sự kiện chuyển động, RELAY qua Gateway
- * (route mới /camera/onvif_event, xem app.py) tới đúng deviceCode cần được báo — đọc từ
- * [AppConfigDefaults.CAMERA_ALARM_NOTIFY_DEVICE_CODE]; để trống thì mặc định relay về CHÍNH
- * thiết bị này (trường hợp máy quản lý camera cũng chính là Camera Node, quay vòng qua Gateway
- * tuy hơi thừa nhưng vô hại — vẫn dùng lại y hệt hạ tầng camera_alarm sẵn có, không cần code
- * riêng cho case này).
+ * LUÔN ở trong LAN nên gọi bình thường), rồi mỗi khi có sự kiện chuyển động, RELAY qua Gateway.
  *
- * Server (Gateway) không cần hiểu gì về ONVIF — endpoint mới chỉ forward vào ĐÚNG kênh
- * camera_alarm_queues/dedup đã có sẵn cho báo động camera gốc. Máy nhận ở đầu kia
- * (WebhookGatewayService.startCameraAlarmSSE()) xử lý y hệt, gọi lại scan() bình thường — KHÔNG
- * cần sửa gì thêm ở phía nhận.
+ * ✅ CẬP NHẬT (Household Event Broadcast): relay giờ đi qua [HouseholdEventPublisher] —
+ * POST /household/event chung với mọi loại household event khác (Tuya đổi trạng thái...) —
+ * thay vì route riêng /camera/onvif_event + field CAMERA_ALARM_NOTIFY_DEVICE_CODE gõ tay 1
+ * chiều như trước. Máy nào cần nhận báo động chỉ cần khai CÙNG [AppConfigDefaults.HOUSEHOLD_ID]
+ * với Camera Node này — Gateway tự broadcast tới MỌI deviceCode cùng household (xem
+ * register_device_code()/household_event() trong app.py), không giới hạn 1 deviceCode đích cố
+ * định như route cũ.
+ *
+ * Server (Gateway) không cần hiểu gì về ONVIF — /household/event chỉ forward vào ĐÚNG kênh
+ * household_event_queues/dedup dùng chung cho mọi loại event. Máy nhận ở đầu kia
+ * (WebhookGatewayService.startHouseholdEventSSE() → handleIncomingHouseholdEvent(), nhánh
+ * type="camera_alarm") xử lý y hệt cũ, gọi lại scan() bình thường — KHÔNG cần sửa gì thêm ở
+ * phía nhận ngoài việc đọc "type".
  *
  * ⚠️ CHỐNG BẮN ĐÔI (double-trigger) — đúng yêu cầu khi thêm tính năng này, kiểm tra ở 3 lớp:
  *
@@ -62,16 +65,20 @@ import javax.inject.Singleton
  * 2) Mỗi cameraId chỉ giữ ĐÚNG 1 Job đang chạy, quản lý qua [activeJobs] — trước khi tạo Job mới
  *    (cấu hình đổi, hoặc vòng reconcile định kỳ phát hiện camera vẫn hợp lệ) luôn hủy Job cũ
  *    trước, không bao giờ để 2 Job cùng chạy song song cho 1 camera.
- * 3) Server-side (lớp phòng vệ cuối): endpoint /camera/onvif_event dùng LẠI đúng
- *    _last_accepted_camera_alarm (dedup 10s, khoá theo (device_code, camera_id)) — dù lỡ có bug
- *    khiến push gốc VÀ ONVIF relay cùng bắn cho 1 camera trong 10s, gateway cũng chỉ forward 1
- *    lần.
+ * 3) Server-side (lớp phòng vệ cuối): POST /household/event dùng dedup 2 lớp CHUNG cho mọi
+ *    event (eventId chính xác + flood window 10s theo (household_id, type, source_device_id),
+ *    chỉ áp dụng cho camera_alarm) — dù lỡ có bug khiến push gốc VÀ ONVIF relay cùng bắn cho 1
+ *    camera trong 10s, gateway cũng chỉ forward 1 lần.
  */
 @Singleton
 class OnvifEventRelay @Inject constructor(
     private val database: AppDatabase,
     private val configProvider: AppConfigProvider,
     private val callSkill: CallSkill,
+    // ✅ MỚI (Household Event Broadcast): nguồn DUY NHẤT gửi event ra Gateway giờ là
+    // HouseholdEventPublisher — không còn tự build JSON POST /camera/onvif_event nữa (route
+    // đó đã bị xoá ở app.py, thay bằng /household/event dùng chung cho mọi loại event).
+    private val householdEventPublisher: HouseholdEventPublisher,
     private val logger: Logger,
 ) {
     companion object {
@@ -346,46 +353,17 @@ class OnvifEventRelay @Inject constructor(
     }
 
     /**
-     * Relay sự kiện qua Gateway — POST /camera/onvif_event, gateway forward vào ĐÚNG kênh
-     * camera_alarm đã có sẵn (xem KDoc đầu file, mục "Cách vá").
+     * Relay sự kiện qua Gateway — POST /household/event (type="camera_alarm") qua
+     * HouseholdEventPublisher, gateway tự forward tới mọi deviceCode cùng household (xem
+     * KDoc đầu file, mục "Cách vá"). Không còn phụ thuộc CAMERA_ALARM_NOTIFY_DEVICE_CODE
+     * (đã xoá khỏi AppConfigDefaults) — máy nào cần nhận báo động chỉ cần khai cùng
+     * [AppConfigDefaults.HOUSEHOLD_ID] với Camera Node này, không cần gõ tay deviceCode
+     * đích một chiều như trước.
      */
-    private suspend fun relayMotionEvent(cameraId: String) = withContext(Dispatchers.IO) {
-        try {
-            val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
-            val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
-            if (gatewayUrl.isBlank() || gatewayToken.isBlank()) {
-                logger.w(TAG, "⚠️ Thiếu cấu hình Gateway, không relay được sự kiện ONVIF của $cameraId.")
-                return@withContext
-            }
-
-            // ⚠️ CẦN THÊM: hằng số CAMERA_ALARM_NOTIFY_DEVICE_CODE trong AppConfigDefaults.kt
-            // (đúng mẫu HOME_CAMERA_NODE_DEVICE_CODE đã có cho Tuya) — deviceCode của máy CẦN
-            // ĐƯỢC BÁO khi có chuyển động (thường là máy mang theo người, có thể KHÁC với chính
-            // Camera Node này nếu bạn dùng 2 thiết bị vật lý riêng biệt). Để trống thì mặc định
-            // relay về CHÍNH thiết bị này (getOrCreateMyDeviceCode()) — đúng cho trường hợp máy
-            // quản lý camera cũng chính là Camera Node.
-            val configuredTarget = configProvider.getString(
-                AppConfigDefaults.CAMERA_ALARM_NOTIFY_DEVICE_CODE
-            ).trim()
-            val targetDeviceCode = configuredTarget.ifBlank { callSkill.getOrCreateMyDeviceCode() }
-
-            val bodyJson = JSONObject().apply {
-                put("token", gatewayToken)
-                put("deviceCode", targetDeviceCode)
-                put("cameraId", cameraId)
-            }
-            val request = Request.Builder()
-                .url("$gatewayUrl/camera/onvif_event")
-                .post(bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    logger.w(TAG, "⚠️ Relay sự kiện ONVIF thất bại, HTTP ${response.code}")
-                }
-            }
-        } catch (e: Exception) {
-            logger.e(TAG, "❌ Lỗi relay sự kiện ONVIF của $cameraId: ${e.message}")
+    private suspend fun relayMotionEvent(cameraId: String) {
+        val delivered = householdEventPublisher.publishCameraAlarm(cameraId)
+        if (!delivered) {
+            logger.w(TAG, "⚠️ Relay sự kiện ONVIF của $cameraId thất bại hoặc chưa cấu hình Household ID/Gateway.")
         }
     }
 }

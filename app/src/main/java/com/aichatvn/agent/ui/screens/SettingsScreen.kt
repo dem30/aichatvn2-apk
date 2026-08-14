@@ -639,11 +639,12 @@ private fun PluginGroupCard(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
-    // ✅ MỚI (UX role/device-code): đọc vai trò hiện tại của máy để (1) chỉ hiện đúng 1 trong 2
-    // field "Mã Camera Node ở nhà" / "Mã máy cần báo khi ONVIF phát hiện chuyển động" — field
-    // còn lại không có tác dụng gì trên vai trò hiện tại nên gây hiểu lầm là trùng lặp (xem thảo
-    // luận trước); và (2) đổi field device.role từ ô nhập chữ tự do sang 2 nút chọn, tránh gõ sai
-    // chính tả "client"/"camera_node" làm sai lệch cả logic lọc lẫn logic gateway relay.
+    // ✅ MỚI (UX role/device-code): đọc vai trò hiện tại của máy để (1) chỉ hiện field "Mã
+    // Camera Node ở nhà" khi cần (chỉ có tác dụng với vai trò Client, dùng để gửi lệnh Tuya
+    // qua Gateway); và (2) đổi field device.role từ ô nhập chữ tự do sang 2 nút chọn, tránh
+    // gõ sai chính tả "client"/"camera_node" làm sai lệch cả logic lọc lẫn logic gateway
+    // relay. Field "Mã hộ gia đình" (HOUSEHOLD_ID, household event broadcast) áp dụng cho
+    // CẢ 2 vai trò nên không nằm trong logic ẩn này.
     val deviceRole = allConfigs.firstOrNull { it.key == "device.role" }?.value?.trim()?.lowercase().orEmpty().ifBlank { "client" }
 
     val (icon, title) = when (pluginId) {
@@ -706,9 +707,15 @@ private fun PluginGroupCard(
                                 Spacer(Modifier.height(6.dp))
                                 Text(
                                     if (isClientRole(deviceRole))
-                                        "Máy này đang là Client — chỉ cần điền \"Mã Camera Node ở nhà\" bên dưới. Field \"Mã máy cần báo khi ONVIF phát hiện chuyển động\" không áp dụng cho vai trò này nên đã ẩn."
+                                        "Máy này đang là Client — chỉ cần điền \"Mã Camera Node ở nhà\" bên dưới để gửi lệnh Tuya khi ở ngoài mạng LAN."
                                     else
-                                        "Máy này đang là Camera Node — chỉ cần điền \"Mã máy cần báo khi ONVIF phát hiện chuyển động\" bên dưới (mã Device Code của máy Client). Field \"Mã Camera Node ở nhà\" không áp dụng cho vai trò này nên đã ẩn.",
+                                        "Máy này đang là Camera Node — không cần điền \"Mã Camera Node ở nhà\" (field đó đã ẩn, không áp dụng cho vai trò này).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "💡 Muốn báo động camera và trạng thái Tuya tự động đồng bộ giữa các máy trong nhà (bất kể vai trò)? Điền \"Mã hộ gia đình\" bên dưới — CÙNG 1 giá trị trên mọi máy muốn đồng bộ với nhau.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -882,9 +889,12 @@ private fun PluginGroupCard(
                     // card trên nên ẩn ô nhập chữ tự do trùng lặp; và chỉ 1 trong 2 field
                     // "Mã Camera Node ở nhà" / "Mã máy cần báo khi ONVIF phát hiện chuyển động"
                     // có tác dụng thật trên vai trò hiện tại — ẩn field còn lại để tránh hiểu lầm.
+                    // ✅ MỚI: HOUSEHOLD_ID áp dụng cho CẢ 2 vai trò (Client lẫn Camera Node) — không
+                    // nằm trong danh sách ẩn theo role, khác với HOME_CAMERA_NODE_DEVICE_CODE (chỉ
+                    // Client dùng, cho việc gửi lệnh Tuya). CAMERA_ALARM_NOTIFY_DEVICE_CODE đã bị xoá
+                    // khỏi AppConfigDefaults — ONVIF giờ tự phát qua household broadcast.
                     val hiddenForGlobalRole = pluginId == "global" && (
                         entity.key == AppConfigDefaults.DEVICE_ROLE ||
-                        (isClientRole(deviceRole) && entity.key == AppConfigDefaults.CAMERA_ALARM_NOTIFY_DEVICE_CODE) ||
                         (!isClientRole(deviceRole) && entity.key == AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE)
                     )
                     if (!hiddenForGlobalRole) {

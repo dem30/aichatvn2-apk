@@ -51,6 +51,11 @@ class SmartSwitchSkill @Inject constructor(
     // ✅ MỚI: fallback gửi lệnh qua Gateway → Camera Node ở nhà khi Local thất bại và đang bật
     // Chế độ Local-only (LOCAL_ONLY_MODE_ENABLED) — xem handleSet().
     private val deviceCommandGatewayClient: DeviceCommandGatewayClient,
+    // ✅ MỚI (Household Event Broadcast): publish tuya_state_change khi CHÍNH máy này vừa
+    // điều khiển Tuya thành công trực tiếp (Local hoặc Cloud, KHÔNG qua Gateway relay) — xem
+    // handleSet(). Role-agnostic, không gate DEVICE_ROLE (khác với vòng poll
+    // syncTuyaDeviceStates() bên WebhookGatewayService).
+    private val householdEventPublisher: HouseholdEventPublisher,
     logger: Logger
 ) : BaseSkill("smart_switch", "Điều khiển thiết bị đóng ngắt", logger), Plugin {
 
@@ -448,6 +453,19 @@ class SmartSwitchSkill @Inject constructor(
             com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
                 database.worldStateDao(), controller.worldStateSource, deviceId, "state", state.toString()
             )
+
+            // ✅ MỚI (Household Event Broadcast): publish tuya_state_change — ĐÚNG 1 lần, tại
+            // điểm xác nhận thành công CUỐI CÙNG, và CHỈ khi:
+            // (1) controller.worldStateSource == "tuya" — MQTT ngoài phạm vi broadcast này
+            //     (xem household-event-broadcast-plan.md mục 0, MqttDeviceController tiếp tục
+            //     ghi world_state qua cơ chế hiện có, không đụng tới ở đây);
+            // (2) !viaGateway — nếu lệnh vừa đi qua Gateway relay (Local thất bại, Local-only
+            //     bật), CHÍNH Camera Node đã tự publish rồi khi nó thực thi thành công (xem
+            //     WebhookGatewayService.handleTuyaCommand()) — publish thêm ở đây sẽ TRÙNG lần
+            //     phát cho cùng 1 hành động (2 originDeviceCode khác nhau cho cùng 1 sự kiện).
+            if (controller.worldStateSource == "tuya" && !viaGateway) {
+                householdEventPublisher.publishTuyaStateChange(deviceId, deviceName, state)
+            }
 
             // ✅ MỚI (Tuần 5 - Active Logging): Ghi nhật ký sự kiện tương tác vật lý vào event_logs
             database.eventLogDao().insertLog(

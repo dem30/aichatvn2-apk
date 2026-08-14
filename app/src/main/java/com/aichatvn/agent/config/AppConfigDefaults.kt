@@ -179,13 +179,15 @@ object AppConfigDefaults {
     // của người dùng cũ (vẫn fallback Cloud như trước) cho tới khi họ tự bật.
     const val LOCAL_ONLY_MODE_ENABLED       = "device.local_only_mode_enabled"
 
-    // ✅ MỚI: deviceCode của máy CẦN ĐƯỢC BÁO khi OnvifEventRelay (Camera Node) phát hiện chuyển
-    // động qua ONVIF — do người dùng tự nhập tay trên chính máy Camera Node, CÙNG Ý NGHĨA/CÙNG
-    // MẪU với HOME_CAMERA_NODE_DEVICE_CODE ở trên nhưng chiều NGƯỢC LẠI (đó là Client -> báo cho
-    // Camera Node biết gửi lệnh đi đâu; đây là Camera Node -> báo cho ai biết vừa có chuyển
-    // động). Để trống = relay về CHÍNH máy Camera Node này (trường hợp 1 máy vừa quản lý camera
-    // vừa làm Camera Node, không cần 2 thiết bị vật lý riêng). Xem OnvifEventRelay.kt.
-    const val CAMERA_ALARM_NOTIFY_DEVICE_CODE = "device.camera_alarm_notify_device_code"
+    // ✅ MỚI (Household Event Broadcast — thay cho CAMERA_ALARM_NOTIFY_DEVICE_CODE cũ):
+    // phạm vi BROADCAST của cả nhà — nhiều deviceCode (nhiều máy, cả Client lẫn Camera
+    // Node) cùng khai 1 householdId sẽ tự động nhận báo động camera VÀ thay đổi trạng
+    // thái Tuya của NHAU, không cần khai riêng "mã máy cần báo" như trước. NHẬP TAY,
+    // KHÔNG tự sinh, KHÔNG fallback về deviceCode khi rỗng — rỗng = máy đó không thuộc
+    // household nào, không nhận và không phát broadcast (xem HouseholdEventPublisher.kt,
+    // register_device_code() phía app.py). Đặt CÙNG 1 giá trị (tự chọn, ví dụ tên nhà)
+    // trên MỌI máy trong nhà muốn đồng bộ với nhau.
+    const val HOUSEHOLD_ID = "device.household_id"
 
     // ───────────────────────── ĐA KÊNH (OMNICHANNEL) ────────
     const val FACEBOOK_PAGE_ACCESS_TOKEN    = "facebook.page_access_token"
@@ -743,12 +745,12 @@ object AppConfigDefaults {
             description = "Khi bật: điều khiển thiết bị Tuya khi Local (LAN) thất bại sẽ chuyển sang gửi lệnh qua Gateway tới Camera Node ở nhà, KHÔNG bao giờ gọi Cloud API để điều khiển hàng ngày nữa. Yêu cầu đã nhập Mã Camera Node ở nhà trước khi bật."
         ),
         AppConfigEntity(
-            key = CAMERA_ALARM_NOTIFY_DEVICE_CODE,
+            key = HOUSEHOLD_ID,
             value = "",
             type = "string",
             pluginId = "global",
-            label = "Mã máy cần báo khi ONVIF phát hiện chuyển động",
-            description = "Chỉ cần thiết lập trên máy đóng vai trò Camera Node. Nhập deviceCode (8 ký tự) của máy CẦN ĐƯỢC BÁO khi ONVIF phát hiện chuyển động (thường là máy bạn mang theo người) — xem mã này trong Cài đặt trên chính máy đó. Để trống = tự báo về CHÍNH máy Camera Node này."
+            label = "Mã hộ gia đình (Household ID)",
+            description = "Đặt CÙNG 1 giá trị (tự chọn, ví dụ tên nhà) trên MỌI máy trong nhà muốn tự động đồng bộ báo động camera và trạng thái Tuya với nhau — áp dụng cho cả vai trò Client lẫn Camera Node, không phân biệt. Để trống = máy này không tham gia đồng bộ hộ gia đình nào cả."
         )
     )
 }
