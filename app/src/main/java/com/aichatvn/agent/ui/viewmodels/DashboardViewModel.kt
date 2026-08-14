@@ -17,6 +17,7 @@ import com.aichatvn.agent.skills.ScheduleSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -94,17 +95,44 @@ class DashboardViewModel @Inject constructor(
     private val _inviteUiState = MutableStateFlow<InviteUiState>(InviteUiState.Idle)
     val inviteUiState: StateFlow<InviteUiState> = _inviteUiState.asStateFlow()
 
+    // ✅ SỬA: Job riêng cho vòng poll 5s thay vì để nó tự chạy vĩnh viễn ngay từ init{} —
+    // trước đây while(true) sống suốt vòng đời ViewModel, mà ViewModel này KHÔNG bị huỷ khi
+    // chuyển tab (xem popUpTo/saveState/restoreState trong AppNavigator.kt — cố tình giữ
+    // ViewModel sống qua tab để không mất scroll/form state), nên poll cứ chạy nền vô ích kể
+    // cả khi Dashboard không hiển thị. Giờ start/stop được điều khiển từ ngoài qua
+    // resumePolling()/pausePolling(), gọi từ DisposableEffect trong DashboardScreen.kt —
+    // composable đó CHỈ tồn tại trong composition khi Dashboard thực sự đang trên màn hình
+    // (NavHost chỉ compose 1 destination active tại 1 thời điểm), nên onDispose() sẽ tự kích
+    // hoạt đúng lúc chuyển tab dù ViewModel bên dưới vẫn sống.
+    private var lightweightPollingJob: kotlinx.coroutines.Job? = null
+
     init {
         refreshDashboardNodes()
         loadFloorplanPath()
         loadFloorplanScale()
         loadViewportState()
         observePendingPatterns()
-        startLightweightStatePolling()
+        // Không gọi startLightweightStatePolling() ở đây nữa — chờ DashboardScreen gọi
+        // resumePolling() khi composable thực sự vào composition.
     }
 
-    // ✅ MỚI: vòng poll nhanh (5s/lần) chỉ chạy khi Dashboard đang mở — viewModelScope tự huỷ
-    // coroutine này khi ViewModel bị clear (rời màn hình Dashboard), không cần dừng tay.
+    /** Gọi từ DisposableEffect khi DashboardScreen vào composition (Dashboard đang mở). */
+    fun resumePolling() {
+        if (lightweightPollingJob?.isActive == true) return
+        lightweightPollingJob = startLightweightStatePolling()
+    }
+
+    /** Gọi từ onDispose của DashboardScreen khi rời màn hình (chuyển tab/back). */
+    fun pausePolling() {
+        lightweightPollingJob?.cancel()
+        lightweightPollingJob = null
+    }
+
+    // ✅ SỬA: vòng poll nhanh (5s/lần) giờ CHỈ chạy khi resumePolling() được gọi (từ
+    // DisposableEffect của DashboardScreen — Dashboard thực sự đang mở), và dừng ngay khi
+    // pausePolling() cancel Job trả về — không còn tự chạy vô hạn từ init{} như trước, vì
+    // ViewModel này sống xuyên suốt qua các lần chuyển tab (saveState/restoreState), không
+    // có tín hiệu nào khác báo "user đã rời màn hình" ngoài composable rời composition.
     //
     // Trước đây Dashboard chỉ biết trạng thái mới nhất qua: (1) chính app điều khiển thành
     // công (sendDeviceAction cập nhật node ngay), hoặc (2) vòng poll nền
@@ -114,13 +142,14 @@ class DashboardViewModel @Inject constructor(
     //
     // Gọi pollLightweightStates() (không phải getDashboardNodes() đầy đủ) — nhẹ hơn nhiều vì
     // không build lại x/y/room/scene/supportedActions mỗi 5s, chỉ đọc ON/OFF qua
-    // getStatusBatch() đã Local-first (xem TuyaManager.getStatusBatch()) nên vẫn hoạt động cả
-    // khi Cloud API die, miễn thiết bị còn cùng LAN. Plugin nào phát hiện lệch sẽ tự publish
+    // getStatusBatchLocalOnly() (thuần Local, KHÔNG rơi Cloud — xem TuyaManager.kt/
+    // DeviceController.kt) nên vẫn hoạt động cả khi Cloud API die, miễn thiết bị còn cùng
+    // LAN, và không tốn quota Cloud dù lặp mỗi 5s. Plugin nào phát hiện lệch sẽ tự publish
     // household event cho các máy khác (xem SmartSwitchSkill.detectAndBroadcastPhysicalChange())
     // — ViewModel này chỉ cần cập nhật UI của CHÍNH máy đang mở, không cần biết gì về household.
-    private fun startLightweightStatePolling() {
-        viewModelScope.launch {
-            while (true) {
+    private fun startLightweightStatePolling(): kotlinx.coroutines.Job {
+        return viewModelScope.launch {
+            while (isActive) {
                 kotlinx.coroutines.delay(5_000L)
                 try {
                     val activePlugins = agentKernel.getAvailablePluginsForUI()

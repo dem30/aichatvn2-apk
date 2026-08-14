@@ -86,6 +86,14 @@ class TuyaDeviceController @Inject constructor(
         }
     }
 
+    // ✅ MỚI: dùng riêng cho vòng poll 5s Dashboard — delegate thẳng
+    // tuyaManager.getStatusBatchLocalOnly() (thuần Local, không rơi Cloud, xem ghi chú tại
+    // TuyaManager.kt và DeviceController.kt). Trả về đúng khoá deviceId (TuyaManager đã
+    // trả sẵn theo id, không cần dịch qua entity như getStatusBatch() ở trên).
+    override suspend fun getStatusBatchLocalOnly(deviceIds: List<String>): Map<String, Boolean> {
+        return tuyaManager.getStatusBatchLocalOnly(deviceIds)
+    }
+
     // ✅ Điểm truy vấn tuyaDeviceDao.getAllDevices() DUY NHẤT còn lại trong toàn bộ app sau
     // khi hoàn tất Tầng 2 — DynamicOptionRegistry và mọi nơi khác chỉ được gọi qua
     // deviceRegistry.all().flatMap { it.listDevices() }, không tự query DAO này nữa.

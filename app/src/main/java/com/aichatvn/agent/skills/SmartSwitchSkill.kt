@@ -344,24 +344,32 @@ class SmartSwitchSkill @Inject constructor(
         }
     }
 
-    // ✅ MỚI: dùng cho vòng poll nhanh (5s) ở DashboardViewModel khi Dashboard đang mở — CHỈ đọc
-    // trạng thái ON/OFF qua getStatusBatch() (đã Local-first, xem TuyaManager.getStatusBatch()),
-    // KHÔNG build lại x/y/room/scene/supportedActions như getDashboardNodes() đầy đủ. Nhẹ hơn
-    // nhiều cho việc gọi lặp lại mỗi 5 giây.
+    // ✅ SỬA: dùng cho vòng poll nhanh (5s) ở DashboardViewModel khi Dashboard đang mở — CHỈ đọc
+    // trạng thái ON/OFF qua getStatusBatchLocalOnly() (KHÔNG BAO GIỜ rơi xuống Cloud, xem
+    // ghi chú tại DeviceController.getStatusBatchLocalOnly()/TuyaManager.getStatusBatchLocalOnly()
+    // — trước đây dùng getStatusBatch() thường, có Cloud fallback, khiến vòng 5s tốn quota
+    // Cloud liên tục cho thiết bị chưa có local_key, và 1 lỗi Cloud (mạng chết/sai client
+    // secret) làm MẤT LUÔN kết quả Local của các thiết bị khác trong cùng batch). Không build
+    // lại x/y/room/scene/supportedActions như getDashboardNodes() đầy đủ — nhẹ hơn nhiều cho
+    // việc gọi lặp lại mỗi 5 giây.
+    //
+    // Trả về giá trị trả về là Map<deviceId, Boolean> trực tiếp — getStatusBatchLocalOnly()
+    // không throw ra ngoài Cloud nên không cần try/catch bọc quanh Cloud nữa; vẫn giữ try/catch
+    // ngoài cùng phòng lỗi bất ngờ khác (DB local đọc lỗi...) để không làm crash coroutine poll.
     override suspend fun pollLightweightStates(): Map<String, Boolean> = withContext(Dispatchers.IO) {
         val tuyaDevices = database.tuyaDeviceDao().getAllDevices().filter { it.online }
         if (tuyaDevices.isEmpty()) return@withContext emptyMap()
 
         val batchStates = try {
-            tuyaController()?.getStatusBatch(tuyaDevices.map { it.id }) ?: emptyMap()
+            tuyaController()?.getStatusBatchLocalOnly(tuyaDevices.map { it.id }) ?: emptyMap()
         } catch (e: Exception) {
-            logger.e("SmartSwitchSkill", "Lỗi poll trạng thái nhanh: ${e.message}")
+            logger.e("SmartSwitchSkill", "Lỗi poll trạng thái nhanh (local): ${e.message}")
             emptyMap()
         }
 
         val result = mutableMapOf<String, Boolean>()
         for (dev in tuyaDevices) {
-            val isOn = batchStates[dev.id]?.isOn ?: continue
+            val isOn = batchStates[dev.id] ?: continue
             result[dev.id] = isOn
             detectAndBroadcastPhysicalChange(dev.id, dev.name, isOn)
         }

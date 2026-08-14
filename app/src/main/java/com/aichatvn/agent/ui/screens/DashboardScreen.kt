@@ -120,6 +120,16 @@ fun DashboardScreen(
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
 
+    // ✅ MỚI: vòng poll 5s (SmartSwitchSkill.pollLightweightStates() qua ViewModel) chỉ nên
+    // chạy khi Dashboard THỰC SỰ đang hiển thị. NavHost chỉ compose đúng 1 destination active
+    // tại 1 thời điểm, nên DisposableEffect này tự vào composition khi mở tab Dashboard và tự
+    // onDispose khi chuyển sang tab khác/back — dù ViewModel bên dưới vẫn sống nguyên (nhờ
+    // saveState/restoreState ở AppNavigator.kt), không cần biết gì thêm về navigation.
+    DisposableEffect(Unit) {
+        viewModel.resumePolling()
+        onDispose { viewModel.pausePolling() }
+    }
+
     var floorplanBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(floorplanPath) {
         floorplanBitmap = floorplanPath?.let { path ->

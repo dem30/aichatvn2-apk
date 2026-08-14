@@ -53,6 +53,22 @@ interface DeviceController {
     }
 
     /**
+     * ✅ MỚI: đọc trạng thái hàng loạt CHỈ QUA ĐƯỜNG LOCAL (LAN), không được phép rơi
+     * xuống Cloud/API hãng dù thiết bị không đọc được qua Local — dùng RIÊNG cho vòng poll
+     * tần suất cao (5s/lần, xem DashboardProvider.pollLightweightStates()) nơi gọi Cloud lặp
+     * lại là không chấp nhận được (chi phí quota) và còn có rủi ro 1 lỗi Cloud làm mất luôn
+     * kết quả Local đã đọc thành công của thiết bị khác (xem TuyaManager.getStatusBatchLocalOnly()
+     * để hiểu rõ lý do tách khỏi getStatusBatch()).
+     *
+     * Có default rỗng để driver nào không có khái niệm Local (vd MQTT, mọi lần đều qua
+     * broker Internet — xem DeviceController.kt phần MQTT) không bắt buộc override; driver
+     * nào có LOCAL_CONTROL (hiện chỉ Tuya) thì PHẢI override để vòng poll 5s thực sự hoạt
+     * động, nếu không thiết bị driver đó sẽ luôn vắng mặt khỏi Dashboard poll nhanh (không
+     * sai, chỉ là không tối ưu — vẫn cập nhật đúng qua getDashboardNodes() bình thường).
+     */
+    suspend fun getStatusBatchLocalOnly(deviceIds: List<String>): Map<String, Boolean> = emptyMap()
+
+    /**
      * Danh sách khả năng mà driver này hỗ trợ — SystemAuditor dùng để quyết định mục nào
      * hiển thị "có thể cải thiện" cho thiết bị dùng giao thức này, tránh đề xuất bật tính
      * năng mà bản thân giao thức không hỗ trợ (vd điều khiển local-LAN chỉ Tuya có, MQTT

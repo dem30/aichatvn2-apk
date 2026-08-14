@@ -860,6 +860,32 @@ class TuyaManager @Inject constructor(
         }
     }
 
+    // ✅ MỚI: dùng RIÊNG cho vòng poll 5s Dashboard (SmartSwitchSkill.pollLightweightStates())
+    // — KHÔNG BAO GIỜ đụng Cloud, dù chỉ 1 dòng, khác hẳn getStatusBatch() bên dưới. Lý do
+    // tách riêng thay vì tái dùng getStatusBatch(): (1) chi phí — vòng 5s không được phép
+    // gọi Cloud API dù chỉ 1 thiết bị, quota sẽ nổ theo tần suất poll; (2) fault isolation —
+    // getStatusBatch() gọi getAccessToken()/Cloud SAU KHI đã đọc xong phần Local vào biến
+    // `result` cùng scope, nên nếu Cloud lỗi (network chết, client_id/secret sai...), toàn
+    // bộ hàm ném exception và LÀM MẤT LUÔN cả phần Local đã đọc thành công — SmartSwitchSkill
+    // bắt exception ở tầng ngoài và trả về emptyMap(), khiến ngay cả thiết bị Local hoạt động
+    // tốt cũng bị coi như "không đọc được" trong lần poll đó. Hàm này không có nhánh Cloud
+    // nên không có rủi ro đó. Thiết bị chưa có local_key/IP (chưa từng điều khiển local lần
+    // nào) sẽ bị bỏ qua khỏi map — coi là "không rõ" cho vòng 5s, không phải false; giá trị
+    // đúng của các thiết bị đó vẫn được cập nhật qua getDashboardNodes()/vòng nền 30 phút
+    // (2 nơi đó vẫn được phép rơi xuống Cloud).
+    suspend fun getStatusBatchLocalOnly(deviceIds: List<String>): Map<String, Boolean> =
+        withContext(Dispatchers.IO) {
+            val result = mutableMapOf<String, Boolean>()
+            for (id in deviceIds) {
+                val entity = tuyaDeviceDao.getDeviceById(id)
+                val localValue = entity?.let { tryGetStatusLocal(it) }
+                if (localValue != null) {
+                    result[id] = localValue
+                }
+            }
+            result
+        }
+
     // ✅ (tối ưu quota API): Tuya có endpoint /v1.0/iot-03/devices/status nhận TỐI ĐA 20
     // device_ids cùng lúc và trả trạng thái của tất cả trong 1 response — thay vì gọi
     // fetchDeviceStatusList() riêng cho từng thiết bị (N call), giờ chỉ tốn ceil(N/20) call.
