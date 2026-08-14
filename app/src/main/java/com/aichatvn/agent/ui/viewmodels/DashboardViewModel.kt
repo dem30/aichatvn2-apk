@@ -99,7 +99,61 @@ class DashboardViewModel @Inject constructor(
         loadFloorplanPath()
         loadFloorplanScale()
         loadViewportState()
-        observePendingPatterns() 
+        observePendingPatterns()
+        startLightweightStatePolling()
+    }
+
+    // ✅ MỚI: vòng poll nhanh (5s/lần) chỉ chạy khi Dashboard đang mở — viewModelScope tự huỷ
+    // coroutine này khi ViewModel bị clear (rời màn hình Dashboard), không cần dừng tay.
+    //
+    // Trước đây Dashboard chỉ biết trạng thái mới nhất qua: (1) chính app điều khiển thành
+    // công (sendDeviceAction cập nhật node ngay), hoặc (2) vòng poll nền
+    // WebhookGatewayService.syncTuyaDeviceStates() — 30 PHÚT/lần. Bấm tay công tắc (không qua
+    // app) chỉ được phản ánh sau tối đa 30 phút. Vòng poll này rút khoảng đó xuống ~5 giây khi
+    // người dùng đang thực sự nhìn vào Dashboard.
+    //
+    // Gọi pollLightweightStates() (không phải getDashboardNodes() đầy đủ) — nhẹ hơn nhiều vì
+    // không build lại x/y/room/scene/supportedActions mỗi 5s, chỉ đọc ON/OFF qua
+    // getStatusBatch() đã Local-first (xem TuyaManager.getStatusBatch()) nên vẫn hoạt động cả
+    // khi Cloud API die, miễn thiết bị còn cùng LAN. Plugin nào phát hiện lệch sẽ tự publish
+    // household event cho các máy khác (xem SmartSwitchSkill.detectAndBroadcastPhysicalChange())
+    // — ViewModel này chỉ cần cập nhật UI của CHÍNH máy đang mở, không cần biết gì về household.
+    private fun startLightweightStatePolling() {
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000L)
+                try {
+                    val activePlugins = agentKernel.getAvailablePluginsForUI()
+                    withContext(Dispatchers.IO) {
+                        activePlugins.forEach { plugin ->
+                            if (plugin.manifest.capabilities.dashboard) {
+                                val states = plugin.pollLightweightStates()
+                                if (states.isEmpty()) return@forEach
+                                val currentNodes = deviceNodes.value
+                                for ((deviceId, isOn) in states) {
+                                    val node = currentNodes.find { it.id == deviceId } ?: continue
+                                    val newStatus = if (isOn) "Đang bật" else "Đang tắt"
+                                    // Chỉ update khi thực sự lệch — tránh recompose UI thừa mỗi
+                                    // 5s cho những thiết bị không đổi gì (trường hợp phổ biến nhất).
+                                    if (node.status != newStatus) {
+                                        deviceRegistry.updateNode(deviceId) { current ->
+                                            current.copy(
+                                                online = true,
+                                                status = newStatus,
+                                                lastSeen = System.currentTimeMillis()
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Lỗi mạng/LAN tạm thời — không làm gián đoạn vòng poll, thử lại ở lần sau.
+                    logger.e("DashboardViewModel", "Lỗi poll trạng thái nhanh: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun observePendingPatterns() {

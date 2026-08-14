@@ -242,43 +242,7 @@ class SmartSwitchSkill @Inject constructor(
                 // 2 lần thừa cho cùng 1 lần thiết bị đổi trạng thái (vòng lặp nền vẫn sẽ tự no-op
                 // vì lúc đó world_state đã khớp rồi).
                 if (isOnline) {
-                    try {
-                        // ✅ SỬA: dùng controller.worldStateSource thay vì literal "tuya" —
-                        // với Tuya giá trị vẫn y hệt "tuya" (xem TuyaDeviceController.kt),
-                        // nên KHÔNG đổi hành vi/key nào đã lưu trong DB. Chỉ đổi nguồn sự
-                        // thật: nếu sau này driver Tuya đổi worldStateSource (không nên, xem
-                        // cảnh báo trong DeviceController.kt), chỗ này tự động theo, không
-                        // cần sửa lại file này lần nữa.
-                        val source = tuyaController()?.worldStateSource ?: "tuya"
-                        val existingState = database.worldStateDao().getState(source, dev.id)
-                        val oldState = existingState?.let {
-                            try {
-                                org.json.JSONObject(it.attributesJson).optString("state", "false")
-                            } catch (e: Exception) {
-                                "false"
-                            }
-                        }?.toBooleanStrictOrNull() ?: false
-
-                        if (isDeviceOn != oldState) {
-                            com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
-                                database.worldStateDao(), source, dev.id, "state", isDeviceOn.toString()
-                            )
-                            database.eventLogDao().insertLog(
-                                com.aichatvn.agent.data.model.EventLogEntity(
-                                    id = java.util.UUID.randomUUID().toString(),
-                                    timestamp = System.currentTimeMillis(),
-                                    source = source,
-                                    sourceId = dev.id,
-                                    eventType = "state_change",
-                                    value = isDeviceOn.toString(),
-                                    summary = "Thiết bị Tuya ${dev.name} đổi trạng thái ngoài ý muốn của app: ${if (isDeviceOn) "Bật" else "Tắt"} (phát hiện qua Dashboard)."
-                                )
-                            )
-                            logger.i("SmartSwitchSkill", "🔁 Dashboard phát hiện biến động vật lý bên ngoài: ${dev.name} đổi trạng thái $oldState ➔ $isDeviceOn")
-                        }
-                    } catch (e: Exception) {
-                        logger.e("SmartSwitchSkill", "Lỗi đồng bộ world_state từ Dashboard cho ${dev.name}: ${e.message}")
-                    }
+                    detectAndBroadcastPhysicalChange(dev.id, dev.name, isDeviceOn)
                 }
 
                 val (deviceIcon, deviceLabel, deviceType) = resolveDeviceVisual(dev)
@@ -325,6 +289,83 @@ class SmartSwitchSkill @Inject constructor(
             }
         }
         deferredNodes.awaitAll()
+    }
+
+    // ✅ MỚI: tách từ khối detect-lệch vốn nằm trong getDashboardNodes() — dùng chung cho cả
+    // getDashboardNodes() (build đầy đủ node cho UI) lẫn pollLightweightStates() (vòng poll 5s
+    // ở DashboardViewModel, chỉ cần biết ON/OFF, không build lại x/y/room/scene). So sánh với
+    // world_state hiện có; nếu lệch, ghi world_state + eventLog NHƯ CŨ, và giờ publish thêm qua
+    // household broadcast — trước đây khối này chỉ ghi world_state cho CHÍNH máy này, các máy
+    // khác trong nhà không hề biết cho tới vòng poll nền 30 phút (WebhookGatewayService).
+    private suspend fun detectAndBroadcastPhysicalChange(deviceId: String, deviceName: String, isDeviceOn: Boolean) {
+        try {
+            // ✅ SỬA: dùng controller.worldStateSource thay vì literal "tuya" —
+            // với Tuya giá trị vẫn y hệt "tuya" (xem TuyaDeviceController.kt),
+            // nên KHÔNG đổi hành vi/key nào đã lưu trong DB. Chỉ đổi nguồn sự
+            // thật: nếu sau này driver Tuya đổi worldStateSource (không nên, xem
+            // cảnh báo trong DeviceController.kt), chỗ này tự động theo, không
+            // cần sửa lại file này lần nữa.
+            val source = tuyaController()?.worldStateSource ?: "tuya"
+            val existingState = database.worldStateDao().getState(source, deviceId)
+            val oldState = existingState?.let {
+                try {
+                    org.json.JSONObject(it.attributesJson).optString("state", "false")
+                } catch (e: Exception) {
+                    "false"
+                }
+            }?.toBooleanStrictOrNull() ?: false
+
+            if (isDeviceOn != oldState) {
+                com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                    database.worldStateDao(), source, deviceId, "state", isDeviceOn.toString()
+                )
+                database.eventLogDao().insertLog(
+                    com.aichatvn.agent.data.model.EventLogEntity(
+                        id = java.util.UUID.randomUUID().toString(),
+                        timestamp = System.currentTimeMillis(),
+                        source = source,
+                        sourceId = deviceId,
+                        eventType = "state_change",
+                        value = isDeviceOn.toString(),
+                        summary = "Thiết bị Tuya $deviceName đổi trạng thái ngoài ý muốn của app: ${if (isDeviceOn) "Bật" else "Tắt"} (phát hiện qua Dashboard)."
+                    )
+                )
+                logger.i("SmartSwitchSkill", "🔁 Dashboard phát hiện biến động vật lý bên ngoài: $deviceName đổi trạng thái $oldState ➔ $isDeviceOn")
+
+                // ✅ MỚI (Household Event Broadcast): báo cho MỌI máy khác cùng household_id
+                // biết ngay qua SSE — không phải chỉ ghi world_state cho riêng máy này. Cùng
+                // hàm publishTuyaStateChange() mà handleSet() dùng khi CHÍNH app điều khiển
+                // thành công (xem đầu file) — với server, đây chỉ là 1 sự kiện tuya_state_change
+                // khác, dedup theo eventId như mọi household event khác.
+                householdEventPublisher.publishTuyaStateChange(deviceId, deviceName, isDeviceOn)
+            }
+        } catch (e: Exception) {
+            logger.e("SmartSwitchSkill", "Lỗi đồng bộ world_state từ Dashboard cho $deviceName: ${e.message}")
+        }
+    }
+
+    // ✅ MỚI: dùng cho vòng poll nhanh (5s) ở DashboardViewModel khi Dashboard đang mở — CHỈ đọc
+    // trạng thái ON/OFF qua getStatusBatch() (đã Local-first, xem TuyaManager.getStatusBatch()),
+    // KHÔNG build lại x/y/room/scene/supportedActions như getDashboardNodes() đầy đủ. Nhẹ hơn
+    // nhiều cho việc gọi lặp lại mỗi 5 giây.
+    override suspend fun pollLightweightStates(): Map<String, Boolean> = withContext(Dispatchers.IO) {
+        val tuyaDevices = database.tuyaDeviceDao().getAllDevices().filter { it.online }
+        if (tuyaDevices.isEmpty()) return@withContext emptyMap()
+
+        val batchStates = try {
+            tuyaController()?.getStatusBatch(tuyaDevices.map { it.id }) ?: emptyMap()
+        } catch (e: Exception) {
+            logger.e("SmartSwitchSkill", "Lỗi poll trạng thái nhanh: ${e.message}")
+            emptyMap()
+        }
+
+        val result = mutableMapOf<String, Boolean>()
+        for (dev in tuyaDevices) {
+            val isOn = batchStates[dev.id]?.isOn ?: continue
+            result[dev.id] = isOn
+            detectAndBroadcastPhysicalChange(dev.id, dev.name, isOn)
+        }
+        result
     }
 
     override suspend fun initialize() {
