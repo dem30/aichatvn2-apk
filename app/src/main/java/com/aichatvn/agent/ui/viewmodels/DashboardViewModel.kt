@@ -177,6 +177,13 @@ class DashboardViewModel @Inject constructor(
                             }
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // ✅ SỬA: KHÔNG được nuốt CancellationException — nuốt nó khiến pausePolling()
+                    // gọi job.cancel() không thực sự dừng được vòng lặp giữa lúc đang có network
+                    // call dở dang (log thực tế từng thấy "StandaloneCoroutine was cancelled" bị
+                    // bắt và log như 1 lỗi bình thường). Phải throw lại để coroutine machinery
+                    // biết mà thực sự kết thúc job — quy tắc bắt buộc của kotlinx.coroutines.
+                    throw e
                 } catch (e: Exception) {
                     // Lỗi mạng/LAN tạm thời — không làm gián đoạn vòng poll, thử lại ở lần sau.
                     logger.e("DashboardViewModel", "Lỗi poll trạng thái nhanh: ${e.message}")

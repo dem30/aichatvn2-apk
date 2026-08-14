@@ -344,27 +344,50 @@ class TuyaLocalController @Inject constructor(
         }.toByteArray()
     }
 
+    // ✅ SỬA (bug thật gây DATA_NOT_MULTIPLE_OF_BLOCK_LENGTH ở MỌI lần query, xác nhận qua log
+    // thực tế lặp lại 100%): phần lớn phản hồi DP_QUERY giao thức 3.3 chèn thêm 4 byte
+    // "return code" (retcode, thường 0x00000000) ĐỨNG TRƯỚC ciphertext thật — không thuộc dữ
+    // liệu mã hoá. Code cũ đưa nguyên `payload` (dư đúng 4 byte so với bội số 16) thẳng vào
+    // AES/ECB/NoPadding.doFinal() → ném exception ngay lập tức trước khi kịp thử offset nào
+    // khác. Nhánh dự phòng cũ bóc 15 byte chỉ đúng cho tiền tố "3.3"+12 byte đệm của chiều
+    // GỬI lệnh CONTROL, không đúng cấu trúc phản hồi DP_QUERY nên cũng luôn thất bại theo.
+    //
+    // Sửa: liệt kê các cách bóc ciphertext hợp lý theo thứ tự ưu tiên, CHỈ thử decrypt với
+    // ứng viên có độ dài đã là bội số 16 (tránh ném exception vô ích cho ứng viên chắc chắn
+    // sai) — ưu tiên bỏ 4 byte retcode trước vì đây là trường hợp phổ biến nhất theo tài liệu
+    // cộng đồng (tinytuya/LocalTuya) và khớp với lỗi quan sát được trong log thực tế.
     private fun parseResponsePacket33(raw: ByteArray, keyBytes: ByteArray): JSONObject? {
         if (raw.size < 24) return null
         val payload = raw.copyOfRange(16, raw.size - 8)
         if (payload.isEmpty()) return JSONObject() // ACK rỗng (thường gặp ở lệnh CONTROL) — coi là thành công
 
-        return try {
-            // Response thường KHÔNG có tiền tố version — thử decrypt thẳng trước.
-            val decrypted = aesEcbDecrypt(payload, keyBytes)
-            JSONObject(String(decrypted, Charsets.UTF_8).trim(Char(0)))
-        } catch (e: Exception) {
+        val candidates = listOfNotNull(
+            // (1) không có tiền tố gì — 1 số firmware trả ciphertext thuần
+            payload.takeIf { it.size % 16 == 0 },
+            // (2) bỏ 4 byte retcode — trường hợp phổ biến nhất cho DP_QUERY 3.3
+            payload.takeIf { it.size > 4 && (it.size - 4) % 16 == 0 }
+                ?.copyOfRange(4, payload.size),
+            // (3) bỏ 15 byte tiền tố "3.3"+đệm — 1 số firmware khác vẫn trả kèm kiểu này
+            payload.takeIf { it.size > 15 && (it.size - 15) % 16 == 0 }
+                ?.copyOfRange(15, payload.size)
+        )
+
+        for (ciphertext in candidates) {
             try {
-                // Một số firmware vẫn trả kèm tiền tố "3.3"+12 byte đệm giống chiều gửi — thử bóc rồi decrypt lại.
-                if (payload.size > 15) {
-                    val decrypted = aesEcbDecrypt(payload.copyOfRange(15, payload.size), keyBytes)
-                    JSONObject(String(decrypted, Charsets.UTF_8).trim(Char(0)))
-                } else null
-            } catch (e2: Exception) {
-                logger.d("TuyaLocalController", "parseResponsePacket33 lỗi: ${e2.message}")
-                null
+                val decrypted = aesEcbDecrypt(ciphertext, keyBytes)
+                return JSONObject(String(decrypted, Charsets.UTF_8).trim(Char(0)))
+            } catch (e: Exception) {
+                // thử ứng viên tiếp theo, không log ở đây để tránh spam — chỉ log 1 lần nếu
+                // hết ứng viên vẫn thất bại (xem dưới).
             }
         }
+
+        logger.d(
+            "TuyaLocalController",
+            "parseResponsePacket33: không decrypt được với mọi cách bóc offset đã biết " +
+                "(payload.size=${payload.size}, không khớp bội số 16 ở offset 0/4/15)"
+        )
+        return null
     }
 
     // ═══════════════════════════════ ĐIỀU KHIỂN — PROTOCOL 3.4 ═══════════════════════════════
