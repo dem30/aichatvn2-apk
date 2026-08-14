@@ -2,6 +2,7 @@ package com.aichatvn.agent.core.plugin
 
 import com.aichatvn.agent.core.AgentKernel
 import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DashboardProvider
 
 data class PluginCapabilities(
     val dashboard: Boolean = false,
@@ -26,7 +27,14 @@ data class PluginManifest(
     val autoGenerateQA: Boolean = true
 )
 
-interface Plugin {
+// ✅ SỬA: Plugin giờ extends DashboardProvider — đây là mắt xích còn thiếu khiến
+// SmartSwitchSkill.pollLightweightStates() "overrides nothing" và
+// DashboardViewModel.plugin.pollLightweightStates() "Unresolved reference". Trước đây
+// Plugin tự khai báo getDashboardNodes() riêng, không liên quan gì tới DashboardProvider,
+// nên pollLightweightStates() (chỉ khai báo bên DashboardProvider) không hề "có mặt" trên
+// kiểu Plugin mà SmartSwitchSkill/DashboardViewModel đang thao tác. Xem ARCHITECTURE.md
+// mục 3.4 — thiết kế gốc đã mô tả đúng quan hệ này, chỉ chưa được nối dây ở code.
+interface Plugin : DashboardProvider {
     val manifest: PluginManifest
 
     val id: String get() = manifest.id
@@ -56,7 +64,11 @@ interface Plugin {
     
     fun getBootstrapQA(): List<PluginQABootstrap> = emptyList()
 
-    suspend fun getDashboardNodes(): List<DeviceNode> = emptyList()
+    // ✅ SỬA: thêm `override` vì giờ đến từ DashboardProvider — chữ ký và default
+    // (emptyList()) giữ nguyên y hệt trước, không đổi hành vi cho bất kỳ Plugin nào đã có.
+    // pollLightweightStates() KHÔNG cần khai báo lại ở đây — Plugin thừa hưởng thẳng default
+    // emptyMap() từ DashboardProvider (xem DashboardProvider.kt).
+    override suspend fun getDashboardNodes(): List<DeviceNode> = emptyList()
 }
 
 data class PluginQABootstrap(
