@@ -43,6 +43,11 @@ class MainApplication : Application(), Configuration.Provider {
     @Inject
     lateinit var backupRestorer: BackupRestorer
 
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH C): bầu chọn vai trò broker (Tầng 1) — chạy lúc app
+    // start VÀ mỗi lần app quay lại foreground (xem ProcessLifecycleOwner observer bên dưới).
+    @Inject
+    lateinit var electionManager: com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager
+
     private val applicationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     companion object {
@@ -66,7 +71,45 @@ class MainApplication : Application(), Configuration.Provider {
         applicationScope.launch {
             initializePlugins()
             seedDemoDataIfNeeded()
+            // ✅ MỚI (MQTT Symmetric Broker, PATCH C.1): bầu chọn vai trò broker 1 lần lúc app
+            // start, không chặn UI (chạy sau seedDemoDataIfNeeded() trong cùng coroutine tuần
+            // tự, không phải launch riêng — giữ đúng thứ tự đã sửa ở race condition qa_data).
+            try {
+                electionManager.electNow(
+                    com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.ElectionTrigger.AppStart
+                )
+                val role = electionManager.currentState.value.role
+                if (role == com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.HOSTING_EMBEDDED) {
+                    com.aichatvn.agent.service.EmbeddedMqttBrokerService.start(this@MainApplication)
+                }
+            } catch (e: Exception) {
+                logger.e("MainApplication", "MQTT election lúc start lỗi: ${e.message}", e)
+            }
         }
+
+        // ✅ MỚI (MQTT Symmetric Broker, PATCH C.2): bầu lại mỗi khi app quay lại foreground —
+        // Camera Node có thể đã online/offline trong lúc app ở nền, cần probe lại thay vì giữ
+        // nguyên kết quả election cũ có thể đã lỗi thời.
+        androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+            object : androidx.lifecycle.DefaultLifecycleObserver {
+                override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                    applicationScope.launch {
+                        try {
+                            val state = electionManager.electNow(
+                                com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.ElectionTrigger.AppForeground
+                            )
+                            if (state.role == com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.HOSTING_EMBEDDED) {
+                                com.aichatvn.agent.service.EmbeddedMqttBrokerService.start(this@MainApplication)
+                            }
+                            // Vai trò khác HOSTING_EMBEDDED: không tự stop ở đây — EmbeddedMqttBrokerService
+                            // tự collect currentState và tự stopSelf() khi role đổi (xem CHANGELOG_FIXES.md).
+                        } catch (e: Exception) {
+                            logger.e("MainApplication", "MQTT election foreground lỗi: ${e.message}", e)
+                        }
+                    }
+                }
+            }
+        )
 
         // Tự động khởi chạy WebhookGatewayService khi mở ứng dụng từ Launcher
         try {

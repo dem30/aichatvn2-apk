@@ -122,7 +122,19 @@ class WebhookGatewayService : Service() {
     lateinit var trainingSkill: TrainingSkill       
 
     @Inject
-    lateinit var deviceRegistry: DeviceRegistry                   
+    lateinit var deviceRegistry: DeviceRegistry
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH B2): inject trực tiếp MqttDeviceController thay vì đi
+    // qua DeviceRegistry — DeviceRegistry ở đây là com.aichatvn.agent.ui.dashboard.DeviceRegistry
+    // (UI/dashboard), KHÁC package với DeviceRegistry mà tài liệu PATCH gốc giả định
+    // (com.aichatvn.agent.devices), không chắc có sẵn controllerFor(protocol). MqttDeviceController
+    // là @Singleton nên inject thẳng an toàn hơn, tương đương gợi ý "(hoặc inject
+    // MqttDeviceController trực tiếp)" trong tài liệu PATCH gốc.
+    @Inject
+    lateinit var mqttDeviceController: com.aichatvn.agent.devices.MqttDeviceController
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH C.4): reconciliation election định kỳ, gắn cùng vòng
+    // Tuya sync loop sẵn có (30 phút) thay vì tạo WorkManager job riêng.
+    @Inject
+    lateinit var electionManager: com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager                   
 
     // ✅ ĐÃ SỬA LỖI 5: Tiêm Provider của Quản gia AI vào cổng dịch vụ
     @Inject
@@ -1228,6 +1240,7 @@ class WebhookGatewayService : Service() {
             // vòng lặp SSE phía trên, vì cả 2 đều coi "command" là JSON mù, không hiểu nội dung.
             val result: CommandExecutionResult = when (deviceType) {
                 "tuya" -> handleTuyaCommand(command)
+                "mqtt" -> handleMqttCommand(command)
                 else -> CommandExecutionResult(false, "device_type không được hỗ trợ: $deviceType")
             }
 
@@ -1289,6 +1302,50 @@ class WebhookGatewayService : Service() {
             CommandExecutionResult(true, if (newState) "Đã bật $deviceName" else "Đã tắt $deviceName")
         } catch (e: Exception) {
             CommandExecutionResult(false, "Lỗi điều khiển Tuya: ${e.message}")
+        }
+    }
+
+    /**
+     * ✅ MỚI (MQTT Symmetric Broker, PATCH B2): tương tự handleTuyaCommand() nhưng cho thiết bị
+     * MQTT — Camera Node publish vào broker LAN của chính nó qua MqttDeviceController (đã
+     * @Singleton inject thẳng, xem ghi chú ở khai báo field phía trên). Định dạng command mong
+     * đợi: {"deviceId": "...", "deviceName": "...", "action": "on" | "off"} — ưu tiên deviceId
+     * (chính xác tuyệt đối), fallback tìm theo deviceName nếu Client cũ chưa gửi deviceId.
+     */
+    private suspend fun handleMqttCommand(command: org.json.JSONObject): CommandExecutionResult {
+        val deviceId = command.optString("deviceId", "").trim().ifBlank { null }
+        val deviceName = command.optString("deviceName", "").trim().ifBlank { null }
+        val action = command.optString("action", "").trim().lowercase()
+
+        if (deviceId == null && deviceName == null) {
+            return CommandExecutionResult(false, "Thiếu deviceId/deviceName trong lệnh MQTT")
+        }
+
+        val resolvedId = deviceId ?: run {
+            val list = mqttDeviceController.listDevices()
+            list.find { it.displayName.equals(deviceName, ignoreCase = true) }?.id
+        }
+        if (resolvedId == null) {
+            return CommandExecutionResult(false, "Không tìm thấy thiết bị MQTT: ${deviceId ?: deviceName}")
+        }
+
+        return try {
+            val result = when (action) {
+                "on" -> mqttDeviceController.turnOn(resolvedId)
+                "off" -> mqttDeviceController.turnOff(resolvedId)
+                else -> return CommandExecutionResult(false, "action không hợp lệ: '$action' (chỉ chấp nhận on/off)")
+            }
+            when (result) {
+                is com.aichatvn.agent.devices.DeviceActionResult.Success ->
+                    // ⚠️ Không tự publishMqttStateChange() ở đây — MqttDeviceController.turnOn()/
+                    // turnOff() đã tự làm việc đó (xem PATCH A), tránh phát trùng 2 lần giống
+                    // handleTuyaCommand() (mục "KHÔNG publish 2 lần" trong SmartSwitchSkill).
+                    CommandExecutionResult(true, if (action == "on") "Đã bật $deviceName" else "Đã tắt $deviceName")
+                is com.aichatvn.agent.devices.DeviceActionResult.Failure ->
+                    CommandExecutionResult(false, result.reason)
+            }
+        } catch (e: Exception) {
+            CommandExecutionResult(false, "Lỗi điều khiển MQTT: ${e.message}")
         }
     }
 
@@ -1931,6 +1988,19 @@ class WebhookGatewayService : Service() {
                     syncTuyaDeviceStates()
                 } catch (e: Exception) {
                     logger.e("TuyaSync", "Lỗi đồng bộ trạng thái Tuya dưới nền: ${e.message}")
+                }
+                // ✅ MỚI (MQTT Symmetric Broker, PATCH C.4): chỉ chạy election reconciliation
+                // trên Camera Node — đúng gate đã dùng cho notifyTuyaStateChangeFromSync(), tránh
+                // N máy Client cùng probe/broadcast trùng nhau mỗi 30 phút.
+                try {
+                    val deviceRole = configProvider.getString(AppConfigDefaults.DEVICE_ROLE, "client").trim()
+                    if (deviceRole == "camera_node") {
+                        electionManager.electNow(
+                            com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.ElectionTrigger.Reconciliation
+                        )
+                    }
+                } catch (e: Exception) {
+                    logger.e("TuyaSync", "MQTT election reconciliation lỗi: ${e.message}")
                 }
                 // ✅ SỬA (tối ưu quota API): 10 phút -> 30 phút. Vòng lặp này chạy 24/7 bất kể
                 // user có mở app hay không, nên interval càng ngắn thì chi phí nền càng lớn dù

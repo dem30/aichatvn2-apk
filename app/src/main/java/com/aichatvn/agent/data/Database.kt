@@ -208,6 +208,25 @@ interface MqttDeviceDao {
 
     @Query("DELETE FROM mqtt_devices WHERE id = :deviceId")
     suspend fun deleteDevice(deviceId: String)
+
+    // ✅ MỚI (version 25 — mục 4.3 kế hoạch): cập nhật RIÊNG deviceLanIp/deviceMac, tách khỏi
+    // insertDevice() (REPLACE, ghi đè nguyên dòng) đúng lý do TuyaDeviceDao.updateLocalControlInfo()
+    // đã tách riêng — TasmotaLanDiscovery chạy độc lập, ghi qua insertDevice() sẽ xoá mất
+    // commandTopic/stateTopic đã lưu trước đó. Gọi từ TasmotaLanDiscovery sau mỗi lần dò LAN
+    // thành công.
+    @Query("UPDATE mqtt_devices SET deviceLanIp = :lanIp, deviceMac = :mac WHERE id = :deviceId")
+    suspend fun updateLanInfo(deviceId: String, lanIp: String?, mac: String?)
+
+    // ✅ MỚI (version 25): cập nhật RIÊNG brokerMode theo deviceId — gọi từ
+    // MqttBrokerElectionManager sau mỗi lần bầu.
+    @Query("UPDATE mqtt_devices SET brokerMode = :brokerMode WHERE id = :deviceId")
+    suspend fun updateBrokerMode(deviceId: String, brokerMode: String)
+
+    // ✅ MỚI (version 25): danh sách thiết bị có deviceLanIp đã biết — cần cho
+    // TasmotaMqttHostMigrator biết migrate thiết bị nào, bỏ qua (không silently fail) thiết bị
+    // chưa có IP đã biết — đúng tinh thần rủi ro mục 5.3.
+    @Query("SELECT * FROM mqtt_devices WHERE deviceLanIp IS NOT NULL")
+    suspend fun getDevicesWithLanIp(): List<MqttDeviceEntity>
 }
 
 // ==================== CAMERA DAO ====================
@@ -602,6 +621,20 @@ val MIGRATION_23_24 = object : Migration(23, 24) {
     }
 }
 
+// ✅ MỚI: version 24 → 25 (MQTT_SYMMETRIC_BROKER_PLAN.md mục 4.2). Thêm 3 cột cho
+// MqttDeviceEntity phục vụ Symmetric Broker Election + Tasmota MqttHost migration:
+// deviceLanIp, deviceMac (nullable, không phá dữ liệu cũ), brokerMode (NOT NULL DEFAULT
+// 'cloud' — khớp đúng brokerSource mặc định đã có từ MIGRATION_23_24, không tạo trạng thái
+// mới mâu thuẫn cho dữ liệu cũ). Theo đúng khuôn ALTER TABLE ... ADD COLUMN các migration
+// trước (17→24 toàn dùng cách này, không CREATE lại bảng). KHÔNG đổi/đụng cột `topic` cũ.
+val MIGRATION_24_25 = object : Migration(24, 25) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN deviceLanIp TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN deviceMac TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN brokerMode TEXT NOT NULL DEFAULT 'cloud'")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -622,12 +655,14 @@ val MIGRATION_23_24 = object : Migration(23, 24) {
         CallLogEntity::class,
         MqttDeviceEntity::class
     ],
-    // bump 23 → 24 để track Cloud Broker V1 thêm cột MqttDeviceEntity (xem MIGRATION_23_24).
+    // bump 24 → 25 để track MQTT Symmetric Broker (mục 4.2) thêm deviceLanIp/deviceMac/
+    // brokerMode vào MqttDeviceEntity (xem MIGRATION_24_25).
+    // Trước đó bump 23 → 24 để track Cloud Broker V1 thêm cột MqttDeviceEntity (xem MIGRATION_23_24).
     // Trước đó bump 22 → 23 để thêm bảng mqtt_devices (Tầng 3 — xem MIGRATION_22_23).
-    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→24
+    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→25
     // (không chỉ riêng migration mới nhất) ở dưới, KHÔNG được để fallbackToDestructiveMigration()
     // xoá dữ liệu của họ.
-    version = 24,
+    version = 25,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -665,7 +700,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

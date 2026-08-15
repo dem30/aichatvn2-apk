@@ -129,12 +129,12 @@ class CloudMqttBrokerProvider @Inject constructor(
     }
 }
 
-@dagger.Module
-@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
-abstract class MqttBrokerModule {
-    @dagger.Binds
-    abstract fun bindMqttBrokerProvider(impl: CloudMqttBrokerProvider): MqttBrokerProvider
-}
+// ❌ ĐÃ XOÁ (MQTT Symmetric Broker, bắt buộc khi merge — xem
+// MQTT_SYMMETRIC_BROKER_IMPLEMENTATION_REPORT.md mục "Bước 3"): abstract class MqttBrokerModule
+// cũ (@Binds tĩnh CloudMqttBrokerProvider -> MqttBrokerProvider) — thay bằng
+// MqttBrokerModule.kt mới (file riêng, @Provides ĐỘNG chọn Cloud/Embedded theo BrokerRole qua
+// DelegatingMqttBrokerProvider). Giữ cả 2 sẽ trùng @Module cùng cung cấp MqttBrokerProvider,
+// Hilt lỗi build ngay. CloudMqttBrokerProvider phía trên GIỮ NGUYÊN 100%, chỉ đường bind đổi.
 
 /**
  * MqttDeviceRuntimeStatus
@@ -192,6 +192,10 @@ class MqttDeviceController @Inject constructor(
     private val brokerProvider: MqttBrokerProvider,
     private val discoveryEngine: MqttDiscoveryEngine,
     private val logger: Logger,
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH A2): song song publishTuyaStateChange() ở
+    // SmartSwitchSkill/WebhookGatewayService — publish qua household để các máy khác trong nhà
+    // sync world_state MQTT, không chỉ máy vừa ra lệnh/vừa nhận message.
+    private val householdEventPublisher: com.aichatvn.agent.skills.HouseholdEventPublisher,
 ) : DeviceController {
 
     override val protocol: DeviceProtocol = DeviceProtocol.MQTT
@@ -422,6 +426,18 @@ class MqttDeviceController @Inject constructor(
                     online = true,
                     timestamp = now
                 )
+                // ✅ MỚI (PATCH A2): broker phát hiện đổi trạng thái (vd bấm tay công tắc vật lý)
+                // — publish cho household với source="subscribe" để phân biệt với điều khiển chủ
+                // động qua app (source mặc định "mqtt" ở publish()/turnOn()/turnOff() phía trên).
+                val entity = mqttDeviceDao.getDeviceById(deviceId)
+                if (entity != null) {
+                    householdEventPublisher.publishMqttStateChange(
+                        deviceId,
+                        entity.name,
+                        newStatus == MqttDeviceRuntimeStatus.ON,
+                        source = "subscribe"
+                    )
+                }
             } catch (e: Exception) {
                 logger.e("MqttDeviceController", "handleIncomingStateMessage($deviceId): cập nhật DB lỗi: ${e.message}", e)
             }
@@ -559,6 +575,14 @@ class MqttDeviceController @Inject constructor(
                 mqttDeviceDao.updateState(
                     deviceId, state = newState, online = true, timestamp = System.currentTimeMillis()
                 )
+                // ✅ MỚI (PATCH A2): publish ngay sau lệnh chủ động thành công — dùng entity.name
+                // đã có sẵn (không cần đọc lại DB), source mặc định "mqtt" (điều khiển chủ động,
+                // phân biệt với "subscribe" ở handleIncomingStateMessage() bên dưới).
+                try {
+                    householdEventPublisher.publishMqttStateChange(deviceId, entity.name, newState)
+                } catch (e: Exception) {
+                    logger.d("MqttDeviceController", "publishMqttStateChange lỗi (bỏ qua): ${e.message}")
+                }
                 DeviceActionResult.Success
             } catch (e: Exception) {
                 logger.e("MqttDeviceController", "publish($deviceId) lỗi: ${e.message}", e)

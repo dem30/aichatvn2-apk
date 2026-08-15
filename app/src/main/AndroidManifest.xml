@@ -84,6 +84,24 @@
                 android:value="smarthome_scheduler_webhook_sse" />
         </service>
 
+        <!-- ✅ MỚI (MQTT_SYMMETRIC_BROKER_PLAN.md): EmbeddedMqttBrokerService.start()/stop() gọi
+             startForegroundService()/stopService() nhưng service KHÔNG khai báo trong manifest
+             gốc — thiếu khai báo này thì ngay lệnh start() đầu tiên sẽ ném
+             android.content.ActivityNotFoundException lúc runtime (Android không tìm thấy
+             service nào khớp Intent), làm crash toàn bộ luồng Election ngay khi role đầu tiên
+             thành HOSTING_EMBEDDED — không phải lỗi "âm thầm không chạy", mà crash app thật.
+             foregroundServiceType="specialUse" + subtype riêng, cùng khuôn WebhookGatewayService
+             ở trên (đã có sẵn quyền FOREGROUND_SERVICE_SPECIAL_USE, không cần xin quyền mới). -->
+        <service
+            android:name=".service.EmbeddedMqttBrokerService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="mqtt_embedded_broker" />
+        </service>
+
         <!-- ❌ Đfont ĐÃ GỠ BỎ HOÀN TOÀN: Đăng ký dịch vụ VoiceAssistantService ngầm cũ tại đây -->
         
         <provider

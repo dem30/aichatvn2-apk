@@ -56,6 +56,11 @@ class SmartSwitchSkill @Inject constructor(
     // handleSet(). Role-agnostic, không gate DEVICE_ROLE (khác với vòng poll
     // syncTuyaDeviceStates() bên WebhookGatewayService).
     private val householdEventPublisher: HouseholdEventPublisher,
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH C.5): dùng riêng cho retry khi MQTT publish fail —
+    // xem handleSet(). MqttDeviceController KHÔNG tự gọi Election (giữ ranh giới tầng, xem
+    // MqttBrokerElectionManager.kt docstring) — đây là nơi DUY NHẤT chủ động gọi electNow(),
+    // chỉ áp dụng cho protocol MQTT, không đụng gì tới nhánh Tuya.
+    private val electionManager: com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager,
     logger: Logger
 ) : BaseSkill("smart_switch", "Điều khiển thiết bị đóng ngắt", logger), Plugin {
 
@@ -450,22 +455,41 @@ class SmartSwitchSkill @Inject constructor(
             // hay không, không hề phân biệt loại exception nào ném ra.
             val result = if (state) controller.turnOn(deviceId) else controller.turnOff(deviceId)
 
-            if (result is DeviceActionResult.Failure) {
-                // ✅ MỚI: Gateway relay CHỈ có nhánh xử lý cho Tuya —
-                // WebhookGatewayService.handleIncomingDeviceCommand() hiện chỉ
-                // when("tuya" -> ...) (mục 5.3/9.1 tài liệu kiến trúc). Giao thức khác (MQTT,
-                // OEM sau này...) chưa có nhánh Gateway relay — thử gọi vẫn sẽ chỉ nhận về
-                // "device_type không được hỗ trợ" từ Gateway, nên trả lỗi gốc thẳng luôn thay
-                // vì tốn 1 round-trip mạng vô ích. Khi ai đó thêm nhánh MQTT vào
-                // WebhookGatewayService (xem mục 9.3 tài liệu), điều kiện dưới đây tự mở ra
-                // nếu đổi thành so khớp danh sách protocol hỗ trợ thay vì == TUYA_CLOUD.
-                if (controller.protocol != DeviceProtocol.TUYA_CLOUD) {
-                    return failure("Lỗi điều khiển thiết bị: ${result.reason}")
+            // ✅ MỚI (MQTT Symmetric Broker, PATCH C.5): fail MQTT rất có thể do broker vừa đổi
+            // (Camera Node online/offline giữa chừng, chưa kịp bầu lại) — bầu lại rồi thử publish
+            // lại 1 lần TẠI CHỖ, rẻ hơn hẳn so với rơi thẳng xuống Gateway relay (round-trip qua
+            // Client ngoài LAN). Chỉ retry cho MQTT — Tuya không có khái niệm Election, không đổi
+            // gì hành vi Tuya cũ.
+            val effectiveResult = if (result is DeviceActionResult.Failure && controller.protocol == DeviceProtocol.MQTT) {
+                try {
+                    electionManager.electNow(
+                        com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.ElectionTrigger.PublishFailed
+                    )
+                    val retryResult = if (state) controller.turnOn(deviceId) else controller.turnOff(deviceId)
+                    logger.d("SmartSwitchSkill", "MQTT publish fail, retry sau election: ${if (retryResult is DeviceActionResult.Success) "thành công" else "vẫn thất bại"}")
+                    retryResult
+                } catch (e: Exception) {
+                    logger.d("SmartSwitchSkill", "MQTT election retry lỗi (bỏ qua, dùng lỗi gốc): ${e.message}")
+                    result
+                }
+            } else {
+                result
+            }
+
+            if (effectiveResult is DeviceActionResult.Failure) {
+                // ✅ SỬA (MQTT Symmetric Broker, PATCH B): Gateway relay giờ hỗ trợ cả Tuya lẫn
+                // MQTT — WebhookGatewayService.handleIncomingDeviceCommand() đã thêm nhánh
+                // when("mqtt" -> handleMqttCommand(...)). Đổi điều kiện từ so khớp đúng 1 giao
+                // thức sang danh sách giao thức Gateway hỗ trợ.
+                val gatewaySupported = controller.protocol == DeviceProtocol.TUYA_CLOUD ||
+                    controller.protocol == DeviceProtocol.MQTT
+                if (!gatewaySupported) {
+                    return failure("Lỗi điều khiển thiết bị: ${effectiveResult.reason}")
                 }
 
                 val localOnlyEnabled = configProvider.getBoolean(AppConfigDefaults.LOCAL_ONLY_MODE_ENABLED)
                 if (!localOnlyEnabled) {
-                    return failure("Lỗi điều khiển thiết bị: ${result.reason}")
+                    return failure("Lỗi điều khiển thiết bị: ${effectiveResult.reason}")
                 }
 
                 val homeDeviceCode = configProvider.getString(AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE).trim()
@@ -475,11 +499,20 @@ class SmartSwitchSkill @Inject constructor(
                     )
                 }
 
+                // ✅ MỚI (PATCH B): deviceType theo đúng giao thức, kèm deviceId khi là MQTT để
+                // Camera Node resolve chính xác (khác Tuya — chỉ cần deviceName).
+                val deviceType = when (controller.protocol) {
+                    DeviceProtocol.MQTT -> "mqtt"
+                    else -> "tuya"
+                }
                 val gatewayResult = deviceCommandGatewayClient.sendDeviceCommandToHomeAndAwaitResult(
-                    deviceType = "tuya",
+                    deviceType = deviceType,
                     command = org.json.JSONObject().apply {
                         put("deviceName", deviceKey)
                         put("action", if (state) "on" else "off")
+                        if (controller.protocol == DeviceProtocol.MQTT) {
+                            put("deviceId", deviceId)
+                        }
                     }
                 )
                 if (!gatewayResult.success) {

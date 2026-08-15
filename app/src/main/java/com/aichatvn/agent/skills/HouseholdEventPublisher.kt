@@ -100,6 +100,24 @@ class HouseholdEventPublisher @Inject constructor(
             put("newState", newState)
         })
 
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH A): song song publishTuyaStateChange() ở trên — cùng
+    // hạ tầng /household/event, chỉ khác type để client phân biệt. Gọi từ MqttDeviceController
+    // sau khi lệnh chủ động thành công (turnOn/turnOff) VÀ từ handleIncomingStateMessage() khi
+    // subscribe realtime từ broker phát hiện đổi trạng thái (source="subscribe") — không cần vòng
+    // poll nền riêng vì subscribe MQTT đã là realtime.
+    suspend fun publishMqttStateChange(
+        deviceId: String,
+        deviceName: String,
+        isOn: Boolean,
+        source: String = "mqtt"
+    ): Boolean =
+        publish("mqtt_state_change", deviceId, JSONObject().apply {
+            put("deviceId", deviceId)
+            put("deviceName", deviceName)
+            put("newState", isOn)
+            put("source", source)
+        })
+
     suspend fun publishCameraAlarm(cameraId: String): Boolean =
         publish("camera_alarm", cameraId, JSONObject().apply { put("cameraId", cameraId) })
 }

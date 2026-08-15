@@ -80,7 +80,23 @@ data class MqttDeviceEntity(
     val stateTopic: String? = null,
 
     val onPayload: String = "ON",
-    val offPayload: String = "OFF"
+    val offPayload: String = "OFF",
+
+    // ✅ MỚI (version 25 — MIGRATION_24_25, xem MQTT_SYMMETRIC_BROKER_PLAN.md mục 4.2):
+    // IP LAN CỦA CHÍNH TASMOTA (không phải broker) — cần để pushMqttHostToTasmota() biết
+    // gọi HTTP command tới đâu. Chỉ có giá trị nếu TasmotaLanDiscovery từng dò được, hoặc
+    // user tự nhập. null nghĩa là chưa biết — TasmotaMqttHostMigrator BỎ QUA thiết bị này
+    // (không silently fail), theo đúng phương án (c) mục 5.3.
+    @ColumnInfo(defaultValue = "NULL")
+    val deviceLanIp: String? = null,
+    // Xác thực lại thiết bị khi IP đổi (tái dùng ý mục 4.2 file kế hoạch cũ).
+    @ColumnInfo(defaultValue = "NULL")
+    val deviceMac: String? = null,
+    // "camera_node_host" | "adhoc" | "cloud" — dùng cho UI hiển thị + logic migrate biết
+    // thiết bị nào đang trỏ vào broker nào. Default 'cloud' khớp đúng brokerSource mặc định
+    // đã có từ MIGRATION_23_24, không tạo trạng thái mới mâu thuẫn cho dữ liệu cũ.
+    @ColumnInfo(defaultValue = "cloud")
+    val brokerMode: String = "cloud"
 )
 
 // ==================== CHAT MESSAGE ====================

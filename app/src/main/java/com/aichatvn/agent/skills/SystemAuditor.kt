@@ -35,7 +35,12 @@ class SystemAuditor @Inject constructor(
     // ✅ MỚI (Giai đoạn 3): so subnet Wi-Fi hiện tại với subnet đã lưu lúc probe/dò LAN
     // thành công lần trước — quyết định 1 camera/thiết bị đang OPTIMIZED thật hay chỉ
     // DEGRADED (khả năng có thật nhưng đang không dùng được vì điện thoại ngoài LAN nhà).
-    private val networkContext: NetworkContext
+    private val networkContext: NetworkContext,
+    // ✅ MỚI (MQTT Symmetric Broker, PATCH D): đọc trạng thái bầu chọn broker hiện tại — CHỈ
+    // ĐỌC (StateFlow.value), không tự electNow() ở đây (audit() phải giữ đúng nguyên tắc
+    // "không side-effect" ghi ở đầu file — electNow() thuộc trách nhiệm của event trigger
+    // wiring, mục 2.4 kế hoạch, không phải của SystemAuditor).
+    private val electionManager: com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager
 ) {
     companion object {
         private const val TAG = "SystemAuditor"
@@ -51,6 +56,7 @@ class SystemAuditor @Inject constructor(
         items += auditCameras()
         items += auditTuyaDevices()
         items += auditMqttDevices()
+        items += auditMqttBrokerHealth()
         items += auditInfra()
 
         logger.i(TAG, "✅ Audit xong: ${items.size} mục (${items.count { it.status == HealthStatus.IMPROVABLE }} có thể cải thiện)")
@@ -249,6 +255,78 @@ class SystemAuditor @Inject constructor(
                 manualActionRoute = null
             )
         }
+    }
+
+    // ==================== MQTT BROKER ELECTION ====================
+
+    /**
+     * Audit sức khoẻ MQTT Broker Election — cảnh báo khi đang FOLLOWING_ADHOC (nên có Camera
+     * Node để ổn định hơn). CHỈ ĐỌC currentState.value (StateFlow, không gọi mạng/electNow()
+     * gì cả) — đúng nguyên tắc "không side-effect" của toàn class.
+     *
+     * safeToAutoApply = false ở mọi nhánh — bầu chọn broker ảnh hưởng kết nối thiết bị vật lý
+     * thật, không phải chỉ bật 1 cờ hiển thị.
+     */
+    private fun auditMqttBrokerHealth(): List<HealthItem> {
+        val state = electionManager.currentState.value
+        val items = mutableListOf<HealthItem>()
+
+        when (state.role) {
+            com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.FOLLOWING_ADHOC -> {
+                items += HealthItem(
+                    id = "mqtt_broker_adhoc",
+                    category = HealthCategory.DEVICE,
+                    status = HealthStatus.DEGRADED,
+                    title = "MQTT Broker đang chạy ad-hoc",
+                    description = "Broker đang do 1 máy Client tạm host. Nên bật Camera Node " +
+                        "ở nhà để broker ổn định hơn (máy chạy 24/7).",
+                    relatedEntityId = null,
+                    safeToAutoApply = false,
+                    manualActionRoute = null
+                )
+            }
+            com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.HOSTING_EMBEDDED -> {
+                items += HealthItem(
+                    id = "mqtt_broker_hosting",
+                    category = HealthCategory.DEVICE,
+                    status = HealthStatus.OPTIMIZED,
+                    title = "MQTT Broker đang chạy trên máy này",
+                    description = "Máy này đang host broker LAN (mode=${state.brokerMode}).",
+                    relatedEntityId = null,
+                    safeToAutoApply = false,
+                    manualActionRoute = null
+                )
+            }
+            com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.FOLLOWING_CAMERA_NODE -> {
+                items += HealthItem(
+                    id = "mqtt_broker_following_cn",
+                    category = HealthCategory.DEVICE,
+                    status = HealthStatus.OPTIMIZED,
+                    title = "MQTT Broker trên Camera Node",
+                    description = "Đang dùng broker tại ${state.activeBrokerIp ?: "?"}.",
+                    relatedEntityId = null,
+                    safeToAutoApply = false,
+                    manualActionRoute = null
+                )
+            }
+            com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.USING_CLOUD -> {
+                items += HealthItem(
+                    id = "mqtt_broker_cloud",
+                    category = HealthCategory.DEVICE,
+                    status = HealthStatus.OPTIMIZED,
+                    title = "MQTT đang dùng Cloud Broker",
+                    description = "Không có broker LAN khả dụng — đang dùng broker cloud đã cấu hình.",
+                    relatedEntityId = null,
+                    safeToAutoApply = false,
+                    manualActionRoute = null
+                )
+            }
+            com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager.BrokerRole.NONE -> {
+                // Chưa từng election (vd app vừa cài, chưa có thiết bị MQTT nào) — không có gì
+                // để báo cáo, không phải lỗi.
+            }
+        }
+        return items
     }
 
     // ==================== HẠ TẦNG CHUNG ====================

@@ -159,6 +159,13 @@ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
     implementation("org.eclipse.paho:org.eclipse.paho.android.service:1.1.1")
 
+    // ✅ MỚI (MQTT_SYMMETRIC_BROKER_PLAN.md mục 4 Implementation Order — "Tích hợp Moquette,
+    // TÁI DÙNG nguyên Khối A"): EmbeddedMqttBrokerService.kt load lớp này qua reflection nên
+    // KHÔNG chặn build nếu thiếu — nhưng thiếu thì broker không bao giờ thực sự start (chỉ log
+    // "❌ Moquette chưa có trong classpath"), toàn bộ vai trò HOSTING_EMBEDDED trở thành vô
+    // nghĩa dù Election vẫn chạy đúng. Thêm để tính năng thực sự hoạt động, không chỉ scaffold.
+    implementation("io.moquette:moquette-broker:0.17")
+
     // Gson
     implementation("com.google.code.gson:gson:2.10.1")
 
