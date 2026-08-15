@@ -1522,7 +1522,7 @@ fun PreconditionGuardDialog(
 
 
 @Composable
-private fun InfoChip(label: String, value: String) {
+fun InfoChip(label: String, value: String) {
     Column {
         Text(
             text = label,

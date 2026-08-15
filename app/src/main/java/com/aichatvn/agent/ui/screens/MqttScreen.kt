@@ -511,7 +511,7 @@ class MqttViewModel @Inject constructor(
  * ghi chú DeviceCapability.REALTIME_STATUS trong MqttDeviceController.kt).
  */
 @Composable
-private fun MqttDeviceCard(
+fun MqttDeviceCard(
     device: MqttDeviceEntity,
     // ✅ MỚI (track hoàn thiện Cloud MQTT): trạng thái realtime 4 mức — thay cho việc chỉ đọc
     // device.online tĩnh. UNKNOWN hiện riêng biệt với OFF (xám thay vì đỏ) — không được phép để
@@ -661,7 +661,7 @@ private fun MqttDeviceCard(
 }
 
 @Composable
-private fun EmptyMqttState(
+fun EmptyMqttState(
     brokerConfigured: Boolean,
     onScan: () -> Unit,
     onAddDevice: () -> Unit,
@@ -729,7 +729,7 @@ private fun EmptyMqttState(
  * đóng dialog rồi tìm nút khác.
  */
 @Composable
-private fun ScanTopicsDialog(
+fun ScanTopicsDialog(
     // ✅ MỚI (track hoàn thiện Cloud MQTT): thiết bị MqttDiscoveryEngine đã NHẬN DIỆN được
     // (Home Assistant/Homie/vendor adapter) — hiện ưu tiên phía trên, mỗi thiết bị chỉ cần chạm
     // 1 lần để mở DiscoveryConfirmDialog xác nhận, KHÔNG lưu thẳng ở đây.
@@ -855,7 +855,7 @@ private fun ScanTopicsDialog(
  * topic/payload thì dùng "Thiết lập nhanh" thêm tay thay vì sửa kết quả discovery.
  */
 @Composable
-private fun DiscoveryConfirmDialog(
+fun DiscoveryConfirmDialog(
     discovered: DiscoveredMqttDevice,
     onDismiss: () -> Unit,
     onConfirm: (finalName: String) -> Unit
@@ -903,7 +903,7 @@ private fun DiscoveryConfirmDialog(
  * MqttDiscoveryEngine nhận diện) vừa quét được. Vẫn để người dùng SỬA được, không khoá field.
  */
 @Composable
-private fun AddMqttDeviceDialog(
+fun AddMqttDeviceDialog(
     initialCommandTopic: String = "",
     onDismiss: () -> Unit,
     onSave: (name: String, commandTopic: String, stateTopic: String, onPayload: String, offPayload: String) -> Unit
@@ -1008,7 +1008,7 @@ private fun AddMqttDeviceDialog(
  * connect thật trước khi cho phép Lưu.
  */
 @Composable
-private fun MqttBrokerConfigDialog(
+fun MqttBrokerConfigDialog(
     currentBrokerUrl: String,
     isTestingConnection: Boolean,
     connectionTestResult: Boolean?,
