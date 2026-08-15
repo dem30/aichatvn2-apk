@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -707,12 +708,44 @@ private fun PluginGroupCard(
                                 Spacer(Modifier.height(6.dp))
                                 Text(
                                     if (isClientRole(deviceRole))
-                                        "Máy này đang là Client — chỉ cần điền \"Mã Camera Node ở nhà\" bên dưới để gửi lệnh Tuya khi ở ngoài mạng LAN."
+                                        "Máy này đang là Client — dán \"Mã Camera Node ở nhà\" bên dưới để gửi lệnh Tuya khi ở ngoài mạng LAN. Lấy mã này từ chính card Vai trò trên máy Camera Node."
                                     else
-                                        "Máy này đang là Camera Node — không cần điền \"Mã Camera Node ở nhà\" (field đó đã ẩn, không áp dụng cho vai trò này).",
+                                        "Máy này đang là Camera Node — đưa mã bên dưới cho (các) máy Client, dán vào \"Mã Camera Node ở nhà\" trên máy đó.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                // ✅ MỚI (UX role/device-code): trước đây mã của chính máy này
+                                // (dùng để dán sang máy Client) chỉ hiển thị ở nhóm "call" (📞 Cuộc
+                                // gọi P2P), không liên quan gì tới "Vai trò" theo tên gọi — người
+                                // dùng phải tự đoán 2 khái niệm là 1 rồi lục tìm đúng nhóm. Hiện lại
+                                // NGAY tại đây, đọc từ cùng key CALL_DEVICE_CODE (không tạo key mới,
+                                // không tách khỏi callSkill.getOrCreateMyDeviceCode() đang dùng thật
+                                // ở WebhookGatewayService — chỉ hiển thị lại giá trị đã có).
+                                if (!isClientRole(deviceRole)) {
+                                    val myDeviceCode = allConfigs.firstOrNull { it.key == AppConfigDefaults.CALL_DEVICE_CODE }?.value?.trim().orEmpty()
+                                    Spacer(Modifier.height(6.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant
+                                        ) {
+                                            Text(
+                                                if (myDeviceCode.isBlank()) "⏳ Đang chờ dịch vụ nền tự sinh mã..." else myDeviceCode,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        if (myDeviceCode.isNotBlank()) {
+                                            IconButton(onClick = {
+                                                clipboardManager.setText(AnnotatedString(myDeviceCode))
+                                                Toast.makeText(context, "📋 Đã sao chép mã Camera Node!", Toast.LENGTH_SHORT).show()
+                                            }) {
+                                                Icon(Icons.Default.ContentCopy, contentDescription = "Sao chép mã Camera Node")
+                                            }
+                                        }
+                                    }
+                                }
                                 Spacer(Modifier.height(4.dp))
                                 Text(
                                     "💡 Muốn báo động camera và trạng thái Tuya tự động đồng bộ giữa các máy trong nhà (bất kể vai trò)? Điền \"Mã hộ gia đình\" bên dưới — CÙNG 1 giá trị trên mọi máy muốn đồng bộ với nhau.",
@@ -898,7 +931,12 @@ private fun PluginGroupCard(
                         (!isClientRole(deviceRole) && entity.key == AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE)
                     )
                     if (!hiddenForGlobalRole) {
-                        ConfigItemRow(entity = entity, onSave = onSave, onReset = onReset)
+                        ConfigItemRow(
+                            entity = entity,
+                            onSave = onSave,
+                            onReset = onReset,
+                            showPasteButton = entity.key == AppConfigDefaults.HOME_CAMERA_NODE_DEVICE_CODE
+                        )
                         Spacer(Modifier.height(8.dp))
                     }
                 }
@@ -911,12 +949,17 @@ private fun PluginGroupCard(
 private fun ConfigItemRow(
     entity: AppConfigEntity,
     onSave: (String, String) -> Unit,
-    onReset: (String) -> Unit
+    onReset: (String) -> Unit,
+    // ✅ MỚI (UX role/device-code): chỉ bật cho HOME_CAMERA_NODE_DEVICE_CODE — mã 8 ký tự
+    // gõ tay dễ sai (đã từng gây lỗi âm thầm, xem comment ở DEVICE_ROLE phía trên). Mặc định
+    // false để KHÔNG đổi giao diện của mọi ConfigItemRow khác đang dùng hàm này.
+    showPasteButton: Boolean = false
 ) {
     var inputValue by remember(entity.key, entity.value) { mutableStateOf(entity.value) }
     val isDirty = inputValue != entity.value
     val isNumeric = entity.type in setOf("int", "long", "float", "double", "number")
     val isBool = entity.type == "boolean"
+    val clipboardManager = LocalClipboardManager.current
 
     Column(
         modifier = Modifier
@@ -973,9 +1016,25 @@ private fun ConfigItemRow(
                         keyboardType = if (isNumeric) KeyboardType.Number else KeyboardType.Text
                     ),
                     trailingIcon = {
-                        if (isDirty) {
-                            IconButton(onClick = { onSave(entity.key, inputValue) }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Default.Check, contentDescription = "Lưu nhanh", tint = MaterialTheme.colorScheme.primary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (showPasteButton) {
+                                IconButton(
+                                    onClick = {
+                                        val pasted = clipboardManager.getText()?.text?.trim().orEmpty()
+                                        if (pasted.isNotBlank()) {
+                                            inputValue = pasted
+                                            onSave(entity.key, pasted)
+                                        }
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentPaste, contentDescription = "Dán mã Camera Node từ khay nhớ tạm", tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                            if (isDirty) {
+                                IconButton(onClick = { onSave(entity.key, inputValue) }, modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Default.Check, contentDescription = "Lưu nhanh", tint = MaterialTheme.colorScheme.primary)
+                                }
                             }
                         }
                     }

@@ -296,7 +296,7 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "call",
             label = "Mã thiết bị cuộc gọi (Device Code)",
-            description = "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại/video P2P từ các thiết bị khác."
+            description = "Mã định danh duy nhất (8 ký tự) dùng để nhận cuộc gọi thoại/video P2P từ các thiết bị khác. Đây CÙNG một mã hiện ở thẻ \"Vai trò của máy này\" khi chọn Camera Node — không phải 2 mã khác nhau, dùng mã nào cũng được."
         ),
 
         // ── GROQ ──
@@ -734,7 +734,7 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "global",
             label = "Mã Camera Node ở nhà",
-            description = "Nhập mã deviceCode (8 ký tự) của máy đặt cố định ở nhà — xem mã này trong Cài đặt trên chính máy đó. Chỉ cần thiết lập trên máy đóng vai trò Client."
+            description = "Mã deviceCode (8 ký tự) của máy Camera Node. Mở app trên máy đó, vào Cài đặt → thẻ \"Vai trò của máy này\" → chọn \"🏠 Camera Node\", mã sẽ hiện ngay trong thẻ đó kèm nút Sao chép — dán lại đây bằng nút 📋 bên cạnh ô nhập. Chỉ cần thiết lập trên máy đóng vai trò Client."
         ),
         AppConfigEntity(
             key = LOCAL_ONLY_MODE_ENABLED,
