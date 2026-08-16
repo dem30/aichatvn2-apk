@@ -23,11 +23,19 @@ import javax.inject.Singleton
  */
 data class DiscoveredCamera(
     val ip: String,
+    // ✅ MỚI: có thể rỗng "" khi camera chỉ được xác nhận qua ONVIF WS-Discovery (protocol=="onvif")
+    // và CHƯA xác nhận có HTTP snapshot — UI (DiscoveredCameraRow) phải tự hiển thị trạng thái
+    // "Cần xác nhận thêm" khi snapshotUrl rỗng thay vì coi đây là lỗi.
     val snapshotUrl: String,
     val vendorGuess: String,       // vd "Hikvision", "Generic" — chỉ để hiển thị gợi ý, KHÔNG chắc chắn 100%
     val username: String?,         // null nếu không cần auth
     val password: String?,
-    val previewBytes: ByteArray?   // ảnh JPEG thật đã fetch được — dùng để show thumbnail cho người dùng xác nhận
+    val previewBytes: ByteArray?,  // ảnh JPEG thật đã fetch được — dùng để show thumbnail cho người dùng xác nhận
+    // ✅ MỚI (multi-protocol discovery): nguồn nào tìm ra kết quả này — "http_snapshot" (hành vi cũ,
+    // giá trị mặc định để không phá bất kỳ chỗ gọi cũ nào chưa cập nhật), "onvif", "vendor_udp".
+    val protocol: String = "http_snapshot",
+    // ✅ MỚI: XAddr (device service URL) trả về từ ONVIF ProbeMatch — chỉ có giá trị khi protocol=="onvif".
+    val onvifXAddr: String? = null
 )
 
 /**

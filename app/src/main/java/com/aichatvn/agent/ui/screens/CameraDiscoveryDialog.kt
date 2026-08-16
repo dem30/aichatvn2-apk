@@ -195,6 +195,18 @@ private fun DiscoveredCameraRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                // ✅ MỚI (multi-protocol discovery): camera tìm thấy qua ONVIF WS-Discovery hoặc
+                // Vendor UDP Discovery (V380) chỉ xác nhận được IP tồn tại — CHƯA có URL ảnh
+                // snapshot thật (snapshotUrl rỗng), khác với kết quả HTTP Snapshot Scan luôn có
+                // ảnh preview. Báo rõ để người dùng không tưởng app lỗi khi không thấy thumbnail.
+                if (camera.snapshotUrl.isBlank() && (camera.protocol == "onvif" || camera.protocol == "vendor_udp")) {
+                    val label = if (camera.protocol == "onvif") "ONVIF" else "V380"
+                    Text(
+                        "📡 Tìm thấy qua $label — cần xác nhận thêm (chưa có ảnh preview)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
             }
 
             Spacer(Modifier.width(8.dp))

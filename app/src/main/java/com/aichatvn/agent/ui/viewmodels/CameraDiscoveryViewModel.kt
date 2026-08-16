@@ -2,8 +2,8 @@ package com.aichatvn.agent.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.aichatvn.agent.tools.camera.CameraAutoDiscoveryTool
 import com.aichatvn.agent.tools.camera.DiscoveredCamera
+import com.aichatvn.agent.tools.camera.discovery.CameraDiscoveryEngine
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -26,7 +26,11 @@ sealed class DiscoveryState {
 
 @HiltViewModel
 class CameraDiscoveryViewModel @Inject constructor(
-    private val discoveryTool: CameraAutoDiscoveryTool,
+    // ✅ SỬA (multi-protocol discovery): trước dùng thẳng CameraAutoDiscoveryTool (chỉ HTTP
+    // snapshot scan) — giờ dùng CameraDiscoveryEngine điều phối nhiều probe (ONVIF WS-Discovery +
+    // HTTP snapshot + chỗ trống cho vendor UDP sau). CameraAutoDiscoveryTool.kt vẫn còn trong
+    // project (không xoá) nhưng ViewModel không gọi nó trực tiếp nữa.
+    private val discoveryEngine: CameraDiscoveryEngine,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -47,7 +51,7 @@ class CameraDiscoveryViewModel @Inject constructor(
 
         scanJob = viewModelScope.launch {
             try {
-                val results = discoveryTool.discoverCameras { current, total ->
+                val results = discoveryEngine.discoverCameras { current, total ->
                     _state.value = DiscoveryState.Scanning(current, total)
                 }
                 _state.value = DiscoveryState.Done(results)
