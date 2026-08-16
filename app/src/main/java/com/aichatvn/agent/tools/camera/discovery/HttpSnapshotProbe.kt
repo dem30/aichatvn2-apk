@@ -1,6 +1,7 @@
 package com.aichatvn.agent.tools.camera.discovery
 
 import com.aichatvn.agent.tools.camera.DiscoveredCamera
+import com.aichatvn.agent.tools.camera.DiscoveredCredentials
 import com.aichatvn.agent.utils.Logger
 import com.aichatvn.agent.utils.NetworkContext
 import kotlinx.coroutines.Dispatchers
