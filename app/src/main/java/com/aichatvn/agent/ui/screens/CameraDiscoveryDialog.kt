@@ -194,71 +194,81 @@ private fun DiscoveredCameraRow(
     onSelect: () -> Unit
 ) {
     Card(shape = RoundedCornerShape(8.dp)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val bitmap = remember(camera.previewBytes) {
-                camera.previewBytes?.let {
-                    try {
-                        BitmapFactory.decodeByteArray(it, 0, it.size)
-                    } catch (e: Exception) {
-                        null
+        Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val bitmap = remember(camera.previewBytes) {
+                    camera.previewBytes?.let {
+                        try {
+                            BitmapFactory.decodeByteArray(it, 0, it.size)
+                        } catch (e: Exception) {
+                            null
+                        }
                     }
                 }
-            }
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(6.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Videocam, contentDescription = null)
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Videocam, contentDescription = null)
+                    }
                 }
-            }
 
-            Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(12.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(camera.ip, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "Đoán: ${camera.manufacturer ?: "?"} — giao thức: ${camera.protocol}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (camera.credentialsRequired) {
+                // ✅ SỬA LỖI LAYOUT (ảnh chụp thật cho thấy chữ bị wrap từng ký tự/từ 1 dòng —
+                // KHÔNG phải bug "chữ bị xoay"): trước đây Column(weight(1f)) này nằm CÙNG 1 Row
+                // với Button("Dùng camera này") không giới hạn width. Compose đo phần tử KHÔNG có
+                // weight trước (Button, theo intrinsic width của text dài) rồi mới chia phần còn
+                // lại cho weight(1f) — với Row hẹp (dialog trên điện thoại), phần còn lại gần như
+                // bằng 0, ép Column xuống còn vài dp nên mỗi từ tự wrap xuống 1 dòng.
+                // Sửa: tách Button RA KHỎI Row này — đưa xuống dòng riêng bên dưới, full width.
+                // Column giờ là phần tử DUY NHẤT có weight trong Row (chỉ còn cạnh icon cố định
+                // 56dp), nên luôn được đo đúng, không còn bị bóp bởi bất kỳ text nào khác.
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(camera.ip, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "🔒 Cần đăng nhập" + (camera.credentials?.let { " (đã tự dò được)" } ?: ""),
+                        "Đoán: ${camera.manufacturer ?: "?"} — giao thức: ${camera.protocol}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
-                // ✅ SỬA: đổi điều kiện theo verifiedSnapshotUrl (thay snapshotUrl cũ) — camera
-                // ONVIF/V380 luôn có verifiedSnapshotUrl == null vì chưa qua bước xác minh.
-                if (camera.verifiedSnapshotUrl == null) {
-                    Text(
-                        "📡 Chưa xác minh endpoint — bấm để dò giao thức thật",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
+                    if (camera.credentialsRequired) {
+                        Text(
+                            "🔒 Cần đăng nhập" + (camera.credentials?.let { " (đã tự dò được)" } ?: ""),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    // ✅ SỬA: đổi điều kiện theo verifiedSnapshotUrl (thay snapshotUrl cũ) — camera
+                    // ONVIF/V380 luôn có verifiedSnapshotUrl == null vì chưa qua bước xác minh.
+                    if (camera.verifiedSnapshotUrl == null) {
+                        Text(
+                            "📡 Chưa xác minh endpoint — bấm để dò giao thức thật",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.height(8.dp))
 
-            Button(onClick = onSelect) { Text("Chọn") }
+            // Button giờ full-width, dòng riêng bên dưới — không còn tranh chấp không gian
+            // ngang với Column thông tin phía trên.
+            Button(onClick = onSelect, modifier = Modifier.fillMaxWidth()) {
+                Text("Chọn")
+            }
         }
     }
 }
