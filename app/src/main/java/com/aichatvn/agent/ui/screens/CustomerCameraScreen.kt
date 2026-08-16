@@ -154,20 +154,36 @@ class CustomerCameraViewModel @Inject constructor(
                 return
             }
             val port = if (uri.port > 0) uri.port else 80
-            val probeResult = capabilityProber.probe(host, port, cam.snapshotUsername, cam.snapshotPassword)
+            // ✅ SỬA: port đọc từ chính snapshotUrl đã lưu (vd 8800 với camera V380) là port THẬT
+            // của camera — truyền vào knownPort để RTSP/HTTP-snapshot thử đúng port đó thay vì chỉ
+            // 554/80 mặc định. httpPort giữ nguyên 80 cho nhánh ONVIF (hành vi cũ, không đổi).
+            val probeResult = capabilityProber.probe(
+                ip = host, knownPort = port,
+                username = cam.snapshotUsername, password = cam.snapshotPassword
+            )
             database.cameraDao().updateCamera(
                 cam.copy(
                     onvifSupported = if (probeResult.onvifSupported) 1 else 0,
                     onvifEventUrl = probeResult.onvifEventUrl,
                     rtspSupported = if (probeResult.rtspSupported) 1 else 0,
-                    rtspUrl = probeResult.rtspUrl
+                    rtspUrl = probeResult.rtspUrl,
+                    // ✅ MỚI: nếu camera chưa có snapshotUrl xác nhận trước đó (vd người dùng mới
+                    // nhập tay IP:port chưa xác minh, hoặc URL cũ đã hỏng) nhưng probe lần này tìm
+                    // được ảnh JPEG thật qua HTTP trên knownPort, tự điền vào — KHÔNG ghi đè
+                    // snapshotUrl đã có sẵn/đang hoạt động, chỉ lấp khi trước đó trống hoặc rỗng.
+                    snapshoturl = if (cam.snapshoturl.isBlank() && probeResult.snapshotUrl != null)
+                        probeResult.snapshotUrl else cam.snapshoturl
                     // rtspEnabled/onvifEnabled KHÔNG đổi ở đây — cùng nguyên tắc
                     // CameraDetailViewModel.probeCapabilities(): probe chỉ cập nhật "có hỗ
                     // trợ", bật thật vẫn qua toggleRtspEnabled()/toggleOnvifEnabled() do
                     // người dùng tự bấm ở Camera Detail.
                 )
             )
-            logger.i("CustomerCameraViewModel", "probeAfterSave OK cameraId=$cameraId rtsp=${probeResult.rtspSupported} onvif=${probeResult.onvifSupported}")
+            logger.i(
+                "CustomerCameraViewModel",
+                "probeAfterSave OK cameraId=$cameraId rtsp=${probeResult.rtspSupported} " +
+                    "onvif=${probeResult.onvifSupported} httpSnapshot=${probeResult.snapshotUrl != null}"
+            )
         } catch (e: Exception) {
             logger.e("CustomerCameraViewModel", "probeAfterSave lỗi: ${e.message}", e)
         }

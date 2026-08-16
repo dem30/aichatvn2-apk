@@ -3,6 +3,7 @@ package com.aichatvn.agent.tools.camera
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.Credentials
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,12 +23,20 @@ import javax.inject.Singleton
  * ⚠️ CHỦ Ý: supported=true chỉ có nghĩa "phát hiện có vẻ hỗ trợ" — KHÔNG tự bật tính năng.
  * Nơi gọi (CameraDetailViewModel) chỉ lưu kết quả này vào onvifSupported/rtspSupported;
  * onvifEnabled/rtspEnabled vẫn do người dùng tự bật qua Switch riêng.
+ *
+ * ✅ MỚI: snapshotUrl/snapshotBytes — kết quả thử HTTP snapshot NGAY TRÊN port đã biết của camera
+ * (vd port dò được từ VendorUdpDiscoveryProbe, như 8800 của V380), bổ sung cho ONVIF/RTSP vốn chỉ
+ * thử port cố định (80/8899/554 mặc định). Nhiều camera vendor riêng (V380...) không hỗ trợ
+ * ONVIF/RTSP nhưng vẫn lộ 1 endpoint ảnh JPEG dạng HTTP ngay trên port lệnh của chính hãng — đây
+ * là nguồn verifiedSnapshotUrl thực tế duy nhất cho nhóm camera đó, xem tryProbeHttpSnapshot().
  */
 data class CapabilityProbeResult(
     val onvifSupported: Boolean,
     val onvifEventUrl: String? = null,
     val rtspSupported: Boolean,
     val rtspUrl: String? = null,
+    val snapshotUrl: String? = null,
+    val snapshotBytes: ByteArray? = null,
     val probedAt: Long = System.currentTimeMillis()
 )
 
@@ -67,6 +76,33 @@ class CameraCapabilityProber @Inject constructor(
             "/live/ch00_0",                          // V380 — sub-stream (candidate, chưa xác nhận chính hãng)
             "/live/ch00_1",                          // V380 — main-stream (candidate, chưa xác nhận chính hãng)
         )
+
+        // ✅ MỚI — dùng cho tryProbeHttpSnapshot(): cùng danh sách path với HttpSnapshotProbe
+        // (đồng bộ, xem SNAPSHOT_PATTERNS trong HttpSnapshotProbe.kt) nhưng KHÔNG lặp lại quét
+        // toàn dải port [80, 8080, 8000, 88] — probe này chỉ thử đúng 1 port đã biết (knownPort)
+        // truyền vào, vì mục tiêu là xác minh 1 camera cụ thể chứ không phải dò tìm mới.
+        private val HTTP_SNAPSHOT_PATHS = listOf(
+            "/ISAPI/Streaming/channels/101/picture", // Hikvision
+            "/cgi-bin/snapshot.cgi?channel=1",        // Dahua
+            "/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2", // Foscam
+            "/cgi-bin/currentpic.cgi",                 // Generic CGI
+            "/snapshot.jpg",                           // Generic
+            "/snap.jpg",                               // Generic
+            "/image.jpg",                              // Generic
+            "/onvif/snapshot",                         // Generic ONVIF
+            "/cgi-bin/api.cgi?cmd=Snap&channel=0",     // Reolink
+            // V380 — port lệnh 8800 theo README prsyahmi/v380 đôi khi lộ HTTP snapshot đơn giản,
+            // CHƯA xác nhận chính hãng, chỉ CANDIDATE thêm vào — chỉ tính "hỗ trợ" khi thật sự
+            // fetch được JPEG (xem fetchSnapshot()), không suy diễn khác.
+            "/tmpfs/snap.jpg",
+            "/snap.cgi",
+        )
+
+        private val DEFAULT_SNAPSHOT_CREDENTIALS: List<Pair<String, String>> = listOf(
+            "admin" to "admin",
+            "admin" to "12345",
+            "admin" to "",
+        )
     }
 
     private val onvifClient = OkHttpClient.Builder()
@@ -74,25 +110,47 @@ class CameraCapabilityProber @Inject constructor(
         .readTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
 
+    private val snapshotClient = OkHttpClient.Builder()
+        .connectTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .readTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .build()
+
+    /**
+     * @param knownPort port đã biết chắc chắn của camera (vd port dò được từ LAN discovery, như
+     * 8800 của V380) — dùng làm port DUY NHẤT cho RTSP/HTTP-snapshot thử thêm, KHÁC với httpPort
+     * (mặc định 80, dùng riêng cho ONVIF — giữ nguyên hành vi cũ). null nghĩa là không biết thêm gì
+     * ngoài httpPort, giữ nguyên hành vi trước đây (chỉ thử port mặc định).
+     */
     suspend fun probe(
         ip: String,
         httpPort: Int = 80,
+        knownPort: Int? = null,
         username: String?,
         password: String?
     ): CapabilityProbeResult = withContext(Dispatchers.IO) {
         val onvifUrl = runCatching { tryProbeOnvif(ip, httpPort) }.getOrNull()
-        val rtspUrl = runCatching { tryProbeRtsp(ip, username, password) }.getOrNull()
+        val rtspUrl = runCatching { tryProbeRtsp(ip, knownPort, username, password) }.getOrNull()
+        // ✅ MỚI: chỉ thử HTTP snapshot trên knownPort khi ONVIF/RTSP đều không xác nhận được gì —
+        // đây là phương án cuối để vẫn trả về được 1 verifiedSnapshotUrl cho camera dùng giao thức
+        // riêng (V380...) mà 2 bước trên không phủ tới. Không thử khi đã có onvif/rtsp vì lúc đó
+        // camera coi như đã "hỗ trợ" theo nghĩa chuẩn, tuỳ CameraSkill quyết định dùng nguồn nào.
+        val snapshot = if (onvifUrl == null && rtspUrl == null && knownPort != null) {
+            runCatching { tryProbeHttpSnapshot(ip, knownPort, username, password) }.getOrNull()
+        } else null
 
         logger.i(
             "CameraCapabilityProber",
-            "Probe $ip xong — ONVIF=${onvifUrl != null}, RTSP=${rtspUrl != null}"
+            "Probe $ip xong — ONVIF=${onvifUrl != null}, RTSP=${rtspUrl != null}, " +
+                "HTTP snapshot(:$knownPort)=${snapshot != null}"
         )
 
         CapabilityProbeResult(
             onvifSupported = onvifUrl != null,
             onvifEventUrl = onvifUrl,
             rtspSupported = rtspUrl != null,
-            rtspUrl = rtspUrl
+            rtspUrl = rtspUrl,
+            snapshotUrl = snapshot?.url,
+            snapshotBytes = snapshot?.bytes
         )
     }
 
@@ -157,18 +215,30 @@ class CameraCapabilityProber @Inject constructor(
      * DESCRIBE thô qua raw socket — KHÔNG dùng ExoPlayer/ MediaExtractor để tránh chi phí decode
      * lúc probe. Chỉ cần xác nhận server trả lời đúng giao thức RTSP.
      *
-     * ⚠️ SỬA: URL trả về PHẢI nhúng sẵn credential (rtsp://user:pass@ip:port/path) nếu camera cần
-     * auth — RtspMediaSource (ExoPlayer) lẫn ffmpeg-kit (CameraRecorder) đều KHÔNG có tham số
+     * ⚠️ URL trả về PHẢI nhúng sẵn credential (rtsp://user:pass@ip:port/path) nếu camera cần auth
+     * — RtspMediaSource (ExoPlayer) lẫn ffmpeg-kit (CameraRecorder) đều KHÔNG có tham số
      * username/password riêng cho RTSP, chỉ đọc được credential từ chính URI khi kết nối thật
      * (khác lúc probe ở đây, probe tự thêm header Authorization thủ công qua socket). Nếu trả về
      * URL trần (không có user:pass@) trong khi camera cần auth, open_live_view/record ở
      * CameraSkill sẽ luôn thất bại dù probe từng báo "hỗ trợ".
+     *
+     * ✅ SỬA: thử knownPort (nếu có) TRƯỚC RTSP_DEFAULT_PORT — trước đây luôn hardcode 554, bỏ
+     * qua hoàn toàn port đã dò được từ LAN discovery (vd 8800 của V380), khiến camera dùng port
+     * riêng không bao giờ được xác minh dù thật sự có RTSP trên port đó. knownPort == 554 thì
+     * không thử lại lần 2 (đã trùng danh sách mặc định).
      */
-    private fun tryProbeRtsp(ip: String, username: String?, password: String?): String? {
-        for (path in RTSP_PATHS) {
-            val plainUrl = "rtsp://$ip:$RTSP_DEFAULT_PORT$path"
-            if (rtspDescribeOk(plainUrl, username, password)) {
-                return buildRtspUrlWithCredentials(ip, path, username, password)
+    private fun tryProbeRtsp(ip: String, knownPort: Int?, username: String?, password: String?): String? {
+        val portsToTry = if (knownPort != null && knownPort != RTSP_DEFAULT_PORT) {
+            listOf(knownPort, RTSP_DEFAULT_PORT)
+        } else {
+            listOf(RTSP_DEFAULT_PORT)
+        }
+        for (port in portsToTry) {
+            for (path in RTSP_PATHS) {
+                val plainUrl = "rtsp://$ip:$port$path"
+                if (rtspDescribeOk(plainUrl, port, username, password)) {
+                    return buildRtspUrlWithCredentials(ip, port, path, username, password)
+                }
             }
         }
         return null
@@ -176,18 +246,18 @@ class CameraCapabilityProber @Inject constructor(
 
     // Percent-encode qua android.net.Uri.encode() — an toàn cho user/pass chứa ký tự đặc biệt
     // (@, :, /, khoảng trắng...) vốn khá phổ biến với mật khẩu camera đặt tuỳ ý.
-    private fun buildRtspUrlWithCredentials(ip: String, path: String, username: String?, password: String?): String {
-        if (username.isNullOrBlank()) return "rtsp://$ip:$RTSP_DEFAULT_PORT$path"
+    private fun buildRtspUrlWithCredentials(ip: String, port: Int, path: String, username: String?, password: String?): String {
+        if (username.isNullOrBlank()) return "rtsp://$ip:$port$path"
         val encodedUser = android.net.Uri.encode(username)
         val encodedPass = android.net.Uri.encode(password ?: "")
-        return "rtsp://$encodedUser:$encodedPass@$ip:$RTSP_DEFAULT_PORT$path"
+        return "rtsp://$encodedUser:$encodedPass@$ip:$port$path"
     }
 
-    private fun rtspDescribeOk(url: String, username: String?, password: String?): Boolean {
+    private fun rtspDescribeOk(url: String, port: Int, username: String?, password: String?): Boolean {
         return try {
             val uri = URI(url)
             Socket().use { socket ->
-                socket.connect(InetSocketAddress(uri.host, RTSP_DEFAULT_PORT), RTSP_PROBE_TIMEOUT_MS.toInt())
+                socket.connect(InetSocketAddress(uri.host, port), RTSP_PROBE_TIMEOUT_MS.toInt())
                 socket.soTimeout = RTSP_PROBE_TIMEOUT_MS.toInt()
 
                 val request = buildString {
@@ -210,6 +280,50 @@ class CameraCapabilityProber @Inject constructor(
             }
         } catch (e: Exception) {
             false
+        }
+    }
+
+    private data class SnapshotResult(val url: String, val bytes: ByteArray)
+
+    /**
+     * ✅ MỚI: thử lấy ảnh JPEG thật qua HTTP trên knownPort — phương án cuối cho camera vendor
+     * riêng (V380...) không xác nhận được ONVIF/RTSP. Cùng tiêu chí "hỗ trợ" với HttpSnapshotProbe
+     * (Content-Type ảnh HOẶC magic byte FF D8 của JPEG thật) — không suy diễn từ HTTP 200 chung
+     * chung, path lạ trả HTML/JSON vẫn bị loại.
+     */
+    private fun tryProbeHttpSnapshot(ip: String, port: Int, username: String?, password: String?): SnapshotResult? {
+        for (path in HTTP_SNAPSHOT_PATHS) {
+            val url = "http://$ip:$port$path"
+
+            fetchSnapshot(url, username, password)?.let { return SnapshotResult(url, it) }
+
+            // Nếu người dùng chưa nhập credential, thử thêm vài default phổ biến — cùng danh sách
+            // tinh thần với HttpSnapshotProbe.DEFAULT_CREDENTIALS, để không bỏ sót camera cần đăng
+            // nhập nhưng người dùng chưa biết tài khoản/mật khẩu.
+            if (username.isNullOrBlank()) {
+                for ((user, pass) in DEFAULT_SNAPSHOT_CREDENTIALS) {
+                    fetchSnapshot(url, user, pass)?.let { return SnapshotResult(url, it) }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun fetchSnapshot(url: String, username: String?, password: String?): ByteArray? {
+        return try {
+            val requestBuilder = Request.Builder().url(url).get()
+            if (!username.isNullOrBlank()) {
+                requestBuilder.header("Authorization", Credentials.basic(username, password ?: ""))
+            }
+            snapshotClient.newCall(requestBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val contentType = response.header("Content-Type") ?: ""
+                val bytes = response.body?.bytes() ?: return null
+                val looksLikeJpeg = bytes.size > 100 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()
+                if (contentType.contains("image", ignoreCase = true) || looksLikeJpeg) bytes else null
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 }

@@ -68,10 +68,16 @@ class CameraVerificationViewModel @Inject constructor(
     private val _state = MutableStateFlow<VerificationState>(VerificationState.Idle)
     val state: StateFlow<VerificationState> = _state.asStateFlow()
 
+    /**
+     * ✅ SỬA: port camera (dò được từ LAN discovery, vd 8800 của V380) giờ truyền đúng vào
+     * knownPort — trước đây bị nhét nhầm vào tham số httpPort của probe() (dùng cho ONVIF, mặc
+     * định 80), khiến RTSP/HTTP-snapshot KHÔNG BAO GIỜ thử trên port thật của camera. httpPort giữ
+     * nguyên mặc định 80 cho ONVIF (hành vi cũ, không đổi).
+     */
     fun probe(ip: String, port: Int, username: String?, password: String?) {
         _state.value = VerificationState.Probing
         viewModelScope.launch {
-            val result = capabilityProber.probe(ip, port, username, password)
+            val result = capabilityProber.probe(ip = ip, knownPort = port, username = username, password = password)
             _state.value = VerificationState.Done(result)
         }
     }
@@ -424,19 +430,23 @@ private fun CameraVerificationDialog(
                         }
                         is VerificationState.Done -> {
                             val r = vs.result
-                            if (r.onvifSupported || r.rtspSupported) {
+                            if (r.onvifSupported || r.rtspSupported || r.snapshotUrl != null) {
                                 Text(
                                     "✅ Xác minh thành công" +
                                         (if (r.rtspSupported) " — RTSP: ${r.rtspUrl}" else "") +
-                                        (if (r.onvifSupported) " — có ONVIF" else ""),
+                                        (if (r.onvifSupported) " — có ONVIF" else "") +
+                                        // ✅ MỚI: xác minh qua HTTP snapshot trên port riêng của
+                                        // camera (vd 8800 V380) — chỉ xảy ra khi ONVIF/RTSP đều
+                                        // không có, xem CameraCapabilityProber.probe().
+                                        (if (r.snapshotUrl != null) " — ảnh chụp: ${r.snapshotUrl}" else ""),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             } else {
                                 Text(
-                                    "❌ Không xác minh được ONVIF/RTSP tại địa chỉ này. Có thể camera " +
-                                        "dùng giao thức riêng (như V380) chưa hỗ trợ xác minh tự động — " +
-                                        "vẫn có thể thêm camera và tự nhập URL/RTSP thủ công sau.",
+                                    "❌ Không xác minh được ONVIF/RTSP/ảnh chụp tại địa chỉ này. Có thể " +
+                                        "camera dùng giao thức riêng chưa hỗ trợ xác minh tự động — vẫn " +
+                                        "có thể thêm camera và tự nhập URL/RTSP thủ công sau.",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.error
                                 )
@@ -468,9 +478,19 @@ private fun CameraVerificationDialog(
                         credentials = newCredentials,
                         credentialsRequired = newCredentialsRequired
                     )
-                // Chỉ ONVIF (không có RTSP) — có device_service URL nhưng đó KHÔNG phải endpoint
-                // ảnh/stream dùng để xem trực tiếp, nên vẫn để verifiedSnapshotUrl null; chỉ cập
-                // nhật credentials đã nhập để không mất nếu người dùng tự điền URL sau.
+                // ✅ MỚI: không có RTSP nhưng probe tìm được ảnh JPEG thật qua HTTP trên port của
+                // camera (vd V380 port 8800) — đây cũng là endpoint đã xác minh thật (fetchSnapshot
+                // đã kiểm tra magic byte/Content-Type ảnh), gán làm verifiedSnapshotUrl để camera
+                // dùng được ngay, không bắt người dùng tự tra cứu/nhập tay thêm.
+                verifiedResult?.snapshotUrl != null ->
+                    camera.copy(
+                        verifiedSnapshotUrl = verifiedResult.snapshotUrl,
+                        credentials = newCredentials,
+                        credentialsRequired = newCredentialsRequired
+                    )
+                // Chỉ ONVIF (không có RTSP/snapshot) — có device_service URL nhưng đó KHÔNG phải
+                // endpoint ảnh/stream dùng để xem trực tiếp, nên vẫn để verifiedSnapshotUrl null;
+                // chỉ cập nhật credentials đã nhập để không mất nếu người dùng tự điền URL sau.
                 else -> camera.copy(
                     credentials = newCredentials,
                     credentialsRequired = newCredentialsRequired
