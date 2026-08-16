@@ -49,9 +49,21 @@ private sealed interface UrlTestState {
  * thành công nhưng nội dung trả về không phải ảnh (URL đúng dạng nhưng trỏ sai chỗ, vd trang HTML
  * đăng nhập thay vì snapshot thật) — cả 3 đều là lỗi "chưa dùng được" nhưng cách sửa khác nhau nên
  * cần thông báo khác nhau để người dùng biết sửa gì tiếp theo.
+ *
+ * ✅ SỬA (phát hiện qua case thật: URL RTSP do CameraCapabilityProber xác minh vẫn báo đỏ "Expected
+ * URL scheme http/https" khi bấm "Kiểm tra kết nối"): OkHttp CHỈ hiểu http/https, không hiểu
+ * rtsp — trước đây hàm này luôn dùng OkHttp bất kể scheme, khiến 1 URL RTSP ĐÃ ĐƯỢC XÁC MINH THẬT
+ * (DESCRIBE trả 200/401 qua CameraCapabilityProber) vẫn bị báo lỗi kết nối ngay tại đây, gây hiểu
+ * lầm nghiêm trọng "camera không dùng được" trong khi RTSP đó có thể hoàn toàn ổn. Sửa: rẽ nhánh
+ * theo scheme — rtsp:// dùng DESCRIBE thô qua socket (cùng kỹ thuật CameraCapabilityProber.
+ * rtspDescribeOk, viết lại độc lập ở đây vì đó là hàm private trong module khác), http(s):// giữ
+ * nguyên hành vi cũ.
  */
 private suspend fun testSnapshotUrl(url: String, username: String, password: String): UrlTestState {
     return withContext(Dispatchers.IO) {
+        if (url.startsWith("rtsp://", ignoreCase = true)) {
+            return@withContext testRtspUrl(url, username, password)
+        }
         try {
             val client = okhttp3.OkHttpClient.Builder()
                 .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
@@ -74,6 +86,60 @@ private suspend fun testSnapshotUrl(url: String, username: String, password: Str
         } catch (e: Exception) {
             UrlTestState.Failure("❌ Không kết nối được: ${e.message ?: "lỗi không xác định"}. Kiểm tra điện thoại và camera có đang cùng mạng Wi-Fi nhà không.")
         }
+    }
+}
+
+/**
+ * ✅ MỚI: kiểm tra URL rtsp:// bằng DESCRIBE thô qua raw socket — không dùng ExoPlayer/MediaExtractor
+ * ở đây vì chỉ cần xác nhận server trả lời đúng giao thức, không cần decode/hiển thị video thật
+ * (hiển thị video thật là việc của màn xem camera, không phải bước "kiểm tra kết nối" này). Cùng kỹ
+ * thuật CameraCapabilityProber.rtspDescribeOk() — 401 vẫn coi là "kết nối được" (server đã xác nhận
+ * hiểu RTSP, chỉ là sai/thiếu credential), 200 là thành công không cần auth.
+ */
+private fun testRtspUrl(url: String, username: String, password: String): UrlTestState {
+    return try {
+        val uri = java.net.URI(url)
+        val host = uri.host
+        if (host.isNullOrBlank()) {
+            return UrlTestState.Failure("❌ URL RTSP không hợp lệ — thiếu địa chỉ IP.")
+        }
+        val port = if (uri.port > 0) uri.port else 554
+
+        java.net.Socket().use { socket ->
+            socket.connect(java.net.InetSocketAddress(host, port), 3_000)
+            socket.soTimeout = 3_000
+
+            val request = buildString {
+                append("DESCRIBE $url RTSP/1.0\r\n")
+                append("CSeq: 1\r\n")
+                if (username.isNotBlank()) {
+                    val basic = android.util.Base64.encodeToString(
+                        "$username:$password".toByteArray(), android.util.Base64.NO_WRAP
+                    )
+                    append("Authorization: Basic $basic\r\n")
+                }
+                append("Accept: application/sdp\r\n\r\n")
+            }
+            socket.getOutputStream().write(request.toByteArray())
+            socket.getOutputStream().flush()
+
+            val statusLine = socket.getInputStream().bufferedReader().readLine()
+                ?: return UrlTestState.Failure("❌ Camera không phản hồi — kiểm tra điện thoại và camera có đang cùng mạng Wi-Fi nhà không.")
+
+            when {
+                statusLine.contains("RTSP/1.0 200") ->
+                    UrlTestState.Success("✅ Kết nối thành công — camera phản hồi RTSP hợp lệ, không cần tài khoản.")
+                statusLine.contains("RTSP/1.0 401") ->
+                    if (username.isNotBlank())
+                        UrlTestState.Failure("❌ Camera từ chối tài khoản/mật khẩu vừa nhập — kiểm tra lại thông tin đăng nhập của camera.")
+                    else
+                        UrlTestState.Failure("🔒 Camera yêu cầu đăng nhập — nhập tài khoản/mật khẩu rồi kiểm tra lại.")
+                else ->
+                    UrlTestState.Failure("⚠️ Camera phản hồi nhưng không đúng giao thức RTSP mong đợi ($statusLine) — URL có thể trỏ sai chỗ.")
+            }
+        }
+    } catch (e: Exception) {
+        UrlTestState.Failure("❌ Không kết nối được: ${e.message ?: "lỗi không xác định"}. Kiểm tra điện thoại và camera có đang cùng mạng Wi-Fi nhà không.")
     }
 }
 
