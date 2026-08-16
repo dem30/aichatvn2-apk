@@ -19,6 +19,125 @@ import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.tools.camera.DiscoveredCamera
 import com.aichatvn.agent.tools.camera.discovery.CameraQrIdentity
 import com.aichatvn.agent.tools.camera.discovery.CameraQrScanResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+// ✅ MỚI (theo góp ý "người dùng không hiểu kỹ thuật, làm hoàn toàn cho họ click"): 3 mảnh ghép
+// UX thêm vào CameraDialog/CameraCard bên dưới, tất cả chỉ dùng dependency đã có sẵn (OkHttp) —
+// không cần thêm thư viện mới:
+// 1. UrlTestState + testSnapshotUrl(): nút "Kiểm tra kết nối" gọi thử GET thật lên URL vừa nhập,
+//    báo ✅/❌ NGAY tại chỗ thay vì Lưu xong mới biết camera đen ở Dashboard.
+// 2. VendorGuideDialog: hướng dẫn chung chung (không bịa chi tiết RTSP path riêng cho từng hãng —
+//    rủi ro sai cao hơn lợi ích) + nút mở CH Play tìm đúng app gốc hãng camera.
+// 3. CameraCard: thêm badge cảnh báo + nút "Cấu hình ngay" khi camera đã lưu nhưng chưa có URL nào
+//    dùng được — trước đây người dùng phải tự nhận ra camera "🔴 Mất kết nối" là do thiếu URL hay
+//    do camera thật sự offline, không phân biệt được.
+
+/** Kết quả bấm "Kiểm tra kết nối" cho URL ảnh chụp vừa nhập/dò được. */
+private sealed interface UrlTestState {
+    data object Idle : UrlTestState
+    data object Testing : UrlTestState
+    data class Success(val message: String) : UrlTestState
+    data class Failure(val message: String) : UrlTestState
+}
+
+/**
+ * Gọi thử GET thật lên [url] (kèm Basic Auth nếu có tài khoản/mật khẩu) — timeout ngắn (5s) vì đây
+ * là kiểm tra tương tác trực tiếp trong dialog, không phải background probe. Phân biệt 3 tình
+ * huống: lỗi kết nối (sai IP/URL/không cùng mạng), lỗi HTTP (sai tài khoản/mật khẩu/path), và
+ * thành công nhưng nội dung trả về không phải ảnh (URL đúng dạng nhưng trỏ sai chỗ, vd trang HTML
+ * đăng nhập thay vì snapshot thật) — cả 3 đều là lỗi "chưa dùng được" nhưng cách sửa khác nhau nên
+ * cần thông báo khác nhau để người dùng biết sửa gì tiếp theo.
+ */
+private suspend fun testSnapshotUrl(url: String, username: String, password: String): UrlTestState {
+    return withContext(Dispatchers.IO) {
+        try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+            val requestBuilder = okhttp3.Request.Builder().url(url)
+            if (username.isNotBlank()) {
+                requestBuilder.header("Authorization", okhttp3.Credentials.basic(username, password))
+            }
+            client.newCall(requestBuilder.build()).execute().use { resp ->
+                when {
+                    !resp.isSuccessful ->
+                        UrlTestState.Failure("❌ Camera trả lỗi HTTP ${resp.code} — kiểm tra lại tài khoản/mật khẩu, hoặc URL đã đúng chưa.")
+                    (resp.header("Content-Type") ?: "").startsWith("image/") ->
+                        UrlTestState.Success("✅ Kết nối thành công — camera trả về ảnh thật.")
+                    else ->
+                        UrlTestState.Failure("⚠️ Kết nối được nhưng nội dung trả về không phải ảnh — URL có thể trỏ sai chỗ (vd trang đăng nhập thay vì ảnh camera).")
+                }
+            }
+        } catch (e: Exception) {
+            UrlTestState.Failure("❌ Không kết nối được: ${e.message ?: "lỗi không xác định"}. Kiểm tra điện thoại và camera có đang cùng mạng Wi-Fi nhà không.")
+        }
+    }
+}
+
+/**
+ * Hướng dẫn CHUNG lấy URL xem camera — cố ý KHÔNG bịa chi tiết path/RTSP riêng cho từng hãng (vd
+ * V380) vì chưa có tài liệu nguồn xác nhận, sai thì hại hơn lợi. Chỉ hướng người dùng tới app gốc
+ * của hãng (nơi CHẮC CHẮN có cách xem/chia sẻ URL) + hỗ trợ 1-click mở đúng app đó trên CH Play.
+ */
+@Composable
+private fun VendorGuideDialog(vendor: String?, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (vendor != null) "Hướng dẫn lấy URL cho camera $vendor" else "Hướng dẫn lấy URL xem camera") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "App chưa tự lấy được URL xem trực tiếp cho camera này. Bạn cần lấy URL đó từ " +
+                        "app gốc của hãng camera (app đã dùng lúc lắp camera ban đầu):",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text("1️⃣  Mở app gốc của hãng camera trên điện thoại.")
+                Text("2️⃣  Vào phần Cài đặt của camera đó → tìm mục \"Chia sẻ\" / \"Share\" / \"RTSP\" / \"Xem qua trình duyệt khác\".")
+                Text("3️⃣  Sao chép URL hoặc đường link hiển thị ở mục đó.")
+                Text("4️⃣  Quay lại đây, dán vào ô \"URL ảnh chụp\" rồi bấm \"Kiểm tra kết nối\".")
+                if (vendor != null) {
+                    Text(
+                        "⚠️ Một số camera $vendor chỉ xem được qua app/cloud riêng của hãng, không có " +
+                            "URL truy cập trực tiếp trong mạng nhà. Nếu không tìm thấy mục URL/RTSP " +
+                            "trong app hãng, camera này có thể chưa hỗ trợ thêm trực tiếp vào đây — " +
+                            "vẫn xem bình thường qua app gốc của hãng.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (vendor != null) {
+                TextButton(onClick = {
+                    val query = android.net.Uri.encode(vendor)
+                    try {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("market://search?q=$query&c=apps")
+                            )
+                        )
+                    } catch (e: Exception) {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://play.google.com/store/search?q=$query&c=apps")
+                            )
+                        )
+                    }
+                }) { Text("Mở CH Play tìm app $vendor") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("Đã hiểu") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Đóng") } }
+    )
+}
 
 @Composable
 fun CameraCard(
@@ -82,6 +201,29 @@ fun CameraCard(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall
                     )
+                }
+            }
+
+            // ✅ MỚI: camera đã lưu nhưng chưa có URL nào dùng được (cả URL LAN lẫn URL dự phòng
+            // đều trống) — trước đây chỉ hiện chung chung "🔴 Mất kết nối" giống hệt trường hợp
+            // camera thật sự offline, người dùng không phân biệt được là do thiếu cấu hình hay do
+            // camera hỏng/mất điện. Badge riêng + nút "Cấu hình ngay" đưa thẳng vào đúng màn sửa.
+            val needsSetup = camera.snapshoturl.orEmpty().isBlank() && camera.snapshotUrlRemote.orEmpty().isBlank()
+            if (needsSetup) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "⚠️ Cần cấu hình thêm — chưa có URL xem camera",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    if (isAdmin) {
+                        TextButton(onClick = onEdit) { Text("Cấu hình ngay") }
+                    }
                 }
             }
 
@@ -219,6 +361,14 @@ fun CameraDialog(
     var locationError by remember { mutableStateOf<String?>(null) }
     var gpsLoading by remember { mutableStateOf(false) }
 
+    // ✅ MỚI: state cho nút "Kiểm tra kết nối" + dialog hướng dẫn theo hãng.
+    val coroutineScope = rememberCoroutineScope()
+    var urlTestState by remember { mutableStateOf<UrlTestState>(UrlTestState.Idle) }
+    var showVendorGuide by remember { mutableStateOf(false) }
+    // Cập nhật khi QR quét ra vendor, hoặc khi chọn 1 kết quả dò tìm LAN có manufacturer — dùng để
+    // hiển thị đúng tên hãng trong VendorGuideDialog thay vì hướng dẫn chung chung nếu đã biết.
+    var detectedVendor by remember { mutableStateOf<String?>(null) }
+
     // ✅ MỚI: quét QR — bọc CameraQrDiscovery qua ViewModel vì CameraDialog là Composable thuần,
     // không tự @Inject được (xem CameraQrScanViewModel.kt).
     val qrScanViewModel: CameraQrScanViewModel = hiltViewModel()
@@ -227,6 +377,7 @@ fun CameraDialog(
         when (val r = qrScanResult) {
             is CameraQrScanResult.Success -> {
                 qrIdentity = r.identity
+                detectedVendor = r.identity.vendor ?: detectedVendor
                 qrScanViewModel.consume()
             }
             is CameraQrScanResult.Error -> {
@@ -258,6 +409,8 @@ fun CameraDialog(
                 snapshotUrl = discovered.verifiedSnapshotUrl ?: ""
                 snapshotUsername = discovered.credentials?.username ?: ""
                 snapshotPassword = discovered.credentials?.password ?: ""
+                urlTestState = UrlTestState.Idle
+                detectedVendor = discovered.manufacturer ?: qrIdentity?.vendor ?: detectedVendor
                 // Luôn ghi lại thông tin phần cứng đã biết vào landInfo (không có field riêng cho
                 // việc này trong form) — kể cả khi đã verify, để giữ lại protocol/deviceId gốc.
                 val label = when (discovered.protocol) {
@@ -282,6 +435,10 @@ fun CameraDialog(
         )
     }
 
+    if (showVendorGuide) {
+        VendorGuideDialog(vendor = detectedVendor, onDismiss = { showVendorGuide = false })
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (camera == null) "Thêm Camera" else "Sửa Camera") },
@@ -297,7 +454,44 @@ fun CameraDialog(
                 Text("Khách hàng: $customerName ($customerId)", style = MaterialTheme.typography.bodyMedium)
 if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTheme.typography.bodySmall)
 
-                OutlinedTextField(value = snapshotUrl, onValueChange = { snapshotUrl = it }, label = { Text("URL ảnh chụp") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = snapshotUrl,
+                    onValueChange = { snapshotUrl = it; urlTestState = UrlTestState.Idle },
+                    label = { Text("URL ảnh chụp") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // ✅ MỚI: kiểm tra NGAY tại chỗ URL vừa nhập/dò được có dùng được thật không, thay
+                // vì phải Lưu xong ra Dashboard mới biết camera đen — và nút "Hướng dẫn" luôn có
+                // sẵn cho người không biết lấy URL ở đâu, không cần đợi dò tìm/quét QR thất bại.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                urlTestState = UrlTestState.Testing
+                                urlTestState = testSnapshotUrl(snapshotUrl.trim(), snapshotUsername.trim(), snapshotPassword)
+                            }
+                        },
+                        enabled = snapshotUrl.isNotBlank() && urlTestState !is UrlTestState.Testing,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        if (urlTestState is UrlTestState.Testing) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(if (urlTestState is UrlTestState.Testing) "Đang kiểm tra..." else "🔎 Kiểm tra kết nối")
+                    }
+                    TextButton(onClick = { showVendorGuide = true }) { Text("📖 Hướng dẫn") }
+                }
+                when (val ts = urlTestState) {
+                    is UrlTestState.Success -> Text(ts.message, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    is UrlTestState.Failure -> Text(ts.message, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    else -> {}
+                }
 
                 // ✅ MỚI: nút 1-click dò tìm camera LAN — tự điền URL + tài khoản/mật khẩu nếu tìm
                 // thấy, người dùng vẫn có thể sửa tay các ô bên dưới sau khi dò.
@@ -493,8 +687,10 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                         "aiNegativeKeywords" to aiNegativeKeywords.trim()
                     ))
                 } else if (!hasAnyUrl) {
-                    // TODO: hiển thị lỗi rõ ràng cho người dùng thay vì im lặng, ví dụ:
-                    // locationError = "Cần nhập URL ảnh chụp hoặc URL dự phòng"
+                    // ✅ SỬA: trước đây bấm "Lưu" mà thiếu URL thì im lặng không làm gì, không báo
+                    // lỗi — người dùng tưởng đã lưu xong. Giờ báo rõ + trỏ thẳng tới nút hướng dẫn.
+                    locationError = "Cần nhập URL ảnh chụp hoặc URL dự phòng trước khi lưu — bấm " +
+                        "\"📖 Hướng dẫn\" phía trên nếu chưa biết lấy URL ở đâu."
                 }
             }) { Text("Lưu") }
         },
