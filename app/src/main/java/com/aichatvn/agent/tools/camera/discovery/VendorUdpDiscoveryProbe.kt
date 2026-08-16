@@ -58,6 +58,10 @@ class VendorUdpDiscoveryProbe @Inject constructor(
         private const val LISTEN_PORT = 10009
         private const val WAIT_WINDOW_MS = 4_000
         private const val SOCKET_TIMEOUT_MS = 500
+        // Port lệnh/stream mặc định của V380 theo README prsyahmi/v380 — dùng để KHỞI ĐIỂM cho
+        // CameraCapabilityProber thử kết nối thật sau discovery, KHÔNG dùng cho chính bước
+        // broadcast discovery này (port đó là SEND_PORT/LISTEN_PORT ở trên, khác hẳn).
+        private const val V380_COMMAND_PORT = 8800
 
         // ✅ Hex NGUYÊN VẸN copy từ findcam.py (biến `data` trong nvdevsearch packet) — đã tự
         // decode lại để xác nhận: ASCII "NVDEVSEARCH^100" (15 byte) + zero-padding tới 128 byte.
@@ -149,13 +153,16 @@ class VendorUdpDiscoveryProbe @Inject constructor(
 
                 found[senderIp] = DiscoveredCamera(
                     ip = senderIp,
-                    snapshotUrl = "", // V380 không có HTTP snapshot — xem CapabilityProber/ghi chú UI cho "Cần xác nhận thêm"
-                    vendorGuess = "V380",
-                    username = null,
-                    password = null,
-                    previewBytes = null,
+                    // ⚠️ Port lệnh/stream thật của V380 là 8800 (xác nhận qua README prsyahmi/v380)
+                    // — KHÁC hoàn toàn port 10008/10009 dùng để discovery ở trên. Port này chỉ là
+                    // "đoán theo tài liệu", CHƯA được CameraCapabilityProber xác minh thật.
+                    port = V380_COMMAND_PORT,
                     protocol = "vendor_udp",
-                    onvifXAddr = null
+                    deviceId = parsed?.deviceId,
+                    manufacturer = "V380"
+                    // credentialsRequired/credentials/verifiedSnapshotUrl: để mặc định (false/null/null)
+                    // — broadcast response KHÔNG xác nhận được gì về auth hay ảnh/stream thật, xem
+                    // CameraCapabilityProber cho bước xác minh tiếp theo.
                 )
             }
         }

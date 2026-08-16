@@ -18,8 +18,8 @@ import javax.inject.Singleton
  * 3. HttpSnapshotProbe — quét 254 IP × nhiều port/path, có thể mất 30s-vài phút, LÀM SAU CÙNG.
  *
  * Gộp kết quả: khử trùng theo IP. Nếu 1 IP được nhiều probe cùng tìm thấy (vd vừa trả lời ONVIF
- * vừa có HTTP snapshot lộ ra), ƯU TIÊN giữ kết quả có snapshotUrl không rỗng (thường là
- * HttpSnapshotProbe, vì nó đã xác nhận được ảnh thật) — nhưng vẫn giữ lại onvifXAddr/protocol
+ * vừa có HTTP snapshot lộ ra), ƯU TIÊN giữ kết quả có verifiedSnapshotUrl khác null (thường là
+ * HttpSnapshotProbe, vì nó đã xác nhận được ảnh thật) — nhưng vẫn giữ lại deviceId/protocol
  * gốc nếu bản ONVIF đến trước đã có, để không mất thông tin capability đã biết.
  */
 @Singleton
@@ -90,15 +90,15 @@ class CameraDiscoveryEngine @Inject constructor(
                 continue
             }
 
-            // Đã có kết quả từ probe khác cho cùng IP — ưu tiên giữ bản có snapshotUrl không rỗng
-            // (đã xác nhận ảnh thật), nhưng bổ sung onvifXAddr/protocol từ bản mới nếu bản cũ chưa có,
-            // để không mất thông tin capability đã biết từ probe khác.
-            val preferExisting = existing.snapshotUrl.isNotBlank() || cam.snapshotUrl.isBlank()
+            // Đã có kết quả từ probe khác cho cùng IP — ưu tiên giữ bản có verifiedSnapshotUrl khác
+            // null (đã xác nhận ảnh thật, luôn từ HttpSnapshotProbe), nhưng bổ sung deviceId từ
+            // bản mới nếu bản cũ chưa có, để không mất thông tin capability đã biết từ probe khác.
+            val preferExisting = existing.verifiedSnapshotUrl != null || cam.verifiedSnapshotUrl == null
             val winner = if (preferExisting) existing else cam
             val loser = if (preferExisting) cam else existing
 
             merged[cam.ip] = winner.copy(
-                onvifXAddr = winner.onvifXAddr ?: loser.onvifXAddr
+                deviceId = winner.deviceId ?: loser.deviceId
             )
         }
     }

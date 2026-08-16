@@ -210,14 +210,33 @@ fun CameraDialog(
     var gpsLoading by remember { mutableStateOf(false) }
 
     // ✅ MỚI: dialog tự động dò tìm camera LAN — tách riêng khỏi AlertDialog chính bên dưới để
-    // tránh lồng dialog-trong-dialog. Khi người dùng chọn 1 kết quả, tự điền lại 3 state ở trên
-    // rồi đóng dialog dò tìm — người dùng vẫn thấy form chính, chỉ cần bấm "Lưu" như bình thường.
+    // tránh lồng dialog-trong-dialog. Khi người dùng chọn 1 kết quả (đã qua bước xác minh trong
+    // CameraVerificationDialog), tự điền lại state ở trên rồi đóng dialog dò tìm.
     if (showDiscoveryDialog) {
         CameraDiscoveryDialog(
             onCameraSelected = { discovered: DiscoveredCamera ->
-                snapshotUrl = discovered.snapshotUrl
-                snapshotUsername = discovered.username ?: ""
-                snapshotPassword = discovered.password ?: ""
+                // ✅ SỬA KIẾN TRÚC (theo góp ý sau case V380 — bỏ cách cũ bịa "http://<IP>" làm
+                // URL giả). discovered.verifiedSnapshotUrl CHỈ khác null khi:
+                // (a) HttpSnapshotProbe đã xác nhận ảnh JPEG thật, hoặc
+                // (b) CameraVerificationDialog vừa chạy CameraCapabilityProber và tìm được RTSP —
+                //     trong trường hợp đó dialog xác minh đã tự cập nhật verifiedSnapshotUrl
+                //     (xem CameraVerificationDialog.onConfirm trong CameraDiscoveryDialog.kt).
+                // Nếu vẫn null (người dùng chọn "Thêm camera (chưa xác minh)" khi không dò được
+                // gì, vd V380 chưa hỗ trợ RTSP/ONVIF) — để trống, KHÔNG bịa giá trị, người dùng tự
+                // nhập URL/RTSP thật sau khi tra cứu thêm.
+                snapshotUrl = discovered.verifiedSnapshotUrl ?: ""
+                snapshotUsername = discovered.credentials?.username ?: ""
+                snapshotPassword = discovered.credentials?.password ?: ""
+                // Luôn ghi lại thông tin phần cứng đã biết vào landInfo (không có field riêng cho
+                // việc này trong form) — kể cả khi đã verify, để giữ lại protocol/deviceId gốc.
+                val label = when (discovered.protocol) {
+                    "onvif" -> "ONVIF (XAddr: ${discovered.deviceId ?: "?"})"
+                    "vendor_udp" -> "V380 UDP Discovery (deviceId: ${discovered.deviceId ?: "?"})"
+                    else -> discovered.protocol
+                }
+                val verifiedNote = if (discovered.verifiedSnapshotUrl == null) " — CHƯA xác minh URL, cần tự nhập" else ""
+                val note = "Tìm thấy qua $label — IP ${discovered.ip}:${discovered.port}$verifiedNote."
+                landInfo = if (landInfo.isBlank()) note else "$landInfo\n$note"
                 showDiscoveryDialog = false
             },
             onDismiss = { showDiscoveryDialog = false }

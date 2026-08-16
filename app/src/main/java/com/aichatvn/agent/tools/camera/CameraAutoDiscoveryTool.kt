@@ -18,25 +18,53 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Kết quả 1 camera dò được — đủ thông tin để điền thẳng vào CameraConfigDraft/saveCameraConfig,
- * không cần người dùng tự gõ tay URL/path.
+ * Thông tin xác thực ĐÃ XÁC NHẬN cho 1 camera — chỉ tồn tại khi 1 probe thực sự thử đăng nhập
+ * thành công (vd HttpSnapshotProbe thử default credentials và server trả ảnh thật). KHÔNG được
+ * tạo ra để "đoán" — nếu chưa thử/chưa xác nhận, để null và dùng credentialsRequired để báo UI
+ * cần hỏi người dùng nhập.
+ */
+data class DiscoveredCredentials(
+    val username: String,
+    val password: String
+)
+
+/**
+ * Kết quả 1 camera dò được — CHỈ chứa thông tin phần cứng/giao thức đã xác nhận tồn tại
+ * (ip/port/protocol/deviceId...), KHÔNG tự suy ra hay bịa snapshotUrl.
+ *
+ * ✅ SỬA (kiến trúc, theo góp ý sau khi phát hiện qua case V380): trước đây có 1 field
+ * `snapshotUrl: String` không nullable — probe nào không xác nhận được ảnh thật (ONVIF, V380)
+ * phải trả "" hoặc bịa "http://<IP>" để lấp chỗ trống, khiến field này mang 2 nghĩa lẫn lộn
+ * ("đây là URL đã xác nhận" VÀ "đây chỉ là IP đoán được"). UI/logic downstream (probeAfterSave)
+ * không phân biệt nổi 2 trường hợp, dẫn tới hành vi sai (form hiện URL giả trông như đã xác minh).
+ *
+ * Sửa: tách hẳn "discovery tìm thấy gì" (ip/port/protocol/deviceId — LUÔN có, vì đây là thứ mọi
+ * probe xác nhận được) khỏi "endpoint ảnh đã xác minh" (verifiedSnapshotUrl — CHỈ khác null khi
+ * 1 probe thật sự lấy được ảnh JPEG, tức chỉ có ý nghĩa với protocol=="http_snapshot" hiện tại).
+ * UI (CameraDialog) không còn tự gán field này vào form camera — phải qua bước
+ * CameraCapabilityProber xác minh trước, xem CameraDiscoveryDialog.kt.
  */
 data class DiscoveredCamera(
     val ip: String,
-    // ✅ MỚI: có thể rỗng "" khi camera chỉ được xác nhận qua ONVIF WS-Discovery (protocol=="onvif")
-    // và CHƯA xác nhận có HTTP snapshot — UI (DiscoveredCameraRow) phải tự hiển thị trạng thái
-    // "Cần xác nhận thêm" khi snapshotUrl rỗng thay vì coi đây là lỗi.
-    val snapshotUrl: String,
-    val vendorGuess: String,       // vd "Hikvision", "Generic" — chỉ để hiển thị gợi ý, KHÔNG chắc chắn 100%
-    val username: String?,         // null nếu không cần auth
-    val password: String?,
-    val previewBytes: ByteArray?,  // ảnh JPEG thật đã fetch được — dùng để show thumbnail cho người dùng xác nhận
-    // ✅ MỚI (multi-protocol discovery): nguồn nào tìm ra kết quả này — "http_snapshot" (hành vi cũ,
-    // giá trị mặc định để không phá bất kỳ chỗ gọi cũ nào chưa cập nhật), "onvif", "vendor_udp".
-    val protocol: String = "http_snapshot",
-    // ✅ MỚI: XAddr (device service URL) trả về từ ONVIF ProbeMatch — chỉ có giá trị khi protocol=="onvif".
-    val onvifXAddr: String? = null
+    val port: Int,
+    // "http_snapshot" | "onvif" | "vendor_udp" — nguồn probe nào tìm thấy kết quả này.
+    val protocol: String,
+    // Định danh phần cứng nếu probe có trả — ONVIF: XAddr (device service URL); V380: deviceId số.
+    // Không có ý nghĩa xác thực identity thật (camera có thể giả mạo giá trị này), chỉ để hiển
+    // thị cho người dùng đối chiếu, KHÔNG dùng để tự động tin tưởng/bỏ qua bước xác minh.
+    val deviceId: String? = null,
+    val manufacturer: String? = null, // vd "Hikvision", "V380" — chỉ để hiển thị gợi ý, KHÔNG chắc chắn 100%
+    // true nếu probe xác nhận endpoint tồn tại nhưng trả 401/cần đăng nhập (chưa thử được credential
+    // nào thành công) — UI phải hiện ô nhập username/password thay vì coi camera "không cần auth".
+    val credentialsRequired: Boolean = false,
+    // CHỈ khác null khi 1 probe thật sự đăng nhập thành công (không phải đoán/mặc định chưa thử).
+    val credentials: DiscoveredCredentials? = null,
+    // CHỈ khác null khi đã xác nhận đây là ảnh JPEG thật lấy được qua HTTP — hiện chỉ
+    // HttpSnapshotProbe có thể set field này; ONVIF/V380 luôn để null vì chưa xác minh xong.
+    val verifiedSnapshotUrl: String? = null,
+    val previewBytes: ByteArray? = null // ảnh JPEG thật đã fetch được — chỉ có khi verifiedSnapshotUrl != null
 )
+
 
 /**
  * ⚠️ CHỦ Ý: Tool này CHỈ dò tìm & xác nhận URL/path/credential hợp lệ — KHÔNG tự ý lưu vào DB.
@@ -215,8 +243,8 @@ class CameraAutoDiscoveryTool @Inject constructor(
                 if (probe?.result != null) {
                     logger.i("CameraAutoDiscoveryTool", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor, không cần auth)")
                     return DiscoveredCamera(
-                        ip = ip, snapshotUrl = url, vendorGuess = vendor,
-                        username = null, password = null, previewBytes = probe.result
+                        ip = ip, port = port, protocol = "http_snapshot",
+                        manufacturer = vendor, verifiedSnapshotUrl = url, previewBytes = probe.result
                     )
                 }
 
@@ -229,8 +257,10 @@ class CameraAutoDiscoveryTool @Inject constructor(
                         if (bytes != null) {
                             logger.i("CameraAutoDiscoveryTool", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor, auth mặc định)")
                             return DiscoveredCamera(
-                                ip = ip, snapshotUrl = url, vendorGuess = vendor,
-                                username = user, password = pass, previewBytes = bytes
+                                ip = ip, port = port, protocol = "http_snapshot",
+                                manufacturer = vendor, credentialsRequired = true,
+                                credentials = DiscoveredCredentials(user, pass),
+                                verifiedSnapshotUrl = url, previewBytes = bytes
                             )
                         }
                     }

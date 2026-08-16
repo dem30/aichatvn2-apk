@@ -18,19 +18,58 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.aichatvn.agent.tools.camera.CameraCapabilityProber
 import com.aichatvn.agent.tools.camera.DiscoveredCamera
+import com.aichatvn.agent.tools.camera.DiscoveredCredentials
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
- * Dialog "1-click tự động dò tìm camera trong mạng LAN".
+ * ✅ SỬA KIẾN TRÚC (theo góp ý sau case V380): trước đây "Dùng camera này" gán THẲNG kết quả
+ * discovery vào form camera — với ONVIF/V380 (chưa xác nhận endpoint ảnh thật), điều này buộc
+ * phải bịa "http://<IP>" làm snapshotUrl giả, khiến 1 field mang 2 nghĩa lẫn lộn (đã xác minh vs
+ * chỉ là IP đoán được).
  *
- * ⚠️ CHỦ Ý: dialog này KHÔNG tự lưu camera vào DB — chỉ trả kết quả đã người dùng xác nhận qua
- * onCameraSelected(). Nơi gọi (vd CustomerCameraScreen) tự quyết định merge kết quả vào config
- * map hiện có rồi gọi saveCamera() như luồng thêm camera thủ công đã có sẵn — không phá vỡ
- * CameraDialog cũ.
- *
- * @param onCameraSelected gọi khi người dùng bấm "Dùng camera này" trên 1 kết quả.
- * @param onDismiss gọi khi người dùng đóng dialog (hủy quét nếu đang chạy dở).
+ * Sửa: bấm vào 1 kết quả giờ mở [CameraVerificationDialog] — màn RIÊNG hiển thị đúng những gì
+ * discovery THẬT SỰ biết (IP/port/protocol/deviceId), cho nhập username/password nếu cần, và có
+ * nút "Tự dò giao thức" gọi CameraCapabilityProber thật (ONVIF → RTSP → HTTP snapshot) TRƯỚC khi
+ * cho phép "Thêm camera". onCameraSelected() giờ chỉ được gọi SAU khi đã xác minh — camera lúc đó
+ * chắc chắn có ít nhất 1 endpoint đã probe thành công, không còn khả năng tạo form trống hoặc URL
+ * giả mạo trông như đã xác minh.
  */
+
+// ── State cho bước xác minh (probe) ────────────────────────────────────────
+
+sealed interface VerificationState {
+    data object Idle : VerificationState
+    data object Probing : VerificationState
+    data class Done(val result: com.aichatvn.agent.tools.camera.CapabilityProbeResult) : VerificationState
+}
+
+@HiltViewModel
+class CameraVerificationViewModel @Inject constructor(
+    private val capabilityProber: CameraCapabilityProber,
+) : ViewModel() {
+    private val _state = MutableStateFlow<VerificationState>(VerificationState.Idle)
+    val state: StateFlow<VerificationState> = _state.asStateFlow()
+
+    fun probe(ip: String, port: Int, username: String?, password: String?) {
+        _state.value = VerificationState.Probing
+        viewModelScope.launch {
+            val result = capabilityProber.probe(ip, port, username, password)
+            _state.value = VerificationState.Done(result)
+        }
+    }
+
+    fun reset() { _state.value = VerificationState.Idle }
+}
+
 @Composable
 fun CameraDiscoveryDialog(
     onCameraSelected: (DiscoveredCamera) -> Unit,
@@ -38,10 +77,23 @@ fun CameraDiscoveryDialog(
     viewModel: com.aichatvn.agent.ui.viewmodels.CameraDiscoveryViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    var cameraToVerify by remember { mutableStateOf<DiscoveredCamera?>(null) }
 
-    // Tự bắt đầu quét ngay khi dialog mở — đúng tinh thần "1-click": người dùng chỉ cần bấm nút
-    // mở dialog này, không cần bấm thêm 1 nút "bắt đầu" nữa bên trong.
     LaunchedEffect(Unit) { viewModel.startScan() }
+
+    if (cameraToVerify != null) {
+        CameraVerificationDialog(
+            camera = cameraToVerify!!,
+            onConfirm = { verified ->
+                onCameraSelected(verified)
+                cameraToVerify = null
+            },
+            onDismiss = { cameraToVerify = null }
+        )
+        // Dialog xác minh nằm ĐÈ LÊN, không thay thế dialog danh sách bên dưới — người dùng bấm
+        // "Đóng" ở đây quay lại được danh sách kết quả, không mất phiên quét đang có.
+        return
+    }
 
     AlertDialog(
         onDismissRequest = {
@@ -103,10 +155,10 @@ fun CameraDiscoveryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(s.results, key = { it.ip + it.snapshotUrl }) { cam ->
+                                items(s.results, key = { it.ip + it.protocol }) { cam ->
                                     DiscoveredCameraRow(
                                         camera = cam,
-                                        onSelect = { onCameraSelected(cam) }
+                                        onSelect = { cameraToVerify = cam }
                                     )
                                 }
                             }
@@ -148,8 +200,6 @@ private fun DiscoveredCameraRow(
                 .padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Thumbnail nhỏ từ ảnh preview thật đã fetch được — giúp người dùng xác nhận đúng
-            // camera thay vì chỉ nhìn IP/URL trừu tượng.
             val bitmap = remember(camera.previewBytes) {
                 camera.previewBytes?.let {
                     try {
@@ -184,25 +234,22 @@ private fun DiscoveredCameraRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(camera.ip, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    "Đoán: ${camera.vendorGuess}",
+                    "Đoán: ${camera.manufacturer ?: "?"} — giao thức: ${camera.protocol}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (!camera.username.isNullOrBlank()) {
+                if (camera.credentialsRequired) {
                     Text(
-                        "🔒 Cần đăng nhập (đã tự dò được)",
+                        "🔒 Cần đăng nhập" + (camera.credentials?.let { " (đã tự dò được)" } ?: ""),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                // ✅ MỚI (multi-protocol discovery): camera tìm thấy qua ONVIF WS-Discovery hoặc
-                // Vendor UDP Discovery (V380) chỉ xác nhận được IP tồn tại — CHƯA có URL ảnh
-                // snapshot thật (snapshotUrl rỗng), khác với kết quả HTTP Snapshot Scan luôn có
-                // ảnh preview. Báo rõ để người dùng không tưởng app lỗi khi không thấy thumbnail.
-                if (camera.snapshotUrl.isBlank() && (camera.protocol == "onvif" || camera.protocol == "vendor_udp")) {
-                    val label = if (camera.protocol == "onvif") "ONVIF" else "V380"
+                // ✅ SỬA: đổi điều kiện theo verifiedSnapshotUrl (thay snapshotUrl cũ) — camera
+                // ONVIF/V380 luôn có verifiedSnapshotUrl == null vì chưa qua bước xác minh.
+                if (camera.verifiedSnapshotUrl == null) {
                     Text(
-                        "📡 Tìm thấy qua $label — cần xác nhận thêm (chưa có ảnh preview)",
+                        "📡 Chưa xác minh endpoint — bấm để dò giao thức thật",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.tertiary
                     )
@@ -211,7 +258,159 @@ private fun DiscoveredCameraRow(
 
             Spacer(Modifier.width(8.dp))
 
-            Button(onClick = onSelect) { Text("Dùng camera này") }
+            Button(onClick = onSelect) { Text("Chọn") }
         }
     }
+}
+
+// ── Màn xác minh camera đã chọn ─────────────────────────────────────────────
+
+/**
+ * Hiển thị đúng những gì discovery THẬT SỰ biết (IP/port/protocol/deviceId), cho nhập
+ * username/password, và bắt buộc bấm "Tự dò giao thức" (gọi CameraCapabilityProber thật) trước
+ * khi cho phép "Thêm camera" — trừ khi camera đã có verifiedSnapshotUrl sẵn từ HttpSnapshotProbe
+ * (trường hợp đó coi như đã xác minh xong từ bước discovery, không bắt probe lại vô ích).
+ */
+@Composable
+private fun CameraVerificationDialog(
+    camera: DiscoveredCamera,
+    onConfirm: (DiscoveredCamera) -> Unit,
+    onDismiss: () -> Unit,
+    viewModel: CameraVerificationViewModel = hiltViewModel()
+) {
+    val verificationState by viewModel.state.collectAsState()
+    var username by remember { mutableStateOf(camera.credentials?.username ?: "") }
+    var password by remember { mutableStateOf(camera.credentials?.password ?: "") }
+
+    // Camera từ HttpSnapshotProbe đã có verifiedSnapshotUrl sẵn — không cần bắt xác minh lại,
+    // coi như đã "Done" ngay từ đầu để người dùng bấm "Thêm camera" được luôn.
+    val alreadyVerified = camera.verifiedSnapshotUrl != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Xác minh camera") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("IP: ${camera.ip}:${camera.port}", fontWeight = FontWeight.Bold)
+                Text("Giao thức phát hiện: ${camera.protocol}", style = MaterialTheme.typography.bodyMedium)
+                camera.deviceId?.let {
+                    Text("Định danh: $it", style = MaterialTheme.typography.bodyMedium)
+                }
+                camera.manufacturer?.let {
+                    Text("Hãng (đoán): $it", style = MaterialTheme.typography.labelSmall)
+                }
+
+                if (alreadyVerified) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "✅ Đã xác minh — ảnh snapshot lấy được tại: ${camera.verifiedSnapshotUrl}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        "Chưa xác minh được endpoint ảnh/stream thật. Nhập tài khoản nếu camera " +
+                            "cần đăng nhập, rồi bấm \"Tự dò giao thức\" để thử ONVIF/RTSP/HTTP.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = username, onValueChange = { username = it },
+                        label = { Text("Tài khoản (nếu cần)") }, modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = password, onValueChange = { password = it },
+                        label = { Text("Mật khẩu (nếu cần)") }, modifier = Modifier.fillMaxWidth(),
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
+                    )
+
+                    when (val vs = verificationState) {
+                        is VerificationState.Idle -> {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.probe(
+                                        camera.ip, camera.port,
+                                        username.ifBlank { null }, password.ifBlank { null }
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.WifiFind, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Tự dò giao thức")
+                            }
+                        }
+                        is VerificationState.Probing -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Đang dò ONVIF/RTSP...", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        is VerificationState.Done -> {
+                            val r = vs.result
+                            if (r.onvifSupported || r.rtspSupported) {
+                                Text(
+                                    "✅ Xác minh thành công" +
+                                        (if (r.rtspSupported) " — RTSP: ${r.rtspUrl}" else "") +
+                                        (if (r.onvifSupported) " — có ONVIF" else ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Text(
+                                    "❌ Không xác minh được ONVIF/RTSP tại địa chỉ này. Có thể camera " +
+                                        "dùng giao thức riêng (như V380) chưa hỗ trợ xác minh tự động — " +
+                                        "vẫn có thể thêm camera và tự nhập URL/RTSP thủ công sau.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            TextButton(onClick = { viewModel.reset() }) { Text("Dò lại") }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val vs = verificationState
+            // Cho phép "Thêm camera" khi: đã có verifiedSnapshotUrl từ trước, HOẶC probe vừa xác
+            // minh được RTSP (rtspUrl là endpoint dùng được thật — gán vào verifiedSnapshotUrl),
+            // HOẶC người dùng chấp nhận thêm dù chưa xác minh (camera dùng giao thức riêng chưa
+            // hỗ trợ auto-probe, như V380) — nhưng KHÔNG tự bịa URL nào cho trường hợp cuối.
+            val verifiedResult = (vs as? VerificationState.Done)?.result
+            val newCredentials = if (username.isNotBlank()) DiscoveredCredentials(username, password) else camera.credentials
+            val newCredentialsRequired = username.isNotBlank() || camera.credentialsRequired
+
+            val finalCamera = when {
+                alreadyVerified -> camera
+                // RTSP xác minh được (DESCRIBE trả 200/401 thật) — ĐÂY mới là "đã xác minh", gán
+                // thẳng rtspUrl (đã kèm credential nếu cần, xem buildRtspUrlWithCredentials trong
+                // CameraCapabilityProber) làm verifiedSnapshotUrl.
+                verifiedResult?.rtspSupported == true && verifiedResult.rtspUrl != null ->
+                    camera.copy(
+                        verifiedSnapshotUrl = verifiedResult.rtspUrl,
+                        credentials = newCredentials,
+                        credentialsRequired = newCredentialsRequired
+                    )
+                // Chỉ ONVIF (không có RTSP) — có device_service URL nhưng đó KHÔNG phải endpoint
+                // ảnh/stream dùng để xem trực tiếp, nên vẫn để verifiedSnapshotUrl null; chỉ cập
+                // nhật credentials đã nhập để không mất nếu người dùng tự điền URL sau.
+                else -> camera.copy(
+                    credentials = newCredentials,
+                    credentialsRequired = newCredentialsRequired
+                )
+            }
+            Button(onClick = { onConfirm(finalCamera) }) {
+                Text(if (alreadyVerified || finalCamera.verifiedSnapshotUrl != null) "Thêm camera" else "Thêm camera (chưa xác minh)")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Đóng") }
+        }
+    )
 }

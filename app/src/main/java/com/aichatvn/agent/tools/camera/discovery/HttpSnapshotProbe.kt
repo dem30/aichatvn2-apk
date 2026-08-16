@@ -147,9 +147,8 @@ class HttpSnapshotProbe @Inject constructor(
                 if (probe?.result != null) {
                     logger.i("HttpSnapshotProbe", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor, không cần auth)")
                     return DiscoveredCamera(
-                        ip = ip, snapshotUrl = url, vendorGuess = vendor,
-                        username = null, password = null, previewBytes = probe.result,
-                        protocol = "http_snapshot"
+                        ip = ip, port = port, protocol = "http_snapshot",
+                        manufacturer = vendor, verifiedSnapshotUrl = url, previewBytes = probe.result
                     )
                 }
 
@@ -159,9 +158,10 @@ class HttpSnapshotProbe @Inject constructor(
                         if (bytes != null) {
                             logger.i("HttpSnapshotProbe", "✅ Tìm thấy camera tại $url (vendor đoán: $vendor, auth mặc định)")
                             return DiscoveredCamera(
-                                ip = ip, snapshotUrl = url, vendorGuess = vendor,
-                                username = user, password = pass, previewBytes = bytes,
-                                protocol = "http_snapshot"
+                                ip = ip, port = port, protocol = "http_snapshot",
+                                manufacturer = vendor, credentialsRequired = true,
+                                credentials = DiscoveredCredentials(user, pass),
+                                verifiedSnapshotUrl = url, previewBytes = bytes
                             )
                         }
                     }

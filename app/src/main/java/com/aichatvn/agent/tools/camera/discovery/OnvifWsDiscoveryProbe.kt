@@ -29,7 +29,8 @@ import javax.inject.Singleton
  * - Chỉ bắt ProbeMatch trả lời TRONG cửa sổ chờ (WAIT_WINDOW_MS) — ONVIF không có khái niệm
  *   "danh sách camera cố định", chỉ có "ai trả lời trong lúc tôi lắng nghe". Camera phản hồi chậm
  *   (mạng yếu, đang bận) có thể bị bỏ lỡ ở 1 lượt quét — người dùng bấm "Quét lại" là cách hợp lệ.
- * - snapshotUrl luôn để rỗng "" — ProbeMatch KHÔNG trả về ảnh, chỉ trả IP + XAddr. UI phải tự xử lý
+ * - verifiedSnapshotUrl luôn null — ProbeMatch KHÔNG trả về ảnh, chỉ trả IP + XAddr (lưu vào
+ *   deviceId). UI phải tự xử lý
  *   hiển thị "Cần xác nhận thêm" cho protocol=="onvif" thay vì mong đợi luôn có ảnh preview.
  * - CHƯA xử lý WS-Security UsernameToken — một số camera yêu cầu Probe phải kèm digest auth mới
  *   trả lời; camera loại này sẽ không xuất hiện qua probe này (tương tự giới hạn đã ghi trong
@@ -166,15 +167,23 @@ class OnvifWsDiscoveryProbe @Inject constructor(
                 }
 
                 logger.i("OnvifWsDiscoveryProbe", "✅ ProbeMatch từ $senderIp — XAddr=$xAddr")
+                // Trích port từ XAddr nếu có (vd "http://192.168.0.50:8899/onvif/device_service")
+                // — nhiều camera TQ giá rẻ dùng port ONVIF riêng khác 80. Mặc định 80 nếu không
+                // parse được port tường minh trong XAddr (URI không có port nghĩa là port mặc định
+                // của scheme, tức 80 cho http).
+                val onvifPort = runCatching { java.net.URI(xAddr).port }.getOrNull()
+                    ?.takeIf { it > 0 } ?: 80
+
                 found[senderIp] = DiscoveredCamera(
                     ip = senderIp,
-                    snapshotUrl = "", // xem giới hạn đã ghi ở đầu file — ONVIF không trả ảnh trong ProbeMatch
-                    vendorGuess = "ONVIF",
-                    username = null,
-                    password = null,
-                    previewBytes = null,
+                    port = onvifPort,
                     protocol = "onvif",
-                    onvifXAddr = xAddr
+                    deviceId = xAddr, // XAddr đóng vai trò định danh — chưa xác nhận credential/snapshot
+                    manufacturer = "ONVIF"
+                    // credentialsRequired/credentials/verifiedSnapshotUrl: để mặc định (false/null/null)
+                    // — ProbeMatch KHÔNG xác nhận được gì về auth hay ảnh thật, xem CameraCapabilityProber
+                    // cho bước xác minh tiếp theo (gọi từ CameraDiscoveryDialog khi người dùng bấm
+                    // "Tự dò giao thức").
                 )
             }
         }
