@@ -12,10 +12,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.data.model.CustomerEntity
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.tools.camera.DiscoveredCamera
+import com.aichatvn.agent.tools.camera.discovery.CameraQrIdentity
+import com.aichatvn.agent.tools.camera.discovery.CameraQrScanResult
 
 @Composable
 fun CameraCard(
@@ -198,6 +201,13 @@ fun CameraDialog(
     // ✅ MỚI: URL dự phòng cloud/public — dùng khi LAN không kết nối được (vd đang ở ngoài mạng nhà).
     var snapshotUrlRemote by remember { mutableStateOf(camera?.snapshotUrlRemote ?: "") }
     var showDiscoveryDialog by remember { mutableStateOf(false) }
+    // ✅ MỚI: danh tính camera từ quét QR (CameraQrDiscovery) — CHỈ là state chờ đối chiếu, KHÔNG
+    // tự ghi vào landInfo lúc quét xong. Đi vào landInfo ở 1 trong 2 đường: (a) khớp với 1 kết quả
+    // LAN discovery lúc người dùng CHỌN (xem onCameraSelected bên dưới), hoặc (b) người dùng chủ
+    // động bấm "Thêm vào ghi chú" nếu không chạy/không tìm được LAN discovery khớp — không có
+    // đường nào tự động viết mà không qua 1 hành động rõ ràng của người dùng.
+    var qrIdentity by remember { mutableStateOf<CameraQrIdentity?>(null) }
+    var qrScanning by remember { mutableStateOf(false) }
     var landInfo by remember { mutableStateOf(camera?.landinfo ?: "") }
     // ✅ SỬA: camera mới lấy prompt/từ khoá mặc định từ AppConfigDefaults (đã nạp qua `defaults`)
     // thay vì gõ cứng "cảnh báo"/"bình thường" trực tiếp trong UI.
@@ -209,11 +219,32 @@ fun CameraDialog(
     var locationError by remember { mutableStateOf<String?>(null) }
     var gpsLoading by remember { mutableStateOf(false) }
 
+    // ✅ MỚI: quét QR — bọc CameraQrDiscovery qua ViewModel vì CameraDialog là Composable thuần,
+    // không tự @Inject được (xem CameraQrScanViewModel.kt).
+    val qrScanViewModel: CameraQrScanViewModel = hiltViewModel()
+    val qrScanResult by qrScanViewModel.result.collectAsState()
+    LaunchedEffect(qrScanResult) {
+        when (val r = qrScanResult) {
+            is CameraQrScanResult.Success -> {
+                qrIdentity = r.identity
+                qrScanViewModel.consume()
+            }
+            is CameraQrScanResult.Error -> {
+                locationError = "Quét QR lỗi: ${r.message}"
+                qrScanViewModel.consume()
+            }
+            is CameraQrScanResult.Cancelled -> qrScanViewModel.consume()
+            null -> {}
+        }
+        qrScanning = false
+    }
+
     // ✅ MỚI: dialog tự động dò tìm camera LAN — tách riêng khỏi AlertDialog chính bên dưới để
     // tránh lồng dialog-trong-dialog. Khi người dùng chọn 1 kết quả (đã qua bước xác minh trong
     // CameraVerificationDialog), tự điền lại state ở trên rồi đóng dialog dò tìm.
     if (showDiscoveryDialog) {
         CameraDiscoveryDialog(
+            qrIdentity = qrIdentity, // ✅ MỚI: cho phép CameraDiscoveryDialog đánh dấu kết quả khớp QR
             onCameraSelected = { discovered: DiscoveredCamera ->
                 // ✅ SỬA KIẾN TRÚC (theo góp ý sau case V380 — bỏ cách cũ bịa "http://<IP>" làm
                 // URL giả). discovered.verifiedSnapshotUrl CHỈ khác null khi:
@@ -235,7 +266,15 @@ fun CameraDialog(
                     else -> discovered.protocol
                 }
                 val verifiedNote = if (discovered.verifiedSnapshotUrl == null) " — CHƯA xác minh URL, cần tự nhập" else ""
-                val note = "Tìm thấy qua $label — IP ${discovered.ip}:${discovered.port}$verifiedNote."
+                // ✅ MỚI: ghi thêm 1 dòng riêng nếu deviceId của kết quả CHỌN khớp qrIdentity —
+                // CHỈ khi thực sự khớp (contains ignoreCase, cùng tiêu chí CameraDiscoveryDialog
+                // dùng để đánh dấu 🟢), không suy diễn khi thiếu 1 trong 2 deviceId.
+                val camId = discovered.deviceId?.trim()
+                val qrId = qrIdentity?.deviceId?.trim()
+                val qrMatchNote = if (!camId.isNullOrBlank() && !qrId.isNullOrBlank() &&
+                    (camId.contains(qrId, ignoreCase = true) || qrId.contains(camId, ignoreCase = true))
+                ) "\nĐối chiếu QR: khớp deviceId ($qrId) — đây là camera vừa quét QR." else ""
+                val note = "Tìm thấy qua $label — IP ${discovered.ip}:${discovered.port}$verifiedNote.$qrMatchNote"
                 landInfo = if (landInfo.isBlank()) note else "$landInfo\n$note"
                 showDiscoveryDialog = false
             },
@@ -269,6 +308,60 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                     Icon(Icons.Default.WifiFind, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Tự động dò tìm camera trong mạng")
+                }
+
+                // ✅ MỚI: quét QR trên thân camera để lấy deviceId — CHỈ tạo qrIdentity (state chờ
+                // đối chiếu), KHÔNG tự ghi gì vào form. Nối vào "Tự động dò tìm camera trong mạng"
+                // ở trên (đối chiếu deviceId, xem onCameraSelected) là đường được khuyến khích;
+                // dòng gợi ý + nút "Thêm vào ghi chú" bên dưới chỉ dành cho trường hợp không chạy/
+                // không tìm được kết quả LAN khớp.
+                OutlinedButton(
+                    onClick = {
+                        val activity = context as? android.app.Activity
+                        if (activity == null) {
+                            locationError = "Không mở được camera quét QR"
+                        } else {
+                            qrScanning = true
+                            qrScanViewModel.scan(activity)
+                        }
+                    },
+                    enabled = !qrScanning,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (qrScanning) "Đang quét..." else "Quét mã QR trên camera")
+                }
+
+                qrIdentity?.let { id ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "📷 Đã quét QR — deviceId: ${id.deviceId ?: "?"}" +
+                                    (id.vendor?.let { v -> " ($v)" } ?: ""),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Bấm \"Tự động dò tìm camera trong mạng\" để đối chiếu, hoặc thêm " +
+                                    "thẳng vào ghi chú nếu không tìm được camera này trên mạng.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        TextButton(onClick = {
+                            // Chủ động (người dùng bấm), không tự động — đúng góp ý: QR không tự
+                            // ý ghi vào landInfo, chỉ ghi khi có hành động rõ ràng.
+                            val note = "Quét QR: deviceId=${id.deviceId ?: "?"}" +
+                                (id.vendor?.let { v -> " — hãng: $v" } ?: "") +
+                                " — CHƯA đối chiếu với LAN discovery."
+                            landInfo = if (landInfo.isBlank()) note else "$landInfo\n$note"
+                            qrIdentity = null
+                        }) { Text("Thêm vào ghi chú") }
+                    }
                 }
 
                 OutlinedTextField(

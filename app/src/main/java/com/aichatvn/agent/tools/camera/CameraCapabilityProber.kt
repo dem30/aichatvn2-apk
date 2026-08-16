@@ -42,6 +42,13 @@ class CameraCapabilityProber @Inject constructor(
         private const val RTSP_PROBE_TIMEOUT_MS = 2_500L
         private const val RTSP_DEFAULT_PORT = 554
 
+        // ⚠️ CANDIDATE, không phải khẳng định — 1 số camera (nhiều nguồn nhắc tới V380, chưa xác
+        // nhận chính hãng) dùng port ONVIF riêng khác hẳn port HTTP snapshot mặc định 80. Chỉ
+        // dùng làm cổng thử THÊM khi cổng mặc định thất bại — tryProbeOnvif() vẫn chỉ báo có
+        // ONVIF sau khi GetCapabilities SOAP thật trả lời đúng giao thức tại cổng đó, không suy
+        // diễn "port 8899 mở nghĩa là có ONVIF".
+        private const val ONVIF_FALLBACK_PORT = 8899
+
         // ✅ Danh sách path RTSP phổ biến theo hãng — cùng tinh thần với SNAPSHOT_PATTERNS bên
         // discovery tool nhưng khác path vì RTSP stream path ≠ HTTP snapshot path của cùng hãng.
         private val RTSP_PATHS = listOf(
@@ -50,6 +57,15 @@ class CameraCapabilityProber @Inject constructor(
             "/stream1",                              // TP-Link Tapo / generic
             "/live",                                 // generic
             "/onvif1",                               // generic ONVIF profile
+            // ⚠️ V380 — CHƯA xác nhận 1-1 với tài liệu chính hãng, chỉ tổng hợp từ nhiều nguồn
+            // reverse-engineer độc lập đồng thuận cùng con số (cùng nhóm nguồn với
+            // VendorUdpDiscoveryProbe.kt). Chỉ là 2 CANDIDATE thêm vào danh sách thử — như mọi
+            // path khác trong list này, chỉ được coi là "hỗ trợ" sau khi rtspDescribeOk() xác
+            // nhận DESCRIBE trả 200/401 thật, không giả định riêng cho V380. Một nguồn ghi rõ
+            // firmware 2505/3505 trở lên mặc định TẮT RTSP — probe fail ở path này với 1 số máy
+            // V380 nhiều khả năng là do firmware, không phải path sai.
+            "/live/ch00_0",                          // V380 — sub-stream (candidate, chưa xác nhận chính hãng)
+            "/live/ch00_1",                          // V380 — main-stream (candidate, chưa xác nhận chính hãng)
         )
     }
 
@@ -81,12 +97,26 @@ class CameraCapabilityProber @Inject constructor(
     }
 
     /**
+     * Thử cổng ONVIF theo thứ tự: cổng HTTP mặc định truyền vào (hành vi cũ, không đổi) trước,
+     * rồi mới thử ONVIF_FALLBACK_PORT nếu cổng đó thất bại VÀ khác cổng vừa thử (tránh thử trùng
+     * khi httpPort đã là 8899). Mỗi cổng vẫn đi qua đúng 1 hàm probe thật (tryProbeOnvifOnPort) —
+     * không có nhánh nào tự gán "có ONVIF" mà không qua GetCapabilities SOAP thật.
+     */
+    private fun tryProbeOnvif(ip: String, httpPort: Int): String? {
+        tryProbeOnvifOnPort(ip, httpPort)?.let { return it }
+        if (httpPort != ONVIF_FALLBACK_PORT) {
+            tryProbeOnvifOnPort(ip, ONVIF_FALLBACK_PORT)?.let { return it }
+        }
+        return null
+    }
+
+    /**
      * Bước 1 mới chỉ xác nhận cổng ONVIF device_service tồn tại và trả lời đúng SOAP —
      * CHƯA xử lý WS-Security UsernameToken digest (nhiều camera đòi auth ngay từ GetCapabilities).
      * Camera cần digest auth sẽ bị báo "không hỗ trợ" ở bước này dù thực ra có — đây là giới hạn
      * đã biết, cần bổ sung sau nếu gặp nhiều case thực tế như vậy.
      */
-    private fun tryProbeOnvif(ip: String, port: Int): String? {
+    private fun tryProbeOnvifOnPort(ip: String, port: Int): String? {
         val deviceServiceUrl = "http://$ip:$port/onvif/device_service"
         val soapBody = """
             <?xml version="1.0" encoding="UTF-8"?>

@@ -223,6 +223,16 @@ dependencies {
     // chỉ khác nơi lưu trữ. Yêu cầu thiết bị có Google Play Services (hầu hết máy Android đều có).
     implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
+
+    // ✅ MỚI: Google Code Scanner API — quét QR camera để lấy Device ID (CameraQrDiscovery.kt).
+    // Dùng UI quét full-screen do Google Play Services cung cấp, KHÔNG cần CameraX (project chưa có
+    // sẵn CameraX) và KHÔNG cần app tự xin quyền CAMERA cho việc quét này. Cùng đánh đổi đã chấp nhận
+    // cho play-services-mlkit-image-labeling/face-detection: cần Google Play Services trên máy, và
+    // lần quét đầu tiên trên mỗi máy cần internet để tải scanner UI (một lần).
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Package Kotlin dùng trong CameraQrDiscovery.kt (com.google.mlkit.vision.codescanner.*,
+    // com.google.mlkit.vision.barcode.common.Barcode) là API surface đi kèm artifact trên — không
+    // cần thêm dependency riêng cho com.google.mlkit:barcode-scanning.
 }
 
 kapt {

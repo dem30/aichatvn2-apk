@@ -635,6 +635,18 @@ val MIGRATION_24_25 = object : Migration(24, 25) {
     }
 }
 
+// ✅ MỚI: version 25 → 26 — CameraConfigEntity thêm deviceId/vendor (danh tính camera từ QR
+// scan/LAN discovery — xem CameraQrDiscovery.kt/CameraDiscoveryDialog.kt). Trước đây 2 giá trị
+// này chỉ được ghi vào landinfo dạng text tự do, không query được. Cả 2 nullable TEXT, DEFAULT
+// NULL — camera cũ (thêm thủ công, không qua discovery/QR) không có gì để điền, giữ nguyên hành
+// vi cũ (đọc ra null). Cùng khuôn ALTER TABLE ADD COLUMN như mọi migration 17→25 trước đó.
+val MIGRATION_25_26 = object : Migration(25, 26) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cameras ADD COLUMN deviceId TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN vendor TEXT DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -659,10 +671,16 @@ val MIGRATION_24_25 = object : Migration(24, 25) {
     // brokerMode vào MqttDeviceEntity (xem MIGRATION_24_25).
     // Trước đó bump 23 → 24 để track Cloud Broker V1 thêm cột MqttDeviceEntity (xem MIGRATION_23_24).
     // Trước đó bump 22 → 23 để thêm bảng mqtt_devices (Tầng 3 — xem MIGRATION_22_23).
-    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→25
+    // ⚠️ Version 20 ĐÃ cài cho khách hàng thật — bắt buộc dùng đủ chuỗi Migration 16→...→26
     // (không chỉ riêng migration mới nhất) ở dưới, KHÔNG được để fallbackToDestructiveMigration()
     // xoá dữ liệu của họ.
-    version = 25,
+    // ✅ SỬA: bump 25 → 26 — MIGRATION_25_26 (CameraConfigEntity thêm deviceId/vendor) đã được
+    // viết sẵn nhưng version annotation vẫn để 25 và chưa có trong .addMigrations(...) bên dưới,
+    // nghĩa là migration này KHÔNG BAO GIỜ chạy — Room sẽ phát hiện schema trong code (đã có 2 cột
+    // mới) không khớp version đã export, có nguy cơ crash hoặc rơi vào fallbackToDestructiveMigration()
+    // (xoá dữ liệu khách hàng thật, xem cảnh báo ngay trên). Bump version + đăng ký migration khớp
+    // với MIGRATION_25_26 đã tồn tại từ trước, không đổi nội dung migration.
+    version = 26,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -700,7 +718,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

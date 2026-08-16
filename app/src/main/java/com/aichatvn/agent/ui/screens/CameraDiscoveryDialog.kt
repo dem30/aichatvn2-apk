@@ -23,6 +23,7 @@ import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.tools.camera.CameraCapabilityProber
 import com.aichatvn.agent.tools.camera.DiscoveredCamera
 import com.aichatvn.agent.tools.camera.DiscoveredCredentials
+import com.aichatvn.agent.tools.camera.discovery.CameraQrIdentity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,6 +43,14 @@ import javax.inject.Inject
  * cho phép "Thêm camera". onCameraSelected() giờ chỉ được gọi SAU khi đã xác minh — camera lúc đó
  * chắc chắn có ít nhất 1 endpoint đã probe thành công, không còn khả năng tạo form trống hoặc URL
  * giả mạo trông như đã xác minh.
+ *
+ * ✅ MỚI: đối chiếu QR ↔ LAN discovery — qrIdentity (từ CameraQrDiscovery.scan(), quét mã QR trên
+ * thân camera) là optional, TRUYỀN VÀO chứ dialog này không tự quét QR. Khi có qrIdentity, mỗi
+ * kết quả LAN discovery có deviceId khớp (contains, ignoreCase — 2 nguồn có thể biểu diễn khác
+ * định dạng dù cùng giá trị gốc, xem CameraQrDiscovery.kt) được đánh dấu "🟢 Khớp mã QR" và đẩy
+ * lên đầu danh sách — CHỈ là gợi ý hiển thị, không tự động gộp/chọn thay người dùng. Chỉ khi thật
+ * sự KHỚP, lúc người dùng bấm "Chọn", deviceId/manufacturer còn thiếu của kết quả LAN mới được bổ
+ * sung từ qrIdentity (null-coalescing — không ghi đè giá trị probe LAN đã tự có).
  */
 
 // ── State cho bước xác minh (probe) ────────────────────────────────────────
@@ -74,6 +83,10 @@ class CameraVerificationViewModel @Inject constructor(
 fun CameraDiscoveryDialog(
     onCameraSelected: (DiscoveredCamera) -> Unit,
     onDismiss: () -> Unit,
+    // ✅ MỚI: kết quả quét QR trước đó (nếu có) — dùng để đối chiếu deviceId với kết quả LAN
+    // discovery, xem ghi chú "✅ MỚI" ở đầu file. null nghĩa là chưa quét QR, không ảnh hưởng gì
+    // tới hành vi cũ.
+    qrIdentity: CameraQrIdentity? = null,
     viewModel: com.aichatvn.agent.ui.viewmodels.CameraDiscoveryViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsState()
@@ -154,11 +167,37 @@ fun CameraDiscoveryDialog(
                                 )
                             }
                         } else {
+                            // Kết quả khớp deviceId với qrIdentity (nếu có) lên đầu danh sách —
+                            // chỉ sắp xếp lại thứ tự hiển thị, KHÔNG lọc bớt kết quả nào.
+                            val sortedResults = remember(s.results, qrIdentity) {
+                                s.results.sortedByDescending { isQrMatch(it, qrIdentity) }
+                            }
+                            if (qrIdentity != null) {
+                                Text(
+                                    "Đã có mã QR (deviceId: ${qrIdentity.deviceId ?: "?"}) — " +
+                                        "camera khớp bên dưới được đánh dấu 🟢",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 8.dp)
+                                )
+                            }
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(s.results, key = { it.ip + it.protocol }) { cam ->
+                                items(sortedResults, key = { it.ip + it.protocol }) { cam ->
+                                    val matched = isQrMatch(cam, qrIdentity)
                                     DiscoveredCameraRow(
                                         camera = cam,
-                                        onSelect = { cameraToVerify = cam }
+                                        isQrMatch = matched,
+                                        onSelect = {
+                                            // Chỉ bổ sung deviceId/manufacturer từ QR khi THẬT SỰ
+                                            // khớp (matched) — tránh gán nhầm danh tính QR của 1
+                                            // camera khác cho camera người dùng vừa chọn.
+                                            cameraToVerify = if (matched) {
+                                                cam.copy(
+                                                    deviceId = cam.deviceId ?: qrIdentity?.deviceId,
+                                                    manufacturer = cam.manufacturer ?: qrIdentity?.vendor
+                                                )
+                                            } else cam
+                                        }
                                     )
                                 }
                             }
@@ -188,9 +227,23 @@ fun CameraDiscoveryDialog(
     )
 }
 
+/**
+ * So khớp deviceId giữa 1 kết quả LAN discovery và qrIdentity — dùng contains(ignoreCase) thay vì
+ * so bằng tuyệt đối, vì 2 nguồn (QR parse heuristic vs ONVIF XAddr/V380 UDP response) có thể biểu
+ * diễn cùng 1 giá trị gốc khác định dạng (hoa/thường, có/không tiền tố). false nếu thiếu 1 trong 2
+ * deviceId — không suy diễn khớp từ dữ liệu rỗng.
+ */
+private fun isQrMatch(camera: DiscoveredCamera, qrIdentity: CameraQrIdentity?): Boolean {
+    val camId = camera.deviceId?.trim()
+    val qrId = qrIdentity?.deviceId?.trim()
+    if (camId.isNullOrBlank() || qrId.isNullOrBlank()) return false
+    return camId.contains(qrId, ignoreCase = true) || qrId.contains(camId, ignoreCase = true)
+}
+
 @Composable
 private fun DiscoveredCameraRow(
     camera: DiscoveredCamera,
+    isQrMatch: Boolean = false,
     onSelect: () -> Unit
 ) {
     Card(shape = RoundedCornerShape(8.dp)) {
@@ -237,6 +290,14 @@ private fun DiscoveredCameraRow(
                 // Column giờ là phần tử DUY NHẤT có weight trong Row (chỉ còn cạnh icon cố định
                 // 56dp), nên luôn được đo đúng, không còn bị bóp bởi bất kỳ text nào khác.
                 Column(modifier = Modifier.weight(1f)) {
+                    if (isQrMatch) {
+                        Text(
+                            "🟢 Khớp mã QR vừa quét",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     Text(camera.ip, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
                     Text(
                         "Đoán: ${camera.manufacturer ?: "?"} — giao thức: ${camera.protocol}",
