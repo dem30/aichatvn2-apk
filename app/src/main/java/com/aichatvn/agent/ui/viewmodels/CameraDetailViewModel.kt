@@ -542,28 +542,49 @@ class CameraDetailViewModel @Inject constructor(
                     return@launch
                 }
                 val port = if (uri.port > 0) uri.port else 80
-                val result = capabilityProber.probe(host, port, cam.snapshotUsername, cam.snapshotPassword)
+                // ✅ SỬA: port đọc từ chính snapshotUrl camera đang dùng (vd 8800 với V380) là
+                // port THẬT của camera — truyền vào knownPort để RTSP/HTTP-snapshot thử đúng port
+                // đó, thay vì bị nhét nhầm vào httpPort (tham số dành riêng cho ONVIF, mặc định 80
+                // — trước đây gây lỗi biên dịch/lệch tham số khi CameraCapabilityProber.probe()
+                // thêm knownPort xen giữa httpPort và username).
+                val result = capabilityProber.probe(
+                    ip = host, knownPort = port,
+                    username = cam.snapshotUsername, password = cam.snapshotPassword
+                )
 
                 val updated = cam.copy(
                     onvifSupported = if (result.onvifSupported) 1 else 0,
                     onvifEventUrl = result.onvifEventUrl,
                     rtspSupported = if (result.rtspSupported) 1 else 0,
-                    rtspUrl = result.rtspUrl
+                    rtspUrl = result.rtspUrl,
+                    // ✅ MỚI: nếu chưa có snapshotUrl xác nhận (URL trống/hỏng) nhưng probe lần
+                    // này tìm được ảnh JPEG thật qua HTTP trên port của camera, tự điền vào —
+                    // KHÔNG ghi đè URL đang hoạt động sẵn, chỉ lấp khi trước đó trống.
+                    snapshoturl = if (cam.snapshoturl.isBlank() && result.snapshotUrl != null)
+                        result.snapshotUrl else cam.snapshoturl
                     // rtspEnabled/onvifEnabled KHÔNG đổi ở đây — probe chỉ cập nhật "có hỗ trợ",
                     // bật thật vẫn qua toggleRtspEnabled() do người dùng tự bấm.
                 )
                 database.cameraDao().updateCamera(updated)
                 loadCamera()
 
-                _probeResult.value = if (result.rtspSupported || result.onvifSupported) {
+                _probeResult.value = if (result.rtspSupported || result.onvifSupported || result.snapshotUrl != null) {
                     "✅ Tìm thấy hỗ trợ: " + listOfNotNull(
                         if (result.rtspSupported) "RTSP" else null,
-                        if (result.onvifSupported) "ONVIF" else null
+                        if (result.onvifSupported) "ONVIF" else null,
+                        // ✅ MỚI: camera vendor riêng (V380...) không hỗ trợ RTSP/ONVIF nhưng vẫn
+                        // có thể có ảnh chụp HTTP thật trên port riêng — báo rõ để người dùng biết
+                        // camera đã dùng được, không chỉ im lặng lưu snapshotUrl.
+                        if (result.snapshotUrl != null) "Ảnh chụp HTTP" else null
                     ).joinToString(", ")
                 } else {
-                    "Không phát hiện RTSP/ONVIF. Kiểm tra máy đang cùng Wi-Fi với camera, hoặc camera đời quá cũ không hỗ trợ."
+                    "Không phát hiện RTSP/ONVIF/ảnh chụp. Kiểm tra máy đang cùng Wi-Fi với camera, hoặc camera đời quá cũ không hỗ trợ."
                 }
-                logger.i("CameraDetailViewModel", "probeCapabilities cameraId=$cameraId rtsp=${result.rtspSupported} onvif=${result.onvifSupported}")
+                logger.i(
+                    "CameraDetailViewModel",
+                    "probeCapabilities cameraId=$cameraId rtsp=${result.rtspSupported} " +
+                        "onvif=${result.onvifSupported} httpSnapshot=${result.snapshotUrl != null}"
+                )
             } catch (e: Exception) {
                 _probeResult.value = "❌ Lỗi kiểm tra: ${e.message}"
                 logger.e("CameraDetailViewModel", "probeCapabilities lỗi: ${e.message}", e)
