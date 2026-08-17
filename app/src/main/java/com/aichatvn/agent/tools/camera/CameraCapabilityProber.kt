@@ -232,11 +232,30 @@ class CameraCapabilityProber @Inject constructor(
                 // chỉ là từ chối vì auth/tham số, không phải "cổng này không phải ONVIF".
                 if (!response.isSuccessful && !body.contains("soap", ignoreCase = true)) return null
 
-                // Trích XAddr của Events service — regex đơn giản, đủ cho probe, không kéo thêm
-                // XML parser dependency chỉ để đọc 1 giá trị.
-                Regex("<tt:Events>.*?<tt:XAddr>(.*?)</tt:XAddr>", RegexOption.DOT_MATCHES_ALL)
+                // ⚠️ SỬA (fix false-positive: V380 Pro và các camera P2P giá rẻ tương tự trả lời
+                // GetCapabilities THÀNH CÔNG nhưng KHÔNG hề có thẻ <tt:Events> nào trong body — vì
+                // firmware không hỗ trợ Events service. Trước đây mọi trường hợp match thất bại
+                // (kể cả không có <tt:Events>) đều fallback về deviceServiceUrl, khiến app lầm
+                // tưởng camera có ONVIF Events và cho phép OnvifEventRelay subscribe vào 1 endpoint
+                // không tồn tại/không hỗ trợ (log lỗi transport dạng EOFException).
+                //
+                // Phân biệt rõ 2 trường hợp:
+                //  (a) Body KHÔNG có thẻ <tt:Events> ở bất kỳ đâu → camera thật sự không hỗ trợ
+                //      Events, trả null ngay, KHÔNG fallback (đây là case V380 Pro).
+                //  (b) Body CÓ thẻ <tt:Events> nhưng regex tách <tt:XAddr> bên trong thất bại
+                //      (định dạng lạ, namespace khác, thứ tự thẻ khác…) → camera có khai báo hỗ
+                //      trợ Events, chỉ là ta không tách được địa chỉ riêng — vẫn fallback về
+                //      deviceServiceUrl như hành vi cũ, vì một số implementation ONVIF rút gọn
+                //      dồn mọi service vào chung 1 endpoint.
+                val hasEventsTag = body.contains("<tt:Events>", ignoreCase = true)
+                val eventsXAddr = Regex("<tt:Events>.*?<tt:XAddr>(.*?)</tt:XAddr>", RegexOption.DOT_MATCHES_ALL)
                     .find(body)?.groupValues?.get(1)
-                    ?: deviceServiceUrl // hỗ trợ ONVIF nhưng không tách được Events service riêng
+
+                when {
+                    eventsXAddr != null -> eventsXAddr
+                    hasEventsTag -> deviceServiceUrl // (b) có khai báo Events nhưng tách XAddr lỗi
+                    else -> null // (a) không hỗ trợ Events — không suy diễn, không fallback
+                }
             }
         } catch (e: Exception) {
             logger.d("CameraCapabilityProber", "tryProbeOnvif($ip) không có ONVIF: ${e.message}")
