@@ -158,17 +158,9 @@ class OnvifEventRelay @Inject constructor(
     // camera cụ thể nào từng gặp lỗi "unexpected end of stream". Chỉ derive readTimeout dài hơn
     // ở đây (qua newBuilder(), vẫn CHIA SẺ ConnectionPool/Dispatcher với client gốc) vì
     // PullMessages là long-poll, cần chờ lâu hơn timeout mặc định của client dùng chung.
-    // ✅ TẠM (debug): log HEADERS thật OkHttp gửi/nhận — so trực tiếp với curl đã xác nhận
-    // camera chấp nhận, để tìm khác biệt tầng thấp mà so từng header thủ công không ra được
-    // (Content-Length cố định vs chunked, thứ tự header, User-Agent...). Gỡ interceptor này sau
-    // khi tìm ra nguyên nhân, không để lại trong bản release (log Basic Auth ra Logcat).
     private val httpClient: OkHttpClient = cameraLanHttpClient
         .newBuilder()
         .readTimeout((PULL_TIMEOUT_SECONDS + 10).toLong(), TimeUnit.SECONDS)
-        .addNetworkInterceptor(
-            okhttp3.logging.HttpLoggingInterceptor { message -> logger.d(TAG, "🔬 OkHttp: $message") }
-                .apply { level = okhttp3.logging.HttpLoggingInterceptor.Level.HEADERS }
-        )
         .build()
 
     // cameraId -> Job đang chạy vòng lặp subscribe+pull cho camera đó.
@@ -392,6 +384,27 @@ class OnvifEventRelay @Inject constructor(
         """.trimIndent()
 
     /** Trả về địa chỉ PullPoint (SubscriptionReference/Address) nếu subscribe thành công. */
+    /**
+     * ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay giữa chu kỳ Pull,
+     * đúng lúc có chuyển động vật lý) — trước đây không khai báo InitialTerminationTime, để camera
+     * tự chọn mặc định. Nhiều camera ONVIF giá rẻ đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ
+     * RESUBSCRIBE_AFTER_N_PULLS ~25s ở tốc độ hiện tại), khiến subscription chết yểu giữa chừng
+     * trước khi app kịp chủ động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì
+     * subscription không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
+     * — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp trần thấp
+     * hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im lặng phó mặc hoàn toàn
+     * cho mặc định của camera như trước.
+     *
+     * ✅ SỬA (debug case thật: EOFException "unexpected end of stream" trên camera hsoap/2.8 — so
+     * curl -v thủ công (742 bytes, 200 OK) với log OkHttp thật qua HttpLoggingInterceptor
+     * (Content-Length: 2078-2080, luôn lỗi) xác nhận: nguyên nhân là đoạn comment XML `<!-- -->`
+     * giải thích dài (tiếng Việt, có dấu, emoji) TRƯỚC ĐÂY nằm ngay trong chuỗi body — bị gửi
+     * NGUYÊN VĂN lên camera vì nó ở trong Kotlin triple-quote string, không phải Kotlin comment.
+     * hsoap/2.8 (SOAP stack nhúng đời cũ) không chịu nổi body dài bất thường/ký tự UTF-8 đa byte
+     * trong comment XML, đóng socket giữa chừng. Chuyển toàn bộ giải thích ra KDoc Kotlin bên
+     * ngoài (không gửi lên mạng) — body thật gửi đi giờ gọn, khớp đúng cấu trúc bản curl đã xác
+     * nhận camera chấp nhận.
+     */
     private suspend fun subscribe(eventsUrl: String, username: String?, password: String?): String? =
         withContext(Dispatchers.IO) {
             val body = """
@@ -404,16 +417,6 @@ class OnvifEventRelay @Inject constructor(
                       to = eventsUrl
                   )}
                   <s:Body>
-                    <!-- ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay
-                    giữa chu kỳ Pull, đúng lúc có chuyển động vật lý) — trước đây không khai báo
-                    InitialTerminationTime, để camera tự chọn mặc định. Nhiều camera ONVIF giá rẻ
-                    đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ RESUBSCRIBE_AFTER_N_PULLS ~25s ở
-                    tốc độ hiện tại), khiến subscription chết yểu giữa chừng trước khi app kịp chủ
-                    động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì subscription
-                    không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
-                    — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp
-                    trần thấp hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im
-                    lặng phó mặc hoàn toàn cho mặc định của camera như trước. -->
                     <tev:CreatePullPointSubscription>
                       <tev:InitialTerminationTime>PT5M</tev:InitialTerminationTime>
                     </tev:CreatePullPointSubscription>
