@@ -325,13 +325,38 @@ class OnvifEventRelay @Inject constructor(
         }
     }
 
+    /**
+     * ✅ MỚI (sửa theo đúng chuẩn ONVIF, không vá riêng theo camera này — phân tích SOAP Fault
+     * xác nhận: request thiếu WS-Addressing Header là nguyên nhân, ONVIF spec + trace chính thức
+     * đều yêu cầu wsa:Action + wsa:To trên MỌI request tới EventPortType/PullPointSubscription,
+     * không riêng gì CreatePullPointSubscription). Trước đây toàn bộ SOAP Body trong file này chỉ
+     * có <s:Body>, KHÔNG có <s:Header> nào — nhiều camera (đặc biệt OEM giá rẻ, ONVIF Events
+     * implementation không đầy đủ như case /event_service/xx đang gặp) từ chối thẳng bằng 400 nếu
+     * thiếu 2 field bắt buộc này. Thêm cả wsa:MessageID (khuyến nghị đi kèm theo WS-Addressing,
+     * một số implementation strict đòi luôn cả 3) — UUID ngẫu nhiên mỗi request, không cần theo
+     * dõi/đối chiếu lại nên không cần lưu trạng thái gì thêm.
+     */
+    private fun wsAddressingHeader(action: String, to: String): String =
+        """
+          <s:Header>
+            <wsa:Action s:mustUnderstand="1">$action</wsa:Action>
+            <wsa:To s:mustUnderstand="1">$to</wsa:To>
+            <wsa:MessageID>urn:uuid:${java.util.UUID.randomUUID()}</wsa:MessageID>
+          </s:Header>
+        """.trimIndent()
+
     /** Trả về địa chỉ PullPoint (SubscriptionReference/Address) nếu subscribe thành công. */
     private suspend fun subscribe(eventsUrl: String, username: String?, password: String?): String? =
         withContext(Dispatchers.IO) {
             val body = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                            xmlns:wsa="http://www.w3.org/2005/08/addressing"
                             xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
+                  ${wsAddressingHeader(
+                      action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest",
+                      to = eventsUrl
+                  )}
                   <s:Body>
                     <tev:CreatePullPointSubscription/>
                   </s:Body>
@@ -363,7 +388,12 @@ class OnvifEventRelay @Inject constructor(
             val body = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                            xmlns:wsa="http://www.w3.org/2005/08/addressing"
                             xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
+                  ${wsAddressingHeader(
+                      action = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest",
+                      to = pullPointUrl
+                  )}
                   <s:Body>
                     <tev:PullMessages>
                       <tev:Timeout>PT${PULL_TIMEOUT_SECONDS}S</tev:Timeout>
@@ -411,7 +441,12 @@ class OnvifEventRelay @Inject constructor(
             try {
                 val body = """
                     <?xml version="1.0" encoding="UTF-8"?>
-                    <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+                    <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                                xmlns:wsa="http://www.w3.org/2005/08/addressing">
+                      ${wsAddressingHeader(
+                          action = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest",
+                          to = pullPointUrl
+                      )}
                       <s:Body>
                         <Unsubscribe xmlns="http://docs.oasis-open.org/wsn/b-2"/>
                       </s:Body>
@@ -441,18 +476,14 @@ class OnvifEventRelay @Inject constructor(
             httpClient.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string()
                 if (!response.isSuccessful) {
-                    // ✅ SỬA (debug case thật: 2 lần dán log 400 liên tiếp đều bị cắt đứt ngay sau
-                    // phần khai báo xmlns, CHƯA BAO GIỜ tới được lý do lỗi thật) — take(300) trước
-                    // đây quá ngắn: SOAP Fault chuẩn luôn có 1 khối xmlns dài ở s:Envelope trước
-                    // khi tới s:Reason/s:Text (lý do thật), 300 ký tự gần như chắc chắn chưa ra
-                    // khỏi phần namespace. Trích thẳng Fault Code + Reason bằng regex (đủ cho debug,
-                    // không kéo XML parser đầy đủ — cùng tinh thần best-effort với các chỗ khác
-                    // trong file) thay vì cắt mù theo độ dài; nếu không tách được (SOAP Fault không
-                    // theo cấu trúc chuẩn, hoặc body không phải XML) mới rơi về cắt thô, và tăng
-                    // ngưỡng cắt thô lên 1200 (đủ dư so với 300 cũ) để còn cơ hội thấy phần thân.
-                    val faultSummary = extractSoapFaultSummary(text)
-                        ?: text?.take(1200) ?: "(rỗng)"
-                    logger.w(TAG, "SOAP $url trả HTTP ${response.code}: $faultSummary")
+                    // ✅ SỬA (góp ý xác đáng: regex trích Fault Code/Reason trước đây quá lỏng —
+                    // ONVIF payload có rất nhiều thẻ <Value>/SimpleItem khác, dễ bắt nhầm node
+                    // không phải Fault, khiến log sai lệch còn nguy hiểm hơn không log gì. Bỏ đoán
+                    // mò bằng regex, log THẲNG phần thân — tăng ngưỡng lên 5000 ký tự (đủ chứa
+                    // trọn <s:Fault>...<s:Reason>...<s:Text> thật trong hầu hết trường hợp, so với
+                    // 300 cũ chỉ đủ hết phần khai báo xmlns) để tự đọc được nguyên văn lý do camera
+                    // từ chối, thay vì suy luận qua 1-2 từ khoá trích được.
+                    logger.w(TAG, "SOAP $url trả HTTP ${response.code}: ${text?.take(5000) ?: "(rỗng)"}")
                     return null
                 }
                 if (text.isNullOrBlank()) {
@@ -465,24 +496,6 @@ class OnvifEventRelay @Inject constructor(
             logger.w(TAG, "SOAP request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
             null
         }
-    }
-
-    /**
-     * ✅ MỚI: trích Fault Code + Reason từ SOAP Fault (hỗ trợ cả SOAP 1.2 "<s:Reason><s:Text>...
-     * </s:Text></s:Reason>" lẫn SOAP 1.1 "<faultstring>...</faultstring>", vì tuỳ camera trả 1
-     * trong 2 dạng). Trả null nếu không khớp được cấu trúc nào (soapPost() tự rơi về cắt thô khi
-     * đó) — regex lỏng, đủ cho debug, cùng tinh thần best-effort với các chỗ khác trong file.
-     */
-    private fun extractSoapFaultSummary(body: String?): String? {
-        if (body.isNullOrBlank()) return null
-        val reason = Regex("<(?:\\w+:)?Text[^>]*>(.*?)</(?:\\w+:)?Text>", RegexOption.DOT_MATCHES_ALL)
-            .find(body)?.groupValues?.get(1)?.trim()
-            ?: Regex("<(?:\\w+:)?faultstring[^>]*>(.*?)</(?:\\w+:)?faultstring>", RegexOption.DOT_MATCHES_ALL)
-                .find(body)?.groupValues?.get(1)?.trim()
-        val code = Regex("<(?:\\w+:)?Value[^>]*>(.*?)</(?:\\w+:)?Value>", RegexOption.DOT_MATCHES_ALL)
-            .find(body)?.groupValues?.get(1)?.trim()
-        if (reason == null && code == null) return null
-        return listOfNotNull(code?.let { "code=$it" }, reason?.let { "reason=$it" }).joinToString(", ")
     }
 
     /**
