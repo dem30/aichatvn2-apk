@@ -413,6 +413,7 @@ class OnvifEventRelay @Inject constructor(
                 </s:Envelope>
             """.trimIndent()
 
+            logger.d(TAG, "📤 ONVIF Subscribe → $eventsUrl")
             val response = soapPost(eventsUrl, body, username, password) ?: return@withContext null
             // Namespace prefix của thẻ Address thay đổi tuỳ hãng (wsa:Address, đôi khi không có
             // prefix) — regex lỏng, đủ dùng cho probe/subscribe, không kéo XML parser đầy đủ,
@@ -532,6 +533,7 @@ class OnvifEventRelay @Inject constructor(
                       </s:Body>
                     </s:Envelope>
                 """.trimIndent()
+                logger.d(TAG, "📤 ONVIF Unsubscribe → $pullPointUrl")
                 soapPost(pullPointUrl, body, username, password)
             } catch (e: Exception) {
                 logger.d(TAG, "Unsubscribe ONVIF thất bại (bỏ qua, không quan trọng): ${e.message}")
@@ -630,8 +632,22 @@ class OnvifEventRelay @Inject constructor(
             // Mọi IOException transport khác (EOFException, SocketException reset/broken pipe,
             // ProtocolException...) coi là RETRYABLE — dấu hiệu chung của 1 connection vừa bị phía
             // camera đóng, không phân biệt theo message cụ thể (xem giải thích ở soapPost()).
-            logger.w(TAG, "SOAP request tới $url lỗi transport (${e.javaClass.simpleName}): ${e.message}")
-            SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, e.javaClass.simpleName)
+            val cause = e.cause
+            val detail = buildString {
+                append(e.javaClass.name)
+                append(": ")
+                append(e.message ?: "(không có message)")
+
+                if (cause != null) {
+                    append(" | cause=")
+                    append(cause.javaClass.name)
+                    append(": ")
+                    append(cause.message ?: "(không có message)")
+                }
+            }
+
+            logger.w(TAG, "❌ SOAP request tới $url lỗi transport: $detail")
+            SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, detail)
         } catch (e: Exception) {
             logger.w(TAG, "SOAP request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
             SoapPostResult(SoapPostOutcome.FAIL, null)
