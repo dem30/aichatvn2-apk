@@ -14,6 +14,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -72,12 +73,31 @@ fun CameraLiveViewScreen(
             val mediaSource = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
                 .setTimeoutMs(8_000)
+                // ✅ MỚI: bật log chi tiết SETUP/DESCRIBE/track parsing ra logcat (tag
+                // RtspClient/ExoPlayer) — không hiện trong màn "System Logs" của app (đó là
+                // Logger riêng của app, ExoPlayer log thẳng ra android.util.Log/logcat) nên cần
+                // xem qua `adb logcat` khi cần soi kỹ nếu bước tắt audio bên dưới không đủ.
+                .setDebugLoggingEnabled(true)
                 .createMediaSource(MediaItem.fromUri(s.rtspUrl))
             val exo = ExoPlayer.Builder(context).build().apply {
                 setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = true
             }
+            // ⚠️ SỬA (đứng hình ở frame đầu, không lỗi, không timeout): sau khi ép TCP mà vẫn
+            // đứng ở 00:00 không decode được, đây là 1 bug KHÁC — đã có ghi nhận công khai ở
+            // chính tracker androidx/media (issue #893 "freezes on first frame when audio is
+            // added", issue #2138 "First Frame Freeze" — cả 2 đều VẪN ĐANG MỞ, chưa có fix chính
+            // thức). module media3-exoplayer-rtsp còn @UnstableApi, hay xung khắc với audio track
+            // (thường G711) của các đầu ghi/camera giá rẻ kiểu Hikvision-clone (path
+            // /Streaming/Channels/101 rất đặc trưng dạng này) — dù FFmpeg/VLC decode bình thường
+            // (RtspFrameGrabber của chính app này đã CHỨNG MINH decode được ảnh thật từ đúng
+            // stream này). Tắt hẳn audio track — chỉ cần xem hình, không cần nghe — để loại khả
+            // năng phổ biến nhất gây đứng hình này trước khi nghi ngờ tới codec video.
+            exo.trackSelectionParameters = exo.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+                .build()
             listener = object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
                     playbackError = "Không phát được RTSP: ${error.errorCodeName} — ${error.message}"
