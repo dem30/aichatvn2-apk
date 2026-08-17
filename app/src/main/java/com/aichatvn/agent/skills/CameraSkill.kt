@@ -270,7 +270,10 @@ PluginAction(
     // hợp lệ trong URI) trước khi thấy CameraCapabilityProber đã có tiền lệ dùng Uri.encode() cho
     // đúng mục đích này — đổi theo để nhất quán 1 kiểu encode cho mọi rtspUrl trong app, tránh 2
     // nơi build URL theo 2 cách khác nhau gây lệch khi debug.
-    private fun buildRtspUrlWithCredentials(rtspUrl: String, username: String?, password: String?): String {
+    // ⚠️ SỬA: bỏ `private` — CameraLiveViewViewModel giờ cần dùng ĐÚNG hàm này để nhúng
+    // username/password vào rtspUrl trước khi đưa cho ExoPlayer (nhánh audio-only), tránh viết
+    // lại logic ghép credentials lần thứ 2 (dễ lệch cách encode với nhánh RtspFrameGrabber ở trên).
+    fun buildRtspUrlWithCredentials(rtspUrl: String, username: String?, password: String?): String {
         val trimmed = rtspUrl.trim()
         if (username.isNullOrBlank() || trimmed.substringAfter("://", "").contains("@")) {
             return trimmed

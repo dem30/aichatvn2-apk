@@ -1,8 +1,13 @@
 package com.aichatvn.agent.ui.viewmodels
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import com.aichatvn.agent.config.AppConfigDefaults
 import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
@@ -10,6 +15,7 @@ import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,7 +49,8 @@ class CameraLiveViewViewModel @Inject constructor(
     private val database: AppDatabase,
     private val cameraSkill: CameraSkill,
     private val configProvider: AppConfigProvider,
-    private val logger: Logger
+    private val logger: Logger,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     val cameraId: String = (savedStateHandle.get<String>("cameraId") ?: "").trim()
@@ -77,6 +84,17 @@ class CameraLiveViewViewModel @Inject constructor(
 
     private var framePollingJob: Job? = null
 
+    // ✅ MỚI: kênh AUDIO riêng cho Live View, chạy song song với video-polling ở trên (2 kênh độc
+    // lập, không đợi nhau). Dùng ExoPlayer nhưng CHỈ bật track audio, tắt hẳn track video — né
+    // đúng bug "đứng hình ở frame đầu" (issue #893/#2138 androidx/media) vì bug đó chỉ xảy ra khi
+    // ExoPlayer cố DECODE VIDEO qua RtspMediaSource với SDP lệch chuẩn của các camera/NVR giá rẻ;
+    // audio (thường G711, đơn giản hơn nhiều) không đụng tới nhánh decode video bị lỗi đó. Không
+    // cần media3-ui/PlayerView vì không render hình gì từ player này, chỉ cần âm thanh phát ra loa.
+    private var audioPlayer: ExoPlayer? = null
+
+    private val _isAudioMuted = MutableStateFlow(false)
+    val isAudioMuted: StateFlow<Boolean> = _isAudioMuted.asStateFlow()
+
     // ✅ MỚI: mã Camera Node ở nhà, đọc sẵn cho màn hình dùng khi bấm "Gọi xem qua Camera Node" —
     // xem ghi chú đầy đủ ở callHomeCameraNode() bên dưới về LÝ DO ViewModel này
     // KHÔNG tự gọi CallSkill.execute("start_call", ...) hay tự navController.navigate(...).
@@ -97,8 +115,45 @@ class CameraLiveViewViewModel @Inject constructor(
             val readyState = _state.value
             if (readyState is LiveViewState.Ready) {
                 startFramePolling(readyState.rtspUrl, cam?.snapshotUsername, cam?.snapshotPassword)
+                startAudioPlayback(readyState.rtspUrl, cam?.snapshotUsername, cam?.snapshotPassword)
             }
         }
+    }
+
+    /**
+     * ✅ MỚI: dựng ExoPlayer riêng cho audio, tắt hẳn track video qua trackSelectionParameters
+     * (giống hệt cách trước đây đã tắt AUDIO để né bug, giờ đảo ngược lại: tắt VIDEO, giữ AUDIO).
+     * setForceUseRtpTcp(true) giữ nguyên như bản video cũ (fix NAT/UDP đã xác nhận có tác dụng).
+     * Credentials phải nhúng thẳng vào URL (rtsp://user:pass@host/...) — RTSP không có auth header
+     * tách rời — dùng LẠI đúng CameraSkill.buildRtspUrlWithCredentials() để không lệch cách encode
+     * với nhánh RtspFrameGrabber (video) đang dùng.
+     */
+    private fun startAudioPlayback(rtspUrl: String, username: String?, password: String?) {
+        stopAudioPlayback()
+        val credentialedUrl = cameraSkill.buildRtspUrlWithCredentials(rtspUrl, username, password)
+        val player = ExoPlayer.Builder(appContext).build()
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build()
+        val mediaSource = RtspMediaSource.Factory()
+            .setForceUseRtpTcp(true)
+            .createMediaSource(MediaItem.fromUri(credentialedUrl))
+        player.setMediaSource(mediaSource)
+        player.volume = if (_isAudioMuted.value) 0f else 1f
+        player.playWhenReady = true
+        player.prepare()
+        audioPlayer = player
+    }
+
+    private fun stopAudioPlayback() {
+        audioPlayer?.release()
+        audioPlayer = null
+    }
+
+    fun toggleMute() {
+        _isAudioMuted.value = !_isAudioMuted.value
+        audioPlayer?.volume = if (_isAudioMuted.value) 0f else 1f
     }
 
     /**
@@ -134,6 +189,7 @@ class CameraLiveViewViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopFramePolling()
+        stopAudioPlayback()
     }
 
     /**

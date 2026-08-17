@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -55,6 +57,9 @@ fun CameraLiveViewScreen(
     val actionMessage by viewModel.actionMessage.collectAsState()
     val liveFrame by viewModel.liveFrame.collectAsState()
     val liveFrameError by viewModel.liveFrameError.collectAsState()
+    // ✅ MỚI: trạng thái tắt/bật âm thanh của kênh audio-only ExoPlayer (song song với video
+    // polling ảnh) — xem CameraLiveViewViewModel.startAudioPlayback()/toggleMute().
+    val isAudioMuted by viewModel.isAudioMuted.collectAsState()
 
     LaunchedEffect(actionMessage) {
         if (actionMessage != null) {
@@ -70,6 +75,18 @@ fun CameraLiveViewScreen(
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
+                    }
+                },
+                actions = {
+                    // ✅ MỚI: chỉ hiện khi đã Ready (có kênh audio đang chạy) — Loading/NotAvailable/
+                    // OutOfHomeLan không có audioPlayer nào đang phát.
+                    if (state is LiveViewState.Ready) {
+                        IconButton(onClick = { viewModel.toggleMute() }) {
+                            Icon(
+                                imageVector = if (isAudioMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                contentDescription = if (isAudioMuted) "Bật âm thanh" else "Tắt âm thanh"
+                            )
+                        }
                     }
                 }
             )
@@ -186,4 +203,3 @@ fun CameraLiveViewScreen(
         }
     }
 }
-
