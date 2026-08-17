@@ -1,7 +1,6 @@
 package com.aichatvn.agent.skills
 
 import com.aichatvn.agent.config.AppConfigDefaults
-import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.CameraConfigEntity
 import com.aichatvn.agent.utils.Logger
@@ -33,9 +32,29 @@ import javax.inject.Singleton
  * không có gì vượt NAT khi điện thoại ra khỏi nhà (khác hẳn Tuya, luôn có Cloud API để rơi
  * xuống, hay video RTSP đi qua P2P WebRTC).
  *
- * Cách vá: ĐÚNG mẫu đã dùng cho Tuya khi Local-only bật (xem DeviceCommandGatewayClient.kt) — 1
- * máy CỐ ĐỊNH ở nhà, đặt deviceRole = "camera_node" (Cài đặt), tự subscribe ONVIF cục bộ (nó
- * LUÔN ở trong LAN nên gọi bình thường), rồi mỗi khi có sự kiện chuyển động, RELAY qua Gateway.
+ * ✅ SỬA (góp ý user, đã xác nhận đúng): trước đây gate bằng deviceRole == "camera_node" (vai trò
+ * TĨNH gán tay 1 lần trong Settings) — sai bản chất, vì server (/household/event) và
+ * HouseholdEventPublisher.kt đều KHÔNG phân biệt vai trò máy gửi (comment gốc app.py: "Publisher
+ * có thể là BẤT KỲ máy nào... endpoint này không phân biệt vai trò máy gửi"). deviceRole vốn
+ * được thiết kế cho mục đích KHÁC hẳn (startDeviceCommandSSE() — nhận LỆNH điều khiển thiết bị
+ * khi Client ở ngoài LAN, xem AppConfigDefaults.DEVICE_ROLE) — OnvifEventRelay chỉ MƯỢN TẠM biến
+ * này làm proxy cho điều kiện thực sự cần: "điện thoại có đang cùng LAN với CAMERA ĐÓ không".
+ * Hệ quả sai thực tế: máy Client đang ở nhà, cùng Wi-Fi với camera, ONVIF hoàn toàn subscribe
+ * được — nhưng bị khoá hoàn toàn chỉ vì chưa gán deviceRole = camera_node.
+ *
+ * Sửa: bỏ gate deviceRole, thay bằng kiểm tra ĐỘNG theo TỪNG CAMERA — dùng
+ * NetworkContext.isOnSavedSubnet(host trích từ onvifEventUrl) để biết chính điện thoại này có
+ * đang cùng subnet Wi-Fi với camera đó không, đúng bản chất kỹ thuật thực sự cần (không phải vai
+ * trò gán tay). Máy nào cùng LAN với camera nào thì subscribe camera đó — không cần biết trước
+ * ai là "camera_node".
+ *
+ * ⚠️ ĐÁNH ĐỔI CHẤP NHẬN ĐƯỢC (đã thảo luận với user, chọn phương án đơn giản): nếu NHIỀU máy
+ * cùng ở nhà (cùng LAN) đồng thời mở app, TẤT CẢ đều sẽ subscribe cùng 1 camera song song — tốn
+ * nhiều ONVIF subscription hơn cần thiết tới cùng 1 camera (một số camera giá rẻ giới hạn số
+ * subscription đồng thời thấp). KHÔNG dùng cơ chế Election như track MQTT Embedded Broker
+ * (MqttBrokerElectionManager) — chỉ 1 máy làm broker — vì phức tạp không cần thiết cho use case
+ * này; server-side dedup (household_event(), lớp 2 flood-window) đã đủ chặn việc noti bị gửi
+ * trùng, nhược điểm chỉ là hao phí subscription phía camera, không phải lỗi chức năng.
  *
  * ✅ CẬP NHẬT (Household Event Broadcast): relay giờ đi qua [HouseholdEventPublisher] —
  * POST /household/event chung với mọi loại household event khác (Tuya đổi trạng thái...) —
@@ -58,39 +77,45 @@ import javax.inject.Singleton
  *      - onvifEnabled == 1        (người dùng đã bật Switch ONVIF)
  *      - onvifEventUrl không rỗng (đã probe ra Events service — xem CameraCapabilityProber)
  *      - enableAlarmPush == 0     (camera CHƯA dùng đường "Báo động" gốc qua push URL riêng)
+ *      - networkContext.isOnSavedSubnet(host của camera) == true (chính máy này đang cùng LAN
+ *        với camera đó — điều kiện MỚI thay cho deviceRole, xem giải thích ở trên)
  *    2 đường (push gốc vs ONVIF relay) cùng mục đích "nhắc quét sớm" — bật cả 2 cho cùng 1
  *    camera khiến scan() bị gọi 2 lần cho cùng 1 lần chuyển động thật. Nếu người dùng lỡ bật cả
  *    2, ONVIF nhường cho đường push gốc (rẻ hơn: camera tự đẩy, không tốn 1 subscription +
  *    coroutine sống 24/7 trên Camera Node).
- * 2) Mỗi cameraId chỉ giữ ĐÚNG 1 Job đang chạy, quản lý qua [activeJobs] — trước khi tạo Job mới
- *    (cấu hình đổi, hoặc vòng reconcile định kỳ phát hiện camera vẫn hợp lệ) luôn hủy Job cũ
- *    trước, không bao giờ để 2 Job cùng chạy song song cho 1 camera.
+ * 2) Mỗi cameraId chỉ giữ ĐÚNG 1 Job đang chạy TRÊN MỖI MÁY, quản lý qua [activeJobs] — trước khi
+ *    tạo Job mới (cấu hình đổi, hoặc vòng reconcile định kỳ phát hiện camera vẫn hợp lệ) luôn hủy
+ *    Job cũ trước, không bao giờ để 2 Job cùng chạy song song cho 1 camera TRÊN CÙNG 1 MÁY (nhiều
+ *    máy khác nhau cùng subscribe 1 camera là đánh đổi đã chấp nhận ở trên, không phải bug).
  * 3) Server-side (lớp phòng vệ cuối): POST /household/event dùng dedup 2 lớp CHUNG cho mọi
  *    event (eventId chính xác + flood window 10s theo (household_id, type, source_device_id),
  *    chỉ áp dụng cho camera_alarm) — dù lỡ có bug khiến push gốc VÀ ONVIF relay cùng bắn cho 1
- *    camera trong 10s, gateway cũng chỉ forward 1 lần.
+ *    camera trong 10s (hoặc nhiều máy cùng LAN cùng relay), gateway cũng chỉ forward 1 lần.
  */
 @Singleton
 class OnvifEventRelay @Inject constructor(
     private val database: AppDatabase,
-    private val configProvider: AppConfigProvider,
     private val callSkill: CallSkill,
     // ✅ MỚI (Household Event Broadcast): nguồn DUY NHẤT gửi event ra Gateway giờ là
     // HouseholdEventPublisher — không còn tự build JSON POST /camera/onvif_event nữa (route
     // đó đã bị xoá ở app.py, thay bằng /household/event dùng chung cho mọi loại event).
     private val householdEventPublisher: HouseholdEventPublisher,
+    // ✅ MỚI: thay cho gate deviceRole == "camera_node" — kiểm tra ĐỘNG chính máy này có đang
+    // cùng LAN Wi-Fi với 1 camera cụ thể không, đúng bản chất kỹ thuật cần cho ONVIF subscribe.
+    private val networkContext: com.aichatvn.agent.utils.NetworkContext,
     private val logger: Logger,
 ) {
     companion object {
         private const val TAG = "OnvifEventRelay"
 
         // Chu kỳ soát lại danh sách camera đủ điều kiện — đủ ngắn để phản ứng nhanh khi người
-        // dùng vừa bật/tắt Switch ONVIF hay đổi enableAlarmPush, không cần tức thời như SSE.
+        // dùng vừa bật/tắt Switch ONVIF hay đổi enableAlarmPush, hoặc điện thoại vừa đổi mạng
+        // Wi-Fi (rời/vào LAN nhà) — không cần tức thời như SSE.
         private const val RECONCILE_INTERVAL_MS = 20_000L
 
         // Timeout PullMessages phía server ONVIF — long-poll kiểu chờ tới khi có sự kiện hoặc
         // hết thời gian này. Không đặt quá dài để vòng lặp còn dịp kiểm tra lại điều kiện kích
-        // hoạt (camera có thể vừa bị tắt Switch giữa chừng).
+        // hoạt (camera có thể vừa bị tắt Switch giữa chừng, hoặc máy vừa rời khỏi Wi-Fi nhà).
         private const val PULL_TIMEOUT_SECONDS = 20
         private const val PULL_MESSAGE_LIMIT = 10
 
@@ -136,21 +161,15 @@ class OnvifEventRelay @Inject constructor(
     }
 
     private suspend fun reconcileOnce() {
-        val deviceRole = configProvider.getString(AppConfigDefaults.DEVICE_ROLE, "client").trim()
-        if (deviceRole != "camera_node") {
-            // Máy "client": không phải Camera Node, không được subscribe ONVIF hộ ai cả — hủy
-            // sạch mọi Job đang chạy (trường hợp người dùng vừa đổi vai trò máy từ camera_node
-            // sang client) rồi đứng chờ.
-            cancelAllJobs()
-            return
-        }
-
+        // ✅ SỬA: bỏ gate deviceRole == "camera_node" — không còn quan tâm vai trò máy gán tay,
+        // chỉ cần biết máy này CÓ đang cùng LAN với TỪNG camera cụ thể không (kiểm tra trong
+        // isEligibleForOnvifRelay() dưới, theo IP thật của camera đó, không phải 1 cờ chung).
         val cameras = withContext(Dispatchers.IO) { database.cameraDao().getAllCameras() }
         val eligible = cameras.filter { isEligibleForOnvifRelay(it) }
         val eligibleIds = eligible.map { it.id.trim() }.toSet()
 
-        // Hủy Job của camera không còn đủ điều kiện nữa (bị xoá, tắt Switch ONVIF, hoặc vừa bật
-        // enableAlarmPush — xem isEligibleForOnvifRelay()).
+        // Hủy Job của camera không còn đủ điều kiện nữa (bị xoá, tắt Switch ONVIF, vừa bật
+        // enableAlarmPush, hoặc máy vừa rời khỏi LAN của camera đó — xem isEligibleForOnvifRelay()).
         for (cameraId in activeJobs.keys.toList()) {
             if (cameraId !in eligibleIds) {
                 cancelJob(cameraId, "không còn đủ điều kiện relay ONVIF")
@@ -183,10 +202,16 @@ class OnvifEventRelay @Inject constructor(
     /**
      * ⚠️ ĐIỀU KIỆN KÍCH HOẠT — xem giải thích đầy đủ ở KDoc đầu file. Đây là lớp chặn double-
      * trigger QUAN TRỌNG NHẤT: enableAlarmPush == 1 luôn thắng, ONVIF relay nhường.
+     *
+     * ✅ SỬA: thay điều kiện deviceRole == "camera_node" (vai trò gán tay, sai bản chất) bằng
+     * kiểm tra ĐỘNG "chính máy này có đang cùng LAN Wi-Fi với camera CỤ THỂ này không" — trích IP
+     * camera từ host của onvifEventUrl (URL Events service thật đã probe được, đảm bảo đúng host
+     * cần subscribe tới, khác snapshoturl có thể trỏ qua field khác/URL dự phòng cloud).
      */
     private fun isEligibleForOnvifRelay(camera: CameraConfigEntity): Boolean {
         if (camera.onvifEnabled != 1) return false
-        if (camera.onvifEventUrl.isNullOrBlank()) return false
+        val eventsUrl = camera.onvifEventUrl
+        if (eventsUrl.isNullOrBlank()) return false
         if (camera.enableAlarmPush == 1) {
             logger.d(
                 TAG,
@@ -196,17 +221,23 @@ class OnvifEventRelay @Inject constructor(
             )
             return false
         }
+
+        val cameraHost = runCatching { java.net.URI(eventsUrl).host }.getOrNull()
+        if (cameraHost.isNullOrBlank()) {
+            logger.w(TAG, "Camera ${camera.id.trim()}: không trích được host từ onvifEventUrl='$eventsUrl', bỏ qua relay.")
+            return false
+        }
+        if (!networkContext.isOnSavedSubnet(cameraHost)) {
+            // Bình thường, không phải lỗi — điện thoại đang ở mạng khác (ngoài LAN nhà, hoặc
+            // đang dùng data di động). reconcileOnce() sẽ tự phát hiện lại khi máy quay về LAN
+            // của camera này (chu kỳ RECONCILE_INTERVAL_MS).
+            return false
+        }
         return true
     }
 
     private fun fingerprintOf(camera: CameraConfigEntity): String =
         "${camera.onvifEventUrl}|${camera.snapshotUsername}|${camera.snapshotPassword}"
-
-    private fun cancelAllJobs() {
-        for (cameraId in activeJobs.keys.toList()) {
-            cancelJob(cameraId, "deviceRole không còn là camera_node")
-        }
-    }
 
     private fun cancelJob(cameraId: String, reason: String) {
         activeJobs.remove(cameraId)?.cancel()
