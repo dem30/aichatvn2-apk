@@ -209,7 +209,11 @@ class CameraCapabilityProber @Inject constructor(
      */
     private fun tryProbeOnvifOnPort(ip: String, port: Int): String? {
         val deviceServiceUrl = "http://$ip:$port/onvif/device_service"
-        val soapBody = """
+        val soapAction = "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
+
+        // SOAP 1.2 là ưu tiên vì đây là version ONVIF hiện đại và tương thích tốt
+        // với các camera Hikvision/Dahua đang chạy ổn trong app.
+        val soap12Body = """
             <?xml version="1.0" encoding="UTF-8"?>
             <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
               <s:Body>
@@ -220,46 +224,104 @@ class CameraCapabilityProber @Inject constructor(
             </s:Envelope>
         """.trimIndent()
 
-        return try {
-            val request = Request.Builder()
-                .url(deviceServiceUrl)
-                .post(soapBody.toRequestBody("application/soap+xml; charset=utf-8".toMediaType()))
-                .build()
+        // Một số firmware OEM giá rẻ chỉ hiểu SOAP 1.1. Vì vậy GetCapabilities
+        // cũng phải có cùng chiến lược fallback như OnvifEventRelay:
+        // SOAP 1.2 -> SOAP 1.1.
+        val soap11Body = soap12Body.replace(
+            "http://www.w3.org/2003/05/soap-envelope",
+            "http://schemas.xmlsoap.org/soap/envelope/"
+        )
 
-            onvifClient.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: return null
-                // SOAP Fault vẫn coi là "có ONVIF" — server đã hiểu & phản hồi đúng giao thức,
-                // chỉ là từ chối vì auth/tham số, không phải "cổng này không phải ONVIF".
-                if (!response.isSuccessful && !body.contains("soap", ignoreCase = true)) return null
+        fun probe(
+            body: String,
+            contentType: String,
+            soapActionHeader: Boolean
+        ): String? {
+            return try {
+                val builder = Request.Builder()
+                    .url(deviceServiceUrl)
+                    .post(body.toRequestBody(contentType.toMediaType()))
 
-                // ⚠️ SỬA (fix false-positive: V380 Pro và các camera P2P giá rẻ tương tự trả lời
-                // GetCapabilities THÀNH CÔNG nhưng KHÔNG hề có thẻ <tt:Events> nào trong body — vì
-                // firmware không hỗ trợ Events service. Trước đây mọi trường hợp match thất bại
-                // (kể cả không có <tt:Events>) đều fallback về deviceServiceUrl, khiến app lầm
-                // tưởng camera có ONVIF Events và cho phép OnvifEventRelay subscribe vào 1 endpoint
-                // không tồn tại/không hỗ trợ (log lỗi transport dạng EOFException).
-                //
-                // Phân biệt rõ 2 trường hợp:
-                //  (a) Body KHÔNG có thẻ <tt:Events> ở bất kỳ đâu → camera thật sự không hỗ trợ
-                //      Events, trả null ngay, KHÔNG fallback (đây là case V380 Pro).
-                //  (b) Body CÓ thẻ <tt:Events> nhưng regex tách <tt:XAddr> bên trong thất bại
-                //      (định dạng lạ, namespace khác, thứ tự thẻ khác…) → camera có khai báo hỗ
-                //      trợ Events, chỉ là ta không tách được địa chỉ riêng — vẫn fallback về
-                //      deviceServiceUrl như hành vi cũ, vì một số implementation ONVIF rút gọn
-                //      dồn mọi service vào chung 1 endpoint.
-                val hasEventsTag = body.contains("<tt:Events>", ignoreCase = true)
-                val eventsXAddr = Regex("<tt:Events>.*?<tt:XAddr>(.*?)</tt:XAddr>", RegexOption.DOT_MATCHES_ALL)
-                    .find(body)?.groupValues?.get(1)
-
-                when {
-                    eventsXAddr != null -> eventsXAddr
-                    hasEventsTag -> deviceServiceUrl // (b) có khai báo Events nhưng tách XAddr lỗi
-                    else -> null // (a) không hỗ trợ Events — không suy diễn, không fallback
+                if (soapActionHeader) {
+                    builder.header("SOAPAction", "\"$soapAction\"")
                 }
+
+                onvifClient.newCall(builder.build()).execute().use { response ->
+                    val responseBody = response.body?.string() ?: return null
+
+                    // SOAP Fault vẫn là bằng chứng endpoint hiểu SOAP/ONVIF.
+                    // Tuy nhiên nếu SOAP 1.2 bị từ chối thì caller sẽ thử SOAP 1.1.
+                    if (!response.isSuccessful &&
+                        !responseBody.contains("soap", ignoreCase = true)
+                    ) {
+                        return null
+                    }
+
+                    responseBody
+                }
+            } catch (e: Exception) {
+                logger.d(
+                    "CameraCapabilityProber",
+                    "GetCapabilities ${contentType.substringBefore(';')} $ip:$port lỗi: ${e.message}"
+                )
+                null
             }
-        } catch (e: Exception) {
-            logger.d("CameraCapabilityProber", "tryProbeOnvif($ip) không có ONVIF: ${e.message}")
-            null
+        }
+
+        // 1) Ưu tiên SOAP 1.2.
+        // 2) Nếu camera không hiểu/đóng kết nối/từ chối SOAP 1.2,
+        //    thử lại SOAP 1.1.
+        val body = probe(
+            soap12Body,
+            "application/soap+xml; charset=utf-8",
+            soapActionHeader = false
+        ) ?: probe(
+            soap11Body,
+            "text/xml; charset=utf-8",
+            soapActionHeader = true
+        ) ?: return null
+
+        /*
+         * Không phụ thuộc namespace prefix.
+         *
+         * Camera chuẩn có thể trả:
+         *   <tt:Events>
+         *   <tev:Events>
+         *   <wsnt:Events>
+         *   <Events>
+         *
+         * Tương tự XAddr cũng có thể dùng prefix khác. Regex cũ chỉ nhận
+         * đúng "<tt:Events>" nên dễ loại nhầm camera OEM giá rẻ.
+         */
+        val eventsBlock = Regex(
+            """<(?:[A-Za-z_][\w.-]*:)?Events\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?Events\s*>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).find(body)?.groupValues?.get(1)
+
+        val eventsXAddr = eventsBlock?.let { block ->
+            Regex(
+                """<(?:[A-Za-z_][\w.-]*:)?XAddr\b[^>]*>\s*(.*?)\s*</(?:[A-Za-z_][\w.-]*:)?XAddr\s*>""",
+                setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+            ).find(block)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+        /*
+         * Phân biệt rõ:
+         *
+         * (a) Có Events và lấy được XAddr
+         *     -> dùng XAddr thật.
+         *
+         * (b) Có Events nhưng không lấy được XAddr
+         *     -> fallback về deviceServiceUrl để hỗ trợ firmware OEM
+         *        dồn nhiều service vào cùng endpoint.
+         *
+         * (c) Hoàn toàn không có Events
+         *     -> null, không false-positive ONVIF Events (case V380 Pro).
+         */
+        return when {
+            eventsXAddr != null -> eventsXAddr
+            eventsBlock != null -> deviceServiceUrl
+            else -> null
         }
     }
 
