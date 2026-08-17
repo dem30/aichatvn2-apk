@@ -168,6 +168,8 @@ class CameraCapabilityProber @Inject constructor(
             tryProbeOnvif(
                 ip = ip,
                 httpPort = httpPort,
+                username = username,
+                password = password,
                 knownOnvifDeviceUrl = knownOnvifDeviceUrl
             )
         }.getOrNull()
@@ -205,6 +207,8 @@ class CameraCapabilityProber @Inject constructor(
     private fun tryProbeOnvif(
         ip: String,
         httpPort: Int,
+        username: String?,
+        password: String?,
         knownOnvifDeviceUrl: String?
     ): String? {
         // WS-Discovery đã trả XAddr thật của camera: giữ nguyên endpoint đó.
@@ -216,26 +220,32 @@ class CameraCapabilityProber @Inject constructor(
                     "XAddr từ WS-Discovery không hợp lệ: '$xAddr' — fallback IP/port."
                 )
             } else {
-                tryProbeOnvifAtUrl(xAddr)?.let { return it }
+                tryProbeOnvifAtUrl(xAddr, username, password)?.let { return it }
             }
         }
 
         // Fallback cho caller cũ chưa truyền XAddr.
-        tryProbeOnvifOnPort(ip, httpPort)?.let { return it }
+        tryProbeOnvifOnPort(ip, httpPort, username, password)?.let { return it }
         if (httpPort != ONVIF_FALLBACK_PORT) {
-            tryProbeOnvifOnPort(ip, ONVIF_FALLBACK_PORT)?.let { return it }
+            tryProbeOnvifOnPort(ip, ONVIF_FALLBACK_PORT, username, password)?.let { return it }
         }
         return null
     }
 
-    private fun tryProbeOnvifOnPort(ip: String, port: Int): String? =
-        tryProbeOnvifAtUrl("http://$ip:$port/onvif/device_service")
+    private fun tryProbeOnvifOnPort(ip: String, port: Int, username: String?, password: String?): String? =
+        tryProbeOnvifAtUrl("http://$ip:$port/onvif/device_service", username, password)
 
     /**
      * Probe đúng endpoint ONVIF Device Service đã biết.
      * Không tự suy diễn lại XAddr nếu WS-Discovery đã cung cấp nó.
+     *
+     * ✅ SỬA (bug thật: GetCapabilities không gửi Authorization dù probe() nhận username/password
+     * — camera yêu cầu Basic Auth trả 401/SOAP Fault NotAuthorized, onvifUrl luôn null, khiến
+     * onvifEventUrl không bao giờ được lưu vào DB dù ONVIF Events thực sự tồn tại và
+     * OnvifEventRelay.soapPostOnce() vẫn gửi đúng Authorization). Thêm Basic Auth giống hệt cách
+     * OnvifEventRelay đã làm, để kết quả probe nhất quán với hành vi subscribe thật sau này.
      */
-    private fun tryProbeOnvifAtUrl(deviceServiceUrl: String): String? {
+    private fun tryProbeOnvifAtUrl(deviceServiceUrl: String, username: String?, password: String?): String? {
         val uri = runCatching { URI(deviceServiceUrl) }.getOrNull() ?: return null
         if (uri.scheme.isNullOrBlank() || uri.host.isNullOrBlank()) return null
 
@@ -268,6 +278,9 @@ class CameraCapabilityProber @Inject constructor(
 
                 if (soapActionHeader) {
                     builder.header("SOAPAction", "\"$soapAction\"")
+                }
+                if (!username.isNullOrBlank()) {
+                    builder.header("Authorization", Credentials.basic(username, password ?: ""))
                 }
 
                 onvifClient.newCall(builder.build()).execute().use { response ->
