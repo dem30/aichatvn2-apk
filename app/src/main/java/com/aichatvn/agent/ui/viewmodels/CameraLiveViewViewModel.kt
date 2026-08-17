@@ -11,9 +11,12 @@ import com.aichatvn.agent.skills.CameraSkill
 import com.aichatvn.agent.utils.Logger
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
@@ -57,6 +60,23 @@ class CameraLiveViewViewModel @Inject constructor(
     private val _actionMessage = MutableStateFlow<String?>(null)
     val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
 
+    // ✅ MỚI: "Xem trực tiếp" kiểu chụp ảnh liên tục qua RtspFrameGrabber (FFmpeg) — thay cho
+    // ExoPlayer/RtspMediaSource. Lý do đổi: media3-exoplayer-rtsp vẫn @UnstableApi, đứng hình ở
+    // frame đầu KHÔNG lỗi KHÔNG timeout với camera dạng /Streaming/Channels/101 (case thật đã
+    // gặp) — trùng khớp 2 issue vẫn đang MỞ trên chính tracker androidx/media (#893 "freezes on
+    // first frame when audio is added", #2138 "First Frame Freeze"), tức là giới hạn thật của thư
+    // viện, không phải lỗi cấu hình. Trong khi đó RtspFrameGrabber (FFmpeg) đã CHỨNG MINH decode
+    // được frame thật từ ĐÚNG stream này (xem log "Bắt frame OK" ở CameraDetailViewModel). Không
+    // mượt bằng video thật (~1 ảnh/1-3s tuỳ tốc độ mạng+camera, xem GRAB_INTERVAL_MS), nhưng chắc
+    // chắn ra hình thay vì màn đen vô thời hạn.
+    private val _liveFrame = MutableStateFlow<ByteArray?>(null)
+    val liveFrame: StateFlow<ByteArray?> = _liveFrame.asStateFlow()
+
+    private val _liveFrameError = MutableStateFlow<String?>(null)
+    val liveFrameError: StateFlow<String?> = _liveFrameError.asStateFlow()
+
+    private var framePollingJob: Job? = null
+
     // ✅ MỚI: mã Camera Node ở nhà, đọc sẵn cho màn hình dùng khi bấm "Gọi xem qua Camera Node" —
     // xem ghi chú đầy đủ ở callHomeCameraNode() bên dưới về LÝ DO ViewModel này
     // KHÔNG tự gọi CallSkill.execute("start_call", ...) hay tự navController.navigate(...).
@@ -73,15 +93,55 @@ class CameraLiveViewViewModel @Inject constructor(
                     LiveViewState.NotAvailable("Camera chưa bật Xem trực tiếp hoặc không hỗ trợ RTSP")
                 else -> resolveReadyOrOutOfLan(cam.rtspUrl)
             }
+
+            val readyState = _state.value
+            if (readyState is LiveViewState.Ready) {
+                startFramePolling(readyState.rtspUrl, cam?.snapshotUsername, cam?.snapshotPassword)
+            }
         }
+    }
+
+    /**
+     * ✅ MỚI: vòng lặp gọi RtspFrameGrabber liên tục — CHỜ frame trước xong mới delay rồi gọi
+     * tiếp (không dùng fixed-rate timer), tránh chồng lấn nhiều lệnh FFmpeg cùng lúc nếu 1 lần
+     * grab chạy chậm (mạng yếu, camera phản hồi trễ). Dừng lại ngay khi coroutine bị huỷ
+     * (rời màn hình → onCleared() huỷ viewModelScope → job này tự dừng theo, cùng cơ chế release()
+     * cũ của ExoPlayer trước đây).
+     */
+    private fun startFramePolling(rtspUrl: String, username: String?, password: String?) {
+        framePollingJob?.cancel()
+        framePollingJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                val bytes = cameraSkill.fetchOneSnapshot(rtspUrl, username, password)
+                if (bytes != null) {
+                    _liveFrame.value = bytes
+                    _liveFrameError.value = null
+                } else {
+                    _liveFrameError.value = "Không lấy được hình từ camera — kiểm tra camera có đang online không."
+                }
+                delay(GRAB_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun stopFramePolling() {
+        framePollingJob?.cancel()
+        framePollingJob = null
+        _liveFrame.value = null
+        _liveFrameError.value = null
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        stopFramePolling()
     }
 
     /**
      * ⚠️ SỬA (lỗ hổng UX): trước đây hàm load() coi rtspUrl có giá trị là ĐỦ để trả Ready, bất kể
      * máy hiện có thực sự cùng LAN với camera hay không — nếu người dùng đang ở ngoài đường,
      * CameraLiveViewScreen sẽ cố kết nối RTSP tới 1 IP nội bộ không thể route được từ internet,
-     * và ExoPlayer chỉ âm thầm treo/timeout mà không có lời giải thích hay lối thoát nào cho
-     * người dùng.
+     * và trước đây (khi còn dùng ExoPlayer) sẽ âm thầm treo/timeout mà không có lời giải thích
+     * hay lối thoát nào cho người dùng.
      *
      * Cách xác định "cùng LAN hay không" ĐÁNG TIN CẬY nhất, không cần lưu SSID nhà (tránh thêm 1
      * bước cấu hình cho người dùng): thử mở thẳng 1 TCP socket tới đúng host:port trong rtspUrl,
@@ -149,6 +209,13 @@ class CameraLiveViewViewModel @Inject constructor(
         // quét lần đầu) — đây là kiểm tra chạy MỖI LẦN mở màn hình xem trực tiếp, cần phản hồi
         // nhanh để không làm người dùng chờ lâu trước khi biết được kết quả.
         private const val LAN_PROBE_TIMEOUT_MS = 1_500
+
+        // ✅ MỚI: khoảng nghỉ giữa 2 lần gọi RtspFrameGrabber liên tiếp — tính TỪ LÚC frame trước
+        // xong, không phải fixed-rate. Đặt ngắn (500ms) vì grabFrame() vốn đã mất 1-3s thật sự
+        // (RtspFrameGrabber.GRAB_TIMEOUT_MS cho phép tới 10s khi mạng/camera chậm) — khoảng nghỉ
+        // chỉ để tránh nã lệnh FFmpeg liên tục sát nhau không cần thiết khi camera phản hồi rất
+        // nhanh, không phải cơ chế giới hạn tốc độ chính.
+        private const val GRAB_INTERVAL_MS = 500L
     }
 
     fun toggleRecording() {

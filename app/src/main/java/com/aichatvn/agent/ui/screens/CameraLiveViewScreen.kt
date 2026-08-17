@@ -1,5 +1,7 @@
 package com.aichatvn.agent.ui.screens
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -8,17 +10,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.rtsp.RtspMediaSource
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import com.aichatvn.agent.ui.viewmodels.CallViewModel
 import com.aichatvn.agent.ui.viewmodels.CameraLiveViewViewModel
@@ -35,6 +30,17 @@ import com.aichatvn.agent.ui.viewmodels.LiveViewState
  *
  * ⚠️ Cần cập nhật khai báo route trong AppNavigator.kt:
  *   composable(route = "camera_live/{cameraId}", ...) { CameraLiveViewScreen(navController, callViewModel) }
+ *
+ * ⚠️ SỬA (bỏ ExoPlayer/RtspMediaSource — case thật: camera dạng /Streaming/Channels/101 đứng
+ * hình ở frame đầu, KHÔNG lỗi KHÔNG timeout, dù đã ép setForceUseRtpTcp(true) + tắt audio track).
+ * Đây là giới hạn THẬT của module media3-exoplayer-rtsp (vẫn @UnstableApi) — trùng khớp 2 issue
+ * còn đang MỞ trên chính tracker androidx/media (#893 "freezes on first frame when audio is
+ * added", #2138 "First Frame Freeze"), không phải lỗi cấu hình có thể vá tiếp bằng cách chỉnh
+ * tham số. Trong khi đó RtspFrameGrabber (FFmpeg) đã CHỨNG MINH decode được frame thật từ ĐÚNG
+ * stream này (xem log "Bắt frame OK" — cùng URL, cùng camera). Màn hình giờ hiển thị
+ * viewModel.liveFrame (ảnh JPEG mới nhất, ViewModel tự polling qua RtspFrameGrabber, xem
+ * CameraLiveViewViewModel.startFramePolling()) thay vì video thật — không mượt bằng video, nhưng
+ * chắc chắn ra hình.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @androidx.compose.runtime.Composable
@@ -43,75 +49,12 @@ fun CameraLiveViewScreen(
     callViewModel: CallViewModel,
     viewModel: CameraLiveViewViewModel = hiltViewModel()
 ) {
-    val context = LocalContext.current
     val state by viewModel.state.collectAsState()
     val camera by viewModel.camera.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val actionMessage by viewModel.actionMessage.collectAsState()
-
-    // ✅ MỚI: player chỉ tồn tại trong lúc màn hình này hiển thị — release() ngay khi rời
-    // màn hình (DisposableEffect), KHÔNG giữ nền như service — đúng thiết kế đã chốt.
-    var player by remember { mutableStateOf<ExoPlayer?>(null) }
-    // ✅ MỚI: lỗi phát RTSP (SETUP thất bại, timeout, auth sai...) — trước đây ExoPlayer fail
-    // HOÀN TOÀN ÂM THẦM: không có Player.Listener nào gắn vào, người dùng chỉ thấy khung đen vĩnh
-    // viễn không rõ lý do, tưởng app bị treo. Giờ bắt lỗi và hiện luôn trên UI.
-    var playbackError by remember { mutableStateOf<String?>(null) }
-
-    DisposableEffect(state) {
-        val s = state
-        var listener: Player.Listener? = null
-        if (s is LiveViewState.Ready) {
-            playbackError = null
-            // ⚠️ SỬA (màn hình đen không rõ lý do): ExoPlayer mặc định thử RTP qua UDP trước —
-            // nếu NAT/router chặn UDP inbound (rất phổ biến trên mạng nhà, 4G, hoặc khi router
-            // không mở port UDP tương ứng), ExoPlayer  ÂM THẦM đợi tới hết setTimeoutMs() (mặc
-            // định 8s, có thể lâu hơn) rồi mới tự chuyển sang TCP — trong lúc đó màn hình chỉ có
-            // màu đen, không có lỗi hay dấu hiệu gì. Đây là giới hạn CÙNG BẢN CHẤT với vấn đề UDP
-            // trên Android mà RtspFrameGrabber.kt (nhánh chụp ảnh AI qua FFmpeg) đã phải xử lý
-            // bằng "-rtsp_transport tcp" — ở đây dùng setForceUseRtpTcp(true) làm điều tương
-            // đương cho ExoPlayer, ép TCP ngay từ đầu thay vì đợi timeout rồi mới fallback.
-            val mediaSource = RtspMediaSource.Factory()
-                .setForceUseRtpTcp(true)
-                .setTimeoutMs(8_000)
-                // ✅ MỚI: bật log chi tiết SETUP/DESCRIBE/track parsing ra logcat (tag
-                // RtspClient/ExoPlayer) — không hiện trong màn "System Logs" của app (đó là
-                // Logger riêng của app, ExoPlayer log thẳng ra android.util.Log/logcat) nên cần
-                // xem qua `adb logcat` khi cần soi kỹ nếu bước tắt audio bên dưới không đủ.
-                .setDebugLoggingEnabled(true)
-                .createMediaSource(MediaItem.fromUri(s.rtspUrl))
-            val exo = ExoPlayer.Builder(context).build().apply {
-                setMediaSource(mediaSource)
-                prepare()
-                playWhenReady = true
-            }
-            // ⚠️ SỬA (đứng hình ở frame đầu, không lỗi, không timeout): sau khi ép TCP mà vẫn
-            // đứng ở 00:00 không decode được, đây là 1 bug KHÁC — đã có ghi nhận công khai ở
-            // chính tracker androidx/media (issue #893 "freezes on first frame when audio is
-            // added", issue #2138 "First Frame Freeze" — cả 2 đều VẪN ĐANG MỞ, chưa có fix chính
-            // thức). module media3-exoplayer-rtsp còn @UnstableApi, hay xung khắc với audio track
-            // (thường G711) của các đầu ghi/camera giá rẻ kiểu Hikvision-clone (path
-            // /Streaming/Channels/101 rất đặc trưng dạng này) — dù FFmpeg/VLC decode bình thường
-            // (RtspFrameGrabber của chính app này đã CHỨNG MINH decode được ảnh thật từ đúng
-            // stream này). Tắt hẳn audio track — chỉ cần xem hình, không cần nghe — để loại khả
-            // năng phổ biến nhất gây đứng hình này trước khi nghi ngờ tới codec video.
-            exo.trackSelectionParameters = exo.trackSelectionParameters
-                .buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
-                .build()
-            listener = object : Player.Listener {
-                override fun onPlayerError(error: PlaybackException) {
-                    playbackError = "Không phát được RTSP: ${error.errorCodeName} — ${error.message}"
-                }
-            }
-            exo.addListener(listener)
-            player = exo
-        }
-        onDispose {
-            listener?.let { player?.removeListener(it) }
-            player?.release()
-            player = null
-        }
-    }
+    val liveFrame by viewModel.liveFrame.collectAsState()
+    val liveFrameError by viewModel.liveFrameError.collectAsState()
 
     LaunchedEffect(actionMessage) {
         if (actionMessage != null) {
@@ -185,19 +128,40 @@ fun CameraLiveViewScreen(
                     }
                 }
                 is LiveViewState.Ready -> {
-                    player?.let { exo ->
-                        AndroidView(
-                            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).align(Alignment.Center),
-                            factory = { PlayerView(context).apply { this.player = exo } }
-                        )
+                    // ✅ MỚI: hiển thị ảnh JPEG mới nhất từ RtspFrameGrabber (poll liên tục ở
+                    // ViewModel) thay vì video thật qua ExoPlayer — xem lý do ở comment đầu file.
+                    if (liveFrame != null) {
+                        val bitmap = remember(liveFrame) {
+                            liveFrame?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                        }
+                        bitmap?.let {
+                            Image(
+                                bitmap = it.asImageBitmap(),
+                                contentDescription = "Hình ảnh trực tiếp từ camera",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).align(Alignment.Center)
+                            )
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.align(Alignment.Center),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(8.dp))
+                            Text("Đang lấy hình từ camera...", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
-                    // ✅ MỚI: hiện lỗi phát RTSP ngay giữa khung hình (đè lên chỗ trước đây luôn
-                    // đen im lặng) — xem playbackError ở DisposableEffect phía trên.
-                    playbackError?.let { err ->
+                    // ✅ MỚI: báo lỗi nếu 1 lượt lấy hình gần nhất thất bại — không đè mất ảnh cũ
+                    // đang hiển thị (chỉ hiện thêm dòng cảnh báo nhỏ ở dưới, ảnh cũ vẫn giữ
+                    // nguyên cho tới khi có ảnh mới), tránh nhấp nháy mất hình mỗi khi có 1 lượt
+                    // poll bị trễ/lỗi tạm thời.
+                    liveFrameError?.let { err ->
                         Text(
                             err,
-                            modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                            modifier = Modifier.align(Alignment.TopCenter).padding(12.dp),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.error
                         )
                     }
@@ -222,3 +186,4 @@ fun CameraLiveViewScreen(
         }
     }
 }
+
