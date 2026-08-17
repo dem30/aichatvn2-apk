@@ -414,7 +414,10 @@ class OnvifEventRelay @Inject constructor(
             """.trimIndent()
 
             logger.d(TAG, "📤 ONVIF Subscribe → $eventsUrl")
-            val response = soapPost(eventsUrl, body, username, password) ?: return@withContext null
+            val response = soapPost(
+                eventsUrl, body, username, password,
+                action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest"
+            ) ?: return@withContext null
             // Namespace prefix của thẻ Address thay đổi tuỳ hãng (wsa:Address, đôi khi không có
             // prefix) — regex lỏng, đủ dùng cho probe/subscribe, không kéo XML parser đầy đủ,
             // cùng tinh thần với CameraCapabilityProber.tryProbeOnvif().
@@ -464,7 +467,10 @@ class OnvifEventRelay @Inject constructor(
             """.trimIndent()
 
             logger.d(TAG, "📤 ONVIF PullMessages → $pullPointUrl")
-            val response = soapPost(pullPointUrl, body, username, password)
+            val response = soapPost(
+                pullPointUrl, body, username, password,
+                action = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
+            )
             if (response == null) {
                 logger.w(TAG, "⚠️ PullMessages($pullPointUrl) không có response (lỗi HTTP/timeout/exception — xem log SOAP request phía trên).")
                 return@withContext null
@@ -535,7 +541,10 @@ class OnvifEventRelay @Inject constructor(
                     </s:Envelope>
                 """.trimIndent()
                 logger.d(TAG, "📤 ONVIF Unsubscribe → $pullPointUrl")
-                soapPost(pullPointUrl, body, username, password)
+                soapPost(
+                    pullPointUrl, body, username, password,
+                    action = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
+                )
             } catch (e: Exception) {
                 logger.d(TAG, "Unsubscribe ONVIF thất bại (bỏ qua, không quan trọng): ${e.message}")
             }
@@ -548,99 +557,132 @@ class OnvifEventRelay @Inject constructor(
      * người debug từ Logcat, cả 2 tình huống trông giống hệt "không có gì xảy ra" dù thực ra
      * server đã trả lời (chỉ là lỗi/rỗng) — không phân biệt được với timeout/mất kết nối thật.
      */
-    private suspend fun soapPost(url: String, soapBody: String, username: String?, password: String?): String? {
-        // ⚠️ SỬA (thiết kế lại theo đúng chuẩn, không match theo 1 câu message cụ thể như trước —
-        // vì app kết nối hàng trăm loại camera khác nhau, mỗi firmware/JVM có thể ném ra một dạng
-        // IOException transport khác nhau cho CÙNG 1 nguyên nhân gốc: EOFException,
-        // SocketException("Connection reset"/"Broken pipe"), ProtocolException... — string-match
-        // đúng 1 câu "unexpected end of stream" chỉ vá đúng con camera đã gặp, bỏ sót mọi firmware
-        // khác báo lỗi transport tương tự bằng exception type/message khác).
-        //
-        // ⚠️ SỬA (case thật xác nhận qua log: 2 lần thử — gốc VÀ retry với connection HOÀN TOÀN
-        // MỚI (đã tắt connection pool, không phải connection cũ tái sử dụng) — vẫn cùng dính
-        // "unexpected end of stream" cách nhau CHƯA TỚI 100ms). Điều này loại hẳn giả thuyết
-        // "connection cũ trong pool bị camera đóng" — nguyên nhân THẬT là phía CAMERA đang bận xử
-        // lý việc khác (rất có thể đúng lúc phát hiện chuyển động thật — mã hoá video, ghi thẻ,
-        // đẩy cảnh báo cloud riêng của hãng...) nên bỏ dở response giữa chừng, không phân biệt
-        // được connection mới hay cũ. Retry NGAY LẬP TỨC (0ms delay như trước) vẫn rơi đúng vào
-        // cùng cửa sổ bận đó nếu cửa sổ bận kéo dài hơn vài chục ms — vô ích.
-        //
-        // ✅ SỬA (log thực tế xác nhận: EOF rơi đúng vào bước Subscribe, đúng lúc camera vừa phát
-        // hiện chuyển động — camera OEM giá rẻ này rất có thể đang bận ghi hình/mã hoá/đẩy cảnh
-        // báo cloud riêng của hãng khi có motion thật, nên không đủ tài nguyên trả lời SOAP kịp,
-        // đóng socket giữa chừng). Backoff cũ 300ms/900ms (tổng ~1.2s) quá ngắn nếu cửa sổ bận
-        // của camera kéo dài vài giây — đổi thành 1s/3s/6s (tổng ~10s, thêm 1 lần thử thứ 4) để
-        // có cơ hội chờ camera rảnh lại thay vì bỏ cuộc quá sớm đúng lúc sự kiện thật đang xảy ra.
+    /**
+     * SOAP compatibility strategy: SOAP 1.2 first, then SOAP 1.1 when the HTTP response
+     * indicates a SOAP-version/content-type compatibility problem.
+     *
+     * `action` is required because SOAP 1.1 carries the action in the HTTP SOAPAction header;
+     * SOAP 1.2 continues to use the WS-Addressing wsa:Action already present in the envelope.
+     */
+    private suspend fun soapPost(
+        url: String,
+        soapBody: String,
+        username: String?,
+        password: String?,
+        action: String
+    ): String? {
         val retryDelaysMs = longArrayOf(1_000L, 3_000L, 6_000L)
-        var lastFailureDetail: String? = null
-        repeat(retryDelaysMs.size + 1) { attempt ->
-            val result = soapPostOnce(url, soapBody, username, password)
-            if (result.outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) return result.text
-            lastFailureDetail = result.text
-            if (attempt < retryDelaysMs.size) {
-                val waitMs = retryDelaysMs[attempt]
-                logger.d(
-                    TAG,
-                    "SOAP $url: lỗi transport (${result.text}) — có thể do camera đang bận xử lý " +
-                        "việc khác (vd đúng lúc có chuyển động thật), thử lại sau ${waitMs}ms " +
-                        "(lần ${attempt + 2}/${retryDelaysMs.size + 1})."
-                )
-                delay(waitMs)
+
+        suspend fun postWithVersion(version: SoapVersion): SoapPostResult {
+            var lastFailureDetail: String? = null
+            repeat(retryDelaysMs.size + 1) { attempt ->
+                val result = soapPostOnce(url, soapBody, username, password, action, version)
+                if (result.outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) return result
+                lastFailureDetail = result.text
+                if (attempt < retryDelaysMs.size) {
+                    val waitMs = retryDelaysMs[attempt]
+                    logger.d(TAG, "SOAP ${version.label} $url: lỗi transport (${result.text}) — thử lại sau ${waitMs}ms (lần ${attempt + 2}/${retryDelaysMs.size + 1}).")
+                    delay(waitMs)
+                }
             }
+            logger.w(TAG, "SOAP ${version.label} $url: vẫn lỗi transport sau ${retryDelaysMs.size + 1} lần thử (lỗi cuối: $lastFailureDetail).")
+            return SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, lastFailureDetail)
         }
-        logger.w(
-            TAG,
-            "SOAP $url: vẫn lỗi transport sau ${retryDelaysMs.size + 1} lần thử (lỗi cuối: " +
-                "$lastFailureDetail) — camera có thể đang bận kéo dài hơn dự kiến, bỏ cuộc lần này."
-        )
+
+        val soap12Result = postWithVersion(SoapVersion.SOAP_12)
+        if (soap12Result.outcome == SoapPostOutcome.OK) return soap12Result.text
+
+        // Không fallback cho timeout/EOF/socket reset/401/403/404. Đổi SOAP version không sửa
+        // được lỗi mạng hoặc authentication. 400/415/500 là các response phù hợp để thử 1.1.
+        if (!soap12Result.shouldFallbackToSoap11) return null
+
+        logger.w(TAG, "⚠️ SOAP 1.2 không được camera chấp nhận tại $url (HTTP ${soap12Result.httpCode}). Fallback SOAP 1.1...")
+        val soap11Result = postWithVersion(SoapVersion.SOAP_11)
+        if (soap11Result.outcome == SoapPostOutcome.OK) {
+            logger.i(TAG, "✅ SOAP 1.1 thành công tại $url sau khi SOAP 1.2 thất bại.")
+            return soap11Result.text
+        }
+        logger.w(TAG, "❌ SOAP 1.2 và SOAP 1.1 đều thất bại tại $url.")
         return null
     }
 
-    private enum class SoapPostOutcome { OK, FAIL, RETRYABLE_TRANSPORT_ERROR }
-    private data class SoapPostResult(val outcome: SoapPostOutcome, val text: String?)
+    private enum class SoapVersion(val label: String) {
+        SOAP_12("1.2"),
+        SOAP_11("1.1")
+    }
 
-    private fun soapPostOnce(url: String, soapBody: String, username: String?, password: String?): SoapPostResult {
+    private enum class SoapPostOutcome {
+        OK,
+        FAIL,
+        RETRYABLE_TRANSPORT_ERROR
+    }
+
+    private data class SoapPostResult(
+        val outcome: SoapPostOutcome,
+        val text: String?,
+        val httpCode: Int? = null
+    ) {
+        val shouldFallbackToSoap11: Boolean
+            get() = outcome == SoapPostOutcome.FAIL && httpCode != null && httpCode in setOf(400, 415, 500)
+    }
+
+    private fun toSoap11Envelope(soapBody: String): String =
+        soapBody.replace(
+            "http://www.w3.org/2003/05/soap-envelope",
+            "http://schemas.xmlsoap.org/soap/envelope/"
+        )
+
+    private fun soapPostOnce(
+        url: String,
+        soapBody: String,
+        username: String?,
+        password: String?,
+        action: String,
+        version: SoapVersion
+    ): SoapPostResult {
         return try {
+            val requestBody = when (version) {
+                SoapVersion.SOAP_12 -> soapBody
+                SoapVersion.SOAP_11 -> toSoap11Envelope(soapBody)
+            }
+            val contentType = when (version) {
+                SoapVersion.SOAP_12 -> "application/soap+xml; charset=utf-8"
+                SoapVersion.SOAP_11 -> "text/xml; charset=utf-8"
+            }
             val builder = Request.Builder()
                 .url(url)
-                .post(soapBody.toRequestBody("application/soap+xml; charset=utf-8".toMediaType()))
+                .post(requestBody.toRequestBody(contentType.toMediaType()))
+
+            if (version == SoapVersion.SOAP_11) {
+                builder.header("SOAPAction", "\"$action\"")
+            }
             if (!username.isNullOrBlank()) {
                 builder.header("Authorization", Credentials.basic(username, password ?: ""))
             }
+
+            logger.d(TAG, "📤 SOAP ${version.label} POST → $url" + if (version == SoapVersion.SOAP_11) " | SOAPAction=$action" else "")
+
             httpClient.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string()
                 if (!response.isSuccessful) {
-                    // ✅ SỬA (góp ý xác đáng: regex trích Fault Code/Reason trước đây quá lỏng —
-                    // ONVIF payload có rất nhiều thẻ <Value>/SimpleItem khác, dễ bắt nhầm node
-                    // không phải Fault, khiến log sai lệch còn nguy hiểm hơn không log gì. Bỏ đoán
-                    // mò bằng regex, log THẲNG phần thân — tăng ngưỡng lên 5000 ký tự (đủ chứa
-                    // trọn <s:Fault>...<s:Reason>...<s:Text> thật trong hầu hết trường hợp, so với
-                    // 300 cũ chỉ đủ hết phần khai báo xmlns) để tự đọc được nguyên văn lý do camera
-                    // từ chối, thay vì suy luận qua 1-2 từ khoá trích được.
-                    logger.w(TAG, "SOAP $url trả HTTP ${response.code}: ${text?.take(5000) ?: "(rỗng)"}")
-                    return SoapPostResult(SoapPostOutcome.FAIL, null)
+                    logger.w(TAG, "SOAP ${version.label} $url trả HTTP ${response.code}: ${text?.take(5000) ?: "(rỗng)"}")
+                    return SoapPostResult(SoapPostOutcome.FAIL, text, response.code)
                 }
                 if (text.isNullOrBlank()) {
-                    logger.w(TAG, "SOAP $url trả HTTP ${response.code} thành công nhưng body rỗng.")
-                    return SoapPostResult(SoapPostOutcome.FAIL, null)
+                    logger.w(TAG, "SOAP ${version.label} $url trả HTTP ${response.code} thành công nhưng body rỗng.")
+                    return SoapPostResult(SoapPostOutcome.FAIL, null, response.code)
                 }
-                SoapPostResult(SoapPostOutcome.OK, text)
+                SoapPostResult(SoapPostOutcome.OK, text, response.code)
             }
         } catch (e: java.net.SocketTimeoutException) {
-            // Camera không phản hồi kịp — lỗi mạng/thiết bị thật, KHÔNG phải connection cũ bị tái
-            // sử dụng (đó là IOException khác, xem nhánh dưới) — retry ngay vô ích.
-            logger.w(TAG, "SOAP request tới $url timeout: ${e.message}")
+            logger.w(TAG, "SOAP ${version.label} request tới $url timeout: ${e.message}")
             SoapPostResult(SoapPostOutcome.FAIL, null)
         } catch (e: java.io.IOException) {
-            // Mọi IOException transport khác (EOFException, SocketException reset/broken pipe,
-            // ProtocolException...) coi là RETRYABLE — dấu hiệu chung của 1 connection vừa bị phía
-            // camera đóng, không phân biệt theo message cụ thể (xem giải thích ở soapPost()).
             val cause = e.cause
             val detail = buildString {
                 append(e.javaClass.name)
                 append(": ")
                 append(e.message ?: "(không có message)")
-
                 if (cause != null) {
                     append(" | cause=")
                     append(cause.javaClass.name)
@@ -648,11 +690,10 @@ class OnvifEventRelay @Inject constructor(
                     append(cause.message ?: "(không có message)")
                 }
             }
-
-            logger.w(TAG, "❌ SOAP request tới $url lỗi transport: $detail")
+            logger.w(TAG, "❌ SOAP ${version.label} request tới $url lỗi transport: $detail")
             SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, detail)
         } catch (e: Exception) {
-            logger.w(TAG, "SOAP request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
+            logger.w(TAG, "SOAP ${version.label} request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
             SoapPostResult(SoapPostOutcome.FAIL, null)
         }
     }
