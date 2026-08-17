@@ -565,11 +565,13 @@ class OnvifEventRelay @Inject constructor(
         // được connection mới hay cũ. Retry NGAY LẬP TỨC (0ms delay như trước) vẫn rơi đúng vào
         // cùng cửa sổ bận đó nếu cửa sổ bận kéo dài hơn vài chục ms — vô ích.
         //
-        // Tăng lên 3 lần thử, có khoảng nghỉ TĂNG DẦN (300ms rồi 900ms) giữa các lần — đủ để vượt
-        // qua 1 khoảng bận ngắn của camera (thường chỉ kéo dài vài trăm ms tới ~1-2s cho 1 sự kiện
-        // chuyển động), mà không làm subscribe() chậm đi đáng kể trong trường hợp phổ biến (lần
-        // đầu đã thành công thì không delay gì cả).
-        val retryDelaysMs = longArrayOf(300L, 900L)
+        // ✅ SỬA (log thực tế xác nhận: EOF rơi đúng vào bước Subscribe, đúng lúc camera vừa phát
+        // hiện chuyển động — camera OEM giá rẻ này rất có thể đang bận ghi hình/mã hoá/đẩy cảnh
+        // báo cloud riêng của hãng khi có motion thật, nên không đủ tài nguyên trả lời SOAP kịp,
+        // đóng socket giữa chừng). Backoff cũ 300ms/900ms (tổng ~1.2s) quá ngắn nếu cửa sổ bận
+        // của camera kéo dài vài giây — đổi thành 1s/3s/6s (tổng ~10s, thêm 1 lần thử thứ 4) để
+        // có cơ hội chờ camera rảnh lại thay vì bỏ cuộc quá sớm đúng lúc sự kiện thật đang xảy ra.
+        val retryDelaysMs = longArrayOf(1_000L, 3_000L, 6_000L)
         var lastFailureDetail: String? = null
         repeat(retryDelaysMs.size + 1) { attempt ->
             val result = soapPostOnce(url, soapBody, username, password)
