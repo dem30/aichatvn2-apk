@@ -326,6 +326,16 @@ class OnvifEventRelay @Inject constructor(
         }
 
     /** true nếu phát hiện tín hiệu chuyển động trong đợt Pull này. */
+    /**
+     * ✅ SỬA (debug case thật: subscribe thành công — thấy log "🔌 Bắt đầu relay" — nhưng sau đó
+     * HOÀN TOÀN im lặng dù camera báo động vật lý thật, không có bất kỳ log nào khác xuất hiện).
+     * Nguyên nhân: soapPost() trả null (lỗi HTTP/timeout/exception khi gọi PullMessages) khiến
+     * pullOnce() return false NGAY LẬP TỨC ở dòng "?: return@withContext false" — vòng while bên
+     * ngoài (runCameraLoop) cứ thế lặp lại vô thời hạn, gọi lại pullOnce(), lại thất bại y hệt,
+     * KHÔNG log gì cả — im lặng tuyệt đối dù có lỗi thật đang xảy ra liên tục. Thêm log ở đây để
+     * phân biệt 3 trạng thái: (1) PullMessages lỗi hẳn (null), (2) PullMessages OK nhưng không có
+     * Motion match, (3) Motion match thành công — trước đây chỉ trạng thái (3) có log.
+     */
     private suspend fun pullOnce(pullPointUrl: String, username: String?, password: String?): Boolean =
         withContext(Dispatchers.IO) {
             val body = """
@@ -341,7 +351,11 @@ class OnvifEventRelay @Inject constructor(
                 </s:Envelope>
             """.trimIndent()
 
-            val response = soapPost(pullPointUrl, body, username, password) ?: return@withContext false
+            val response = soapPost(pullPointUrl, body, username, password)
+            if (response == null) {
+                logger.w(TAG, "⚠️ PullMessages($pullPointUrl) không có response (lỗi HTTP/timeout/exception — xem log SOAP request phía trên). Sẽ thử lại ngay vòng Pull kế tiếp.")
+                return@withContext false
+            }
 
             // ⚠️ Heuristic có chủ ý (không parse XML đầy đủ, cùng tinh thần best-effort với
             // CameraCapabilityProber): coi là "có chuyển động" nếu response chứa 1 Topic nhắc
@@ -351,7 +365,19 @@ class OnvifEventRelay @Inject constructor(
             val hasMotionTopic = response.contains("Motion", ignoreCase = true)
             val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
                 .containsMatchIn(response)
-            hasMotionTopic && hasTrueValue
+            val matched = hasMotionTopic && hasTrueValue
+
+            // Log DEBUG mỗi vòng (kể cả không match) — để xác nhận vòng Pull THỰC SỰ đang chạy
+            // đều đặn, không bị treo/chết âm thầm. Cắt bớt response nếu quá dài (PullMessages có
+            // thể trả nhiều message cùng lúc, MessageLimit=10) để không tràn log 1 dòng quá dài.
+            logger.d(
+                TAG,
+                "Pull($pullPointUrl): hasMotionTopic=$hasMotionTopic, hasTrueValue=$hasTrueValue, " +
+                    "matched=$matched | response(${response.length} ký tự, cắt 500 đầu)=" +
+                    response.take(500)
+            )
+
+            matched
         }
 
     private suspend fun unsubscribeBestEffort(pullPointUrl: String, username: String?, password: String?) {
@@ -376,6 +402,12 @@ class OnvifEventRelay @Inject constructor(
         }
     }
 
+    /**
+     * ✅ SỬA (cùng nguyên nhân với pullOnce ở trên): trước đây 2 nhánh thất bại "im lặng" — body
+     * rỗng và HTTP không thành công — chỉ trả null, KHÔNG log gì, khác nhánh catch (có log). Với
+     * người debug từ Logcat, cả 2 tình huống trông giống hệt "không có gì xảy ra" dù thực ra
+     * server đã trả lời (chỉ là lỗi/rỗng) — không phân biệt được với timeout/mất kết nối thật.
+     */
     private fun soapPost(url: String, soapBody: String, username: String?, password: String?): String? {
         return try {
             val builder = Request.Builder()
@@ -386,15 +418,23 @@ class OnvifEventRelay @Inject constructor(
             }
             httpClient.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string()
-                if (text.isNullOrBlank()) return null
-                // SOAP Fault vẫn có thể mang thông tin dùng được (một số camera trả Fault kèm
-                // gợi ý auth) — nhưng để đơn giản và nhất quán với style probe hiện có, coi
-                // response lỗi HTTP rõ ràng là thất bại, không cố khai thác thêm.
-                if (!response.isSuccessful) return null
+                if (!response.isSuccessful) {
+                    // SOAP Fault vẫn có thể mang thông tin dùng được (một số camera trả Fault kèm
+                    // gợi ý auth) — nhưng để đơn giản và nhất quán với style probe hiện có, coi
+                    // response lỗi HTTP rõ ràng là thất bại, không cố khai thác thêm. Log rõ code +
+                    // body (nếu có) để phân biệt được với timeout/mất kết nối (2 trường hợp trước
+                    // đây trông giống hệt nhau trong log — đều chỉ "không thấy gì" từ phía gọi).
+                    logger.w(TAG, "SOAP $url trả HTTP ${response.code}: ${text?.take(300) ?: "(rỗng)"}")
+                    return null
+                }
+                if (text.isNullOrBlank()) {
+                    logger.w(TAG, "SOAP $url trả HTTP ${response.code} thành công nhưng body rỗng.")
+                    return null
+                }
                 text
             }
         } catch (e: Exception) {
-            logger.d(TAG, "SOAP request tới $url lỗi: ${e.message}")
+            logger.w(TAG, "SOAP request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
             null
         }
     }
