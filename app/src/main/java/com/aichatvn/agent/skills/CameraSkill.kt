@@ -79,6 +79,11 @@ class CameraSkill @Inject constructor(
     // bật sau khi CameraCapabilityProber xác nhận camera hỗ trợ), KHÔNG liên quan gì tới luồng
     // snapshot HTTP định kỳ vẫn đang chạy song song như cũ.
     private val cameraRecorder: com.aichatvn.agent.tools.camera.CameraRecorder,
+    // ✅ MỚI: bắt frame JPEG qua FFmpegKit cho camera chỉ có RTSP (không có endpoint HTTP snapshot
+    // nào, vd case V380) — SnapshotFetcher không hiểu scheme rtsp:// nên trước đây scanCamera()
+    // luôn thất bại với các camera này dù xem trực tiếp qua RTSP hoàn toàn ổn. Xem
+    // RtspFrameGrabber.kt để biết chi tiết giới hạn (ép TCP transport, timeout, dọn file cache).
+    private val rtspFrameGrabber: com.aichatvn.agent.tools.camera.RtspFrameGrabber,
     logger: Logger,
 ) : BaseSkill("camera", "Quản lý camera", logger), Plugin {
 
@@ -222,14 +227,52 @@ PluginAction(
     // đơn giản là không có gì để thử thêm, trả về null y hệt hành vi cũ (không phá vỡ camera nào
     // chưa cấu hình URL remote).
     private suspend fun fetchSnapshotWithFallback(camera: CameraConfigEntity): ByteArray? {
-        val lanBytes = snapshotFetcher.fetchSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
+        val lanBytes = fetchOneSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
         if (lanBytes != null) return lanBytes
 
         val remoteUrl = camera.snapshotUrlRemote?.trim()
         if (remoteUrl.isNullOrBlank()) return null
 
         logger.d("CameraSkill", "🌐 LAN fetch thất bại, thử fallback qua snapshotUrlRemote cho camera ${camera.id.trim()}")
-        return snapshotFetcher.fetchSnapshot(remoteUrl, camera.snapshotUsername, camera.snapshotPassword)
+        return fetchOneSnapshot(remoteUrl, camera.snapshotUsername, camera.snapshotPassword)
+    }
+
+    // ✅ MỚI: rẽ nhánh theo scheme URL — SnapshotFetcher chỉ hiểu http/https (trả null ngay với
+    // rtsp://, xem SnapshotFetcher.kt), nên camera chỉ có RTSP (không có endpoint HTTP snapshot
+    // nào, vd case V380) trước đây KHÔNG BAO GIỜ lấy được ảnh dù xem trực tiếp qua RTSP hoàn toàn
+    // ổn. url ở đây có thể là snapshoturl (LAN) hoặc snapshotUrlRemote — cả hai đều có thể là
+    // rtsp:// nếu người dùng cấu hình vậy, nên kiểm tra scheme ở MỘT chỗ duy nhất thay vì lặp lại
+    // ở từng nhánh gọi.
+    private suspend fun fetchOneSnapshot(url: String, username: String?, password: String?): ByteArray? {
+        if (url.trim().startsWith("rtsp://", ignoreCase = true)) {
+            return rtspFrameGrabber.grabFrame(buildRtspUrlWithCredentials(url, username, password))
+        }
+        return snapshotFetcher.fetchSnapshot(url, username, password)
+    }
+
+    // ⚠️ RTSP không có cơ chế auth header tách rời như HTTP Basic Auth — username/password (nếu
+    // camera yêu cầu) phải nhúng thẳng vào URL dạng rtsp://user:pass@host:port/path, đây là quy
+    // ước chuẩn mà ffmpeg (và mọi RTSP client khác) đọc được. snapshotUsername/snapshotPassword
+    // đã lưu sẵn tách rời trong DB (dùng chung field với nhánh HTTP snapshot cũ) nên cần ghép lại
+    // ở đây trước khi đưa cho RtspFrameGrabber. Bỏ qua nếu URL đã tự chứa "@" từ trước — trường
+    // hợp phổ biến nhất là camera này đến từ luồng discovery, nơi
+    // CameraCapabilityProber.buildRtspUrlWithCredentials() đã nhúng sẵn credentials vào rtspUrl
+    // trả về TRƯỚC KHI lưu vào snapshoturl, nên nhúng lại ở đây sẽ tạo "user:pass@user:pass@host".
+    //
+    // ✅ SỬA: dùng android.net.Uri.encode() thay vì java.net.URLEncoder.encode() — ban đầu viết
+    // nhầm URLEncoder (chuẩn application/x-www-form-urlencoded, mã hoá dấu cách thành "+", KHÔNG
+    // hợp lệ trong URI) trước khi thấy CameraCapabilityProber đã có tiền lệ dùng Uri.encode() cho
+    // đúng mục đích này — đổi theo để nhất quán 1 kiểu encode cho mọi rtspUrl trong app, tránh 2
+    // nơi build URL theo 2 cách khác nhau gây lệch khi debug.
+    private fun buildRtspUrlWithCredentials(rtspUrl: String, username: String?, password: String?): String {
+        val trimmed = rtspUrl.trim()
+        if (username.isNullOrBlank() || trimmed.substringAfter("://", "").contains("@")) {
+            return trimmed
+        }
+        val encodedUser = android.net.Uri.encode(username)
+        val encodedPass = android.net.Uri.encode(password.orEmpty())
+        val credentials = if (password.isNullOrBlank()) encodedUser else "$encodedUser:$encodedPass"
+        return trimmed.replaceFirst("rtsp://", "rtsp://$credentials@", ignoreCase = true)
     }
 
     // ✅ MỚI (day/night split): trước đây các mẫu học báo giả (falseDeltas/falseDiffs), baseline
@@ -2393,7 +2436,10 @@ PluginAction(
     suspend fun testCameraUrl(snapshotUrl: String, snapshotUsername: String? = null, snapshotPassword: String? = null): PluginResult {
         return try {
             logger.i("CameraSkill", "🧪 testCameraUrl: $snapshotUrl")
-            val imageBytes = snapshotFetcher.fetchSnapshot(snapshotUrl, snapshotUsername, snapshotPassword)
+            // ✅ MỚI: cùng rẽ nhánh RTSP như fetchOneSnapshot() — nếu không, nút "Test" trong
+            // CameraDetailViewModel sẽ luôn báo lỗi cho camera chỉ có RTSP dù scanCamera() thật
+            // đã chạy được, gây hiểu lầm camera bị hỏng.
+            val imageBytes = fetchOneSnapshot(snapshotUrl, snapshotUsername, snapshotPassword)
 
             if (imageBytes == null) {
                 logger.w("CameraSkill", "🧪 testCameraUrl: fetch trả về null (URL sai hoặc camera offline)")
