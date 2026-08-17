@@ -545,7 +545,7 @@ class OnvifEventRelay @Inject constructor(
      * người debug từ Logcat, cả 2 tình huống trông giống hệt "không có gì xảy ra" dù thực ra
      * server đã trả lời (chỉ là lỗi/rỗng) — không phân biệt được với timeout/mất kết nối thật.
      */
-    private fun soapPost(url: String, soapBody: String, username: String?, password: String?): String? {
+    private suspend fun soapPost(url: String, soapBody: String, username: String?, password: String?): String? {
         // ⚠️ SỬA (thiết kế lại theo đúng chuẩn, không match theo 1 câu message cụ thể như trước —
         // vì app kết nối hàng trăm loại camera khác nhau, mỗi firmware/JVM có thể ném ra một dạng
         // IOException transport khác nhau cho CÙNG 1 nguyên nhân gốc: EOFException,
@@ -553,23 +553,41 @@ class OnvifEventRelay @Inject constructor(
         // đúng 1 câu "unexpected end of stream" chỉ vá đúng con camera đã gặp, bỏ sót mọi firmware
         // khác báo lỗi transport tương tự bằng exception type/message khác).
         //
-        // Retry ĐÚNG 1 lần cho MỌI IOException xảy ra Ở TẦNG TRANSPORT (connect/write/đọc response
-        // giữa chừng — soapPostOnce() phân biệt rõ nhóm này qua SoapPostOutcome.RETRYABLE, xem bên
-        // dưới), KHÔNG retry SocketTimeoutException (camera thực sự không phản hồi — lỗi mạng/
-        // thiết bị thật, retry ngay vô ích, tổ tốn thêm thời gian trong 1 chu kỳ Pull) và KHÔNG
-        // retry khi response đã nhận được nhưng nội dung lỗi (HTTP fail/body rỗng — đó là phản hồi
-        // thật từ camera, không phải lỗi transport).
-        repeat(2) { attempt ->
+        // ⚠️ SỬA (case thật xác nhận qua log: 2 lần thử — gốc VÀ retry với connection HOÀN TOÀN
+        // MỚI (đã tắt connection pool, không phải connection cũ tái sử dụng) — vẫn cùng dính
+        // "unexpected end of stream" cách nhau CHƯA TỚI 100ms). Điều này loại hẳn giả thuyết
+        // "connection cũ trong pool bị camera đóng" — nguyên nhân THẬT là phía CAMERA đang bận xử
+        // lý việc khác (rất có thể đúng lúc phát hiện chuyển động thật — mã hoá video, ghi thẻ,
+        // đẩy cảnh báo cloud riêng của hãng...) nên bỏ dở response giữa chừng, không phân biệt
+        // được connection mới hay cũ. Retry NGAY LẬP TỨC (0ms delay như trước) vẫn rơi đúng vào
+        // cùng cửa sổ bận đó nếu cửa sổ bận kéo dài hơn vài chục ms — vô ích.
+        //
+        // Tăng lên 3 lần thử, có khoảng nghỉ TĂNG DẦN (300ms rồi 900ms) giữa các lần — đủ để vượt
+        // qua 1 khoảng bận ngắn của camera (thường chỉ kéo dài vài trăm ms tới ~1-2s cho 1 sự kiện
+        // chuyển động), mà không làm subscribe() chậm đi đáng kể trong trường hợp phổ biến (lần
+        // đầu đã thành công thì không delay gì cả).
+        val retryDelaysMs = longArrayOf(300L, 900L)
+        var lastFailureDetail: String? = null
+        repeat(retryDelaysMs.size + 1) { attempt ->
             val result = soapPostOnce(url, soapBody, username, password)
             if (result.outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) return result.text
-            if (attempt == 0) {
+            lastFailureDetail = result.text
+            if (attempt < retryDelaysMs.size) {
+                val waitMs = retryDelaysMs[attempt]
                 logger.d(
                     TAG,
-                    "SOAP $url: lỗi transport (${result.text}) — có thể do connection vừa bị camera " +
-                        "đóng, thử lại 1 lần với connection mới."
+                    "SOAP $url: lỗi transport (${result.text}) — có thể do camera đang bận xử lý " +
+                        "việc khác (vd đúng lúc có chuyển động thật), thử lại sau ${waitMs}ms " +
+                        "(lần ${attempt + 2}/${retryDelaysMs.size + 1})."
                 )
+                delay(waitMs)
             }
         }
+        logger.w(
+            TAG,
+            "SOAP $url: vẫn lỗi transport sau ${retryDelaysMs.size + 1} lần thử (lỗi cuối: " +
+                "$lastFailureDetail) — camera có thể đang bận kéo dài hơn dự kiến, bỏ cuộc lần này."
+        )
         return null
     }
 
