@@ -573,31 +573,77 @@ class OnvifEventRelay @Inject constructor(
     ): String? {
         val retryDelaysMs = longArrayOf(1_000L, 3_000L, 6_000L)
 
-        suspend fun postWithVersion(version: SoapVersion): SoapPostResult {
-            var lastFailureDetail: String? = null
+        suspend fun postWithVersion(
+            version: SoapVersion,
+            fallbackOnImmediateTransport: Boolean
+        ): SoapPostResult {
+            var lastFailure: SoapPostResult? = null
+
             repeat(retryDelaysMs.size + 1) { attempt ->
                 val result = soapPostOnce(url, soapBody, username, password, action, version)
-                if (result.outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) return result
-                lastFailureDetail = result.text
+
+                if (result.outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) {
+                    return result
+                }
+
+                lastFailure = result
+
+                // EOF / unexpected end of stream / connection reset / closed stream
+                // xảy ra rất nhanh thường là camera từ chối SOAP version. Với SOAP 1.2,
+                // fallback ngay để thử SOAP 1.1 thay vì lặp lại cùng request.
+                if (fallbackOnImmediateTransport && result.isSoapVersionTransportFailure) {
+                    return result
+                }
+
                 if (attempt < retryDelaysMs.size) {
                     val waitMs = retryDelaysMs[attempt]
-                    logger.d(TAG, "SOAP ${version.label} $url: lỗi transport (${result.text}) — thử lại sau ${waitMs}ms (lần ${attempt + 2}/${retryDelaysMs.size + 1}).")
+                    logger.d(
+                        TAG,
+                        "SOAP ${version.label} $url: lỗi transport (${result.text}) " +
+                            "— thử lại sau ${waitMs}ms (lần ${attempt + 2}/${retryDelaysMs.size + 1})."
+                    )
                     delay(waitMs)
                 }
             }
-            logger.w(TAG, "SOAP ${version.label} $url: vẫn lỗi transport sau ${retryDelaysMs.size + 1} lần thử (lỗi cuối: $lastFailureDetail).")
-            return SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, lastFailureDetail)
+
+            logger.w(
+                TAG,
+                "SOAP ${version.label} $url: vẫn lỗi transport sau " +
+                    "${retryDelaysMs.size + 1} lần thử (lỗi cuối: ${lastFailure?.text})."
+            )
+            return lastFailure ?: SoapPostResult(
+                SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR,
+                "unknown transport error"
+            )
         }
 
-        val soap12Result = postWithVersion(SoapVersion.SOAP_12)
+        // SOAP 1.2 trước. Nếu camera đóng socket ngay (EOF/reset/closed stream),
+        // coi đó là dấu hiệu không tương thích SOAP 1.2 và chuyển NGAY sang 1.1.
+        // Không retry SOAP 1.2 thêm 3 lần trong trường hợp này.
+        val soap12Result = postWithVersion(
+            version = SoapVersion.SOAP_12,
+            fallbackOnImmediateTransport = true
+        )
         if (soap12Result.outcome == SoapPostOutcome.OK) return soap12Result.text
 
-        // Không fallback cho timeout/EOF/socket reset/401/403/404. Đổi SOAP version không sửa
-        // được lỗi mạng hoặc authentication. 400/415/500 là các response phù hợp để thử 1.1.
-        if (!soap12Result.shouldFallbackToSoap11) return null
+        // 400/415/500: phản hồi HTTP cho thấy khả năng không tương thích protocol.
+        // EOF/reset/closed stream: camera có thể đã đóng socket vì không hiểu SOAP 1.2.
+        if (!soap12Result.shouldFallbackToSoap11 &&
+            !soap12Result.isSoapVersionTransportFailure) {
+            return null
+        }
 
-        logger.w(TAG, "⚠️ SOAP 1.2 không được camera chấp nhận tại $url (HTTP ${soap12Result.httpCode}). Fallback SOAP 1.1...")
-        val soap11Result = postWithVersion(SoapVersion.SOAP_11)
+        logger.w(
+            TAG,
+            "⚠️ SOAP 1.2 không được camera chấp nhận tại $url " +
+                "(HTTP ${soap12Result.httpCode ?: "transport"}; ${soap12Result.text}). " +
+                "Fallback SOAP 1.1..."
+        )
+
+        val soap11Result = postWithVersion(
+            version = SoapVersion.SOAP_11,
+            fallbackOnImmediateTransport = false
+        )
         if (soap11Result.outcome == SoapPostOutcome.OK) {
             logger.i(TAG, "✅ SOAP 1.1 thành công tại $url sau khi SOAP 1.2 thất bại.")
             return soap11Result.text
@@ -623,7 +669,28 @@ class OnvifEventRelay @Inject constructor(
         val httpCode: Int? = null
     ) {
         val shouldFallbackToSoap11: Boolean
-            get() = outcome == SoapPostOutcome.FAIL && httpCode != null && httpCode in setOf(400, 415, 500)
+            get() = outcome == SoapPostOutcome.FAIL &&
+                httpCode != null &&
+                httpCode in setOf(400, 415, 500)
+
+        /**
+         * Camera OEM thường đóng socket ngay khi không hiểu SOAP 1.2.
+         * OkHttp biểu diễn trường hợp này bằng EOFException / unexpected EOF /
+         * connection reset / closed stream. Đây là transport symptom nhưng trong
+         * ngữ cảnh SOAP-version fallback nó phải được thử bằng SOAP 1.1 ngay.
+         */
+        val isSoapVersionTransportFailure: Boolean
+            get() {
+                if (outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) return false
+                val d = text.orEmpty().lowercase()
+                return d.contains("eofexception") ||
+                    d.contains("unexpected end of stream") ||
+                    d.contains("connection reset") ||
+                    d.contains("connection closed") ||
+                    d.contains("stream was reset") ||
+                    d.contains("stream closed") ||
+                    d.contains("broken pipe")
+            }
     }
 
     private fun toSoap11Envelope(soapBody: String): String =
