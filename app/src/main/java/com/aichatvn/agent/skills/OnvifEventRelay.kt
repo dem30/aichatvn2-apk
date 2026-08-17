@@ -149,6 +149,13 @@ class OnvifEventRelay @Inject constructor(
         private const val MAX_CONSECUTIVE_PULL_FAILURES = 3
 
         private const val ERROR_RETRY_DELAY_MS = 10_000L
+
+        // ✅ MỚI: log "Pull(...)" ở pullOnce() vốn bắn mỗi vòng để xác nhận loop còn sống — với
+        // camera không tuân thủ long-poll (trả lời gần tức thì, vòng chạy ~1s/lần do
+        // MIN_PULL_INTERVAL_MS), tần suất mọi lần khiến System Logs bị spam. Giãn ra: chỉ log 1
+        // lần mỗi 10 lượt Pull (~10s ở tốc độ hiện tại) — đủ để xác nhận loop không treo mà không
+        // tràn log. Log lỗi/cảnh báo/near-miss/motion match KHÔNG bị ảnh hưởng, vẫn log mọi lần.
+        private const val LOG_EVERY_N_PULLS = 10
     }
 
     // ✅ SỬA (thiết kế lại theo đúng chuẩn — xem KDoc đầy đủ ở CameraLanHttpClient.kt): không còn
@@ -326,7 +333,7 @@ class OnvifEventRelay @Inject constructor(
                     // thêm delay() cho đủ MIN_PULL_INTERVAL_MS trước khi Pull lần kế — không đổi
                     // gì nếu camera đã tự block đủ lâu (elapsed >= sàn thì delay(0), bỏ qua).
                     val startedAt = System.currentTimeMillis()
-                    val motionDetected = pullOnce(pullPointUrl, username, password)
+                    val motionDetected = pullOnce(pullPointUrl, username, password, pullIndex = pullCount)
                     if (motionDetected == null) {
                         consecutiveFailures++
                         if (consecutiveFailures >= MAX_CONSECUTIVE_PULL_FAILURES) {
@@ -384,27 +391,6 @@ class OnvifEventRelay @Inject constructor(
         """.trimIndent()
 
     /** Trả về địa chỉ PullPoint (SubscriptionReference/Address) nếu subscribe thành công. */
-    /**
-     * ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay giữa chu kỳ Pull,
-     * đúng lúc có chuyển động vật lý) — trước đây không khai báo InitialTerminationTime, để camera
-     * tự chọn mặc định. Nhiều camera ONVIF giá rẻ đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ
-     * RESUBSCRIBE_AFTER_N_PULLS ~25s ở tốc độ hiện tại), khiến subscription chết yểu giữa chừng
-     * trước khi app kịp chủ động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì
-     * subscription không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
-     * — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp trần thấp
-     * hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im lặng phó mặc hoàn toàn
-     * cho mặc định của camera như trước.
-     *
-     * ✅ SỬA (debug case thật: EOFException "unexpected end of stream" trên camera hsoap/2.8 — so
-     * curl -v thủ công (742 bytes, 200 OK) với log OkHttp thật qua HttpLoggingInterceptor
-     * (Content-Length: 2078-2080, luôn lỗi) xác nhận: nguyên nhân là đoạn comment XML `<!-- -->`
-     * giải thích dài (tiếng Việt, có dấu, emoji) TRƯỚC ĐÂY nằm ngay trong chuỗi body — bị gửi
-     * NGUYÊN VĂN lên camera vì nó ở trong Kotlin triple-quote string, không phải Kotlin comment.
-     * hsoap/2.8 (SOAP stack nhúng đời cũ) không chịu nổi body dài bất thường/ký tự UTF-8 đa byte
-     * trong comment XML, đóng socket giữa chừng. Chuyển toàn bộ giải thích ra KDoc Kotlin bên
-     * ngoài (không gửi lên mạng) — body thật gửi đi giờ gọn, khớp đúng cấu trúc bản curl đã xác
-     * nhận camera chấp nhận.
-     */
     private suspend fun subscribe(eventsUrl: String, username: String?, password: String?): String? =
         withContext(Dispatchers.IO) {
             val body = """
@@ -417,6 +403,16 @@ class OnvifEventRelay @Inject constructor(
                       to = eventsUrl
                   )}
                   <s:Body>
+                    <!-- ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay
+                    giữa chu kỳ Pull, đúng lúc có chuyển động vật lý) — trước đây không khai báo
+                    InitialTerminationTime, để camera tự chọn mặc định. Nhiều camera ONVIF giá rẻ
+                    đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ RESUBSCRIBE_AFTER_N_PULLS ~25s ở
+                    tốc độ hiện tại), khiến subscription chết yểu giữa chừng trước khi app kịp chủ
+                    động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì subscription
+                    không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
+                    — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp
+                    trần thấp hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im
+                    lặng phó mặc hoàn toàn cho mặc định của camera như trước. -->
                     <tev:CreatePullPointSubscription>
                       <tev:InitialTerminationTime>PT5M</tev:InitialTerminationTime>
                     </tev:CreatePullPointSubscription>
@@ -457,7 +453,18 @@ class OnvifEventRelay @Inject constructor(
     // vòng ngoài cần biết để bỏ cuộc SỚM, không đợi hết nguyên RESUBSCRIBE_AFTER_N_PULLS lần thất
     // bại mới chịu resubscribe, xem case thật "ResourceUnknownFault" giữa chừng), false = thành
     // công nhưng không có chuyển động (bình thường), true = có chuyển động.
-    private suspend fun pullOnce(pullPointUrl: String, username: String?, password: String?): Boolean? =
+    // ✅ SỬA (case thật: log DEBUG "Pull(...)" bắn mỗi ~1 giây/lần — do MIN_PULL_INTERVAL_MS +
+    // camera không tuân thủ long-poll — làm System Logs bị spam, khó đọc log khác lẫn vào giữa).
+    // Giữ nguyên MỤC ĐÍCH log gốc (xác nhận vòng Pull không treo/chết âm thầm), chỉ giảm TẦN SUẤT:
+    // log định kỳ mỗi LOG_EVERY_N_PULLS lần thay vì mọi lần. Log near-miss (hasTrueValue nhưng
+    // không match Motion) và log lỗi/warning khác trong file này giữ nguyên tần suất — chỉ dòng
+    // "vẫn đang chạy bình thường" lặp lại vô ích này mới cần giãn ra.
+    private suspend fun pullOnce(
+        pullPointUrl: String,
+        username: String?,
+        password: String?,
+        pullIndex: Int
+    ): Boolean? =
         withContext(Dispatchers.IO) {
             val body = """
                 <?xml version="1.0" encoding="UTF-8"?>
@@ -477,7 +484,9 @@ class OnvifEventRelay @Inject constructor(
                 </s:Envelope>
             """.trimIndent()
 
-            logger.d(TAG, "📤 ONVIF PullMessages → $pullPointUrl")
+            if (pullIndex % LOG_EVERY_N_PULLS == 0) {
+                logger.d(TAG, "📤 ONVIF PullMessages → $pullPointUrl")
+            }
             val response = soapPost(
                 pullPointUrl, body, username, password,
                 action = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
@@ -497,15 +506,18 @@ class OnvifEventRelay @Inject constructor(
                 .containsMatchIn(response)
             val matched = hasMotionTopic && hasTrueValue
 
-            // Log DEBUG mỗi vòng (kể cả không match) — để xác nhận vòng Pull THỰC SỰ đang chạy
-            // đều đặn, không bị treo/chết âm thầm. Cắt bớt response nếu quá dài (PullMessages có
-            // thể trả nhiều message cùng lúc, MessageLimit=10) để không tràn log 1 dòng quá dài.
-            logger.d(
-                TAG,
-                "Pull($pullPointUrl): hasMotionTopic=$hasMotionTopic, hasTrueValue=$hasTrueValue, " +
-                    "matched=$matched | response(${response.length} ký tự, cắt 500 đầu)=" +
-                    response.take(500)
-            )
+            // Log DEBUG định kỳ (không phải mọi vòng) — để xác nhận vòng Pull THỰC SỰ đang chạy đều
+            // đặn, không bị treo/chết âm thầm, mà không spam System Logs mỗi ~1 giây. Cắt bớt response
+            // nếu quá dài (PullMessages có thể trả nhiều message cùng lúc, MessageLimit=10) để không
+            // tràn log 1 dòng quá dài.
+            if (pullIndex % LOG_EVERY_N_PULLS == 0) {
+                logger.d(
+                    TAG,
+                    "Pull($pullPointUrl) #$pullIndex: hasMotionTopic=$hasMotionTopic, hasTrueValue=$hasTrueValue, " +
+                        "matched=$matched | response(${response.length} ký tự, cắt 500 đầu)=" +
+                        response.take(500)
+                )
+            }
 
             // ✅ MỚI (debug case thật: hasTrueValue=true nhưng hasMotionTopic=false — camera CÓ
             // báo 1 giá trị chuyển true, rất có thể đúng lúc chuyển động vật lý xảy ra, nhưng

@@ -450,6 +450,16 @@ fun CameraDialog(
                 qrIdentity = r.identity
                 detectedVendor = r.identity.vendor ?: detectedVendor
                 qrScanViewModel.consume()
+                // ✅ SỬA (góp ý user: "quét QR xong nhưng có tự động được gì đâu" — đúng, trước đây
+                // quét xong chỉ hiện 1 dòng text nhắc người dùng TỰ bấm nút "Tự động dò tìm camera
+                // trong mạng" riêng, thêm 1 bước thao tác thừa và dễ bị bỏ qua vì dòng nhắc nằm
+                // dưới, không nổi bật). Quét QR xong → MỞ THẲNG dialog dò tìm mạng luôn, đúng đích
+                // quét QR sinh ra để làm (đối chiếu deviceId với kết quả LAN discovery) — không có
+                // lý do gì bắt người dùng phải tự tìm nút bấm tiếp theo. Vẫn giữ nguyên nguyên tắc
+                // gốc "không tự động ghi form": dialog mở ra chỉ ĐỀ XUẤT kết quả khớp (đánh dấu 🟢
+                // qua qrIdentity truyền vào CameraDiscoveryDialog bên dưới), người dùng vẫn phải tự
+                // bấm CHỌN 1 kết quả mới thật sự điền vào form.
+                showDiscoveryDialog = true
             }
             is CameraQrScanResult.Error -> {
                 locationError = "Quét QR lỗi: ${r.message}"
@@ -617,8 +627,12 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                                 color = MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                "Bấm \"Tự động dò tìm camera trong mạng\" để đối chiếu, hoặc thêm " +
-                                    "thẳng vào ghi chú nếu không tìm được camera này trên mạng.",
+                                // ✅ SỬA: dialog dò tìm giờ đã tự mở ngay sau khi quét (xem
+                                // LaunchedEffect ở trên) — dòng nhắc "bấm nút..." không còn đúng bối
+                                // cảnh. Đổi thành hướng dẫn cho trường hợp còn lại: dialog không tìm
+                                // thấy kết quả khớp, hoặc người dùng đã đóng dialog mà chưa chọn gì.
+                                "Nếu không tìm được camera này trên mạng, có thể bấm \"Tự động dò " +
+                                    "tìm\" lại hoặc thêm thẳng deviceId vào ghi chú bên dưới.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
