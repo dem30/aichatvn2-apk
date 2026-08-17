@@ -796,12 +796,19 @@ class CameraDetailViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val url = _camera.value?.snapshoturl
+                val cam = _camera.value
+                val url = cam?.snapshoturl
                 if (url.isNullOrBlank()) {
                     logger.w("CameraDetailViewModel", "loadLiveSnapshot: snapshotUrl trống, id=$cameraId")
                 } else {
+                    // ✅ SỬA: trước đây gọi thẳng snapshotFetcher.fetchSnapshot(url) — bỏ qua hoàn
+                    // toàn nhánh RTSP, nên camera chỉ có RTSP (không có endpoint HTTP snapshot, vd
+                    // case V380) luôn trả null ở màn hình này dù testCameraUrl()/scanCamera() phía
+                    // CameraSkill đã xử lý đúng từ trước. Đổi sang cameraSkill.fetchOneSnapshot() —
+                    // cùng hàm dùng chung cho mọi nơi cần lấy 1 tấm ảnh từ URL camera (tự rẽ nhánh
+                    // http/https/rtsp), tránh lặp lại lỗi bỏ sót y hệt.
                     val bytes = withContext(Dispatchers.IO) {
-                        snapshotFetcher.fetchSnapshot(url)
+                        cameraSkill.fetchOneSnapshot(url, cam.snapshotUsername, cam.snapshotPassword)
                     }
                     if (bytes != null) {
                         logger.d("CameraDetailViewModel", "loadLiveSnapshot: OK (${bytes.size} bytes) | id=$cameraId")

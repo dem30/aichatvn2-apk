@@ -243,7 +243,13 @@ PluginAction(
     // ổn. url ở đây có thể là snapshoturl (LAN) hoặc snapshotUrlRemote — cả hai đều có thể là
     // rtsp:// nếu người dùng cấu hình vậy, nên kiểm tra scheme ở MỘT chỗ duy nhất thay vì lặp lại
     // ở từng nhánh gọi.
-    private suspend fun fetchOneSnapshot(url: String, username: String?, password: String?): ByteArray? {
+    // ✅ SỬA: bỏ `private` — CameraDetailViewModel.loadLiveSnapshot() (màn hình chi tiết camera,
+    // nút xem ảnh chụp thử) đang gọi thẳng snapshotFetcher.fetchSnapshot(url) thay vì qua hàm
+    // này, nên camera chỉ có RTSP vẫn luôn trả null ở MÀN HÌNH ĐÓ dù scanCamera()/testCameraUrl()
+    // trong chính CameraSkill đã rẽ nhánh đúng từ trước. Public hoá để mọi nơi cần "lấy 1 tấm ảnh
+    // từ URL camera, tự động hiểu cả http/https lẫn rtsp" đều gọi qua ĐÚNG MỘT chỗ này, tránh lặp
+    // lại lỗi bỏ sót y hệt ở chỗ khác về sau.
+    suspend fun fetchOneSnapshot(url: String, username: String?, password: String?): ByteArray? {
         if (url.trim().startsWith("rtsp://", ignoreCase = true)) {
             return rtspFrameGrabber.grabFrame(buildRtspUrlWithCredentials(url, username, password))
         }

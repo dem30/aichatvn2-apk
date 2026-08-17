@@ -15,6 +15,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import com.aichatvn.agent.ui.viewmodels.CallViewModel
@@ -49,18 +51,43 @@ fun CameraLiveViewScreen(
     // ✅ MỚI: player chỉ tồn tại trong lúc màn hình này hiển thị — release() ngay khi rời
     // màn hình (DisposableEffect), KHÔNG giữ nền như service — đúng thiết kế đã chốt.
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
+    // ✅ MỚI: lỗi phát RTSP (SETUP thất bại, timeout, auth sai...) — trước đây ExoPlayer fail
+    // HOÀN TOÀN ÂM THẦM: không có Player.Listener nào gắn vào, người dùng chỉ thấy khung đen vĩnh
+    // viễn không rõ lý do, tưởng app bị treo. Giờ bắt lỗi và hiện luôn trên UI.
+    var playbackError by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(state) {
         val s = state
+        var listener: Player.Listener? = null
         if (s is LiveViewState.Ready) {
+            playbackError = null
+            // ⚠️ SỬA (màn hình đen không rõ lý do): ExoPlayer mặc định thử RTP qua UDP trước —
+            // nếu NAT/router chặn UDP inbound (rất phổ biến trên mạng nhà, 4G, hoặc khi router
+            // không mở port UDP tương ứng), ExoPlayer  ÂM THẦM đợi tới hết setTimeoutMs() (mặc
+            // định 8s, có thể lâu hơn) rồi mới tự chuyển sang TCP — trong lúc đó màn hình chỉ có
+            // màu đen, không có lỗi hay dấu hiệu gì. Đây là giới hạn CÙNG BẢN CHẤT với vấn đề UDP
+            // trên Android mà RtspFrameGrabber.kt (nhánh chụp ảnh AI qua FFmpeg) đã phải xử lý
+            // bằng "-rtsp_transport tcp" — ở đây dùng setForceUseRtpTcp(true) làm điều tương
+            // đương cho ExoPlayer, ép TCP ngay từ đầu thay vì đợi timeout rồi mới fallback.
+            val mediaSource = RtspMediaSource.Factory()
+                .setForceUseRtpTcp(true)
+                .setTimeoutMs(8_000)
+                .createMediaSource(MediaItem.fromUri(s.rtspUrl))
             val exo = ExoPlayer.Builder(context).build().apply {
-                setMediaSource(RtspMediaSource.Factory().createMediaSource(MediaItem.fromUri(s.rtspUrl)))
+                setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = true
             }
+            listener = object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    playbackError = "Không phát được RTSP: ${error.errorCodeName} — ${error.message}"
+                }
+            }
+            exo.addListener(listener)
             player = exo
         }
         onDispose {
+            listener?.let { player?.removeListener(it) }
             player?.release()
             player = null
         }
@@ -142,6 +169,16 @@ fun CameraLiveViewScreen(
                         AndroidView(
                             modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).align(Alignment.Center),
                             factory = { PlayerView(context).apply { this.player = exo } }
+                        )
+                    }
+                    // ✅ MỚI: hiện lỗi phát RTSP ngay giữa khung hình (đè lên chỗ trước đây luôn
+                    // đen im lặng) — xem playbackError ở DisposableEffect phía trên.
+                    playbackError?.let { err ->
+                        Text(
+                            err,
+                            modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                     Column(
