@@ -441,12 +441,18 @@ class OnvifEventRelay @Inject constructor(
             httpClient.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string()
                 if (!response.isSuccessful) {
-                    // SOAP Fault vẫn có thể mang thông tin dùng được (một số camera trả Fault kèm
-                    // gợi ý auth) — nhưng để đơn giản và nhất quán với style probe hiện có, coi
-                    // response lỗi HTTP rõ ràng là thất bại, không cố khai thác thêm. Log rõ code +
-                    // body (nếu có) để phân biệt được với timeout/mất kết nối (2 trường hợp trước
-                    // đây trông giống hệt nhau trong log — đều chỉ "không thấy gì" từ phía gọi).
-                    logger.w(TAG, "SOAP $url trả HTTP ${response.code}: ${text?.take(300) ?: "(rỗng)"}")
+                    // ✅ SỬA (debug case thật: 2 lần dán log 400 liên tiếp đều bị cắt đứt ngay sau
+                    // phần khai báo xmlns, CHƯA BAO GIỜ tới được lý do lỗi thật) — take(300) trước
+                    // đây quá ngắn: SOAP Fault chuẩn luôn có 1 khối xmlns dài ở s:Envelope trước
+                    // khi tới s:Reason/s:Text (lý do thật), 300 ký tự gần như chắc chắn chưa ra
+                    // khỏi phần namespace. Trích thẳng Fault Code + Reason bằng regex (đủ cho debug,
+                    // không kéo XML parser đầy đủ — cùng tinh thần best-effort với các chỗ khác
+                    // trong file) thay vì cắt mù theo độ dài; nếu không tách được (SOAP Fault không
+                    // theo cấu trúc chuẩn, hoặc body không phải XML) mới rơi về cắt thô, và tăng
+                    // ngưỡng cắt thô lên 1200 (đủ dư so với 300 cũ) để còn cơ hội thấy phần thân.
+                    val faultSummary = extractSoapFaultSummary(text)
+                        ?: text?.take(1200) ?: "(rỗng)"
+                    logger.w(TAG, "SOAP $url trả HTTP ${response.code}: $faultSummary")
                     return null
                 }
                 if (text.isNullOrBlank()) {
@@ -459,6 +465,24 @@ class OnvifEventRelay @Inject constructor(
             logger.w(TAG, "SOAP request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
             null
         }
+    }
+
+    /**
+     * ✅ MỚI: trích Fault Code + Reason từ SOAP Fault (hỗ trợ cả SOAP 1.2 "<s:Reason><s:Text>...
+     * </s:Text></s:Reason>" lẫn SOAP 1.1 "<faultstring>...</faultstring>", vì tuỳ camera trả 1
+     * trong 2 dạng). Trả null nếu không khớp được cấu trúc nào (soapPost() tự rơi về cắt thô khi
+     * đó) — regex lỏng, đủ cho debug, cùng tinh thần best-effort với các chỗ khác trong file.
+     */
+    private fun extractSoapFaultSummary(body: String?): String? {
+        if (body.isNullOrBlank()) return null
+        val reason = Regex("<(?:\\w+:)?Text[^>]*>(.*?)</(?:\\w+:)?Text>", RegexOption.DOT_MATCHES_ALL)
+            .find(body)?.groupValues?.get(1)?.trim()
+            ?: Regex("<(?:\\w+:)?faultstring[^>]*>(.*?)</(?:\\w+:)?faultstring>", RegexOption.DOT_MATCHES_ALL)
+                .find(body)?.groupValues?.get(1)?.trim()
+        val code = Regex("<(?:\\w+:)?Value[^>]*>(.*?)</(?:\\w+:)?Value>", RegexOption.DOT_MATCHES_ALL)
+            .find(body)?.groupValues?.get(1)?.trim()
+        if (reason == null && code == null) return null
+        return listOfNotNull(code?.let { "code=$it" }, reason?.let { "reason=$it" }).joinToString(", ")
     }
 
     /**
