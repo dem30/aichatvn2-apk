@@ -463,8 +463,8 @@ class OnvifEventRelay @Inject constructor(
                 </s:Envelope>
             """.trimIndent()
 
+            logger.d(TAG, "📤 ONVIF PullMessages → $pullPointUrl")
             val response = soapPost(pullPointUrl, body, username, password)
-            if (response == null) {
                 logger.w(TAG, "⚠️ PullMessages($pullPointUrl) không có response (lỗi HTTP/timeout/exception — xem log SOAP request phía trên).")
                 return@withContext null
             }
