@@ -158,9 +158,17 @@ class OnvifEventRelay @Inject constructor(
     // camera cụ thể nào từng gặp lỗi "unexpected end of stream". Chỉ derive readTimeout dài hơn
     // ở đây (qua newBuilder(), vẫn CHIA SẺ ConnectionPool/Dispatcher với client gốc) vì
     // PullMessages là long-poll, cần chờ lâu hơn timeout mặc định của client dùng chung.
+    // ✅ TẠM (debug): log HEADERS thật OkHttp gửi/nhận — so trực tiếp với curl đã xác nhận
+    // camera chấp nhận, để tìm khác biệt tầng thấp mà so từng header thủ công không ra được
+    // (Content-Length cố định vs chunked, thứ tự header, User-Agent...). Gỡ interceptor này sau
+    // khi tìm ra nguyên nhân, không để lại trong bản release (log Basic Auth ra Logcat).
     private val httpClient: OkHttpClient = cameraLanHttpClient
         .newBuilder()
         .readTimeout((PULL_TIMEOUT_SECONDS + 10).toLong(), TimeUnit.SECONDS)
+        .addNetworkInterceptor(
+            okhttp3.logging.HttpLoggingInterceptor { message -> logger.d(TAG, "🔬 OkHttp: $message") }
+                .apply { level = okhttp3.logging.HttpLoggingInterceptor.Level.HEADERS }
+        )
         .build()
 
     // cameraId -> Job đang chạy vòng lặp subscribe+pull cho camera đó.

@@ -275,6 +275,9 @@ class CameraCapabilityProber @Inject constructor(
                     // OEM hsoap/2.8: test thực tế cho thấy Connection: close ổn định.
                     .header("Connection", "close")
                     .header("Accept", "application/soap+xml, text/xml, */*")
+                    // ✅ SỬA: tắt gzip tự động của OkHttp (Accept-Encoding: gzip) — xem giải thích
+                    // đầy đủ ở OnvifEventRelay.soapPostOnce(), cùng nguyên nhân EOF trên camera này.
+                    .header("Accept-Encoding", "identity")
 
                 if (soapActionHeader) {
                     builder.header("SOAPAction", "\"$soapAction\"")
