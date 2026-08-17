@@ -719,6 +719,9 @@ class OnvifEventRelay @Inject constructor(
             val builder = Request.Builder()
                 .url(url)
                 .post(requestBody.toRequestBody(contentType.toMediaType()))
+                // Camera hsoap/2.8 đã xác nhận ổn định với Connection: close.
+                .header("Connection", "close")
+                .header("Accept", "application/soap+xml, text/xml, */*")
 
             if (version == SoapVersion.SOAP_11) {
                 builder.header("SOAPAction", "\"$action\"")

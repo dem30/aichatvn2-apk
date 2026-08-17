@@ -157,9 +157,13 @@ class CustomerCameraViewModel @Inject constructor(
             // ✅ SỬA: port đọc từ chính snapshotUrl đã lưu (vd 8800 với camera V380) là port THẬT
             // của camera — truyền vào knownPort để RTSP/HTTP-snapshot thử đúng port đó thay vì chỉ
             // 554/80 mặc định. httpPort giữ nguyên 80 cho nhánh ONVIF (hành vi cũ, không đổi).
+            // ✅ SỬA: dùng lại XAddr thật đã lưu từ lúc dò tìm (nếu có) — cùng nguyên tắc
+            // CameraDetailViewModel.probeCapabilities(): tránh suy đoán "http://$host:80/onvif/
+            // device_service" khi camera dùng port ONVIF riêng (vd :8899).
             val probeResult = capabilityProber.probe(
                 ip = host, knownPort = port,
-                username = cam.snapshotUsername, password = cam.snapshotPassword
+                username = cam.snapshotUsername, password = cam.snapshotPassword,
+                knownOnvifDeviceUrl = cam.onvifDeviceServiceUrl
             )
             database.cameraDao().updateCamera(
                 cam.copy(

@@ -197,8 +197,23 @@ class OnvifWsDiscoveryProbe @Inject constructor(
      * 1-2 giá trị). ProbeMatch có thể trả nhiều XAddr cách nhau bởi khoảng trắng — chỉ lấy cái đầu.
      */
     private fun extractXAddr(responseXml: String): String? {
-        val match = Regex("<[a-zA-Z]*:?XAddrs>(.*?)</[a-zA-Z]*:?XAddrs>", RegexOption.DOT_MATCHES_ALL)
-            .find(responseXml) ?: return null
-        return match.groupValues[1].trim().split(Regex("\\s+")).firstOrNull()?.takeIf { it.isNotBlank() }
+        val match = Regex(
+            """<(?:[A-Za-z_][\w.-]*:)?XAddrs\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?XAddrs\s*>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).find(responseXml) ?: return null
+
+        val candidates = match.groupValues[1]
+            .trim()
+            .split(Regex("\\s+"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        // Nếu camera trả nhiều XAddr, ưu tiên HTTP Device Service.
+        return candidates.firstOrNull {
+            it.startsWith("http://", ignoreCase = true) &&
+                it.contains("/onvif/device_service", ignoreCase = true)
+        } ?: candidates.firstOrNull {
+            it.startsWith("http://", ignoreCase = true)
+        } ?: candidates.firstOrNull()
     }
 }

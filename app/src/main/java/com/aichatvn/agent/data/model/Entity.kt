@@ -202,6 +202,14 @@ data class CameraConfigEntity(
     val onvifSupported: Int = 0,
     @ColumnInfo(defaultValue = "NULL")
     val onvifEventUrl: String? = null,
+    // ✅ MỚI: XAddr (device service URL) mà OnvifWsDiscoveryProbe tìm được lúc dò tìm LAN, vd
+    // "http://192.168.0.104:8899/onvif/device_service". Trước đây giá trị này chỉ được ghi vào
+    // landInfo dạng text tự do rồi mất — probeCapabilities() phải tự suy port từ snapshoturl,
+    // nên không bao giờ dùng lại được XAddr thật đã dò được. Lưu riêng field này để
+    // CameraDetailViewModel.probeCapabilities() truyền thẳng vào
+    // CameraCapabilityProber.probe(knownOnvifDeviceUrl = ...) thay vì suy đoán port 80 mặc định.
+    @ColumnInfo(defaultValue = "NULL")
+    val onvifDeviceServiceUrl: String? = null,
     @ColumnInfo(defaultValue = "0")
     val onvifEnabled: Int = 0,
     @ColumnInfo(defaultValue = "0")

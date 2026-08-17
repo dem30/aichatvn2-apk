@@ -408,6 +408,11 @@ fun CameraDialog(
     var snapshotPassword by remember { mutableStateOf(camera?.snapshotPassword ?: "") }
     // ✅ MỚI: URL dự phòng cloud/public — dùng khi LAN không kết nối được (vd đang ở ngoài mạng nhà).
     var snapshotUrlRemote by remember { mutableStateOf(camera?.snapshotUrlRemote ?: "") }
+    // ✅ MỚI: XAddr thật (ONVIF device service URL) tìm được qua OnvifWsDiscoveryProbe — nạp sẵn
+    // nếu đang sửa camera đã có, ghi lại khi chọn 1 kết quả dò tìm ONVIF (xem onCameraSelected).
+    // Trước đây giá trị này chỉ được nhét vào landInfo dạng ghi chú text rồi mất, không dùng lại
+    // được cho probeCapabilities() — xem ghi chú field onvifDeviceServiceUrl trong Entity.kt.
+    var onvifDeviceServiceUrl by remember { mutableStateOf(camera?.onvifDeviceServiceUrl ?: "") }
     var showDiscoveryDialog by remember { mutableStateOf(false) }
     // ✅ MỚI: danh tính camera từ quét QR (CameraQrDiscovery) — CHỈ là state chờ đối chiếu, KHÔNG
     // tự ghi vào landInfo lúc quét xong. Đi vào landInfo ở 1 trong 2 đường: (a) khớp với 1 kết quả
@@ -477,6 +482,12 @@ fun CameraDialog(
                 snapshotPassword = discovered.credentials?.password ?: ""
                 urlTestState = UrlTestState.Idle
                 detectedVendor = discovered.manufacturer ?: qrIdentity?.vendor ?: detectedVendor
+                // ✅ MỚI: giữ lại XAddr thật khi kết quả chọn là ONVIF — trước đây chỉ có bản ghi
+                // text trong landInfo (xem note bên dưới), giờ lưu thêm vào field riêng để
+                // probeCapabilities() dùng thẳng thay vì suy đoán port 80 từ IP.
+                if (discovered.protocol == "onvif" && !discovered.deviceId.isNullOrBlank()) {
+                    onvifDeviceServiceUrl = discovered.deviceId
+                }
                 // Luôn ghi lại thông tin phần cứng đã biết vào landInfo (không có field riêng cho
                 // việc này trong form) — kể cả khi đã verify, để giữ lại protocol/deviceId gốc.
                 val label = when (discovered.protocol) {
@@ -747,6 +758,7 @@ if (customerEmail.isNotBlank()) Text("Email: $customerEmail", style = MaterialTh
                         "snapshotUsername" to snapshotUsername.trim(),
                         "snapshotPassword" to snapshotPassword.trim(),
                         "snapshotUrlRemote" to snapshotUrlRemote.trim(),
+                        "onvifDeviceServiceUrl" to onvifDeviceServiceUrl.trim(),
                         "landinfo" to landInfo.trim(),
                         "aiPrompt" to aiPrompt.trim(),
                         "aiPositiveKeywords" to aiPositiveKeywords.trim(),

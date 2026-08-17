@@ -2283,6 +2283,14 @@ PluginAction(
                 // quả probe + tắt mất Switch RTSP/ONVIF người dùng đã bật.
                 onvifSupported = existing?.onvifSupported ?: 0,
                 onvifEventUrl = existing?.onvifEventUrl,
+                // ✅ MỚI: khác với onvifEventUrl (chỉ do probe tự tìm ra, không có trong form nên
+                // luôn kế thừa existing) — onvifDeviceServiceUrl (XAddr) THẬT SỰ có trong config
+                // khi người dùng vừa chọn 1 kết quả dò tìm ONVIF ở CameraDialog (xem
+                // CameraComponents.kt). Áp dụng cùng pattern với snapshotUrlRemote ngay dưới: ưu
+                // tiên giá trị mới trong config, chỉ kế thừa existing khi config không gửi (vd
+                // sửa camera qua form khác không đụng tới bước dò tìm).
+                onvifDeviceServiceUrl = (config["onvifDeviceServiceUrl"] as? String)?.trim()?.ifBlank { null }
+                    ?: existing?.onvifDeviceServiceUrl,
                 onvifEnabled = existing?.onvifEnabled ?: 0,
                 rtspSupported = existing?.rtspSupported ?: 0,
                 rtspUrl = existing?.rtspUrl,

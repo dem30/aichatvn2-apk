@@ -155,13 +155,22 @@ class CameraCapabilityProber @Inject constructor(
         httpPort: Int = 80,
         knownPort: Int? = null,
         username: String?,
-        password: String?
+        password: String?,
+        // XAddr lấy trực tiếp từ WS-Discovery.
+        // Khi có XAddr, ưu tiên chính endpoint này thay vì tự dựng từ IP + port.
+        knownOnvifDeviceUrl: String? = null
     ): CapabilityProbeResult = withContext(Dispatchers.IO) {
         // knownPort lên đầu danh sách (ưu tiên thử trước vì khả năng đúng cao hơn), sau đó tới các
         // port ứng viên chuẩn — distinct() để không thử trùng khi knownPort đã nằm trong danh sách.
         val candidatePorts = (listOfNotNull(knownPort) + CANDIDATE_PORTS_FOR_KNOWN_CAMERA).distinct()
 
-        val onvifUrl = runCatching { tryProbeOnvif(ip, httpPort) }.getOrNull()
+        val onvifUrl = runCatching {
+            tryProbeOnvif(
+                ip = ip,
+                httpPort = httpPort,
+                knownOnvifDeviceUrl = knownOnvifDeviceUrl
+            )
+        }.getOrNull()
         val rtspUrl = runCatching { tryProbeRtsp(ip, candidatePorts, username, password) }.getOrNull()
         // ✅ MỚI: chỉ thử HTTP snapshot khi ONVIF/RTSP đều không xác nhận được gì — đây là phương
         // án cuối để vẫn trả về được 1 verifiedSnapshotUrl cho camera dùng giao thức riêng (V380...)
@@ -193,12 +202,117 @@ class CameraCapabilityProber @Inject constructor(
      * khi httpPort đã là 8899). Mỗi cổng vẫn đi qua đúng 1 hàm probe thật (tryProbeOnvifOnPort) —
      * không có nhánh nào tự gán "có ONVIF" mà không qua GetCapabilities SOAP thật.
      */
-    private fun tryProbeOnvif(ip: String, httpPort: Int): String? {
+    private fun tryProbeOnvif(
+        ip: String,
+        httpPort: Int,
+        knownOnvifDeviceUrl: String?
+    ): String? {
+        // WS-Discovery đã trả XAddr thật của camera: giữ nguyên endpoint đó.
+        if (!knownOnvifDeviceUrl.isNullOrBlank()) {
+            val xAddr = knownOnvifDeviceUrl.trim()
+            if (runCatching { URI(xAddr).host }.getOrNull().isNullOrBlank()) {
+                logger.w(
+                    "CameraCapabilityProber",
+                    "XAddr từ WS-Discovery không hợp lệ: '$xAddr' — fallback IP/port."
+                )
+            } else {
+                tryProbeOnvifAtUrl(xAddr)?.let { return it }
+            }
+        }
+
+        // Fallback cho caller cũ chưa truyền XAddr.
         tryProbeOnvifOnPort(ip, httpPort)?.let { return it }
         if (httpPort != ONVIF_FALLBACK_PORT) {
             tryProbeOnvifOnPort(ip, ONVIF_FALLBACK_PORT)?.let { return it }
         }
         return null
+    }
+
+    private fun tryProbeOnvifOnPort(ip: String, port: Int): String? =
+        tryProbeOnvifAtUrl("http://$ip:$port/onvif/device_service")
+
+    /**
+     * Probe đúng endpoint ONVIF Device Service đã biết.
+     * Không tự suy diễn lại XAddr nếu WS-Discovery đã cung cấp nó.
+     */
+    private fun tryProbeOnvifAtUrl(deviceServiceUrl: String): String? {
+        val uri = runCatching { URI(deviceServiceUrl) }.getOrNull() ?: return null
+        if (uri.scheme.isNullOrBlank() || uri.host.isNullOrBlank()) return null
+
+        val soapAction = "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
+
+        val soap12Body = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+              <s:Body>
+                <GetCapabilities xmlns="http://www.onvif.org/ver10/device/wsdl">
+                  <Category>All</Category>
+                </GetCapabilities>
+              </s:Body>
+            </s:Envelope>
+        """.trimIndent()
+
+        val soap11Body = soap12Body.replace(
+            "http://www.w3.org/2003/05/soap-envelope",
+            "http://schemas.xmlsoap.org/soap/envelope/"
+        )
+
+        fun probe(body: String, contentType: String, soapActionHeader: Boolean): String? {
+            return try {
+                val builder = Request.Builder()
+                    .url(deviceServiceUrl)
+                    .post(body.toRequestBody(contentType.toMediaType()))
+                    // OEM hsoap/2.8: test thực tế cho thấy Connection: close ổn định.
+                    .header("Connection", "close")
+                    .header("Accept", "application/soap+xml, text/xml, */*")
+
+                if (soapActionHeader) {
+                    builder.header("SOAPAction", "\"$soapAction\"")
+                }
+
+                onvifClient.newCall(builder.build()).execute().use { response ->
+                    val responseBody = response.body?.string() ?: return null
+                    if (!response.isSuccessful &&
+                        !responseBody.contains("soap", ignoreCase = true)
+                    ) return null
+                    responseBody
+                }
+            } catch (e: Exception) {
+                logger.d(
+                    "CameraCapabilityProber",
+                    "GetCapabilities ${contentType.substringBefore(';')} $deviceServiceUrl lỗi: ${e.message}"
+                )
+                null
+            }
+        }
+
+        val body = probe(
+            soap12Body,
+            "application/soap+xml; charset=utf-8",
+            soapActionHeader = false
+        ) ?: probe(
+            soap11Body,
+            "text/xml; charset=utf-8",
+            soapActionHeader = true
+        ) ?: return null
+
+        val eventsBlock = Regex(
+            """<(?:[A-Za-z_][\w.-]*:)?Events\b[^>]*>(.*?)</(?:[A-Za-z_][\w.-]*:)?Events\s*>""",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).find(body)?.groupValues?.get(1)
+
+        val eventsXAddr = eventsBlock?.let { block ->
+            Regex(
+                """<(?:[A-Za-z_][\w.-]*:)?XAddr\b[^>]*>\s*(.*?)\s*</(?:[A-Za-z_][\w.-]*:)?XAddr\s*>""",
+                setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+            ).find(block)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+        return when {
+            eventsXAddr != null -> eventsXAddr
+            eventsBlock != null -> deviceServiceUrl
+            else -> null
+        }
     }
 
     /**

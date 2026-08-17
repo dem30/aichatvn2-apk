@@ -547,9 +547,16 @@ class CameraDetailViewModel @Inject constructor(
                 // đó, thay vì bị nhét nhầm vào httpPort (tham số dành riêng cho ONVIF, mặc định 80
                 // — trước đây gây lỗi biên dịch/lệch tham số khi CameraCapabilityProber.probe()
                 // thêm knownPort xen giữa httpPort và username).
+                // ✅ MỚI: nếu camera này được thêm qua dò tìm ONVIF WS-Discovery, ta đã có sẵn
+                // XAddr thật (onvifDeviceServiceUrl, vd "http://192.168.0.104:8899/onvif/device_service").
+                // Truyền thẳng vào knownOnvifDeviceUrl để CameraCapabilityProber gọi đúng URL đó,
+                // thay vì tự suy đoán "http://$host:80/onvif/device_service" — nhiều camera TQ giá
+                // rẻ dùng port ONVIF riêng khác 80 nên suy đoán port 80 sẽ probe sai và báo
+                // "không hỗ trợ ONVIF" oan, dù XAddr thật đã dò được từ trước.
                 val result = capabilityProber.probe(
                     ip = host, knownPort = port,
-                    username = cam.snapshotUsername, password = cam.snapshotPassword
+                    username = cam.snapshotUsername, password = cam.snapshotPassword,
+                    knownOnvifDeviceUrl = cam.onvifDeviceServiceUrl
                 )
 
                 val updated = cam.copy(
