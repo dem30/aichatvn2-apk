@@ -227,10 +227,26 @@ class OnvifEventRelay @Inject constructor(
             logger.w(TAG, "Camera ${camera.id.trim()}: không trích được host từ onvifEventUrl='$eventsUrl', bỏ qua relay.")
             return false
         }
+        // ✅ SỬA (debug case thật: người dùng đứng đúng cạnh camera nhưng không thấy log gì cả —
+        // trước đây nhánh này im lặng hoàn toàn khi trả false, không có cách nào tự chẩn đoán qua
+        // Logcat). Log rõ subnet hiện tại của máy vs subnet suy ra từ camera — nguyên nhân phổ
+        // biến nhất: getCurrentWifiSubnet() trả null vì thiếu quyền ACCESS_FINE_LOCATION (Android
+        // 10+ yêu cầu quyền Location mới đọc được SSID/IP Wi-Fi thật, WifiManager.connectionInfo
+        // trả rỗng/giả nếu thiếu quyền — không throw exception nên NetworkContext không tự biết
+        // để báo lỗi, chỉ lặng lẽ trả null → isOnSavedSubnet() luôn false).
         if (!networkContext.isOnSavedSubnet(cameraHost)) {
-            // Bình thường, không phải lỗi — điện thoại đang ở mạng khác (ngoài LAN nhà, hoặc
-            // đang dùng data di động). reconcileOnce() sẽ tự phát hiện lại khi máy quay về LAN
-            // của camera này (chu kỳ RECONCILE_INTERVAL_MS).
+            val currentSubnet = networkContext.getCurrentWifiSubnet()
+            logger.d(
+                TAG,
+                "Camera ${camera.id.trim()} (host=$cameraHost) tạm không subscribe — " +
+                    if (currentSubnet == null)
+                        "không đọc được subnet Wi-Fi hiện tại của máy (null). Có thể do: (1) máy " +
+                            "không kết nối Wi-Fi/đang dùng data di động, hoặc (2) app CHƯA được cấp " +
+                            "quyền Vị trí (Location) — Android 10+ bắt buộc quyền này để đọc SSID/IP " +
+                            "Wi-Fi thật. Kiểm tra Cài đặt hệ thống > Ứng dụng > AIChatVN2 > Quyền > Vị trí."
+                    else
+                        "subnet máy hiện tại '$currentSubnet' khác subnet camera (suy từ IP $cameraHost)."
+            )
             return false
         }
         return true
