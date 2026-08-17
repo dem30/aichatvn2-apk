@@ -125,6 +125,19 @@ class OnvifEventRelay @Inject constructor(
         // CameraCapabilityProber.tryProbeOnvif()).
         private const val RESUBSCRIBE_AFTER_N_PULLS = 25
 
+        // ✅ MỚI (debug case thật: log cho thấy các lần Pull cách nhau ~40-65ms thay vì gần
+        // PULL_TIMEOUT_SECONDS=20s như kỳ vọng). PullMessages ĐÚNG CHUẨN ONVIF phải tự block phía
+        // camera tới khi có message hoặc hết Timeout — nhưng không phải camera nào cũng tuân thủ
+        // đúng (camera này trả lời gần như tức thì khi không có gì để báo). Vòng while ở
+        // runCameraLoop() trước đây không có delay() nào, đặt cược hoàn toàn vào việc bản thân
+        // PullMessages tự chặn đủ lâu — với camera không tuân thủ, vòng lặp biến thành busy-loop
+        // thật sự, dồn dập gửi request tới mức đạt RESUBSCRIBE_AFTER_N_PULLS chỉ trong hơn 1
+        // giây, kéo theo subscribe() lại liên tục dồn dập → nhiều camera ONVIF giá rẻ giới hạn
+        // tốc độ tạo subscription sẽ trả 400 khi bị dồn kiểu này (đúng log WARNING đã thấy). Ép
+        // sàn thời gian tối thiểu giữa 2 lần Pull ở CHÍNH PHÍA APP — không phụ thuộc camera có tự
+        // block đủ lâu hay không.
+        private const val MIN_PULL_INTERVAL_MS = 1_000L
+
         private const val ERROR_RETRY_DELAY_MS = 10_000L
     }
 
@@ -283,12 +296,21 @@ class OnvifEventRelay @Inject constructor(
 
                 var pullCount = 0
                 while (coroutineContext.isActive && pullCount < RESUBSCRIBE_AFTER_N_PULLS) {
+                    // ✅ MỚI: đo thời gian THỰC TẾ của lần Pull này — nếu camera trả lời nhanh hơn
+                    // nhiều so với PULL_TIMEOUT_SECONDS (không tuân thủ long-poll đúng chuẩn), bù
+                    // thêm delay() cho đủ MIN_PULL_INTERVAL_MS trước khi Pull lần kế — không đổi
+                    // gì nếu camera đã tự block đủ lâu (elapsed >= sàn thì delay(0), bỏ qua).
+                    val startedAt = System.currentTimeMillis()
                     val motionDetected = pullOnce(pullPointUrl, username, password)
                     if (motionDetected) {
                         logger.i(TAG, "🚨 ONVIF phát hiện chuyển động: camera $cameraId")
                         relayMotionEvent(cameraId)
                     }
                     pullCount++
+                    val elapsed = System.currentTimeMillis() - startedAt
+                    if (elapsed < MIN_PULL_INTERVAL_MS) {
+                        delay(MIN_PULL_INTERVAL_MS - elapsed)
+                    }
                 }
                 // Chủ động resubscribe theo chu kỳ — an toàn hơn là cố parse chính xác
                 // TerminationTime trả về lúc subscribe (xem comment RESUBSCRIBE_AFTER_N_PULLS).
