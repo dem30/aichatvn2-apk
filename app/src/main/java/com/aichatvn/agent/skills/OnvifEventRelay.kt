@@ -103,6 +103,9 @@ class OnvifEventRelay @Inject constructor(
     // ✅ MỚI: thay cho gate deviceRole == "camera_node" — kiểm tra ĐỘNG chính máy này có đang
     // cùng LAN Wi-Fi với 1 camera cụ thể không, đúng bản chất kỹ thuật cần cho ONVIF subscribe.
     private val networkContext: com.aichatvn.agent.utils.NetworkContext,
+    // ✅ MỚI: client HTTP dùng chung cho MỌI camera trên LAN (xem CameraLanHttpClient.kt) — thay
+    // cho việc tự dựng OkHttpClient.Builder() riêng như trước.
+    @com.aichatvn.agent.di.CameraLanHttpClient private val cameraLanHttpClient: OkHttpClient,
     private val logger: Logger,
 ) {
     companion object {
@@ -148,10 +151,16 @@ class OnvifEventRelay @Inject constructor(
         private const val ERROR_RETRY_DELAY_MS = 10_000L
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+    // ✅ SỬA (thiết kế lại theo đúng chuẩn — xem KDoc đầy đủ ở CameraLanHttpClient.kt): không còn
+    // tự dựng OkHttpClient riêng ở đây nữa. [cameraLanHttpClient] tiêm qua Hilt là 1 client DÙNG
+    // CHUNG cho MỌI lời gọi HTTP/SOAP tới camera trên LAN trong toàn app (đã tắt connection pool
+    // ở cấp Provider — lý do đầy đủ xem CameraLanHttpClient.kt), không riêng gì ONVIF hay 1 con
+    // camera cụ thể nào từng gặp lỗi "unexpected end of stream". Chỉ derive readTimeout dài hơn
+    // ở đây (qua newBuilder(), vẫn CHIA SẺ ConnectionPool/Dispatcher với client gốc) vì
+    // PullMessages là long-poll, cần chờ lâu hơn timeout mặc định của client dùng chung.
+    private val httpClient: OkHttpClient = cameraLanHttpClient
+        .newBuilder()
         .readTimeout((PULL_TIMEOUT_SECONDS + 10).toLong(), TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
     // cameraId -> Job đang chạy vòng lặp subscribe+pull cho camera đó.
@@ -537,6 +546,37 @@ class OnvifEventRelay @Inject constructor(
      * server đã trả lời (chỉ là lỗi/rỗng) — không phân biệt được với timeout/mất kết nối thật.
      */
     private fun soapPost(url: String, soapBody: String, username: String?, password: String?): String? {
+        // ⚠️ SỬA (thiết kế lại theo đúng chuẩn, không match theo 1 câu message cụ thể như trước —
+        // vì app kết nối hàng trăm loại camera khác nhau, mỗi firmware/JVM có thể ném ra một dạng
+        // IOException transport khác nhau cho CÙNG 1 nguyên nhân gốc: EOFException,
+        // SocketException("Connection reset"/"Broken pipe"), ProtocolException... — string-match
+        // đúng 1 câu "unexpected end of stream" chỉ vá đúng con camera đã gặp, bỏ sót mọi firmware
+        // khác báo lỗi transport tương tự bằng exception type/message khác).
+        //
+        // Retry ĐÚNG 1 lần cho MỌI IOException xảy ra Ở TẦNG TRANSPORT (connect/write/đọc response
+        // giữa chừng — soapPostOnce() phân biệt rõ nhóm này qua SoapPostOutcome.RETRYABLE, xem bên
+        // dưới), KHÔNG retry SocketTimeoutException (camera thực sự không phản hồi — lỗi mạng/
+        // thiết bị thật, retry ngay vô ích, tổ tốn thêm thời gian trong 1 chu kỳ Pull) và KHÔNG
+        // retry khi response đã nhận được nhưng nội dung lỗi (HTTP fail/body rỗng — đó là phản hồi
+        // thật từ camera, không phải lỗi transport).
+        repeat(2) { attempt ->
+            val result = soapPostOnce(url, soapBody, username, password)
+            if (result.outcome != SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR) return result.text
+            if (attempt == 0) {
+                logger.d(
+                    TAG,
+                    "SOAP $url: lỗi transport (${result.text}) — có thể do connection vừa bị camera " +
+                        "đóng, thử lại 1 lần với connection mới."
+                )
+            }
+        }
+        return null
+    }
+
+    private enum class SoapPostOutcome { OK, FAIL, RETRYABLE_TRANSPORT_ERROR }
+    private data class SoapPostResult(val outcome: SoapPostOutcome, val text: String?)
+
+    private fun soapPostOnce(url: String, soapBody: String, username: String?, password: String?): SoapPostResult {
         return try {
             val builder = Request.Builder()
                 .url(url)
@@ -555,17 +595,28 @@ class OnvifEventRelay @Inject constructor(
                     // 300 cũ chỉ đủ hết phần khai báo xmlns) để tự đọc được nguyên văn lý do camera
                     // từ chối, thay vì suy luận qua 1-2 từ khoá trích được.
                     logger.w(TAG, "SOAP $url trả HTTP ${response.code}: ${text?.take(5000) ?: "(rỗng)"}")
-                    return null
+                    return SoapPostResult(SoapPostOutcome.FAIL, null)
                 }
                 if (text.isNullOrBlank()) {
                     logger.w(TAG, "SOAP $url trả HTTP ${response.code} thành công nhưng body rỗng.")
-                    return null
+                    return SoapPostResult(SoapPostOutcome.FAIL, null)
                 }
-                text
+                SoapPostResult(SoapPostOutcome.OK, text)
             }
+        } catch (e: java.net.SocketTimeoutException) {
+            // Camera không phản hồi kịp — lỗi mạng/thiết bị thật, KHÔNG phải connection cũ bị tái
+            // sử dụng (đó là IOException khác, xem nhánh dưới) — retry ngay vô ích.
+            logger.w(TAG, "SOAP request tới $url timeout: ${e.message}")
+            SoapPostResult(SoapPostOutcome.FAIL, null)
+        } catch (e: java.io.IOException) {
+            // Mọi IOException transport khác (EOFException, SocketException reset/broken pipe,
+            // ProtocolException...) coi là RETRYABLE — dấu hiệu chung của 1 connection vừa bị phía
+            // camera đóng, không phân biệt theo message cụ thể (xem giải thích ở soapPost()).
+            logger.w(TAG, "SOAP request tới $url lỗi transport (${e.javaClass.simpleName}): ${e.message}")
+            SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, e.javaClass.simpleName)
         } catch (e: Exception) {
             logger.w(TAG, "SOAP request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
-            null
+            SoapPostResult(SoapPostOutcome.FAIL, null)
         }
     }
 

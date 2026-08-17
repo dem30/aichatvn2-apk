@@ -42,6 +42,13 @@ data class CapabilityProbeResult(
 
 @Singleton
 class CameraCapabilityProber @Inject constructor(
+    // ✅ MỚI: client HTTP dùng chung cho MỌI camera trên LAN (xem CameraLanHttpClient.kt) — thay
+    // cho việc tự dựng 2 OkHttpClient.Builder() riêng (onvifClient/snapshotClient) như trước, mỗi
+    // cái 1 ConnectionPool mặc định độc lập, dễ dính lỗi "unexpected end of stream" (và các dạng
+    // IOException transport tương tự) khi probe nhiều camera OEM không tuân thủ keep-alive đúng
+    // chuẩn — cùng lớp bug đã vá ở OnvifEventRelay, fix chung 1 chỗ áp dụng cho mọi nơi gọi HTTP
+    // tới camera thay vì vá lại lần nữa ở đây.
+    @com.aichatvn.agent.di.CameraLanHttpClient private val cameraLanHttpClient: OkHttpClient,
     private val logger: Logger,
 ) {
     companion object {
@@ -121,12 +128,16 @@ class CameraCapabilityProber @Inject constructor(
         )
     }
 
-    private val onvifClient = OkHttpClient.Builder()
+    // ✅ MỚI: derive từ cameraLanHttpClient qua newBuilder() — chỉ đổi timeout (ngắn hơn, đúng nhu
+    // cầu "xác nhận có hỗ trợ không" chứ không phải fetch dữ liệu thật), vẫn CHIA SẺ
+    // ConnectionPool/Dispatcher (đã tắt pool) với client gốc, theo đúng khuyến nghị OkHttp khi cần
+    // nhiều cấu hình timeout trong cùng 1 app — không tạo client hoàn toàn mới.
+    private val onvifClient = cameraLanHttpClient.newBuilder()
         .connectTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
 
-    private val snapshotClient = OkHttpClient.Builder()
+    private val snapshotClient = cameraLanHttpClient.newBuilder()
         .connectTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(ONVIF_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()

@@ -86,6 +86,11 @@ class CameraAutoDiscoveryTool @Inject constructor(
     // cấp NetworkContext (đã có @Singleton @Inject constructor riêng), không cần khai báo gì
     // thêm ở DeviceModule/AppModule.
     private val networkContext: NetworkContext,
+    // ✅ MỚI: client HTTP dùng chung cho MỌI camera trên LAN (xem CameraLanHttpClient.kt) — thay
+    // cho scanClient tự dựng riêng bên dưới. Cùng lý do với OnvifEventRelay/CameraCapabilityProber:
+    // quét 254 IP với nhiều loại camera OEM khác nhau, tránh tái sử dụng connection pool có thể
+    // đã bị 1 host khác/camera khác đóng.
+    @com.aichatvn.agent.di.CameraLanHttpClient private val cameraLanHttpClient: OkHttpClient,
 ) {
     companion object {
         // Timeout ngắn cho bước quét port sống — mục đích chỉ lọc nhanh IP "có vẻ có thiết bị
@@ -143,7 +148,9 @@ class CameraAutoDiscoveryTool @Inject constructor(
         )
     }
 
-    private val scanClient = OkHttpClient.Builder()
+    // ✅ MỚI: derive từ cameraLanHttpClient qua newBuilder() thay vì tự dựng client mới — vẫn chia
+    // sẻ ConnectionPool (đã tắt) với mọi nơi gọi HTTP camera khác trong app.
+    private val scanClient = cameraLanHttpClient.newBuilder()
         .connectTimeout(SNAPSHOT_TRY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(SNAPSHOT_TRY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()

@@ -16,10 +16,16 @@ import javax.inject.Singleton
 
 @Singleton
 class SnapshotFetcher @Inject constructor(
+    // ✅ MỚI: client HTTP dùng chung cho MỌI camera trên LAN (xem CameraLanHttpClient.kt) — thay
+    // cho việc tự dựng OkHttpClient.Builder() riêng. SnapshotFetcher là nơi gọi lặp lại nhiều lần
+    // nhất tới CÙNG 1 camera (mỗi lượt CameraSkill.scanCamera theo lịch định kỳ) — đúng kịch bản
+    // dễ trúng lỗi "connection tái sử dụng từ pool nhưng camera đã đóng" nhất nếu còn giữ pool
+    // riêng cũ, nên gộp vào client dùng chung (đã tắt pool) là ưu tiên cao ở đây.
+    @com.aichatvn.agent.di.CameraLanHttpClient cameraLanHttpClient: OkHttpClient,
     private val logger: Logger
 ) {
 
-    private val client = OkHttpClient.Builder()
+    private val client = cameraLanHttpClient.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .build()

@@ -26,12 +26,42 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
+import okhttp3.ConnectionPool
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 import javax.inject.Provider // Thêm import Provider
 
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    // ✅ MỚI (thiết kế lại theo đúng chuẩn — xem KDoc đầy đủ ở CameraLanHttpClient.kt): 1 client
+    // DÙNG CHUNG cho MỌI lời gọi HTTP/SOAP tới camera trên LAN (ONVIF, RTSP DESCRIBE qua socket
+    // riêng không dùng client này, HTTP snapshot, discovery scan) — thay vì mỗi class tự dựng
+    // OkHttpClient.Builder() riêng như trước (8 chỗ rải rác, mỗi nơi 1 ConnectionPool độc lập).
+    //
+    // ConnectionPool(0, ...): tắt hẳn việc tái sử dụng connection — buộc mỗi request tới camera mở
+    // TCP mới. Lý do: rất nhiều firmware camera OEM giá rẻ (con số camera app hỗ trợ lên tới hàng
+    // trăm loại) không tuân thủ keep-alive HTTP đúng chuẩn, tự đóng socket ngay sau 1 request —
+    // nếu dùng pool, OkHttp sẽ có lúc lấy lại đúng connection đã bị đóng đó ra tái sử dụng, gây
+    // IOException transport (unexpected end of stream, EOFException, connection reset...) không
+    // liên quan gì tới nội dung request. Trên LAN, chi phí mở TCP mới mỗi lần (~1-5ms) không đáng
+    // kể so với rủi ro lỗi giả này.
+    //
+    // Timeout để mặc định vừa phải ở đây — nơi cần timeout khác (ngắn hơn cho probe, dài hơn cho
+    // long-poll PullMessages) tự derive qua `.newBuilder()...build()`, KHÔNG tạo OkHttpClient gốc
+    // mới (giữ nguyên ConnectionPool/Dispatcher dùng chung).
+    @Provides
+    @Singleton
+    @CameraLanHttpClient
+    fun provideCameraLanHttpClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.NANOSECONDS))
+        .retryOnConnectionFailure(true)
+        .build()
 
     // ✅ ĐÃ SỬA: TuyaManager có @Inject constructor nên để Hilt tự dựng,
     // không cần @Provides thủ công (constructor thật cần thêm TuyaLocalController + AppConfigProvider)

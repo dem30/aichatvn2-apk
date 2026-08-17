@@ -33,6 +33,14 @@ import javax.inject.Singleton
 class HttpSnapshotProbe @Inject constructor(
     private val logger: Logger,
     private val networkContext: NetworkContext,
+    // ✅ MỚI: client HTTP dùng chung cho MỌI camera trên LAN (xem CameraLanHttpClient.kt) — thay
+    // cho scanClient tự dựng riêng bên dưới. File này là bản sao gần nguyên vẹn của
+    // CameraAutoDiscoveryTool.discoverCameras() cũ nên đã kế thừa luôn cùng 1 lỗi connection-pool
+    // (OkHttp tái sử dụng connection mà camera firmware đã tự đóng → "unexpected end of stream"
+    // và các biến thể IOException tương tự) — vá ở đây theo đúng gốc chung, không tạo lại
+    // OkHttpClient.Builder() độc lập nữa. Đây là probe chạy đường chính hiện tại (được
+    // CameraDiscoveryEngine gọi trực tiếp), quan trọng hơn CameraAutoDiscoveryTool.kt cũ.
+    @com.aichatvn.agent.di.CameraLanHttpClient private val cameraLanHttpClient: OkHttpClient,
 ) : CameraProbe {
 
     override val name: String = "HTTP Snapshot Scan"
@@ -69,7 +77,10 @@ class HttpSnapshotProbe @Inject constructor(
         )
     }
 
-    private val scanClient = OkHttpClient.Builder()
+    // ✅ MỚI: derive từ cameraLanHttpClient qua newBuilder() thay vì tự dựng client mới — vẫn chia
+    // sẻ ConnectionPool (đã tắt ở AppModule.provideCameraLanHttpClient()) với mọi nơi gọi HTTP
+    // camera khác trong app (OnvifEventRelay, CameraCapabilityProber, SnapshotFetcher...).
+    private val scanClient = cameraLanHttpClient.newBuilder()
         .connectTimeout(SNAPSHOT_TRY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(SNAPSHOT_TRY_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
