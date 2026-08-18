@@ -563,7 +563,17 @@ class OnvifEventRelay @Inject constructor(
             // KHÔNG đặt log() này ở dạng comment lồng trong chuỗi SOAP body/header (xem cảnh báo
             // regression ở KDoc của subscribe()) — đây là statement Kotlin bình thường, chạy SAU
             // khi response đã nhận xong, không góp phần vào bất kỳ request nào gửi lên camera.
-            if (response.contains("NotificationMessage", ignoreCase = true)) {
+            //
+            // ✅ SỬA (bug tự phát hiện ngay lần đầu bật log tóm tắt bên dưới: thấy spam
+            // "unknown-topic(op=none,value=false)" ở MỌI lần Pull rỗng bình thường — nguyên nhân
+            // là splitNotificationMessages() có fallback "không tách được block nào -> coi cả
+            // response là 1 block giả" (xem KDoc hàm đó), và log tóm tắt cũ chạy vô điều kiện
+            // trên [messages] nên vô tình log luôn cả block giả này mỗi lần Pull rỗng, y hệt lỗi
+            // spam mà LOG_EVERY_N_PULLS từng phải sửa cho log khác). Tách biến điều kiện ra dùng
+            // chung cho CẢ 2 log (RAW lẫn tóm tắt) — chỉ khi response thật sự chứa
+            // NotificationMessage mới cho [messages] chạy qua vòng tóm tắt, tránh log block giả.
+            val hasRealNotificationMessage = response.contains("NotificationMessage", ignoreCase = true)
+            if (hasRealNotificationMessage) {
                 logger.i(TAG, "📩 ONVIF EVENT RAW (camera $cameraId): $response")
             }
 
@@ -602,10 +612,12 @@ class OnvifEventRelay @Inject constructor(
                 val topic = extractTopic(message) ?: "unknown-topic"
                 val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
                     .containsMatchIn(message)
-                topicSummaries.add(
-                    "$topic(op=${extractPropertyOperation(message) ?: "none"}," +
-                        "value=${if (hasTrueValue) "true" else "false"})"
-                )
+                if (hasRealNotificationMessage) {
+                    topicSummaries.add(
+                        "$topic(op=${extractPropertyOperation(message) ?: "none"}," +
+                            "value=${if (hasTrueValue) "true" else "false"})"
+                    )
+                }
                 if (!hasTrueValue) {
                     // Value false/0 (hoặc không tìm thấy Value) trong message này — vẫn cập nhật
                     // rising-edge state về false để lần sau true thật sự tính là "vừa đổi", rồi
