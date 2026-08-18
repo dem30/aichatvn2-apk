@@ -496,6 +496,20 @@ class OnvifEventRelay @Inject constructor(
                 return@withContext null
             }
 
+            // ✅ MỚI (debug tạm thời, giữ lại vì chi phí gần như 0 khi không có event — chỉ log
+            // khi response THỰC SỰ chứa ít nhất 1 NotificationMessage, không log mỗi lần Pull rỗng
+            // để tránh spam giống lý do LOG_EVERY_N_PULLS ở trên): log NGUYÊN VĂN response ngay khi
+            // nhận được, TRƯỚC khi qua bất kỳ bước parse/regex nào — mục đích duy nhất là lấy XML
+            // thật của TỪNG hãng camera (đặc biệt OEM như V380 không tuân thủ ONVIF đầy đủ) để đối
+            // chiếu tay với parser, xác định chính xác cấu trúc SimpleItem/Name/Topic/
+            // PropertyOperation thật sự khác giả định ở chỗ nào — thay vì tiếp tục đoán theo spec.
+            // KHÔNG đặt log() này ở dạng comment lồng trong chuỗi SOAP body/header (xem cảnh báo
+            // regression ở KDoc của subscribe()) — đây là statement Kotlin bình thường, chạy SAU
+            // khi response đã nhận xong, không góp phần vào bất kỳ request nào gửi lên camera.
+            if (response.contains("NotificationMessage", ignoreCase = true)) {
+                logger.i(TAG, "📩 ONVIF EVENT RAW (camera $cameraId): $response")
+            }
+
             // ✅ SỬA (đúng ONVIF Core Spec — không vá riêng theo hành vi 1 camera, áp dụng chung
             // cho mọi hãng tuân thủ Profile S/T lẫn hãng không tuân thủ đầy đủ):
             //
