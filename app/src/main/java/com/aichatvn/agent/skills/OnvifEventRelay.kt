@@ -325,6 +325,12 @@ class OnvifEventRelay @Inject constructor(
                     continue
                 }
 
+                // ✅ MỚI (debug, không đổi logic match/relay): ngay sau subscribe() thành công,
+                // hỏi camera 1 lần duy nhất "TopicSet thật mà mày khai báo hỗ trợ là gì" — xem
+                // KDoc đầy đủ ở probeEventPropertiesBestEffort() bên dưới. Best-effort thuần
+                // túy: lỗi ở đây không ảnh hưởng gì tới vòng Pull chính, không throw ra ngoài.
+                probeEventPropertiesBestEffort(cameraId, eventsUrl, username, password)
+
                 var pullCount = 0
                 // ✅ MỚI: đếm số lần PullMessages thất bại LIÊN TIẾP (pullOnce trả null) — case
                 // thật "ResourceUnknownFault" giữa chừng cho thấy đợi đủ RESUBSCRIBE_AFTER_N_PULLS
@@ -435,6 +441,57 @@ class OnvifEventRelay @Inject constructor(
                 .find(response)?.groupValues?.get(1)?.trim()
                 ?: eventsUrl // Một số camera dùng chung URL Events cho cả PullMessages.
         }
+
+    /**
+     * ✅ MỚI (debug, KHÔNG đổi bất kỳ logic match/relay nào hiện có — xem thảo luận đầu file):
+     * "có Events service, PullPoint hoạt động, thấy đều 2 topic ImageTooDark/ImageTooBlurry"
+     * KHÔNG có nghĩa là "có hỗ trợ Motion topic" — 2 việc khác nhau. Thay vì tiếp tục đoán tên
+     * topic chuyển động thật của camera (có thể không phải "Motion"), gọi GetEventProperties
+     * (request CHUẨN ONVIF, EventPortType — cùng service với CreatePullPointSubscription, không
+     * phải PullPointSubscription) — trả về nguyên cây TopicSet mà camera KHAI BÁO hỗ trợ, kể cả
+     * các topic nó chưa từng thực sự gửi qua Pull. Gọi 1 LẦN duy nhất ngay sau subscribe() thành
+     * công (không lặp lại mỗi vòng resubscribe tốn thêm request vô ích cho mục đích debug).
+     *
+     * Chỉ log RAW response cho người debug xem qua Logcat — không parse, không đổi hành vi
+     * match/relay nào. Người dùng cuối không thấy gì khác. Lỗi ở đây (camera không hỗ trợ
+     * GetEventProperties, timeout...) bị nuốt hoàn toàn — best-effort thuần túy, không được phép
+     * ảnh hưởng tới vòng Pull chính đang chạy ngay sau nó.
+     */
+    private suspend fun probeEventPropertiesBestEffort(
+        cameraId: String,
+        eventsUrl: String,
+        username: String?,
+        password: String?
+    ) {
+        try {
+            val body = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                            xmlns:wsa="http://www.w3.org/2005/08/addressing"
+                            xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
+                  ${wsAddressingHeader(
+                      action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest",
+                      to = eventsUrl
+                  )}
+                  <s:Body>
+                    <tev:GetEventProperties/>
+                  </s:Body>
+                </s:Envelope>
+            """.trimIndent()
+
+            val response = soapPost(
+                eventsUrl, body, username, password,
+                action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest"
+            )
+            if (response == null) {
+                logger.i(TAG, "🔍 GetEventProperties (camera $cameraId): không có response (lỗi/không hỗ trợ)")
+                return
+            }
+            logger.i(TAG, "🔍 GetEventProperties RAW (camera $cameraId): $response")
+        } catch (e: Exception) {
+            // im lặng — đây thuần tuý là debug probe, không được phép ảnh hưởng vòng Pull chính.
+        }
+    }
 
     /**
      * true = phát hiện chuyển động, false = PullMessages thành công nhưng không match, null =
