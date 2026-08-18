@@ -197,6 +197,18 @@ class OnvifEventRelay @Inject constructor(
     // tạo lại Job mới với cấu hình đúng, thay vì tiếp tục chạy với subscription trỏ tới URL cũ.
     private val activeJobFingerprints = ConcurrentHashMap<String, String>()
 
+    // ✅ MỚI (theo đúng ONVIF Core Spec, không vá riêng theo hãng): key "$cameraId|$topic" ->
+    // giá trị true/false CUỐI CÙNG đã thấy cho topic đó. Dùng làm fallback rising-edge khi
+    // NotificationMessage không mang PropertyOperation (thuộc tính BẮT BUỘC theo spec nhưng
+    // một số OEM giá rẻ bỏ qua hoặc gắn sai) — chỉ coi là match khi giá trị vừa chuyển từ
+    // false -> true so với lần Pull trước, thay vì cứ true là bắn liên tục mỗi lần camera
+    // resend (một số hãng resend định kỳ dù chẳng có gì đổi, đặc biệt khi thiếu
+    // PropertyOperation="Initialized" để tự phân biệt). Sống theo vòng đời Job (resubscribe
+    // không xoá map — rising-edge vẫn đúng nghĩa xuyên suốt các subscription liên tiếp của
+    // cùng 1 camera; camera bị xoá/Job bị huỷ hẳn thì entry cũ trở thành rác vô hại, kích
+    // thước tối đa bị chặn bởi số camera thật x số topic thật, không tăng vô hạn).
+    private val lastKnownTopicValue = ConcurrentHashMap<String, Boolean>()
+
     /**
      * Gọi 1 lần từ WebhookGatewayService.onCreate() — vô hại nếu gọi trên máy "client" (không
      * phải Camera Node), vòng lặp tự đứng chờ, không tốn tài nguyên đáng kể, cùng triết lý với
@@ -329,7 +341,7 @@ class OnvifEventRelay @Inject constructor(
                     // thêm delay() cho đủ MIN_PULL_INTERVAL_MS trước khi Pull lần kế — không đổi
                     // gì nếu camera đã tự block đủ lâu (elapsed >= sàn thì delay(0), bỏ qua).
                     val startedAt = System.currentTimeMillis()
-                    val motionDetected = pullOnce(pullPointUrl, username, password, pullIndex = pullCount)
+                    val motionDetected = pullOnce(cameraId, pullPointUrl, username, password, pullIndex = pullCount)
                     if (motionDetected == null) {
                         consecutiveFailures++
                         if (consecutiveFailures >= MAX_CONSECUTIVE_PULL_FAILURES) {
@@ -451,6 +463,7 @@ class OnvifEventRelay @Inject constructor(
     // không match Motion) và log lỗi/warning khác trong file này giữ nguyên tần suất — chỉ dòng
     // "vẫn đang chạy bình thường" lặp lại vô ích này mới cần giãn ra.
     private suspend fun pullOnce(
+        cameraId: String,
         pullPointUrl: String,
         username: String?,
         password: String?,
@@ -483,24 +496,109 @@ class OnvifEventRelay @Inject constructor(
                 return@withContext null
             }
 
-            // ✅ SỬA (góp ý user: AIChatVN2 không cần phân loại ĐÚNG LOẠI event theo chuẩn ONVIF —
-            // hệ thống chỉ mượn ONVIF Events làm "chuông báo có gì đó đang xảy ra" để TRIGGER chụp
-            // ảnh + phân tích thật ở tầng AI (HouseManagerSkill/AgentKernel), không tự phán đoán ý
-            // nghĩa sự kiện ở tầng transport này. Heuristic cũ CHỈ coi là đáng chụp khi Topic có
-            // chữ "Motion" — quá hẹp: log thật đã bắt được ImageTooDark/ImageTooBlurry (giá trị
-            // true thật, camera thật sự đang báo) nhưng bị heuristic từ chối oan, mất cơ hội chụp.
-            // Đổi tiêu chí: bất kỳ giá trị true/1 nào là ĐỦ để trigger — trừ các Topic thuộc
-            // NOISE_TOPICS bên dưới (biết rõ là nhiễu định kỳ/trạng thái nội bộ máy, không phải sự
-            // kiện đáng chụp ảnh, nếu để lọt sẽ chụp+phân tích liên tục vô ích tốn tài nguyên).
-            val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
-                .containsMatchIn(response)
-            val hasMotionTopic = response.contains("Motion", ignoreCase = true)
-            val isKnownNoise = hasTrueValue && NOISE_TOPICS.any { response.contains(it, ignoreCase = true) } &&
-                !hasMotionTopic
-            val matched = hasTrueValue && !isKnownNoise
+            // ✅ SỬA (đúng ONVIF Core Spec — không vá riêng theo hành vi 1 camera, áp dụng chung
+            // cho mọi hãng tuân thủ Profile S/T lẫn hãng không tuân thủ đầy đủ):
+            //
+            // Mỗi <NotificationMessage> theo spec mang thuộc tính PropertyOperation trên phần tử
+            // Message ("Initialized" | "Changed" | "Deleted"). Đây là cách CHUẨN để phân biệt
+            // "camera đang báo lại trạng thái đã có sẵn" (Initialized — gửi lúc mới subscribe,
+            // hoặc một số hãng tự ý resend định kỳ dù chẳng có gì đổi) khỏi "trạng thái VỪA đổi
+            // thật" (Changed). Heuristic cũ chỉ nhìn Value="true" toàn cục trên cả response, bỏ
+            // qua hẳn thuộc tính này lẫn việc 1 response có thể chứa NHIỀU NotificationMessage —
+            // nên 1 message Initialized/Deleted true cũ cũng bị tính chung là "có match".
+            //
+            // Xử lý qua 2 lớp, tách theo TỪNG NotificationMessage block (không còn regex toàn cục
+            // trên cả response):
+            //   1) PropertyOperation="Changed" -> ứng viên match (đúng chuẩn, ưu tiên).
+            //      PropertyOperation="Initialized"/"Deleted" -> KHÔNG match (đúng chuẩn: không
+            //      phải sự kiện mới), bất kể Value là gì.
+            //   2) Thiếu hẳn PropertyOperation (OEM giá rẻ bỏ qua, dù bắt buộc trong spec) hoặc
+            //      không nhận diện được giá trị -> fallback rising-edge theo (cameraId, Topic):
+            //      chỉ match khi Value vừa chuyển false -> true so với lần Pull trước (lưu ở
+            //      [lastKnownTopicValue]), không phải cứ true là khớp.
+            // Sau đó vẫn áp NOISE_TOPICS như cũ để loại các Topic biết rõ là nhiễu định kỳ/trạng
+            // thái nội bộ máy (trừ khi bản thân Topic có chữ "Motion").
+            val messages = splitNotificationMessages(response)
+            var matched = false
+            for (message in messages) {
+                val topic = extractTopic(message) ?: "unknown-topic"
+                val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(message)
+                if (!hasTrueValue) {
+                    // Value false/0 (hoặc không tìm thấy Value) trong message này — vẫn cập nhật
+                    // rising-edge state về false để lần sau true thật sự tính là "vừa đổi", rồi
+                    // xét message tiếp theo (không góp phần vào matched).
+                    lastKnownTopicValue["$cameraId|$topic"] = false
+                    continue
+                }
+
+                val propertyOperation = extractPropertyOperation(message)
+                val isCandidateMatch = when (propertyOperation) {
+                    "Changed" -> true
+                    "Initialized", "Deleted" -> false
+                    else -> {
+                        // Thiếu/không nhận diện được PropertyOperation — fallback rising-edge.
+                        val key = "$cameraId|$topic"
+                        val wasTrue = lastKnownTopicValue[key] == true
+                        !wasTrue
+                    }
+                }
+                // Luôn cập nhật state true cho topic này (kể cả khi PropertyOperation cho biết
+                // đây không phải Changed) — để rising-edge fallback ở lần Pull kế tiếp phản ánh
+                // đúng giá trị hiện tại của camera, không riêng gì các message dùng fallback.
+                lastKnownTopicValue["$cameraId|$topic"] = true
+
+                if (!isCandidateMatch) continue
+
+                val hasMotionTopic = topic.contains("Motion", ignoreCase = true)
+                val isKnownNoise = NOISE_TOPICS.any { topic.equals(it, ignoreCase = true) } && !hasMotionTopic
+                if (!isKnownNoise) {
+                    matched = true
+                }
+            }
 
             matched
         }
+
+    // ✅ MỚI: tách response PullMessages thành từng <...NotificationMessage>...</...NotificationMessage>
+    // block riêng biệt — cần thiết để đọc đúng Topic/PropertyOperation/Value CỦA CÙNG 1 message,
+    // vì 1 lần Pull có thể trả về nhiều message (PULL_MESSAGE_LIMIT), mỗi message có thể thuộc
+    // Topic khác nhau và mang giá trị PropertyOperation khác nhau. Regex lỏng (namespace prefix
+    // tuỳ hãng, đôi khi không có prefix) — cùng tinh thần best-effort với các chỗ parse XML khác
+    // trong file này (CameraCapabilityProber.tryProbeOnvif(), subscribe()).
+    private fun splitNotificationMessages(response: String): List<String> {
+        val matches = Regex(
+            "<(?:\\w+:)?NotificationMessage[\\s>].*?</(?:\\w+:)?NotificationMessage>",
+            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+        ).findAll(response).map { it.value }.toList()
+        // Một số camera OEM không dùng đúng tên thẻ NotificationMessage (implementation không
+        // đầy đủ) — nếu không tách được block nào, coi cả response là 1 block duy nhất để không
+        // mất hẳn khả năng phát hiện match như cũ (best-effort, không hoàn hảo nhưng không bỏ sót
+        // hẳn), chấp nhận rủi ro Topic/PropertyOperation trộn lẫn giữa các event ở case hiếm này.
+        return matches.ifEmpty { listOf(response) }
+    }
+
+    // ✅ MỚI: trích Topic của 1 NotificationMessage block — dùng làm key rising-edge theo
+    // (cameraId, Topic). Namespace prefix của thẻ Topic thay đổi tuỳ hãng, tương tự Address ở
+    // subscribe().
+    private fun extractTopic(message: String): String? =
+        Regex("<(?:\\w+:)?Topic[^>]*>(.*?)</(?:\\w+:)?Topic>", RegexOption.DOT_MATCHES_ALL)
+            .find(message)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+
+    // ✅ MỚI: trích thuộc tính PropertyOperation trên phần tử Message theo ONVIF Core Spec
+    // ("Initialized" | "Changed" | "Deleted"). Trả null nếu vắng mặt hoặc giá trị lạ — khiến
+    // pullOnce() rơi xuống fallback rising-edge thay vì tự tin dùng giá trị không hợp lệ.
+    private fun extractPropertyOperation(message: String): String? {
+        val raw = Regex("PropertyOperation\\s*=\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+            .find(message)?.groupValues?.get(1)?.trim()
+            ?: return null
+        return when {
+            raw.equals("Changed", ignoreCase = true) -> "Changed"
+            raw.equals("Initialized", ignoreCase = true) -> "Initialized"
+            raw.equals("Deleted", ignoreCase = true) -> "Deleted"
+            else -> null
+        }
+    }
 
     private suspend fun unsubscribeBestEffort(pullPointUrl: String, username: String?, password: String?) {
         // NonCancellable: hàm này thường được gọi trong nhánh dọn dẹp khi Job sắp bị hủy (đổi
