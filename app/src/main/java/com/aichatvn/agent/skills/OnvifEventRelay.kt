@@ -396,7 +396,29 @@ class OnvifEventRelay @Inject constructor(
           </s:Header>
         """.trimIndent()
 
-    /** Trả về địa chỉ PullPoint (SubscriptionReference/Address) nếu subscribe thành công. */
+    /**
+     * Trả về địa chỉ PullPoint (SubscriptionReference/Address) nếu subscribe thành công.
+     *
+     * ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay giữa chu kỳ Pull,
+     * đúng lúc có chuyển động vật lý) — trước đây không khai báo InitialTerminationTime, để camera
+     * tự chọn mặc định. Nhiều camera ONVIF giá rẻ đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ
+     * RESUBSCRIBE_AFTER_N_PULLS ~25s ở tốc độ hiện tại), khiến subscription chết yểu giữa chừng
+     * trước khi app kịp chủ động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì
+     * subscription không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
+     * — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp trần thấp
+     * hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im lặng phó mặc hoàn toàn
+     * cho mặc định của camera như trước.
+     *
+     * ⚠️ CẢNH BÁO REGRESSION (đã xảy ra 1 lần thật, ngày 18/08/2026): đoạn giải thích này BẮT BUỘC
+     * phải nằm ở KDoc bên ngoài `val body = """..."""`, KHÔNG được để dạng comment XML `<!-- -->`
+     * lồng vào BÊN TRONG chuỗi triple-quote body — vì nếu lồng vào trong, toàn bộ đoạn text tiếng
+     * Việt dài (có dấu, emoji) này bị gửi NGUYÊN VĂN lên camera như một phần thật của SOAP Body,
+     * khiến Content-Length phình to bất thường (2078-2080 byte thay vì 742 byte đúng chuẩn) và
+     * camera hsoap/2.8 (SOAP stack nhúng đời cũ) đóng socket giữa chừng — gây đúng
+     * `EOFException: unexpected end of stream`, đã xác nhận qua HttpLoggingInterceptor +
+     * đối chiếu curl -v thủ công. KHÔNG di chuyển đoạn giải thích này vào lại bên trong body dù
+     * với lý do "để dễ đọc gần code" — nó BẮT BUỘC phải ở KDoc như hiện tại.
+     */
     private suspend fun subscribe(eventsUrl: String, username: String?, password: String?): String? =
         withContext(Dispatchers.IO) {
             val body = """
@@ -409,16 +431,6 @@ class OnvifEventRelay @Inject constructor(
                       to = eventsUrl
                   )}
                   <s:Body>
-                    <!-- ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay
-                    giữa chu kỳ Pull, đúng lúc có chuyển động vật lý) — trước đây không khai báo
-                    InitialTerminationTime, để camera tự chọn mặc định. Nhiều camera ONVIF giá rẻ
-                    đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ RESUBSCRIBE_AFTER_N_PULLS ~25s ở
-                    tốc độ hiện tại), khiến subscription chết yểu giữa chừng trước khi app kịp chủ
-                    động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì subscription
-                    không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
-                    — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp
-                    trần thấp hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im
-                    lặng phó mặc hoàn toàn cho mặc định của camera như trước. -->
                     <tev:CreatePullPointSubscription>
                       <tev:InitialTerminationTime>PT5M</tev:InitialTerminationTime>
                     </tev:CreatePullPointSubscription>
