@@ -567,14 +567,29 @@ class OnvifEventRelay @Inject constructor(
             }
     }
 
+    /** Áp dụng 1 XML parser feature nếu implementation hỗ trợ; bỏ qua nếu không (một số máy
+     *  Android không nhận diện đủ các feature string chống XXE của Xerces). */
+    private fun DocumentBuilderFactory.trySetFeature(name: String, value: Boolean) {
+        try {
+            setFeature(name, value)
+        } catch (e: Exception) {
+            logger.d(TAG, "ℹ️ XML parser không hỗ trợ feature '$name', bỏ qua: ${e.javaClass.simpleName}")
+        }
+    }
+
     /** Namespace-agnostic ONVIF parser: Topic + Message + Source/Key/Data + SimpleItem. */
     private fun parseNotificationEvents(response: String): List<OnvifNotificationEvent> = try {
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-            setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            // Android's built-in XML parser (không phải Xerces đầy đủ như JVM desktop) không
+            // nhận diện một số feature string chống XXE này và ném ParserConfigurationException
+            // ngay khi setFeature() — nếu không bọc riêng từng dòng, 1 feature không hỗ trợ sẽ
+            // làm hỏng toàn bộ factory setup, khiến MỌI event ONVIF bị rơi vào catch bên ngoài.
+            // Best-effort: áp dụng feature nào máy hỗ trợ, bỏ qua feature nào không.
+            trySetFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            trySetFeature("http://xml.org/sax/features/external-general-entities", false)
+            trySetFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            trySetFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
         }
         val document = factory.newDocumentBuilder().parse(InputSource(StringReader(response)))
         val nodes = document.getElementsByTagNameNS("*", "NotificationMessage")
