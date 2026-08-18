@@ -208,7 +208,7 @@ class OnvifEventRelay @Inject constructor(
                 try {
                     reconcileOnce()
                 } catch (e: Exception) {
-                    logger.e(TAG, "Lỗi vòng soát camera ONVIF: ${e.message}", e)
+                    // im lặng — chỉ giữ log báo phát hiện chuyển động
                 }
                 delay(RECONCILE_INTERVAL_MS)
             }
@@ -268,18 +268,11 @@ class OnvifEventRelay @Inject constructor(
         val eventsUrl = camera.onvifEventUrl
         if (eventsUrl.isNullOrBlank()) return false
         if (camera.enableAlarmPush == 1) {
-            logger.d(
-                TAG,
-                "Camera ${camera.id.trim()} đang bật cả ONVIF lẫn Báo động gốc (push) — " +
-                    "nhường cho đường push gốc để tránh scan() bị gọi 2 lần cho cùng 1 sự kiện. " +
-                    "Tắt 1 trong 2 Switch nếu không muốn thấy log này."
-            )
             return false
         }
 
         val cameraHost = runCatching { java.net.URI(eventsUrl).host }.getOrNull()
         if (cameraHost.isNullOrBlank()) {
-            logger.w(TAG, "Camera ${camera.id.trim()}: không trích được host từ onvifEventUrl='$eventsUrl', bỏ qua relay.")
             return false
         }
         // ✅ SỬA (debug case thật: người dùng đứng đúng cạnh camera nhưng không thấy log gì cả —
@@ -290,18 +283,6 @@ class OnvifEventRelay @Inject constructor(
         // trả rỗng/giả nếu thiếu quyền — không throw exception nên NetworkContext không tự biết
         // để báo lỗi, chỉ lặng lẽ trả null → isOnSavedSubnet() luôn false).
         if (!networkContext.isOnSavedSubnet(cameraHost)) {
-            val currentSubnet = networkContext.getCurrentWifiSubnet()
-            logger.d(
-                TAG,
-                "Camera ${camera.id.trim()} (host=$cameraHost) tạm không subscribe — " +
-                    if (currentSubnet == null)
-                        "không đọc được subnet Wi-Fi hiện tại của máy (null). Có thể do: (1) máy " +
-                            "không kết nối Wi-Fi/đang dùng data di động, hoặc (2) app CHƯA được cấp " +
-                            "quyền Vị trí (Location) — Android 10+ bắt buộc quyền này để đọc SSID/IP " +
-                            "Wi-Fi thật. Kiểm tra Cài đặt hệ thống > Ứng dụng > AIChatVN2 > Quyền > Vị trí."
-                    else
-                        "subnet máy hiện tại '$currentSubnet' khác subnet camera (suy từ IP $cameraHost)."
-            )
             return false
         }
         return true
@@ -313,7 +294,6 @@ class OnvifEventRelay @Inject constructor(
     private fun cancelJob(cameraId: String, reason: String) {
         activeJobs.remove(cameraId)?.cancel()
         activeJobFingerprints.remove(cameraId)
-        logger.i(TAG, "🛑 Dừng relay ONVIF cho camera $cameraId ($reason)")
     }
 
     // ===== Vòng lặp subscribe + pull cho 1 camera =====
@@ -324,14 +304,11 @@ class OnvifEventRelay @Inject constructor(
         val username = camera.snapshotUsername
         val password = camera.snapshotPassword
 
-        logger.i(TAG, "🔌 Bắt đầu relay ONVIF cho camera $cameraId ($eventsUrl)")
-
         while (coroutineContext.isActive) {
             var pullPointUrl: String? = null
             try {
                 pullPointUrl = subscribe(eventsUrl, username, password)
                 if (pullPointUrl == null) {
-                    logger.w(TAG, "⚠️ Subscribe ONVIF thất bại cho $cameraId, thử lại sau ${ERROR_RETRY_DELAY_MS / 1000}s")
                     delay(ERROR_RETRY_DELAY_MS)
                     continue
                 }
@@ -356,11 +333,6 @@ class OnvifEventRelay @Inject constructor(
                     if (motionDetected == null) {
                         consecutiveFailures++
                         if (consecutiveFailures >= MAX_CONSECUTIVE_PULL_FAILURES) {
-                            logger.w(
-                                TAG,
-                                "⚠️ PullMessages thất bại $consecutiveFailures lần liên tiếp cho $cameraId — " +
-                                    "bỏ cuộc sớm, resubscribe ngay thay vì đợi hết chu kỳ."
-                            )
                             break
                         }
                     } else {
@@ -380,7 +352,6 @@ class OnvifEventRelay @Inject constructor(
                 // TerminationTime trả về lúc subscribe (xem comment RESUBSCRIBE_AFTER_N_PULLS).
                 unsubscribeBestEffort(pullPointUrl, username, password)
             } catch (e: Exception) {
-                logger.e(TAG, "❌ Lỗi vòng lặp ONVIF cho $cameraId: ${e.message}")
                 if (pullPointUrl != null) {
                     unsubscribeBestEffort(pullPointUrl, username, password)
                 }
@@ -441,7 +412,6 @@ class OnvifEventRelay @Inject constructor(
                 </s:Envelope>
             """.trimIndent()
 
-            logger.d(TAG, "📤 ONVIF Subscribe → $eventsUrl")
             val response = soapPost(
                 eventsUrl, body, username, password,
                 action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/CreatePullPointSubscriptionRequest"
@@ -505,15 +475,11 @@ class OnvifEventRelay @Inject constructor(
                 </s:Envelope>
             """.trimIndent()
 
-            if (pullIndex % LOG_EVERY_N_PULLS == 0) {
-                logger.d(TAG, "📤 ONVIF PullMessages → $pullPointUrl")
-            }
             val response = soapPost(
                 pullPointUrl, body, username, password,
                 action = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
             )
             if (response == null) {
-                logger.w(TAG, "⚠️ PullMessages($pullPointUrl) không có response (lỗi HTTP/timeout/exception — xem log SOAP request phía trên).")
                 return@withContext null
             }
 
@@ -532,37 +498,6 @@ class OnvifEventRelay @Inject constructor(
             val isKnownNoise = hasTrueValue && NOISE_TOPICS.any { response.contains(it, ignoreCase = true) } &&
                 !hasMotionTopic
             val matched = hasTrueValue && !isKnownNoise
-
-            // Log DEBUG định kỳ (không phải mọi vòng) — để xác nhận vòng Pull THỰC SỰ đang chạy đều
-            // đặn, không bị treo/chết âm thầm, mà không spam System Logs mỗi ~1 giây. Cắt bớt response
-            // nếu quá dài (PullMessages có thể trả nhiều message cùng lúc, MessageLimit=10) để không
-            // tràn log 1 dòng quá dài.
-            if (pullIndex % LOG_EVERY_N_PULLS == 0) {
-                logger.d(
-                    TAG,
-                    "Pull($pullPointUrl) #$pullIndex: hasMotionTopic=$hasMotionTopic, hasTrueValue=$hasTrueValue, " +
-                        "matched=$matched | response(${response.length} ký tự, cắt 500 đầu)=" +
-                        response.take(500)
-                )
-            }
-
-            // ✅ SỬA: trước đây log này cảnh báo "sự kiện thật bị bỏ sót" vì heuristic cũ từ chối
-            // oan — giờ KHÔNG còn bị từ chối nữa (matched dựa trên hasTrueValue, xem trên), nên
-            // đổi thành log THÔNG TIN (không phải cảnh báo mất sự kiện) để vẫn biết được: lần
-            // trigger này đến từ Topic không phải Motion — hữu ích khi cần thêm Topic mới vào
-            // NOISE_TOPICS sau này nếu phát hiện 1 Topic nào đó gây trigger vô ích lặp lại.
-            if (hasTrueValue && !hasMotionTopic && !isKnownNoise) {
-                val topics = Regex("<(?:\\w+:)?Topic[^>]*>(.*?)</(?:\\w+:)?Topic>", RegexOption.DOT_MATCHES_ALL)
-                    .findAll(response)
-                    .map { it.groupValues[1].trim() }
-                    .distinct()
-                    .joinToString(", ")
-                logger.i(
-                    TAG,
-                    "ℹ️ Pull($pullPointUrl) trigger chụp ảnh bởi Topic không phải Motion: " +
-                        "${topics.ifBlank { "(không trích được, xem full response ở log DEBUG)" }}"
-                )
-            }
 
             matched
         }
@@ -587,13 +522,12 @@ class OnvifEventRelay @Inject constructor(
                       </s:Body>
                     </s:Envelope>
                 """.trimIndent()
-                logger.d(TAG, "📤 ONVIF Unsubscribe → $pullPointUrl")
                 soapPost(
                     pullPointUrl, body, username, password,
                     action = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
                 )
             } catch (e: Exception) {
-                logger.d(TAG, "Unsubscribe ONVIF thất bại (bỏ qua, không quan trọng): ${e.message}")
+                // im lặng — chỉ giữ log báo phát hiện chuyển động
             }
         }
     }
@@ -644,20 +578,10 @@ class OnvifEventRelay @Inject constructor(
 
                 if (attempt < retryDelaysMs.size) {
                     val waitMs = retryDelaysMs[attempt]
-                    logger.d(
-                        TAG,
-                        "SOAP ${version.label} $url: lỗi transport (${result.text}) " +
-                            "— thử lại sau ${waitMs}ms (lần ${attempt + 2}/${retryDelaysMs.size + 1})."
-                    )
                     delay(waitMs)
                 }
             }
 
-            logger.w(
-                TAG,
-                "SOAP ${version.label} $url: vẫn lỗi transport sau " +
-                    "${retryDelaysMs.size + 1} lần thử (lỗi cuối: ${lastFailure?.text})."
-            )
             return lastFailure ?: SoapPostResult(
                 SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR,
                 "unknown transport error"
@@ -680,22 +604,13 @@ class OnvifEventRelay @Inject constructor(
             return null
         }
 
-        logger.w(
-            TAG,
-            "⚠️ SOAP 1.2 không được camera chấp nhận tại $url " +
-                "(HTTP ${soap12Result.httpCode ?: "transport"}; ${soap12Result.text}). " +
-                "Fallback SOAP 1.1..."
-        )
-
         val soap11Result = postWithVersion(
             version = SoapVersion.SOAP_11,
             fallbackOnImmediateTransport = false
         )
         if (soap11Result.outcome == SoapPostOutcome.OK) {
-            logger.i(TAG, "✅ SOAP 1.1 thành công tại $url sau khi SOAP 1.2 thất bại.")
             return soap11Result.text
         }
-        logger.w(TAG, "❌ SOAP 1.2 và SOAP 1.1 đều thất bại tại $url.")
         return null
     }
 
@@ -777,22 +692,17 @@ class OnvifEventRelay @Inject constructor(
                 builder.header("Authorization", Credentials.basic(username, password ?: ""))
             }
 
-            logger.d(TAG, "📤 SOAP ${version.label} POST → $url" + if (version == SoapVersion.SOAP_11) " | SOAPAction=$action" else "")
-
             httpClient.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string()
                 if (!response.isSuccessful) {
-                    logger.w(TAG, "SOAP ${version.label} $url trả HTTP ${response.code}: ${text?.take(5000) ?: "(rỗng)"}")
                     return SoapPostResult(SoapPostOutcome.FAIL, text, response.code)
                 }
                 if (text.isNullOrBlank()) {
-                    logger.w(TAG, "SOAP ${version.label} $url trả HTTP ${response.code} thành công nhưng body rỗng.")
                     return SoapPostResult(SoapPostOutcome.FAIL, null, response.code)
                 }
                 SoapPostResult(SoapPostOutcome.OK, text, response.code)
             }
         } catch (e: java.net.SocketTimeoutException) {
-            logger.w(TAG, "SOAP ${version.label} request tới $url timeout: ${e.message}")
             SoapPostResult(SoapPostOutcome.FAIL, null)
         } catch (e: java.io.IOException) {
             val cause = e.cause
@@ -807,10 +717,8 @@ class OnvifEventRelay @Inject constructor(
                     append(cause.message ?: "(không có message)")
                 }
             }
-            logger.w(TAG, "❌ SOAP ${version.label} request tới $url lỗi transport: $detail")
             SoapPostResult(SoapPostOutcome.RETRYABLE_TRANSPORT_ERROR, detail)
         } catch (e: Exception) {
-            logger.w(TAG, "SOAP ${version.label} request tới $url lỗi (${e.javaClass.simpleName}): ${e.message}")
             SoapPostResult(SoapPostOutcome.FAIL, null)
         }
     }
@@ -835,13 +743,21 @@ class OnvifEventRelay @Inject constructor(
         val imageBytes = try {
             cameraSkill.fetchOneSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
         } catch (e: Exception) {
-            logger.w(TAG, "⚠️ Fetch ảnh LAN thất bại lúc relay báo động ONVIF cho $cameraId: ${e.message}")
             null
         }
 
-        val delivered = householdEventPublisher.publishCameraAlarm(cameraId, imageBytes)
-        if (!delivered) {
-            logger.w(TAG, "⚠️ Relay sự kiện ONVIF của $cameraId thất bại hoặc chưa cấu hình Household ID/Gateway.")
-        }
+        // ✅ MỚI: máy này đang cùng LAN với camera (điều kiện bắt buộc để chạy tới đây, xem
+        // isEligibleForOnvifRelay()) — tự quét luôn tại chỗ, không chờ vòng broadcast quay lại.
+        // Server (/household/event) chủ động loại trừ chính máy phát khỏi danh sách nhận
+        // (xem app.py: "if dc == origin_device_code: continue"), nên với hộ chỉ có 1 máy,
+        // không có ai khác xử lý báo động nếu thiếu bước này.
+        cameraSkill.scanCamera(
+            cameraId = cameraId,
+            isDailyReport = false,
+            forceAi = false,
+            preloadedImageBytes = imageBytes
+        )
+
+        householdEventPublisher.publishCameraAlarm(cameraId, imageBytes)
     }
 }
