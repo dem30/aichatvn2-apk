@@ -591,10 +591,21 @@ class OnvifEventRelay @Inject constructor(
             // thái nội bộ máy (trừ khi bản thân Topic có chữ "Motion").
             val messages = splitNotificationMessages(response)
             var matched = false
+            // ✅ MỚI (debug, không đổi logic match ở dưới): gom lại 1 dòng tóm tắt NGẮN GỌN mọi
+            // Topic thấy được trong lần Pull này — kể cả khi State=false hoặc bị loại vì
+            // Initialized/Deleted/NOISE_TOPICS — để lướt log quanh thời điểm có báo động vật lý
+            // thật mà không phải đọc lại nguyên response RAW dài mỗi lần chỉ để tìm 1 Topic cụ
+            // thể (ví dụ đối chiếu MotionAlarm có thực sự được camera gửi hay không). Chỉ đọc,
+            // không góp phần vào [matched] hay bất kỳ state nào khác.
+            val topicSummaries = mutableListOf<String>()
             for (message in messages) {
                 val topic = extractTopic(message) ?: "unknown-topic"
                 val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
                     .containsMatchIn(message)
+                topicSummaries.add(
+                    "$topic(op=${extractPropertyOperation(message) ?: "none"}," +
+                        "value=${if (hasTrueValue) "true" else "false"})"
+                )
                 if (!hasTrueValue) {
                     // Value false/0 (hoặc không tìm thấy Value) trong message này — vẫn cập nhật
                     // rising-edge state về false để lần sau true thật sự tính là "vừa đổi", rồi
@@ -626,6 +637,10 @@ class OnvifEventRelay @Inject constructor(
                 if (!isKnownNoise) {
                     matched = true
                 }
+            }
+
+            if (topicSummaries.isNotEmpty()) {
+                logger.i(TAG, "👀 Pull thấy topics (camera $cameraId): ${topicSummaries.joinToString(", ")}")
             }
 
             matched
