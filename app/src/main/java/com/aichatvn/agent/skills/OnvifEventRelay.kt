@@ -162,6 +162,19 @@ class OnvifEventRelay @Inject constructor(
         // lần mỗi 10 lượt Pull (~10s ở tốc độ hiện tại) — đủ để xác nhận loop không treo mà không
         // tràn log. Log lỗi/cảnh báo/near-miss/motion match KHÔNG bị ảnh hưởng, vẫn log mọi lần.
         private const val LOG_EVERY_N_PULLS = 10
+
+        // ✅ MỚI: Topic ONVIF biết rõ là nhiễu định kỳ/trạng thái nội bộ máy — KHÔNG đáng trigger
+        // chụp ảnh dù giá trị true (khác các Topic "sự kiện thật" như Motion, ImageTooDark,
+        // ImageTooBlurry, Tamper... — những cái này giờ ĐỀU trigger vì hasTrueValue là đủ, xem
+        // pullOnce()). Chỉ thêm vào đây khi ĐÃ XÁC NHẬN qua log thật là Topic đó gây chụp ảnh vô
+        // ích liên tục (ví dụ heartbeat/keep-alive tự thân camera phát ra đều đặn bất kể có sự
+        // kiện gì hay không) — không suy đoán trước, để tránh lại rơi vào lỗi cũ (bỏ sót sự kiện
+        // thật vì đoán nhầm tên Topic).
+        private val NOISE_TOPICS = setOf(
+            "tns1:Monitoring/ProcessorUsage",
+            "tns1:Monitoring/OperatingTime",
+            "tns1:Device/HardwareFailure"
+        )
     }
 
     // ✅ SỬA (thiết kế lại theo đúng chuẩn — xem KDoc đầy đủ ở CameraLanHttpClient.kt): không còn
@@ -399,25 +412,15 @@ class OnvifEventRelay @Inject constructor(
     /**
      * Trả về địa chỉ PullPoint (SubscriptionReference/Address) nếu subscribe thành công.
      *
-     * ✅ SỬA (debug case thật: SOAP Fault "wsrf-rw:ResourceUnknownFault" ngay giữa chu kỳ Pull,
-     * đúng lúc có chuyển động vật lý) — trước đây không khai báo InitialTerminationTime, để camera
-     * tự chọn mặc định. Nhiều camera ONVIF giá rẻ đặt mặc định RẤT NGẮN (ngắn hơn cả 1 chu kỳ
-     * RESUBSCRIBE_AFTER_N_PULLS ~25s ở tốc độ hiện tại), khiến subscription chết yểu giữa chừng
-     * trước khi app kịp chủ động resubscribe theo lịch — mọi PullMessages sau đó bị từ chối vì
-     * subscription không còn tồn tại. Xin hẳn PT5M (5 phút, dư dả nhiều lần so với 1 chu kỳ thật)
-     * — không có gì đảm bảo camera CHẤP NHẬN đúng giá trị này (một số hãng vẫn tự áp trần thấp
-     * hơn), nhưng đây là cách chuẩn ONVIF để XIN thời hạn dài, thay vì im lặng phó mặc hoàn toàn
-     * cho mặc định của camera như trước.
-     *
-     * ⚠️ CẢNH BÁO REGRESSION (đã xảy ra 1 lần thật, ngày 18/08/2026): đoạn giải thích này BẮT BUỘC
-     * phải nằm ở KDoc bên ngoài `val body = """..."""`, KHÔNG được để dạng comment XML `<!-- -->`
-     * lồng vào BÊN TRONG chuỗi triple-quote body — vì nếu lồng vào trong, toàn bộ đoạn text tiếng
-     * Việt dài (có dấu, emoji) này bị gửi NGUYÊN VĂN lên camera như một phần thật của SOAP Body,
-     * khiến Content-Length phình to bất thường (2078-2080 byte thay vì 742 byte đúng chuẩn) và
-     * camera hsoap/2.8 (SOAP stack nhúng đời cũ) đóng socket giữa chừng — gây đúng
-     * `EOFException: unexpected end of stream`, đã xác nhận qua HttpLoggingInterceptor +
-     * đối chiếu curl -v thủ công. KHÔNG di chuyển đoạn giải thích này vào lại bên trong body dù
-     * với lý do "để dễ đọc gần code" — nó BẮT BUỘC phải ở KDoc như hiện tại.
+     * ⚠️ CẢNH BÁO REGRESSION (đã xảy ra ít nhất 2 lần thật, tháng 08/2026): đoạn giải thích cho
+     * InitialTerminationTime=PT5M BẮT BUỘC phải nằm ở KDoc bên ngoài `val body = """..."""`,
+     * KHÔNG được để dạng comment XML `<!-- -->` lồng vào BÊN TRONG chuỗi triple-quote body — vì
+     * nếu lồng vào trong, toàn bộ đoạn text tiếng Việt dài (có dấu, emoji) bị gửi NGUYÊN VĂN lên
+     * camera như một phần thật của SOAP Body, khiến Content-Length phình to bất thường (2078-2080
+     * byte thay vì 742 byte đúng chuẩn) và camera hsoap/2.8 đóng socket giữa chừng — gây đúng
+     * `EOFException: unexpected end of stream`, đã xác nhận qua HttpLoggingInterceptor + đối
+     * chiếu curl -v thủ công. Nếu bạn đang đọc dòng này SAU KHI copy/paste lại comment vào trong
+     * body — dừng lại, đó chính là bug đã tái diễn.
      */
     private suspend fun subscribe(eventsUrl: String, username: String?, password: String?): String? =
         withContext(Dispatchers.IO) {
@@ -514,15 +517,21 @@ class OnvifEventRelay @Inject constructor(
                 return@withContext null
             }
 
-            // ⚠️ Heuristic có chủ ý (không parse XML đầy đủ, cùng tinh thần best-effort với
-            // CameraCapabilityProber): coi là "có chuyển động" nếu response chứa 1 Topic nhắc
-            // tới Motion VÀ 1 SimpleItem giá trị true đi kèm — đủ dùng cho đa số camera hỗ trợ
-            // ONVIF Profile S/T (Topic dạng .../RuleEngine/CellMotionDetector/Motion hoặc
-            // .../VideoSource/MotionAlarm), chấp nhận có thể bỏ sót vài hãng có Topic khác lạ.
-            val hasMotionTopic = response.contains("Motion", ignoreCase = true)
+            // ✅ SỬA (góp ý user: AIChatVN2 không cần phân loại ĐÚNG LOẠI event theo chuẩn ONVIF —
+            // hệ thống chỉ mượn ONVIF Events làm "chuông báo có gì đó đang xảy ra" để TRIGGER chụp
+            // ảnh + phân tích thật ở tầng AI (HouseManagerSkill/AgentKernel), không tự phán đoán ý
+            // nghĩa sự kiện ở tầng transport này. Heuristic cũ CHỈ coi là đáng chụp khi Topic có
+            // chữ "Motion" — quá hẹp: log thật đã bắt được ImageTooDark/ImageTooBlurry (giá trị
+            // true thật, camera thật sự đang báo) nhưng bị heuristic từ chối oan, mất cơ hội chụp.
+            // Đổi tiêu chí: bất kỳ giá trị true/1 nào là ĐỦ để trigger — trừ các Topic thuộc
+            // NOISE_TOPICS bên dưới (biết rõ là nhiễu định kỳ/trạng thái nội bộ máy, không phải sự
+            // kiện đáng chụp ảnh, nếu để lọt sẽ chụp+phân tích liên tục vô ích tốn tài nguyên).
             val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
                 .containsMatchIn(response)
-            val matched = hasMotionTopic && hasTrueValue
+            val hasMotionTopic = response.contains("Motion", ignoreCase = true)
+            val isKnownNoise = hasTrueValue && NOISE_TOPICS.any { response.contains(it, ignoreCase = true) } &&
+                !hasMotionTopic
+            val matched = hasTrueValue && !isKnownNoise
 
             // Log DEBUG định kỳ (không phải mọi vòng) — để xác nhận vòng Pull THỰC SỰ đang chạy đều
             // đặn, không bị treo/chết âm thầm, mà không spam System Logs mỗi ~1 giây. Cắt bớt response
@@ -537,24 +546,21 @@ class OnvifEventRelay @Inject constructor(
                 )
             }
 
-            // ✅ MỚI (debug case thật: hasTrueValue=true nhưng hasMotionTopic=false — camera CÓ
-            // báo 1 giá trị chuyển true, rất có thể đúng lúc chuyển động vật lý xảy ra, nhưng
-            // dùng tên Topic không chứa chữ "Motion" nên bị heuristic từ chối oan). Ghi ở mức
-            // WARNING (không bị lọc mất nếu người dùng tắt hiển thị DEBUG để đỡ spam — DEBUG thì
-            // nổ mỗi giây, còn near-miss này chỉ nổ khi THẬT SỰ có giá trị đổi thành true, không
-            // spam) kèm trích riêng (?:wsnt:)?Topic để biết đúng tên Topic thật của camera này,
-            // không cần lục lại full response nữa — bổ sung tên đó vào heuristic ở lần sửa sau.
-            if (hasTrueValue && !hasMotionTopic) {
+            // ✅ SỬA: trước đây log này cảnh báo "sự kiện thật bị bỏ sót" vì heuristic cũ từ chối
+            // oan — giờ KHÔNG còn bị từ chối nữa (matched dựa trên hasTrueValue, xem trên), nên
+            // đổi thành log THÔNG TIN (không phải cảnh báo mất sự kiện) để vẫn biết được: lần
+            // trigger này đến từ Topic không phải Motion — hữu ích khi cần thêm Topic mới vào
+            // NOISE_TOPICS sau này nếu phát hiện 1 Topic nào đó gây trigger vô ích lặp lại.
+            if (hasTrueValue && !hasMotionTopic && !isKnownNoise) {
                 val topics = Regex("<(?:\\w+:)?Topic[^>]*>(.*?)</(?:\\w+:)?Topic>", RegexOption.DOT_MATCHES_ALL)
                     .findAll(response)
                     .map { it.groupValues[1].trim() }
                     .distinct()
                     .joinToString(", ")
-                logger.w(
+                logger.i(
                     TAG,
-                    "🔎 Pull($pullPointUrl) có giá trị true nhưng KHÔNG match heuristic Motion — " +
-                        "khả năng cao đây là 1 sự kiện thật bị bỏ sót vì tên Topic khác lạ. " +
-                        "Topic thực tế trong response: ${topics.ifBlank { "(không trích được, xem full response ở log DEBUG)" }}"
+                    "ℹ️ Pull($pullPointUrl) trigger chụp ảnh bởi Topic không phải Motion: " +
+                        "${topics.ifBlank { "(không trích được, xem full response ở log DEBUG)" }}"
                 )
             }
 
