@@ -58,6 +58,13 @@ import com.aichatvn.agent.skills.DeviceCommandGatewayClient
 // trước đó — bài học: MỌI class mới ở package khác dùng trong file này đều phải có import riêng.
 import com.aichatvn.agent.skills.OnvifEventRelay
 import com.aichatvn.agent.skills.HouseholdEventPublisher
+// ✅ THÊM IMPORT: sửa lỗi build "Unresolved reference 'CameraSkill'" / "Unresolved reference
+// 'scanCamera'" / "Unresolved reference 'fetchOneSnapshot'" (kaptDebugKotlin/compileDebugKotlin
+// FAILED) — file này dùng findPlugin("camera") as? CameraSkill ở 2 chỗ (household_event xử lý
+// "alert"/scanCamera() và "camera_snapshot_request"/fetchOneSnapshot()) nhưng thiếu import,
+// đúng bài học đã ghi ở import DeviceCommandGatewayClient/OnvifEventRelay phía trên: mọi class
+// ở package khác dùng trong file này đều phải có import riêng, dù chỉ dùng qua "as?" cast.
+import com.aichatvn.agent.skills.CameraSkill
 
 @AndroidEntryPoint
 class WebhookGatewayService : Service() {
