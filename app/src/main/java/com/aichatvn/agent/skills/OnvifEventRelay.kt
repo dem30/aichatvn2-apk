@@ -7,7 +7,7 @@ import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.NonCancellable
+import kotlinx.corouti1nes.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -20,6 +20,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.io.StringReader
+import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Element
+import org.xml.sax.InputSource
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -325,12 +329,6 @@ class OnvifEventRelay @Inject constructor(
                     continue
                 }
 
-                // ✅ MỚI (debug, không đổi logic match/relay): ngay sau subscribe() thành công,
-                // hỏi camera 1 lần duy nhất "TopicSet thật mà mày khai báo hỗ trợ là gì" — xem
-                // KDoc đầy đủ ở probeEventPropertiesBestEffort() bên dưới. Best-effort thuần
-                // túy: lỗi ở đây không ảnh hưởng gì tới vòng Pull chính, không throw ra ngoài.
-                probeEventPropertiesBestEffort(cameraId, eventsUrl, username, password)
-
                 var pullCount = 0
                 // ✅ MỚI: đếm số lần PullMessages thất bại LIÊN TIẾP (pullOnce trả null) — case
                 // thật "ResourceUnknownFault" giữa chừng cho thấy đợi đủ RESUBSCRIBE_AFTER_N_PULLS
@@ -443,57 +441,6 @@ class OnvifEventRelay @Inject constructor(
         }
 
     /**
-     * ✅ MỚI (debug, KHÔNG đổi bất kỳ logic match/relay nào hiện có — xem thảo luận đầu file):
-     * "có Events service, PullPoint hoạt động, thấy đều 2 topic ImageTooDark/ImageTooBlurry"
-     * KHÔNG có nghĩa là "có hỗ trợ Motion topic" — 2 việc khác nhau. Thay vì tiếp tục đoán tên
-     * topic chuyển động thật của camera (có thể không phải "Motion"), gọi GetEventProperties
-     * (request CHUẨN ONVIF, EventPortType — cùng service với CreatePullPointSubscription, không
-     * phải PullPointSubscription) — trả về nguyên cây TopicSet mà camera KHAI BÁO hỗ trợ, kể cả
-     * các topic nó chưa từng thực sự gửi qua Pull. Gọi 1 LẦN duy nhất ngay sau subscribe() thành
-     * công (không lặp lại mỗi vòng resubscribe tốn thêm request vô ích cho mục đích debug).
-     *
-     * Chỉ log RAW response cho người debug xem qua Logcat — không parse, không đổi hành vi
-     * match/relay nào. Người dùng cuối không thấy gì khác. Lỗi ở đây (camera không hỗ trợ
-     * GetEventProperties, timeout...) bị nuốt hoàn toàn — best-effort thuần túy, không được phép
-     * ảnh hưởng tới vòng Pull chính đang chạy ngay sau nó.
-     */
-    private suspend fun probeEventPropertiesBestEffort(
-        cameraId: String,
-        eventsUrl: String,
-        username: String?,
-        password: String?
-    ) {
-        try {
-            val body = """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
-                            xmlns:wsa="http://www.w3.org/2005/08/addressing"
-                            xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
-                  ${wsAddressingHeader(
-                      action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest",
-                      to = eventsUrl
-                  )}
-                  <s:Body>
-                    <tev:GetEventProperties/>
-                  </s:Body>
-                </s:Envelope>
-            """.trimIndent()
-
-            val response = soapPost(
-                eventsUrl, body, username, password,
-                action = "http://www.onvif.org/ver10/events/wsdl/EventPortType/GetEventPropertiesRequest"
-            )
-            if (response == null) {
-                logger.i(TAG, "🔍 GetEventProperties (camera $cameraId): không có response (lỗi/không hỗ trợ)")
-                return
-            }
-            logger.i(TAG, "🔍 GetEventProperties RAW (camera $cameraId): $response")
-        } catch (e: Exception) {
-            // im lặng — đây thuần tuý là debug probe, không được phép ảnh hưởng vòng Pull chính.
-        }
-    }
-
-    /**
      * true = phát hiện chuyển động, false = PullMessages thành công nhưng không match, null =
      * PullMessages thất bại (lỗi HTTP/mạng/subscription chết — xem giải thích tách biệt các
      * trạng thái ở comment "✅ SỬA: Boolean -> Boolean?" bên dưới).
@@ -553,150 +500,154 @@ class OnvifEventRelay @Inject constructor(
                 return@withContext null
             }
 
-            // ✅ MỚI (debug tạm thời, giữ lại vì chi phí gần như 0 khi không có event — chỉ log
-            // khi response THỰC SỰ chứa ít nhất 1 NotificationMessage, không log mỗi lần Pull rỗng
-            // để tránh spam giống lý do LOG_EVERY_N_PULLS ở trên): log NGUYÊN VĂN response ngay khi
-            // nhận được, TRƯỚC khi qua bất kỳ bước parse/regex nào — mục đích duy nhất là lấy XML
-            // thật của TỪNG hãng camera (đặc biệt OEM như V380 không tuân thủ ONVIF đầy đủ) để đối
-            // chiếu tay với parser, xác định chính xác cấu trúc SimpleItem/Name/Topic/
-            // PropertyOperation thật sự khác giả định ở chỗ nào — thay vì tiếp tục đoán theo spec.
-            // KHÔNG đặt log() này ở dạng comment lồng trong chuỗi SOAP body/header (xem cảnh báo
-            // regression ở KDoc của subscribe()) — đây là statement Kotlin bình thường, chạy SAU
-            // khi response đã nhận xong, không góp phần vào bất kỳ request nào gửi lên camera.
-            //
-            // ✅ SỬA (bug tự phát hiện ngay lần đầu bật log tóm tắt bên dưới: thấy spam
-            // "unknown-topic(op=none,value=false)" ở MỌI lần Pull rỗng bình thường — nguyên nhân
-            // là splitNotificationMessages() có fallback "không tách được block nào -> coi cả
-            // response là 1 block giả" (xem KDoc hàm đó), và log tóm tắt cũ chạy vô điều kiện
-            // trên [messages] nên vô tình log luôn cả block giả này mỗi lần Pull rỗng, y hệt lỗi
-            // spam mà LOG_EVERY_N_PULLS từng phải sửa cho log khác). Tách biến điều kiện ra dùng
-            // chung cho CẢ 2 log (RAW lẫn tóm tắt) — chỉ khi response thật sự chứa
-            // NotificationMessage mới cho [messages] chạy qua vòng tóm tắt, tránh log block giả.
-            val hasRealNotificationMessage = response.contains("NotificationMessage", ignoreCase = true)
-            if (hasRealNotificationMessage) {
-                logger.i(TAG, "📩 ONVIF EVENT RAW (camera $cameraId): $response")
-            }
-
-            // ✅ SỬA (đúng ONVIF Core Spec — không vá riêng theo hành vi 1 camera, áp dụng chung
-            // cho mọi hãng tuân thủ Profile S/T lẫn hãng không tuân thủ đầy đủ):
-            //
-            // Mỗi <NotificationMessage> theo spec mang thuộc tính PropertyOperation trên phần tử
-            // Message ("Initialized" | "Changed" | "Deleted"). Đây là cách CHUẨN để phân biệt
-            // "camera đang báo lại trạng thái đã có sẵn" (Initialized — gửi lúc mới subscribe,
-            // hoặc một số hãng tự ý resend định kỳ dù chẳng có gì đổi) khỏi "trạng thái VỪA đổi
-            // thật" (Changed). Heuristic cũ chỉ nhìn Value="true" toàn cục trên cả response, bỏ
-            // qua hẳn thuộc tính này lẫn việc 1 response có thể chứa NHIỀU NotificationMessage —
-            // nên 1 message Initialized/Deleted true cũ cũng bị tính chung là "có match".
-            //
-            // Xử lý qua 2 lớp, tách theo TỪNG NotificationMessage block (không còn regex toàn cục
-            // trên cả response):
-            //   1) PropertyOperation="Changed" -> ứng viên match (đúng chuẩn, ưu tiên).
-            //      PropertyOperation="Initialized"/"Deleted" -> KHÔNG match (đúng chuẩn: không
-            //      phải sự kiện mới), bất kể Value là gì.
-            //   2) Thiếu hẳn PropertyOperation (OEM giá rẻ bỏ qua, dù bắt buộc trong spec) hoặc
-            //      không nhận diện được giá trị -> fallback rising-edge theo (cameraId, Topic):
-            //      chỉ match khi Value vừa chuyển false -> true so với lần Pull trước (lưu ở
-            //      [lastKnownTopicValue]), không phải cứ true là khớp.
-            // Sau đó vẫn áp NOISE_TOPICS như cũ để loại các Topic biết rõ là nhiễu định kỳ/trạng
-            // thái nội bộ máy (trừ khi bản thân Topic có chữ "Motion").
-            val messages = splitNotificationMessages(response)
+            val events = parseNotificationEvents(response)
             var matched = false
-            // ✅ MỚI (debug, không đổi logic match ở dưới): gom lại 1 dòng tóm tắt NGẮN GỌN mọi
-            // Topic thấy được trong lần Pull này — kể cả khi State=false hoặc bị loại vì
-            // Initialized/Deleted/NOISE_TOPICS — để lướt log quanh thời điểm có báo động vật lý
-            // thật mà không phải đọc lại nguyên response RAW dài mỗi lần chỉ để tìm 1 Topic cụ
-            // thể (ví dụ đối chiếu MotionAlarm có thực sự được camera gửi hay không). Chỉ đọc,
-            // không góp phần vào [matched] hay bất kỳ state nào khác.
-            val topicSummaries = mutableListOf<String>()
-            for (message in messages) {
-                val topic = extractTopic(message) ?: "unknown-topic"
-                val hasTrueValue = Regex("Value\\s*=\\s*\"(?:true|1)\"", RegexOption.IGNORE_CASE)
-                    .containsMatchIn(message)
-                if (hasRealNotificationMessage) {
-                    topicSummaries.add(
-                        "$topic(op=${extractPropertyOperation(message) ?: "none"}," +
-                            "value=${if (hasTrueValue) "true" else "false"})"
-                    )
-                }
-                if (!hasTrueValue) {
-                    // Value false/0 (hoặc không tìm thấy Value) trong message này — vẫn cập nhật
-                    // rising-edge state về false để lần sau true thật sự tính là "vừa đổi", rồi
-                    // xét message tiếp theo (không góp phần vào matched).
-                    lastKnownTopicValue["$cameraId|$topic"] = false
+
+            for (event in events) {
+                val trueItems = event.items.filter { isTrueValue(it.value) }
+                val falseItems = event.items.filter { isFalseValue(it.value) }
+                val stateKey = "$cameraId|${event.identityKey}"
+
+                if (falseItems.isNotEmpty()) lastKnownTopicValue[stateKey] = false
+                if (trueItems.isEmpty()) {
+                    if (event.propertyOperation.equals("Deleted", ignoreCase = true)) {
+                        lastKnownTopicValue[stateKey] = false
+                    }
                     continue
                 }
 
-                val propertyOperation = extractPropertyOperation(message)
-                val isCandidateMatch = when (propertyOperation) {
-                    "Changed" -> true
-                    "Initialized", "Deleted" -> false
-                    else -> {
-                        // Thiếu/không nhận diện được PropertyOperation — fallback rising-edge.
-                        val key = "$cameraId|$topic"
-                        val wasTrue = lastKnownTopicValue[key] == true
-                        !wasTrue
-                    }
+                val isMotion = looksLikeMotionEvent(event, trueItems)
+                val isKnownNoise = NOISE_TOPICS.any {
+                    normalizeTopic(event.topic).equals(normalizeTopic(it), ignoreCase = true)
                 }
-                // Luôn cập nhật state true cho topic này (kể cả khi PropertyOperation cho biết
-                // đây không phải Changed) — để rising-edge fallback ở lần Pull kế tiếp phản ánh
-                // đúng giá trị hiện tại của camera, không riêng gì các message dùng fallback.
-                lastKnownTopicValue["$cameraId|$topic"] = true
-
-                if (!isCandidateMatch) continue
-
-                val hasMotionTopic = topic.contains("Motion", ignoreCase = true)
-                val isKnownNoise = NOISE_TOPICS.any { topic.equals(it, ignoreCase = true) } && !hasMotionTopic
-                if (!isKnownNoise) {
-                    matched = true
+                if (!isMotion && isKnownNoise) {
+                    logger.d(TAG, "ℹ️ ONVIF bỏ qua noise: topic=${event.topic}")
+                    lastKnownTopicValue[stateKey] = true
+                    continue
                 }
-            }
 
-            if (topicSummaries.isNotEmpty()) {
-                logger.i(TAG, "👀 Pull thấy topics (camera $cameraId): ${topicSummaries.joinToString(", ")}")
-            }
+                val previousTrue = lastKnownTopicValue[stateKey] == true
+                lastKnownTopicValue[stateKey] = true
+                val shouldTrigger = when {
+                    event.propertyOperation.equals("Changed", ignoreCase = true) -> true
+                    event.propertyOperation.equals("Deleted", ignoreCase = true) -> false
+                    else -> !previousTrue
+                }
 
+                logger.d(
+                    TAG,
+                    "📥 ONVIF event: topic=${event.topic}, op=${event.propertyOperation ?: "none"}, " +
+                        "motion=$isMotion, items=${event.items.joinToString { "${it.name}=${it.value}" }}"
+                )
+
+                if (isMotion && shouldTrigger) matched = true
+            }
             matched
         }
 
-    // ✅ MỚI: tách response PullMessages thành từng <...NotificationMessage>...</...NotificationMessage>
-    // block riêng biệt — cần thiết để đọc đúng Topic/PropertyOperation/Value CỦA CÙNG 1 message,
-    // vì 1 lần Pull có thể trả về nhiều message (PULL_MESSAGE_LIMIT), mỗi message có thể thuộc
-    // Topic khác nhau và mang giá trị PropertyOperation khác nhau. Regex lỏng (namespace prefix
-    // tuỳ hãng, đôi khi không có prefix) — cùng tinh thần best-effort với các chỗ parse XML khác
-    // trong file này (CameraCapabilityProber.tryProbeOnvif(), subscribe()).
-    private fun splitNotificationMessages(response: String): List<String> {
-        val matches = Regex(
-            "<(?:\\w+:)?NotificationMessage[\\s>].*?</(?:\\w+:)?NotificationMessage>",
-            setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
-        ).findAll(response).map { it.value }.toList()
-        // Một số camera OEM không dùng đúng tên thẻ NotificationMessage (implementation không
-        // đầy đủ) — nếu không tách được block nào, coi cả response là 1 block duy nhất để không
-        // mất hẳn khả năng phát hiện match như cũ (best-effort, không hoàn hảo nhưng không bỏ sót
-        // hẳn), chấp nhận rủi ro Topic/PropertyOperation trộn lẫn giữa các event ở case hiếm này.
-        return matches.ifEmpty { listOf(response) }
+    private data class OnvifItem(val name: String, val value: String)
+
+    private data class OnvifNotificationEvent(
+        val topic: String,
+        val propertyOperation: String?,
+        val sourceItems: List<OnvifItem>,
+        val keyItems: List<OnvifItem>,
+        val dataItems: List<OnvifItem>,
+    ) {
+        val items: List<OnvifItem> get() = sourceItems + keyItems + dataItems
+        val identityKey: String
+            get() = buildString {
+                append(normalizeTopic(topic))
+                for (item in sourceItems + keyItems) {
+                    append('|').append(item.name.lowercase()).append('=').append(item.value)
+                }
+            }
     }
 
-    // ✅ MỚI: trích Topic của 1 NotificationMessage block — dùng làm key rising-edge theo
-    // (cameraId, Topic). Namespace prefix của thẻ Topic thay đổi tuỳ hãng, tương tự Address ở
-    // subscribe().
-    private fun extractTopic(message: String): String? =
-        Regex("<(?:\\w+:)?Topic[^>]*>(.*?)</(?:\\w+:)?Topic>", RegexOption.DOT_MATCHES_ALL)
-            .find(message)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotBlank() }
+    /** Namespace-agnostic ONVIF parser: Topic + Message + Source/Key/Data + SimpleItem. */
+    private fun parseNotificationEvents(response: String): List<OnvifNotificationEvent> = try {
+        val factory = DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            setFeature("http://xml.org/sax/features/external-general-entities", false)
+            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+        }
+        val document = factory.newDocumentBuilder().parse(InputSource(StringReader(response)))
+        val nodes = document.getElementsByTagNameNS("*", "NotificationMessage")
+        buildList {
+            for (i in 0 until nodes.length) {
+                val notification = nodes.item(i) as? Element ?: continue
+                val topic = firstDescendantText(notification, "Topic").orEmpty().ifBlank { "unknown-topic" }
+                val messageContainer = firstDescendantElement(notification, "Message") ?: continue
+                val message = if (messageContainer.hasAttribute("PropertyOperation")) messageContainer
+                else firstDescendantElement(messageContainer, "Message") ?: messageContainer
+                val op = message.getAttribute("PropertyOperation").trim().takeIf { it.isNotEmpty() }
+                add(OnvifNotificationEvent(topic, op,
+                    itemsInGroup(message, "Source"),
+                    itemsInGroup(message, "Key"),
+                    itemsInGroup(message, "Data")))
+            }
+        }
+    } catch (e: Exception) {
+        logger.w(TAG, "⚠️ Không parse được XML ONVIF: ${e.javaClass.simpleName}: ${e.message}")
+        emptyList()
+    }
 
-    // ✅ MỚI: trích thuộc tính PropertyOperation trên phần tử Message theo ONVIF Core Spec
-    // ("Initialized" | "Changed" | "Deleted"). Trả null nếu vắng mặt hoặc giá trị lạ — khiến
-    // pullOnce() rơi xuống fallback rising-edge thay vì tự tin dùng giá trị không hợp lệ.
-    private fun extractPropertyOperation(message: String): String? {
-        val raw = Regex("PropertyOperation\\s*=\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
-            .find(message)?.groupValues?.get(1)?.trim()
-            ?: return null
-        return when {
-            raw.equals("Changed", ignoreCase = true) -> "Changed"
-            raw.equals("Initialized", ignoreCase = true) -> "Initialized"
-            raw.equals("Deleted", ignoreCase = true) -> "Deleted"
-            else -> null
+    private fun itemsInGroup(message: Element, groupName: String): List<OnvifItem> {
+        val group = firstDescendantElement(message, groupName) ?: return emptyList()
+        val nodes = group.getElementsByTagNameNS("*", "SimpleItem")
+        return buildList {
+            for (i in 0 until nodes.length) {
+                val item = nodes.item(i) as? Element ?: continue
+                val name = item.getAttribute("Name").trim()
+                val value = item.getAttribute("Value").trim()
+                if (name.isNotBlank()) add(OnvifItem(name, value))
+            }
         }
     }
+
+    private fun firstDescendantElement(parent: Element, localName: String): Element? {
+        val nodes = parent.getElementsByTagNameNS("*", localName)
+        return (0 until nodes.length).asSequence()
+            .mapNotNull { nodes.item(it) as? Element }.firstOrNull()
+    }
+
+    private fun firstDescendantText(parent: Element, localName: String): String? =
+        firstDescendantElement(parent, localName)?.textContent?.trim()
+
+    /** Generic motion recognition; does not require one vendor-specific Topic. */
+    private fun looksLikeMotionEvent(event: OnvifNotificationEvent, trueItems: List<OnvifItem>): Boolean {
+        val topic = normalizeTopic(event.topic).lowercase()
+        val motionTopic = topic.contains("motion") ||
+            topic.contains("cellmotion") ||
+            topic.contains("motionalarm") ||
+            topic.contains("motiondetector")
+
+        val motionItem = trueItems.any {
+            val n = normalizeToken(it.name)
+            n == "ismotion" || n == "motion" || n == "motionalarm" ||
+                n == "motiondetected" || n == "cellmotion" || n.contains("motion")
+        }
+
+        val cellMotionRule = topic.contains("cellmotiondetector")
+        val genericAlarmState = trueItems.any {
+            normalizeToken(it.name) in setOf("state", "active", "alarm")
+        }
+        return motionTopic || motionItem || (cellMotionRule && genericAlarmState)
+    }
+
+    private fun isTrueValue(value: String): Boolean =
+        value.trim().equals("true", ignoreCase = true) || value.trim() == "1"
+
+    private fun isFalseValue(value: String): Boolean =
+        value.trim().equals("false", ignoreCase = true) || value.trim() == "0"
+
+    private fun normalizeTopic(topic: String): String =
+        topic.trim().replace("\\s+".toRegex(), "").removePrefix("{").removeSuffix("}")
+
+    private fun normalizeToken(value: String): String =
+        value.trim().lowercase().replace("[^a-z0-9]".toRegex(), "")
 
     private suspend fun unsubscribeBestEffort(pullPointUrl: String, username: String?, password: String?) {
         // NonCancellable: hàm này thường được gọi trong nhánh dọn dẹp khi Job sắp bị hủy (đổi
