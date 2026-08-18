@@ -460,6 +460,11 @@ PluginAction(
         // trong thời gian dài, mà không phải lưu ảnh ở MỌI lượt quét 5 phút.
         const val PERIODIC_IMAGE_INTERVAL_MS = 60 * 60 * 1000L
 
+        // ✅ MỚI: chu kỳ health-check snapshotUrlRemote (xem scheduleCloudSnapshotVerification())
+        // — 45 phút, nhẹ hơn nhiều so với poll LAN 5 phút vì mục tiêu chỉ là phát hiện sớm URL
+        // cloud hỏng, không cần theo dõi real-time.
+        const val CLOUD_SNAPSHOT_VERIFY_INTERVAL_MS = 45 * 60 * 1000L
+
         // ✅ MỚI (decay): giá trị mặc định để ngưỡng hạ về khi không còn mẫu nhiễu nào "còn hạn".
         const val DEFAULT_DELTA_TRIGGER = 10
         const val DEFAULT_ABS_DIFF_TRIGGER = 18
@@ -933,8 +938,96 @@ PluginAction(
         cleanupOldEventLogs() 
         pruneOrphanedCameraState()
         scheduleDailyReport()
+        scheduleCloudSnapshotVerification()
         
         syncToDeviceRegistry()
+    }
+
+    // ✅ MỚI: verify liên tục snapshotUrlRemote — chu kỳ 45 phút (nhẹ hơn nhiều so với poll LAN
+    // 5 phút, vì cloud URL hiếm khi đổi trạng thái nhanh và mục tiêu chỉ là PHÁT HIỆN SỚM URL
+    // hỏng, không phải theo dõi real-time). Chạy NGAY 1 lần lúc khởi động (delay=0 ở vòng đầu)
+    // rồi lặp lại — khác scheduleDailyReport() vốn chờ tới đúng giờ trong ngày mới chạy lần đầu.
+    private fun scheduleCloudSnapshotVerification() {
+        scope.launch {
+            while (true) {
+                try {
+                    verifyAllCloudSnapshotUrls()
+                } catch (e: Exception) {
+                    logger.e("CameraSkill", "verifyAllCloudSnapshotUrls error: ${e.message}", e)
+                }
+                delay(CLOUD_SNAPSHOT_VERIFY_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun verifyAllCloudSnapshotUrls() {
+        val cameras = withContext(Dispatchers.IO) { database.cameraDao().getActiveCameras() }
+        for (camera in cameras) {
+            val remoteUrl = camera.snapshotUrlRemote?.trim()
+            if (remoteUrl.isNullOrBlank()) continue
+
+            val bytes = try {
+                fetchOneSnapshot(remoteUrl, camera.snapshotUsername, camera.snapshotPassword)
+            } catch (e: Exception) {
+                null
+            }
+            val healthy = bytes != null
+
+            if (!healthy) {
+                logger.w("CameraSkill", "⚠️ snapshotUrlRemote không truy cập được cho camera ${camera.id.trim()}: $remoteUrl")
+            }
+
+            withContext(Dispatchers.IO) {
+                database.cameraDao().updateCamera(
+                    camera.copy(
+                        snapshotUrlRemoteLastVerifiedAt = System.currentTimeMillis(),
+                        snapshotUrlRemoteHealthy = if (healthy) 1 else 0
+                    )
+                )
+            }
+        }
+    }
+
+    // ✅ MỚI: gợi ý (KHÔNG tự lưu) 1 URL snapshotUrlRemote ứng viên bằng cách thay host:port của
+    // snapshoturl (LAN, đã hoạt động) sang ddnsHost:ddnsPort, giữ nguyên path/query — rồi thử
+    // fetch thật để xác nhận trước khi trả về gợi ý. Trả null nếu camera chưa khai ddnsHost, URL
+    // LAN không parse được, hoặc thử fetch thất bại (DDNS/port-forward chưa đúng, hoặc router
+    // chưa mở port thật). UI (CameraDetailScreen) gọi hàm này khi người dùng bấm "Dò tìm URL
+    // cloud", hiển thị kết quả để người dùng tự xác nhận trước khi lưu vào snapshotUrlRemote —
+    // không có bước tự động ghi đè.
+    suspend fun suggestRemoteUrlFromDdns(cameraId: String): String? {
+        val camera = withContext(Dispatchers.IO) { database.cameraDao().getCameraById(cameraId.trim()) } ?: return null
+        val ddnsHost = camera.ddnsHost?.trim()
+        if (ddnsHost.isNullOrBlank()) return null
+
+        val lanUrl = try {
+            java.net.URI(camera.snapshoturl.trim())
+        } catch (e: Exception) {
+            logger.w("CameraSkill", "suggestRemoteUrlFromDdns: snapshoturl không parse được cho $cameraId: ${e.message}")
+            return null
+        }
+
+        val candidatePort = camera.ddnsPort ?: lanUrl.port.takeIf { it != -1 }
+        val candidate = buildString {
+            append(lanUrl.scheme ?: "http")
+            append("://")
+            append(ddnsHost)
+            if (candidatePort != null) append(":").append(candidatePort)
+            append(lanUrl.rawPath ?: "")
+            if (!lanUrl.rawQuery.isNullOrBlank()) append("?").append(lanUrl.rawQuery)
+        }
+
+        val verified = try {
+            fetchOneSnapshot(candidate, camera.snapshotUsername, camera.snapshotPassword) != null
+        } catch (e: Exception) {
+            false
+        }
+
+        if (!verified) {
+            logger.d("CameraSkill", "suggestRemoteUrlFromDdns: ứng viên $candidate không fetch được cho $cameraId")
+            return null
+        }
+        return candidate
     }
 
     private suspend fun syncToDeviceRegistry() {
@@ -1422,12 +1515,19 @@ PluginAction(
         return false
     }
     
+    // ✅ MỚI: preloadedImageBytes — cho phép nơi gọi (WebhookGatewayService.handleIncomingHouseholdEvent,
+    // nhánh "camera_alarm" khi payload có imageUrl từ máy Camera Node relay qua) đưa thẳng ảnh
+    // ĐÃ tải sẵn (tải qua Gateway, không phải fetch trực tiếp từ camera) vào pipeline phân
+    // tích/lưu, bỏ qua fetchSnapshotWithFallback() — vì máy này có thể không cùng LAN lẫn không
+    // có snapshotUrlRemote cấu hình, nhưng vẫn có ảnh THẬT nhờ máy khác trong household gửi qua.
+    // Chỉ có ý nghĩa khi cameraId chỉ định đúng 1 camera (bulk scan-all không dùng tham số này).
     suspend fun scanCamera(
         cameraId: String?,
         isDailyReport: Boolean,
         scheduleId: String? = null,
         forceAi: Boolean = false,
-        overrideAlertActions: List<AlertActionConfig>? = null
+        overrideAlertActions: List<AlertActionConfig>? = null,
+        preloadedImageBytes: ByteArray? = null
     ): PluginResult {
         return try {
             val cameras = if (!cameraId.isNullOrBlank() && cameraId != "null") {
@@ -1483,7 +1583,8 @@ PluginAction(
                         customerSetting.smartMode == 1 && camera.smartMode == 1,
                         scheduleId = scheduleId,
                         forceAi = forceAi,
-                        overrideAlertActions = overrideAlertActions
+                        overrideAlertActions = overrideAlertActions,
+                        preloadedImageBytes = preloadedImageBytes
                     )
                 }
                 results.add(result)
@@ -2126,11 +2227,17 @@ PluginAction(
         isSmartMode: Boolean,
         scheduleId: String? = null,
         forceAi: Boolean = false,
-        overrideAlertActions: List<AlertActionConfig>? = null
+        overrideAlertActions: List<AlertActionConfig>? = null,
+        preloadedImageBytes: ByteArray? = null
     ): Map<String, Any> {
         val tid = camera.id.trim()
         try {
-            val imageBytes = fetchSnapshotWithFallback(camera)
+            // ✅ MỚI: có ảnh đã tải sẵn (relay từ máy khác trong household qua Gateway) thì dùng
+            // luôn, bỏ qua fetch — KHÔNG coi việc fetch LAN/remote thất bại là "camera offline"
+            // trong trường hợp này, vì ảnh vừa nhận được chứng minh camera vẫn đang hoạt động
+            // bình thường ở máy đã fetch nó, chỉ MÁY NÀY không tới được thôi (khác bản chất lỗi
+            // hoàn toàn so với "Cannot fetch snapshot" thật).
+            val imageBytes = preloadedImageBytes ?: fetchSnapshotWithFallback(camera)
             if (imageBytes == null) {
                 handleOfflineCamera(camera)
                 recordOffline(tid)

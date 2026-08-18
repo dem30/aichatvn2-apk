@@ -647,6 +647,21 @@ val MIGRATION_25_26 = object : Migration(25, 26) {
     }
 }
 
+// ✅ MỚI: version 26 → 27 — CameraConfigEntity thêm 4 cột cho tính năng verify/gợi ý
+// snapshotUrlRemote (xem ghi chú tại khai báo field trong Entity.kt):
+// snapshotUrlRemoteLastVerifiedAt/snapshotUrlRemoteHealthy (health-check định kỳ) và
+// ddnsHost/ddnsPort (gợi ý dò URL cloud khi có DDNS/port-forward). Tất cả nullable, DEFAULT
+// NULL — camera cũ không có gì để điền, giữ nguyên hành vi đọc ra null, cùng khuôn ALTER TABLE
+// ADD COLUMN như mọi migration 17→26 trước đó.
+val MIGRATION_26_27 = object : Migration(26, 27) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cameras ADD COLUMN snapshotUrlRemoteLastVerifiedAt INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN snapshotUrlRemoteHealthy INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN ddnsHost TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE cameras ADD COLUMN ddnsPort INTEGER DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -680,7 +695,9 @@ val MIGRATION_25_26 = object : Migration(25, 26) {
     // mới) không khớp version đã export, có nguy cơ crash hoặc rơi vào fallbackToDestructiveMigration()
     // (xoá dữ liệu khách hàng thật, xem cảnh báo ngay trên). Bump version + đăng ký migration khớp
     // với MIGRATION_25_26 đã tồn tại từ trước, không đổi nội dung migration.
-    version = 26,
+    // ✅ MỚI: bump 26 → 27 — MIGRATION_26_27 (CameraConfigEntity thêm 4 cột verify/DDNS cho
+    // snapshotUrlRemote, xem ghi chú tại khai báo migration).
+    version = 27,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -718,7 +735,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

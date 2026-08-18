@@ -118,6 +118,96 @@ class HouseholdEventPublisher @Inject constructor(
             put("source", source)
         })
 
-    suspend fun publishCameraAlarm(cameraId: String): Boolean =
-        publish("camera_alarm", cameraId, JSONObject().apply { put("cameraId", cameraId) })
+    // ✅ MỚI: máy đang publish camera_alarm mà ĐANG CÙNG LAN với camera đó (mới tự fetch được
+    // ảnh LAN thật lúc trigger scan sớm — xem OnvifEventRelay.relayMotionEvent() và nhánh nhận
+    // camera_alarm_push trong WebhookGatewayService) truyền kèm imageBytes vào đây. Ảnh được
+    // upload lên /upload-household-image (endpoint MỚI, xác thực bằng token — khác
+    // /upload-image vốn dành cho luồng website widget cần widgetKey) TRƯỚC khi publish, rồi chỉ
+    // nhét imageUrl (nhẹ) vào payload — KHÔNG nhét base64 thẳng vào payload/household/event vì
+    // kênh đó là SSE broadcast tới mọi máy trong household, ảnh vài trăm KB base64 hoá sẽ làm
+    // phình payload không cần thiết cho những máy không quan tâm.
+    //
+    // imageBytes = null (không cùng LAN với camera, hoặc fetch/upload ảnh thất bại) vẫn publish
+    // bình thường, KHÔNG chặn báo động — máy nhận sẽ tự quét cục bộ như hành vi cũ (xem
+    // WebhookGatewayService.handleIncomingHouseholdEvent()).
+    suspend fun publishCameraAlarm(cameraId: String, imageBytes: ByteArray? = null): Boolean {
+        val payload = JSONObject().apply { put("cameraId", cameraId) }
+
+        if (imageBytes != null) {
+            val imageUrl = uploadImageAndGetUrl(imageBytes)
+            if (imageUrl != null) {
+                payload.put("imageUrl", imageUrl)
+            } else {
+                logger.w("HouseholdEvent", "⚠️ Upload ảnh báo động thất bại cho camera=$cameraId — vẫn phát báo động không kèm ảnh.")
+            }
+        }
+
+        return publish("camera_alarm", cameraId, payload)
+    }
+
+    // ✅ MỚI: Client (có thể không cùng LAN với camera) yêu cầu 1 ảnh mới — thay vì tự đoán
+    // máy nào là "Camera Node", broadcast cho CẢ household; mỗi máy nhận tự quyết định có trả
+    // lời hay không dựa trên networkContext.isOnSavedSubnet() của CHÍNH nó (xem nhánh
+    // "camera_snapshot_request" trong WebhookGatewayService.handleIncomingHouseholdEvent()).
+    // requestId do người gọi tự sinh (UUID) — dùng để khớp response, vì có thể có nhiều yêu
+    // cầu đang chờ song song (nhiều camera, hoặc user bấm lại).
+    suspend fun publishCameraSnapshotRequest(cameraId: String, requestId: String): Boolean =
+        publish("camera_snapshot_request", cameraId, JSONObject().apply {
+            put("cameraId", cameraId)
+            put("requestId", requestId)
+        })
+
+    // ✅ MỚI: máy đã xác nhận cùng LAN với camera (xem nhánh nhận ở WebhookGatewayService) gọi
+    // hàm này SAU KHI fetch LAN thành công — upload ảnh rồi publish lại đúng requestId để máy
+    // đã yêu cầu khớp về đúng request đang chờ. imageBytes luôn khác null ở đây (caller chỉ gọi
+    // khi fetch thành công) — không có "response thất bại": máy không fetch được thì đơn giản
+    // không publish gì cả, để máy khác (nếu có, cùng LAN) có cơ hội trả lời; người yêu cầu tự
+    // timeout nếu không ai trả lời.
+    suspend fun publishCameraSnapshotResponse(requestId: String, cameraId: String, imageBytes: ByteArray): Boolean {
+        val imageUrl = uploadImageAndGetUrl(imageBytes) ?: run {
+            logger.w("HouseholdEvent", "⚠️ Upload ảnh snapshot thất bại cho requestId=$requestId cameraId=$cameraId — không publish response.")
+            return false
+        }
+        return publish("camera_snapshot_response", cameraId, JSONObject().apply {
+            put("requestId", requestId)
+            put("cameraId", cameraId)
+            put("imageUrl", imageUrl)
+        })
+    }
+
+    // ✅ MỚI: POST /upload-household-image (endpoint mới trên gateway, song song /upload-image
+    // của website widget nhưng xác thực bằng token thay vì widgetKey). Trả về imageUrl ngắn hạn
+    // (TTL 10 phút phía server — đủ để client đang ở xa tải về ngay sau khi nhận SSE báo động,
+    // không cần lưu vĩnh viễn).
+    private suspend fun uploadImageAndGetUrl(imageBytes: ByteArray): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val gatewayUrl = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_URL).trim()
+                val gatewayToken = configProvider.getString(AppConfigDefaults.GLOBAL_GATEWAY_TOKEN).trim()
+                if (gatewayUrl.isBlank() || gatewayToken.isBlank()) return@withContext null
+
+                val imageBase64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
+                val bodyJson = JSONObject().apply {
+                    put("token", gatewayToken)
+                    put("imageBase64", imageBase64)
+                }
+                val request = Request.Builder()
+                    .url("$gatewayUrl/upload-household-image")
+                    .post(bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logger.w("HouseholdEvent", "⚠️ Upload ảnh báo động thất bại, HTTP: ${response.code}")
+                        return@withContext null
+                    }
+                    val json = JSONObject(response.body?.string() ?: "{}")
+                    if (json.optString("status") != "success") return@withContext null
+                    json.optString("imageUrl").ifBlank { null }
+                }
+            } catch (e: Exception) {
+                logger.e("HouseholdEvent", "❌ Lỗi upload ảnh báo động: ${e.message}")
+                null
+            }
+        }
 }

@@ -100,6 +100,12 @@ class OnvifEventRelay @Inject constructor(
     // HouseholdEventPublisher — không còn tự build JSON POST /camera/onvif_event nữa (route
     // đó đã bị xoá ở app.py, thay bằng /household/event dùng chung cho mọi loại event).
     private val householdEventPublisher: HouseholdEventPublisher,
+    // ✅ MỚI: máy chạy vòng lặp này CHẮC CHẮN đang cùng LAN với camera (điều kiện
+    // isEligibleForOnvifRelay() ở dưới), nên tận dụng luôn để tự fetch 1 tấm ảnh LAN thật
+    // ngay lúc phát hiện chuyển động, gửi kèm báo động cho client ở xa (không tự lặp lại logic
+    // fetch/rẽ nhánh RTSP — gọi thẳng CameraSkill.fetchOneSnapshot() dùng chung MỘT chỗ duy
+    // nhất, xem ghi chú "Public hoá" tại khai báo hàm đó).
+    private val cameraSkill: CameraSkill,
     // ✅ MỚI: thay cho gate deviceRole == "camera_node" — kiểm tra ĐỘNG chính máy này có đang
     // cùng LAN Wi-Fi với 1 camera cụ thể không, đúng bản chất kỹ thuật cần cho ONVIF subscribe.
     private val networkContext: com.aichatvn.agent.utils.NetworkContext,
@@ -348,7 +354,7 @@ class OnvifEventRelay @Inject constructor(
                         consecutiveFailures = 0
                         if (motionDetected) {
                             logger.i(TAG, "🚨 ONVIF phát hiện chuyển động: camera $cameraId")
-                            relayMotionEvent(cameraId)
+                            relayMotionEvent(camera)
                         }
                     }
                     pullCount++
@@ -798,9 +804,24 @@ class OnvifEventRelay @Inject constructor(
      * (đã xoá khỏi AppConfigDefaults) — máy nào cần nhận báo động chỉ cần khai cùng
      * [AppConfigDefaults.HOUSEHOLD_ID] với Camera Node này, không cần gõ tay deviceCode
      * đích một chiều như trước.
+     *
+     * ✅ MỚI: gọi ĐÚNG MỘT chỗ CameraSkill.fetchOneSnapshot() để lấy ảnh LAN thật (máy này chắc
+     * chắn cùng LAN với camera — điều kiện bắt buộc để vòng lặp ONVIF chạy tới đây, xem
+     * isEligibleForOnvifRelay()) TRƯỚC khi publish — cho client ở xa nhận được ảnh thật thay vì
+     * chỉ 1 tín hiệu "có báo động" suông. fetch lỗi (camera vừa mất kết nối LAN giữa lúc vừa
+     * pull được sự kiện) KHÔNG chặn việc publish báo động — vẫn gửi, chỉ thiếu ảnh, client ở xa
+     * fallback về hành vi cũ (tự scan cục bộ).
      */
-    private suspend fun relayMotionEvent(cameraId: String) {
-        val delivered = householdEventPublisher.publishCameraAlarm(cameraId)
+    private suspend fun relayMotionEvent(camera: CameraConfigEntity) {
+        val cameraId = camera.id.trim()
+        val imageBytes = try {
+            cameraSkill.fetchOneSnapshot(camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword)
+        } catch (e: Exception) {
+            logger.w(TAG, "⚠️ Fetch ảnh LAN thất bại lúc relay báo động ONVIF cho $cameraId: ${e.message}")
+            null
+        }
+
+        val delivered = householdEventPublisher.publishCameraAlarm(cameraId, imageBytes)
         if (!delivered) {
             logger.w(TAG, "⚠️ Relay sự kiện ONVIF của $cameraId thất bại hoặc chưa cấu hình Household ID/Gateway.")
         }

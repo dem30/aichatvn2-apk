@@ -173,6 +173,19 @@ class WebhookGatewayService : Service() {
     @Inject
     lateinit var householdEventPublisher: HouseholdEventPublisher
 
+    // ✅ MỚI: xem có đang cùng subnet Wi-Fi đã lưu của 1 camera hay không — dùng ở nhánh
+    // "camera_snapshot_request" để quyết định CHÍNH máy này có nên tự fetch LAN trả lời hay
+    // không, KHÔNG cần biết trước máy nào là "Camera Node" (SystemAuditor.kt cũng dùng đúng
+    // class này cho mục đích tương tự — xem Phase 3 SHAS).
+    @Inject
+    lateinit var networkContext: com.aichatvn.agent.utils.NetworkContext
+
+    // ✅ MỚI: khớp camera_snapshot_response về đúng request đang chờ (xem
+    // CameraSnapshotRequestRegistry.kt) — chỉ dùng ở nhánh "camera_snapshot_response", máy
+    // publish request (CameraDetailViewModel) đọc qua cùng singleton này.
+    @Inject
+    lateinit var cameraSnapshotRequestRegistry: com.aichatvn.agent.skills.CameraSnapshotRequestRegistry
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotificationText = ""
@@ -1095,12 +1108,38 @@ class WebhookGatewayService : Service() {
                 "camera_alarm" -> {
                     val cameraId = payload.optString("cameraId", "").trim()
                     if (cameraId.isNotEmpty()) {
-                        logger.i("HouseholdEventSSE", "🚨 Camera $cameraId báo động, kích hoạt quét sớm (vẫn tôn trọng pHash/cooldown).")
+                        // ✅ MỚI: máy publish (đang cùng LAN với camera lúc báo động) có thể đã
+                        // kèm sẵn ảnh THẬT qua Gateway (xem HouseholdEventPublisher.publishCameraAlarm()
+                        // / OnvifEventRelay.relayMotionEvent()) — nếu có imageUrl, tải ảnh đó về
+                        // và đưa THẲNG vào scanCamera() qua preloadedImageBytes, bỏ qua việc tự
+                        // fetch cục bộ (máy này có thể không cùng LAN lẫn không có
+                        // snapshotUrlRemote cấu hình — trước đây sẽ luôn "Cannot fetch snapshot"
+                        // trong trường hợp đó). Không có imageUrl (máy publish không cùng LAN với
+                        // camera, hoặc upload ảnh thất bại) → giữ nguyên hành vi cũ, tự scan cục bộ.
+                        val imageUrl = payload.optString("imageUrl", "").trim()
+                        val preloadedImageBytes = if (imageUrl.isNotEmpty()) {
+                            downloadImageAsBase64(imageUrl)?.let { base64 ->
+                                try {
+                                    android.util.Base64.decode(base64, android.util.Base64.NO_WRAP)
+                                } catch (e: Exception) {
+                                    logger.w("HouseholdEventSSE", "⚠️ Giải mã ảnh báo động thất bại: ${e.message}")
+                                    null
+                                }
+                            }
+                        } else null
+
+                        logger.i(
+                            "HouseholdEventSSE",
+                            "🚨 Camera $cameraId báo động, kích hoạt quét sớm (vẫn tôn trọng pHash/cooldown)" +
+                                if (preloadedImageBytes != null) ", kèm ảnh thật từ household." else "."
+                        )
                         // ✅ force=false: KHÔNG bypass cooldown/pHash — chỉ chạy sớm hơn lịch,
                         // logic quyết định có gọi AI hay không vẫn nằm nguyên trong scanCamera().
-                        findPlugin("camera")?.execute(
-                            "scan",
-                            mapOf("cameraId" to cameraId, "force" to false)
+                        (findPlugin("camera") as? CameraSkill)?.scanCamera(
+                            cameraId = cameraId,
+                            isDailyReport = false,
+                            forceAi = false,
+                            preloadedImageBytes = preloadedImageBytes
                         )
                     }
                 }
@@ -1119,6 +1158,51 @@ class WebhookGatewayService : Service() {
                                 lastSeen = System.currentTimeMillis()
                             )
                         }
+                    }
+                }
+                // ✅ MỚI: Client (không nhất thiết cùng LAN với camera) xin 1 ảnh mới. Broadcast
+                // tới cả household — máy này CHỈ trả lời nếu đang thật sự cùng subnet Wi-Fi đã
+                // lưu của chính camera đó (không đoán vai trò trước, không cần biết
+                // home_camera_node_code). Nhiều máy cùng nhà đều cùng LAN thì có thể cùng trả
+                // lời — chấp nhận được (CameraSnapshotRequestRegistry chỉ lấy kết quả ĐẦU TIÊN,
+                // các response tới sau bị bỏ qua vì requestId đã bị remove khỏi map).
+                "camera_snapshot_request" -> {
+                    val cameraId = payload.optString("cameraId", "").trim()
+                    val requestId = payload.optString("requestId", "").trim()
+                    if (cameraId.isNotEmpty() && requestId.isNotEmpty()) {
+                        serviceScope.launch {
+                            try {
+                                val camera = database.cameraDao().getCameraById(cameraId) ?: return@launch
+                                val cameraHost = try {
+                                    java.net.URI(camera.snapshoturl.trim()).host
+                                } catch (e: Exception) {
+                                    null
+                                }
+                                if (!networkContext.isOnSavedSubnet(cameraHost)) {
+                                    // Không cùng LAN với camera này — không phải máy phù hợp để
+                                    // trả lời, lặng lẽ bỏ qua (không phải lỗi).
+                                    return@launch
+                                }
+                                val cameraSkill = findPlugin("camera") as? CameraSkill ?: return@launch
+                                val bytes = cameraSkill.fetchOneSnapshot(
+                                    camera.snapshoturl, camera.snapshotUsername, camera.snapshotPassword
+                                ) ?: return@launch
+                                householdEventPublisher.publishCameraSnapshotResponse(requestId, cameraId, bytes)
+                            } catch (e: Exception) {
+                                logger.d("HouseholdEventSSE", "camera_snapshot_request xử lý lỗi (bỏ qua): ${e.message}")
+                            }
+                        }
+                    }
+                }
+                // ✅ MỚI: khớp response về đúng request đang chờ ở CameraDetailViewModel (nếu
+                // chính máy này là máy đã publish request — máy khác trong household nhận được
+                // event này cũng vô hại, registry của chúng đơn giản không có requestId tương
+                // ứng nên complete() không làm gì).
+                "camera_snapshot_response" -> {
+                    val requestId = payload.optString("requestId", "").trim()
+                    val imageUrl = payload.optString("imageUrl", "").trim().ifBlank { null }
+                    if (requestId.isNotEmpty()) {
+                        cameraSnapshotRequestRegistry.complete(requestId, imageUrl)
                     }
                 }
                 else -> logger.d("HouseholdEventSSE", "Bỏ qua household event không xác định, type=$type")

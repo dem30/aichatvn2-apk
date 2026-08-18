@@ -36,7 +36,9 @@ import com.aichatvn.agent.data.model.TuyaDeviceEntity
 import com.aichatvn.agent.data.model.AlertActionConfig
 import com.aichatvn.agent.ui.components.SmartActionFormSheet
 import com.aichatvn.agent.ui.viewmodels.AlarmVerifyState // ✅ MỚI
+import com.aichatvn.agent.ui.viewmodels.DdnsSuggestState // ✅ MỚI
 import com.aichatvn.agent.ui.viewmodels.CameraDetailViewModel
+import com.aichatvn.agent.ui.viewmodels.CameraSnapshotRequestResult // ✅ MỚI: dùng ở nhánh kiểm tra snapshotRequestResult is ... .TimedOut
 import com.aichatvn.agent.ui.viewmodels.ScheduleDraft
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -331,6 +333,36 @@ fun CameraDetailScreen(
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Xem ảnh trực tiếp")
+                        }
+
+                        // ✅ MỚI: dùng khi máy này KHÔNG cùng LAN với camera (nút trên không
+                        // fetch được) — xin ảnh từ bất kỳ máy nào khác trong nhà đang cùng LAN,
+                        // xem CameraDetailViewModel.requestSnapshotFromCameraNode().
+                        Spacer(Modifier.height(6.dp))
+                        val isRequestingSnapshot by viewModel.isRequestingSnapshot.collectAsState()
+                        val snapshotRequestResult by viewModel.snapshotRequestResult.collectAsState()
+                        OutlinedButton(
+                            onClick = { viewModel.requestSnapshotFromCameraNode() },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !isRequestingSnapshot
+                        ) {
+                            if (isRequestingSnapshot) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Đang chờ máy ở nhà trả lời...")
+                            } else {
+                                Icon(Icons.Default.Home, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Xin ảnh từ nhà")
+                            }
+                        }
+                        if (snapshotRequestResult is CameraSnapshotRequestResult.TimedOut) {
+                            Text(
+                                "Không có máy nào ở nhà (cùng mạng với camera) trả lời — thử lại sau, hoặc kiểm tra có ai đang mở app ở nhà không.",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
                         }
                     }
                 }
@@ -685,6 +717,10 @@ fun CameraDetailScreen(
                                 DetailRow("Snapshot URL", cam.snapshoturl.ifBlank { "—" })
                                 DetailRow("Tài khoản đăng nhập camera", cam.snapshotUsername?.ifBlank { null } ?: "—")
                                 DetailRow("URL dự phòng (cloud/ngoài mạng)", cam.snapshotUrlRemote?.ifBlank { null } ?: "—")
+                                DetailRow(
+                                    "DDNS / Port-forward",
+                                    if (cam.ddnsHost.isNullOrBlank()) "—" else cam.ddnsHost + (cam.ddnsPort?.let { ":$it" } ?: "")
+                                )
                                 DetailRow("Vị trí", cam.landinfo?.ifBlank { "—" } ?: "—")
                                 DetailRow("AI Prompt", cam.aiPrompt.ifBlank { "(mặc định)" })
                                 DetailRow("Từ khoá (+)", cam.aiPositiveKeywords.ifBlank { "(mặc định)" })
@@ -740,6 +776,70 @@ fun CameraDetailScreen(
                                         singleLine = true,
                                         supportingText = { Text("Để trống nếu chỉ dùng trong mạng nhà. Lấy từ app gốc của hãng camera.") }
                                     )
+                                    Spacer(Modifier.height(6.dp))
+                                    // ✅ MỚI: DDNS hostname (+ port forward nếu khác port LAN) — dùng để nút "Dò tìm URL
+                                    // cloud" bên dưới tự build 1 URL ứng viên từ snapshoturl (LAN) + host:port này.
+                                    OutlinedTextField(
+                                        value = draft.ddnsHost,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(ddnsHost = v) } },
+                                        label = { Text("DDNS hostname (nếu router có port-forward)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        supportingText = { Text("Để trống nếu router nhà không có DDNS/port-forward.") }
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    OutlinedTextField(
+                                        value = draft.ddnsPort,
+                                        onValueChange = { v -> viewModel.updateConfigDraft { copy(ddnsPort = v.filter { c -> c.isDigit() }) } },
+                                        label = { Text("Port (để trống = dùng port của Snapshot URL)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    val ddnsSuggestState by viewModel.ddnsSuggestState.collectAsState()
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        TextButton(
+                                            onClick = { viewModel.suggestDdnsUrl() },
+                                            enabled = draft.ddnsHost.isNotBlank() && ddnsSuggestState != DdnsSuggestState.Loading
+                                        ) {
+                                            if (ddnsSuggestState == DdnsSuggestState.Loading) {
+                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                                Spacer(Modifier.width(6.dp))
+                                            }
+                                            Text("Dò tìm URL cloud")
+                                        }
+                                    }
+                                    when (val s = ddnsSuggestState) {
+                                        is DdnsSuggestState.Found -> {
+                                            Card(
+                                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(10.dp)) {
+                                                    Text("Đã tìm thấy URL hoạt động:", style = MaterialTheme.typography.labelMedium)
+                                                    Text(s.url, style = MaterialTheme.typography.bodySmall)
+                                                    Spacer(Modifier.height(6.dp))
+                                                    Row {
+                                                        TextButton(onClick = { viewModel.applyDdnsSuggestion() }) {
+                                                            Text("Dùng URL này")
+                                                        }
+                                                        TextButton(onClick = { viewModel.clearDdnsSuggestState() }) {
+                                                            Text("Bỏ qua")
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        DdnsSuggestState.NotFound -> {
+                                            Text(
+                                                "Không dò được URL cloud hoạt động — kiểm tra lại DDNS/port-forward trên router, hoặc camera hiện không phản hồi.",
+                                                color = MaterialTheme.colorScheme.error,
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                        else -> {}
+                                    }
                                     Spacer(Modifier.height(6.dp))
                                     val gpsContext = androidx.compose.ui.platform.LocalContext.current
                                     var gpsLoading by remember { mutableStateOf(false) }

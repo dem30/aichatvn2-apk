@@ -46,6 +46,24 @@ sealed class AlarmVerifyState {
     object TimedOut : AlarmVerifyState()
 }
 
+// ✅ MỚI: trạng thái nút "Dò tìm URL cloud" — gọi CameraSkill.suggestRemoteUrlFromDdns(),
+// KHÔNG tự lưu kết quả vào snapshotUrlRemote (xem applyDdnsSuggestion() — người dùng phải tự
+// bấm "Dùng URL này" mới ghi vào draft).
+sealed class DdnsSuggestState {
+    object Idle : DdnsSuggestState()
+    object Loading : DdnsSuggestState()
+    data class Found(val url: String) : DdnsSuggestState()
+    object NotFound : DdnsSuggestState()
+}
+
+// ✅ MỚI: kết quả nút "Xin ảnh từ nhà" (requestSnapshotFromCameraNode()) — Found khi có máy
+// nào đó cùng LAN với camera trả lời trong thời gian chờ, TimedOut khi không ai trả lời
+// (không nhất thiết là lỗi — có thể đơn giản không ai đang ở nhà cùng LAN camera đó).
+sealed class CameraSnapshotRequestResult {
+    data class Found(val imageUrl: String) : CameraSnapshotRequestResult()
+    object TimedOut : CameraSnapshotRequestResult()
+}
+
 data class CameraConfigDraft(
     val snapshotUrl: String = "",
     val landInfo: String = "",
@@ -59,7 +77,12 @@ data class CameraConfigDraft(
     val snapshotUsername: String = "",
     val snapshotPassword: String = "",
     // ✅ MỚI: URL dự phòng cloud/public — dùng khi LAN không kết nối được (vd đang ở ngoài mạng nhà).
-    val snapshotUrlRemote: String = ""
+    val snapshotUrlRemote: String = "",
+    // ✅ MỚI: DDNS hostname (+ port forward nếu khác port LAN) — dùng để gợi ý (không tự lưu)
+    // 1 URL snapshotUrlRemote ứng viên, xem suggestDdnsUrl(). Để trống nếu router nhà không có
+    // port-forward/DDNS. ddnsPort giữ dạng String ở draft (input field), parse Int lúc saveConfig().
+    val ddnsHost: String = "",
+    val ddnsPort: String = ""
 
 )
 
@@ -87,6 +110,10 @@ class CameraDetailViewModel @Inject constructor(
     private val callSkill: CallSkill, // ✅ MỚI: getOrCreateMyDeviceCode() — cùng deviceCode đang dùng cho kênh /call/stream
     // ✅ MỚI: probe RTSP/ONVIF — @Singleton @Inject constructor sẵn, không cần khai báo @Provides riêng.
     private val capabilityProber: com.aichatvn.agent.tools.camera.CameraCapabilityProber,
+    // ✅ MỚI: xin ảnh mới từ máy nào đó cùng LAN với camera (không nhất thiết chính máy này) —
+    // xem requestSnapshotFromCameraNode() và WebhookGatewayService nhánh camera_snapshot_request.
+    private val householdEventPublisher: com.aichatvn.agent.skills.HouseholdEventPublisher,
+    private val cameraSnapshotRequestRegistry: com.aichatvn.agent.skills.CameraSnapshotRequestRegistry,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -115,11 +142,24 @@ class CameraDetailViewModel @Inject constructor(
     private val _liveSnapshot = MutableStateFlow<ByteArray?>(null)
     val liveSnapshot: StateFlow<ByteArray?> = _liveSnapshot.asStateFlow()
 
+    // ✅ MỚI: kết quả nút "Xin ảnh từ nhà" — xem requestSnapshotFromCameraNode(). null = chưa
+    // yêu cầu lần nào (hoặc đã xoá). isRequestingSnapshot tách riêng khỏi kết quả để UI có thể
+    // hiện loading trong lúc chờ, không lẫn với kết quả lần trước.
+    private val _isRequestingSnapshot = MutableStateFlow(false)
+    val isRequestingSnapshot: StateFlow<Boolean> = _isRequestingSnapshot.asStateFlow()
+
+    private val _snapshotRequestResult = MutableStateFlow<CameraSnapshotRequestResult?>(null)
+    val snapshotRequestResult: StateFlow<CameraSnapshotRequestResult?> = _snapshotRequestResult.asStateFlow()
+
     private val _configDraft = MutableStateFlow<CameraConfigDraft?>(null)
     val configDraft: StateFlow<CameraConfigDraft?> = _configDraft.asStateFlow()
 
     private val _configSaveResult = MutableStateFlow<String?>(null)
     val configSaveResult: StateFlow<String?> = _configSaveResult.asStateFlow()
+
+    // ✅ MỚI: kết quả nút "Dò tìm URL cloud" — xem DdnsSuggestState.
+    private val _ddnsSuggestState = MutableStateFlow<DdnsSuggestState>(DdnsSuggestState.Idle)
+    val ddnsSuggestState: StateFlow<DdnsSuggestState> = _ddnsSuggestState.asStateFlow()
 
     private val _schedules = MutableStateFlow<List<ScheduleEntity>>(emptyList())
     val schedules: StateFlow<List<ScheduleEntity>> = _schedules.asStateFlow()
@@ -186,12 +226,15 @@ class CameraDetailViewModel @Inject constructor(
             snapshotUsername = cam.snapshotUsername ?: "",
             snapshotPassword = cam.snapshotPassword ?: "",
             snapshotUrlRemote = cam.snapshotUrlRemote ?: "",
+            ddnsHost = cam.ddnsHost ?: "",
+            ddnsPort = cam.ddnsPort?.toString() ?: "",
 
           alertActions = alertActionsFromJson(cam.alertActions) // ✅ MỚI
         
 
           
         )
+        _ddnsSuggestState.value = DdnsSuggestState.Idle
     }
 
     fun addAlertAction(cfg: AlertActionConfig) {
@@ -206,6 +249,115 @@ class CameraDetailViewModel @Inject constructor(
     fun closeConfigEditor() {
         _configDraft.value = null
         _configSaveResult.value = null
+        _ddnsSuggestState.value = DdnsSuggestState.Idle
+    }
+
+    // ✅ MỚI: gọi CameraSkill.suggestRemoteUrlFromDdns() — thử build URL ứng viên từ
+    // ddnsHost/ddnsPort đang có trong DRAFT (chưa lưu) và snapshoturl (LAN) đã lưu trong DB,
+    // rồi tự fetch thật để xác nhận trước khi hiển thị. KHÔNG ghi vào snapshotUrlRemote ở đây
+    // — chỉ applyDdnsSuggestion() (người dùng tự bấm) mới ghi vào draft.
+    //
+    // Lưu ý: nếu người dùng vừa gõ ddnsHost/ddnsPort mới nhưng CHƯA bấm "Lưu" tổng thể,
+    // suggestRemoteUrlFromDdns() đọc từ CameraConfigEntity trong DB (giá trị đã lưu trước đó,
+    // có thể trống) chứ không đọc draft — nên ở đây ta lưu tạm ddnsHost/ddnsPort của draft
+    // xuống DB trước khi gọi, để gợi ý luôn khớp với những gì người dùng vừa gõ trên màn hình.
+    fun suggestDdnsUrl() {
+        val draft = _configDraft.value ?: return
+        val cam = _camera.value ?: return
+        val host = draft.ddnsHost.trim()
+        if (host.isBlank()) {
+            _ddnsSuggestState.value = DdnsSuggestState.NotFound
+            return
+        }
+        viewModelScope.launch {
+            _ddnsSuggestState.value = DdnsSuggestState.Loading
+            try {
+                withContext(Dispatchers.IO) {
+                    database.cameraDao().updateCamera(
+                        cam.copy(
+                            ddnsHost = host,
+                            ddnsPort = draft.ddnsPort.trim().toIntOrNull()
+                        )
+                    )
+                }
+                val candidate = cameraSkill.suggestRemoteUrlFromDdns(cameraId)
+                _ddnsSuggestState.value = if (candidate != null) {
+                    DdnsSuggestState.Found(candidate)
+                } else {
+                    DdnsSuggestState.NotFound
+                }
+            } catch (e: Exception) {
+                logger.e("CameraDetailViewModel", "suggestDdnsUrl error: ${e.message}", e)
+                _ddnsSuggestState.value = DdnsSuggestState.NotFound
+            }
+        }
+    }
+
+    // ✅ MỚI: người dùng bấm "Dùng URL này" — chép URL ứng viên đã xác nhận vào draft.snapshotUrlRemote.
+    // Vẫn cần bấm "Lưu" (saveConfig()) như bình thường để ghi thật vào DB.
+    fun applyDdnsSuggestion() {
+        val state = _ddnsSuggestState.value
+        if (state is DdnsSuggestState.Found) {
+            updateConfigDraft { copy(snapshotUrlRemote = state.url) }
+        }
+        _ddnsSuggestState.value = DdnsSuggestState.Idle
+    }
+
+    fun clearDdnsSuggestState() {
+        _ddnsSuggestState.value = DdnsSuggestState.Idle
+    }
+
+    // ✅ MỚI: xin 1 ảnh mới từ BẤT KỲ máy nào trong household đang cùng LAN với camera này —
+    // không cần biết trước máy nào là "Camera Node" (xem HouseholdEventPublisher.
+    // publishCameraSnapshotRequest() + WebhookGatewayService nhánh camera_snapshot_request).
+    // Dùng khi Client không tự fetch LAN được (không cùng mạng nhà) và snapshotUrlRemote
+    // không có/không hoạt động — thay thế hợp lý cho việc bắt firmware camera tự đính ảnh.
+    fun requestSnapshotFromCameraNode() {
+        viewModelScope.launch {
+            _isRequestingSnapshot.value = true
+            _snapshotRequestResult.value = null
+            try {
+                val requestId = UUID.randomUUID().toString()
+                val published = householdEventPublisher.publishCameraSnapshotRequest(cameraId, requestId)
+                if (!published) {
+                    _snapshotRequestResult.value = CameraSnapshotRequestResult.TimedOut
+                    return@launch
+                }
+                val imageUrl = cameraSnapshotRequestRegistry.await(requestId, timeoutMs = SNAPSHOT_REQUEST_TIMEOUT_MS)
+                if (imageUrl != null) {
+                    _snapshotRequestResult.value = CameraSnapshotRequestResult.Found(imageUrl)
+                    // Tải bytes về rồi đổ vào _liveSnapshot — dùng lại đúng pipeline hiển thị
+                    // bitmap sẵn có của nút "Xem ảnh trực tiếp", không cần UI vẽ riêng.
+                    val bytes = withContext(Dispatchers.IO) {
+                        runCatching {
+                            val request = okhttp3.Request.Builder().url(imageUrl).get().build()
+                            okhttp3.OkHttpClient().newCall(request).execute().use { resp ->
+                                if (resp.isSuccessful) resp.body?.bytes() else null
+                            }
+                        }.getOrNull()
+                    }
+                    if (bytes != null) _liveSnapshot.value = bytes
+                } else {
+                    _snapshotRequestResult.value = CameraSnapshotRequestResult.TimedOut
+                }
+            } catch (e: Exception) {
+                logger.e("CameraDetailViewModel", "requestSnapshotFromCameraNode error: ${e.message}", e)
+                _snapshotRequestResult.value = CameraSnapshotRequestResult.TimedOut
+            } finally {
+                _isRequestingSnapshot.value = false
+            }
+        }
+    }
+
+    fun clearSnapshotRequestResult() {
+        _snapshotRequestResult.value = null
+    }
+
+    companion object {
+        // ✅ MỚI: đủ thời gian cho 1 máy khác wake up mạng/fetch LAN/upload — vẫn ngắn vì đây
+        // là tương tác chủ động của người dùng (đang chờ xem kết quả), khác hẳn job nền 45
+        // phút của verifyAllCloudSnapshotUrls().
+        private const val SNAPSHOT_REQUEST_TIMEOUT_MS = 15_000L
     }
 
     fun updateConfigDraft(update: CameraConfigDraft.() -> CameraConfigDraft) {
@@ -229,6 +381,8 @@ class CameraDetailViewModel @Inject constructor(
                     snapshotUsername = draft.snapshotUsername.trim().ifBlank { null },
                     snapshotPassword = draft.snapshotPassword.trim().ifBlank { null },
                     snapshotUrlRemote = draft.snapshotUrlRemote.trim().ifBlank { null },
+                    ddnsHost = draft.ddnsHost.trim().ifBlank { null },
+                    ddnsPort = draft.ddnsPort.trim().toIntOrNull(),
 
 
                   alertActions = alertActionsToJson(draft.alertActions) // ✅ MỚI

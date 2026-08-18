@@ -90,9 +90,51 @@ class SystemAuditor @Inject constructor(
             val isOnHomeSubnet = networkContext.isOnSavedSubnet(cameraIp)
             items += auditCameraOnvif(camera, isOnHomeSubnet)
             items += auditCameraRtsp(camera, isOnHomeSubnet)
+            auditCameraCloudUrl(camera)?.let { items += it }
         }
 
         return items
+    }
+
+    // ✅ MỚI: cảnh báo khi snapshotUrlRemote (URL cloud dự phòng) đã cấu hình nhưng
+    // CameraSkill.verifyAllCloudSnapshotUrls() (chạy nền mỗi 45 phút) phát hiện không truy
+    // cập được — phát hiện sớm thay vì chỉ lộ ra lúc người dùng thực sự ở xa nhà cần dùng.
+    // Trả về null (không thêm mục nào) nếu camera chưa cấu hình snapshotUrlRemote — không có
+    // gì để báo cáo, không phải UNSUPPORTED (khác auditCameraOnvif/Rtsp: đây không phải khả
+    // năng probe được, mà là 1 field người dùng tự khai, có thể chưa từng khai).
+    private fun auditCameraCloudUrl(camera: CameraConfigEntity): HealthItem? {
+        val remoteUrl = camera.snapshotUrlRemote?.trim()
+        if (remoteUrl.isNullOrBlank()) return null
+
+        // Chưa từng verify lần nào (vd vừa nhập URL, job nền 45 phút chưa kịp chạy) — chưa có
+        // gì để kết luận tốt/xấu, không hiện mục cảnh báo giả trước khi có dữ liệu thật.
+        if (camera.snapshotUrlRemoteLastVerifiedAt == null || camera.snapshotUrlRemoteHealthy == null) {
+            return null
+        }
+
+        val healthy = camera.snapshotUrlRemoteHealthy == 1
+        return HealthItem(
+            id = "camera_cloud_url_${camera.id}",
+            category = HealthCategory.CAMERA,
+            status = if (healthy) HealthStatus.OPTIMIZED else HealthStatus.CONFLICT,
+            title = "URL cloud dự phòng cho \"${camera.customername}\"",
+            description = if (healthy)
+                "URL cloud dùng khi ra ngoài mạng nhà đang hoạt động bình thường."
+            else
+                "URL cloud dùng khi ra ngoài mạng nhà hiện không truy cập được — kiểm tra lại " +
+                    "DDNS/port-forward trên router, hoặc URL đã lấy từ app gốc của hãng camera " +
+                    "có còn đúng không.",
+            relatedEntityId = camera.id,
+            // CONFLICT, không IMPROVABLE: không có cờ nào để tự bật — cần người dùng tự kiểm
+            // tra router/URL rồi vào màn hình chi tiết camera sửa hoặc dò lại.
+            safeToAutoApply = false,
+            // ⚠️ GIẢ ĐỊNH CHƯA XÁC NHẬN: route điều hướng tới CameraDetailScreen — suy ra từ
+            // pattern "camera_detail/{cameraId}" (khớp key SavedStateHandle "cameraId" đã thấy
+            // trong CameraDetailViewModel), nhưng không có file NavGraph để đối chiếu route
+            // thật đã đăng ký. Bạn kiểm tra lại đúng route string trong NavGraph.kt (hoặc
+            // tương đương) trước khi build — nếu khác, chỉ cần sửa 1 dòng này.
+            manualActionRoute = if (!healthy) "camera_detail/${camera.id.trim()}" else null
+        )
     }
 
     /** Tách host từ 1 URL — dùng java.net.URI thay vì regex/split thủ công cho chắc. */

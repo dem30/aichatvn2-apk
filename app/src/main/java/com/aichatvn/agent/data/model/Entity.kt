@@ -221,7 +221,26 @@ data class CameraConfigEntity(
     @ColumnInfo(defaultValue = "NULL")
     val rtspUrl: String? = null,
     @ColumnInfo(defaultValue = "0")
-    val rtspEnabled: Int = 0
+    val rtspEnabled: Int = 0,
+    // ✅ MỚI: kết quả health-check định kỳ cho snapshotUrlRemote — CloudSnapshotVerifier gọi
+    // fetchOneSnapshot(snapshotUrlRemote) trực tiếp (bỏ qua LAN) theo chu kỳ riêng, ghi lại ở
+    // đây để SystemAuditor cảnh báo khi URL cloud hỏng thay vì chỉ phát hiện lúc client ở xa
+    // thực sự cần dùng (quá trễ). snapshotUrlRemoteHealthy dùng Int? thay vì Boolean? vì Room
+    // map Boolean? sang INTEGER cùng cách nhưng Int? tường minh 3 trạng thái hơn: null = chưa
+    // từng kiểm tra (camera mới/chưa cấu hình snapshotUrlRemote), 1 = OK, 0 = fail.
+    @ColumnInfo(defaultValue = "NULL")
+    val snapshotUrlRemoteLastVerifiedAt: Long? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val snapshotUrlRemoteHealthy: Int? = null,
+    // ✅ MỚI: DDNS hostname (+ port forward nếu khác port LAN) người dùng tự khai — dùng để GỢI
+    // Ý (không tự động lưu) 1 URL snapshotUrlRemote ứng viên bằng cách thay host:port của
+    // snapshoturl (LAN, đã verify) sang ddnsHost:ddnsPort, giữ nguyên path/query. Để trống nếu
+    // router nhà không có port-forward/DDNS — tính năng gợi ý chỉ ẩn đi, không ảnh hưởng gì
+    // khác.
+    @ColumnInfo(defaultValue = "NULL")
+    val ddnsHost: String? = null,
+    @ColumnInfo(defaultValue = "NULL")
+    val ddnsPort: Int? = null
 )
 
 @Entity(tableName = "customer_settings")
