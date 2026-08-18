@@ -121,6 +121,9 @@ class OnvifEventRelay @Inject constructor(
     companion object {
         private const val TAG = "OnvifEventRelay"
 
+        fun normalizeTopic(topic: String): String =
+            topic.trim().replace("\\s+".toRegex(), "").removePrefix("{").removeSuffix("}")
+
         // Chu kỳ soát lại danh sách camera đủ điều kiện — đủ ngắn để phản ứng nhanh khi người
         // dùng vừa bật/tắt Switch ONVIF hay đổi enableAlarmPush, hoặc điện thoại vừa đổi mạng
         // Wi-Fi (rời/vào LAN nhà) — không cần tức thời như SSE.
@@ -642,9 +645,6 @@ class OnvifEventRelay @Inject constructor(
 
     private fun isFalseValue(value: String): Boolean =
         value.trim().equals("false", ignoreCase = true) || value.trim() == "0"
-
-    private fun normalizeTopic(topic: String): String =
-        topic.trim().replace("\\s+".toRegex(), "").removePrefix("{").removeSuffix("}")
 
     private fun normalizeToken(value: String): String =
         value.trim().lowercase().replace("[^a-z0-9]".toRegex(), "")
