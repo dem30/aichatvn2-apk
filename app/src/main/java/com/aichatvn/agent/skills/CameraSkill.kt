@@ -457,7 +457,7 @@ PluginAction(
         // Ngưỡng "trôi nền" (|currentDiff - baselineDiff|) — điều kiện thứ 3 kích hoạt isSuddenChange,
         // độc lập với deltaTrigger/absDiffTrigger. Đặt thành hằng số dùng chung để tránh lệch giá trị
         // giữa nơi tính toán (scanCamera) và nơi báo cáo chẩn đoán (updateDiagnostics).
-        const val DRIFT_TRIGGER = 12
+        const val DRIFT_TRIGGER = 6
 
         // ✅ MỚI: khoảng cách tối thiểu giữa 2 ảnh "nền" (không do biến động) ở nhánh "Bình
         // thường" — đảm bảo luôn có ít nhất 1 ảnh/tiếng để tra cứu dù camera đứng yên hoàn toàn
@@ -470,8 +470,8 @@ PluginAction(
         const val CLOUD_SNAPSHOT_VERIFY_INTERVAL_MS = 45 * 60 * 1000L
 
         // ✅ MỚI (decay): giá trị mặc định để ngưỡng hạ về khi không còn mẫu nhiễu nào "còn hạn".
-        const val DEFAULT_DELTA_TRIGGER = 6
-        const val DEFAULT_ABS_DIFF_TRIGGER = 10
+        const val DEFAULT_DELTA_TRIGGER = 3
+        const val DEFAULT_ABS_DIFF_TRIGGER = 5
 
         // ✅ MỚI (decay): một mẫu nhiễu (false positive) chỉ có giá trị tham chiếu trong khoảng thời
         // gian này. Quá hạn mà không có mẫu mới nào bổ sung/xác nhận lại thì bị loại khỏi tập học,
@@ -1125,11 +1125,11 @@ PluginAction(
         } else {
             val recentDeltas = period.falseDeltas.takeLast(30).sorted()
             val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, 15)
+            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, 10)
 
             val recentDiffs = period.falseDiffs.takeLast(30).sorted()
             val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, 22)
+            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, 14)
         }
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
@@ -2067,20 +2067,13 @@ PluginAction(
                     val latestAlert = withContext(Dispatchers.IO) {
                         database.alertDao().getLatestAlertForCamera(tid)
                     }
-                    val mergeWindowMs = alertMergeWindowMs()
-                    val latestEffectiveTime = latestAlert?.let { it.endTime ?: it.timestamp }
-                    val hasNormalScanSinceLastAlert = latestEffectiveTime != null && state.lastNormalScanAt > latestEffectiveTime
-                    val shouldMerge = latestAlert != null &&
-                        latestAlert.isSuspicious == 1 &&
-                        latestEffectiveTime != null &&
-                        (now - latestEffectiveTime) <= mergeWindowMs &&
-                        !hasNormalScanSinceLastAlert
-
-                    val activeAlertId = if (shouldMerge && latestAlert != null) {
-                        latestAlert.id
-                    } else {
-                        UUID.randomUUID().toString()
-                    }
+                    // ✅ SỬA (theo yêu cầu — bỏ gộp sự kiện để lịch sử cảnh báo rõ ràng): trước đây
+                    // các cảnh báo liên tiếp trong cùng mergeWindowMs bị gộp thành 1 record, và vì
+                    // saveAlertImage() lưu file theo tên "$alertId.jpg" nên ảnh của lần quét sau ĐÈ
+                    // MẤT ảnh lần quét trước cùng chuỗi gộp. Giờ mỗi lần isSuspicious=true LUÔN tạo
+                    // alert mới với id mới -> ảnh riêng, không còn ghi đè hay gộp nội dung nữa.
+                    val shouldMerge = false
+                    val activeAlertId = UUID.randomUUID().toString()
 
                     // ✅ SỬA: khi isSuspicious chỉ đến từ suy đoán pixel-diff tạm thời (aiWasUnreliable),
                     // KHÔNG gửi email/thông báo — giữ đúng ý đồ gốc "AI lỗi -> tránh báo động giả làm
