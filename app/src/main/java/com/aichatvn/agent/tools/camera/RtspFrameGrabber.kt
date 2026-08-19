@@ -49,13 +49,6 @@ class RtspFrameGrabber @Inject constructor(
         // DESCRIBE probe (2.5s ở CameraCapabilityProber) vì đây là mở stream thật + decode video,
         // không chỉ bắt tay giao thức. Camera LAN bình thường chỉ mất 1-3s; 10s đã rất rộng rãi.
         private const val GRAB_TIMEOUT_MS = 10_000L
-
-        // ✅ MỚI: giới hạn cạnh dài nhất của frame xuất ra — mục đích ảnh này là pHash so sánh +
-        // AI Vision (Groq), không phải xem/lưu trữ, nên không cần giữ nguyên độ phân giải gốc
-        // camera (thường 1080p/2K, vài trăm KB/ảnh). 400px cạnh dài đủ chi tiết cho cả 2 mục
-        // đích, giảm dung lượng xuống còn vài chục KB — đỡ tốn băng thông khi gửi ảnh kèm báo
-        // động ra ngoài LAN, và giảm chi phí/thời gian gọi Groq Vision API.
-        private const val MAX_FRAME_DIMENSION = 400
     }
 
     /**
@@ -100,21 +93,12 @@ class RtspFrameGrabber @Inject constructor(
      *
      * "-rtsp_transport tcp": BẮT BUỘC — xem giới hạn UDP ở ghi chú đầu file.
      * "-frames:v 1": chỉ decode đúng 1 frame rồi dừng, không phải toàn bộ stream.
-     * "-vf scale=...": ✅ MỚI — co nhỏ cạnh dài nhất về MAX_FRAME_DIMENSION, giữ nguyên tỉ lệ
-     * khung hình gốc (không ép méo ảnh vì camera có thể lắp ngang hoặc dọc). Biểu thức chọn
-     * cạnh nào đang dài hơn (iw=chiều rộng, ih=chiều cao gốc) để giới hạn còn
-     * MAX_FRAME_DIMENSION, cạnh còn lại tính "-2" (FFmpeg tự suy theo tỉ lệ, luôn làm tròn về
-     * số chẵn — bắt buộc với codec JPEG/H.264, số lẻ sẽ lỗi encode). Nếu ảnh gốc đã nhỏ hơn
-     * MAX_FRAME_DIMENSION sẵn, scale filter tự động không phóng to lên (dùng min(iw,W) thay vì
-     * gán cứng W).
      * "-y": ghi đè nếu file output đã tồn tại (không nên xảy ra vì tên file có timestamp, nhưng an
      * toàn hơn để không bị FFmpeg hỏi xác nhận và treo).
      */
     private suspend fun runFFmpegGrab(rtspUrl: String, outputPath: String): Boolean =
         suspendCancellableCoroutine { cont ->
-            val scaleExpr = "scale='if(gt(iw,ih),min(iw,$MAX_FRAME_DIMENSION),-2)':" +
-                "'if(gt(iw,ih),-2,min(ih,$MAX_FRAME_DIMENSION))'"
-            val command = "-rtsp_transport tcp -i \"$rtspUrl\" -frames:v 1 -vf \"$scaleExpr\" -y \"$outputPath\""
+            val command = "-rtsp_transport tcp -i \"$rtspUrl\" -frames:v 1 -y \"$outputPath\""
             var session: FFmpegSession? = null
             session = FFmpegKit.executeAsync(command) { completedSession ->
                 if (cont.isActive) {

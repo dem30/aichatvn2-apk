@@ -79,7 +79,7 @@ class CameraSkill @Inject constructor(
     // bật sau khi CameraCapabilityProber xác nhận camera hỗ trợ), KHÔNG liên quan gì tới luồng
     // snapshot HTTP định kỳ vẫn đang chạy song song như cũ.
     private val cameraRecorder: com.aichatvn.agent.tools.camera.CameraRecorder,
-    // ✅ MỚI: bắt frame JPEG qua FFmpegKit cho camera chỉ có RTSP (không có endpoint HTTP snapshot
+    // ✅ MỚI: bắt f rame JPEG qua FFmpegKit cho camera chỉ có RTSP (không có endpoint HTTP snapshot
     // nào, vd case V380) — SnapshotFetcher không hiểu scheme rtsp:// nên trước đây scanCamera()
     // luôn thất bại với các camera này dù xem trực tiếp qua RTSP hoàn toàn ổn. Xem
     // RtspFrameGrabber.kt để biết chi tiết giới hạn (ép TCP transport, timeout, dọn file cache).
