@@ -80,13 +80,23 @@ class ImageHashTool @Inject constructor() {
     }
 
     // Tối ưu hóa lớn: Di chuyển toàn bộ tiến trình giảm dung lượng ảnh nặng ra Dispatchers.Default
-    suspend fun optimizeImage(imageBytes: ByteArray, maxWidth: Int = 480, maxHeight: Int = 270): ByteArray = withContext(Dispatchers.Default) {
+    //
+    // ✅ SỬA: maxWidth/maxHeight trước đây (480x270, tỉ lệ cố định 16:9) dùng thẳng làm kích
+    // thước ĐÍCH cho Bitmap.createScaledBitmap() — ép mọi ảnh về đúng 480x270 bất kể tỉ lệ
+    // khung hình gốc, khiến camera lắp dọc (ảnh gốc cao hơn rộng) bị co dẹt/méo hình. Giờ
+    // maxWidth/maxHeight là GIỚI HẠN cạnh dài nhất (300-400px theo yêu cầu — mục đích ảnh này
+    // là pHash so sánh + AI Vision, không phải xem/lưu trữ, không cần độ phân giải cao), tỉ lệ
+    // khung hình gốc luôn được giữ nguyên qua targetWidth/targetHeight tính toán bên dưới.
+    suspend fun optimizeImage(imageBytes: ByteArray, maxWidth: Int = 400, maxHeight: Int = 400): ByteArray = withContext(Dispatchers.Default) {
         try {
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
+            val srcWidth = options.outWidth
+            val srcHeight = options.outHeight
+            if (srcWidth <= 0 || srcHeight <= 0) return@withContext imageBytes
 
             var scale = 1
-            while (options.outWidth / scale > maxWidth && options.outHeight / scale > maxHeight) {
+            while (srcWidth / scale > maxWidth && srcHeight / scale > maxHeight) {
                 scale *= 2
             }
 
@@ -94,7 +104,15 @@ class ImageHashTool @Inject constructor() {
             val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, decodeOptions) 
                 ?: return@withContext imageBytes // Chống lỗi NPE và sập app nếu ảnh thô bị hỏng từ đầu vào
 
-            val scaledBitmap = Bitmap.createScaledBitmap(bitmap, maxWidth, maxHeight, true)
+            // Giữ nguyên tỉ lệ khung hình gốc: co theo cạnh dài hơn trước, cạnh còn lại tính
+            // theo đúng tỉ lệ srcWidth/srcHeight — không ép cứng cả 2 chiều như trước, tránh
+            // méo ảnh với camera lắp dọc hoặc tỉ lệ khác 16:9. Không phóng to nếu ảnh gốc đã
+            // nhỏ hơn giới hạn sẵn (coerceAtMost giữ nguyên kích thước gốc trong trường hợp đó).
+            val ratio = minOf(maxWidth.toFloat() / srcWidth, maxHeight.toFloat() / srcHeight, 1f)
+            val targetWidth = (srcWidth * ratio).toInt().coerceAtLeast(1)
+            val targetHeight = (srcHeight * ratio).toInt().coerceAtLeast(1)
+
+            val scaledBitmap = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
             if (bitmap != scaledBitmap) bitmap.recycle()
 
             val outputStream = ByteArrayOutputStream()

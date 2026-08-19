@@ -110,6 +110,11 @@ class OnvifEventRelay @Inject constructor(
     // fetch/rẽ nhánh RTSP — gọi thẳng CameraSkill.fetchOneSnapshot() dùng chung MỘT chỗ duy
     // nhất, xem ghi chú "Public hoá" tại khai báo hàm đó).
     private val cameraSkill: CameraSkill,
+    // ✅ MỚI: dùng để nén/co ảnh trước khi publish qua Gateway ở relayMotionEvent() — ảnh thô
+    // từ fetchOneSnapshot() thường vài trăm KB (full độ phân giải camera), không cần thiết cho
+    // mục đích xem nhanh/Groq Vision phía máy nhận. Cùng instance dùng chung với CameraSkill
+    // (Hilt @Singleton), không tạo thêm state riêng.
+    private val imageHashTool: com.aichatvn.agent.tools.camera.ImageHashTool,
     // ✅ MỚI: thay cho gate deviceRole == "camera_node" — kiểm tra ĐỘNG chính máy này có đang
     // cùng LAN Wi-Fi với 1 camera cụ thể không, đúng bản chất kỹ thuật cần cho ONVIF subscribe.
     private val networkContext: com.aichatvn.agent.utils.NetworkContext,
@@ -981,6 +986,11 @@ class OnvifEventRelay @Inject constructor(
         // Server (/household/event) chủ động loại trừ chính máy phát khỏi danh sách nhận
         // (xem app.py: "if dc == origin_device_code: continue"), nên với hộ chỉ có 1 máy,
         // không có ai khác xử lý báo động nếu thiếu bước này.
+        //
+        // Truyền imageBytes (ảnh THÔ, chưa optimize) cho scanCamera — bên trong
+        // processImageWithLearning() đã tự gọi imageHashTool.optimizeImage() trước khi đưa
+        // vào Groq Vision/lưu daily event, không cần optimize trước ở đây (tránh optimize 2
+        // lần tốn CPU vô ích cho cùng 1 ảnh).
         cameraSkill.scanCamera(
             cameraId = cameraId,
             isDailyReport = false,
@@ -988,6 +998,13 @@ class OnvifEventRelay @Inject constructor(
             preloadedImageBytes = imageBytes
         )
 
-        householdEventPublisher.publishCameraAlarm(cameraId, imageBytes)
+        // ✅ SỬA: publishCameraAlarm() gửi ảnh này ra Gateway cho các máy khác trong household
+        // (qua HTTP/base64, xem WebhookGatewayService) — trước đây dùng thẳng imageBytes THÔ từ
+        // camera (thường vài trăm KB, full độ phân giải gốc), khác nhánh scanCamera ở trên vốn
+        // tự optimize nội bộ. Optimize riêng ở đây trước khi publish: giảm dung lượng gửi qua
+        // Gateway (tốn băng thông/pin hơn hẳn so với gọi hàm cục bộ), máy nhận cũng chỉ cần ảnh
+        // đủ để xem nhanh + Groq Vision, không cần độ phân giải gốc.
+        val imageBytesForAlarm = imageBytes?.let { imageHashTool.optimizeImage(it) }
+        householdEventPublisher.publishCameraAlarm(cameraId, imageBytesForAlarm)
     }
 }
