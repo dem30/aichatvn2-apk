@@ -680,6 +680,19 @@ PluginAction(
         }
     }
 
+    // ✅ SỬA (build lỗi "Unresolved reference"): CameraLiveViewViewModel.kt gọi thẳng
+    // cameraSkill.isRecording(cameraId) và subscribe cameraSkill.recordingFinished (xem load() —
+    // đồng bộ trạng thái nút Ghi hình lúc mở màn hình + hiện đúng thông báo SAVED/
+    // CANCELLED_AND_SAVED/FAILED khi phiên ghi kết thúc), nhưng CameraSkill trước đây chỉ giữ
+    // cameraRecorder ở mức private và chỉ bọc startRecording()/stopRecording() — chưa từng forward
+    // isRecording()/recordingFinished ra public API, nên ViewModel không compile được dù
+    // CameraRecorder đã có sẵn 2 thứ này. Forward thẳng, không thêm logic gì khác — CameraSkill
+    // chỉ đóng vai trò facade, nguồn sự thật duy nhất vẫn là CameraRecorder.
+    fun isRecording(cameraId: String): Boolean = cameraRecorder.isRecording(cameraId)
+
+    val recordingFinished: kotlinx.coroutines.flow.SharedFlow<com.aichatvn.agent.tools.camera.CameraRecorder.RecordingFinished>
+        get() = cameraRecorder.recordingFinished
+
     private suspend fun handleListCameras(): PluginResult = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
         if (cameras.isEmpty()) return@withContext PluginResult.Success(mapOf("message" to "Chưa có camera nào"))
