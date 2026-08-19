@@ -370,15 +370,35 @@ object AppConfigDefaults {
             type = "string",
             pluginId = "camera",
             label = "Từ khoá cảnh báo mặc định",
-            description = "Danh sách từ khoá (cách nhau bằng dấu phẩy) QUYẾT ĐỊNH báo động — dùng cho cả 2 nguồn: (1) văn bản mô tả của Groq AI (mặc định \"cảnh báo\", đúng theo prompt yêu cầu AI tự viết chữ này khi phát hiện bất thường), và (2) nhãn vật thể do ML Kit local nhận diện (vd \"người\", \"xe ô tô\" — copy từ danh sách tham khảo ở CAMERA_DEFAULT_NEGATIVE_KW sang đây). CHỈ báo động khi khớp đúng 1 từ khoá trong danh sách này — để trống hoặc không khớp gì = không bao giờ báo động (an toàn mặc định, không tốn quota AI). Dùng cho camera chưa cấu hình riêng."
+            // ✅ SỬA: ML Kit không còn dùng field này để quyết định báo động (xem
+            // buildMlKitContentAndDecision() trong CameraSkill.kt — diff/pHash hệ thống quyết
+            // định isSuspicious ở cả 2 chế độ ML Kit: AI tắt và Groq lỗi/hết quota). Field này
+            // giờ CHỈ còn dùng khi chế độ AI (Groq) bật VÀ Groq trả về text thô/JSON lỗi parse
+            // (không lấy được structuredSuspicious) — lúc đó hệ thống mới cần dò từ khoá trong
+            // chính văn bản Groq viết ra để đoán isSuspicious. Giá trị mặc định "cảnh báo" khớp
+            // với CAMERA_DEFAULT_AI_PROMPT (yêu cầu Groq tự viết đúng chữ này khi phát hiện bất
+            // thường). Dùng cho camera chưa cấu hình riêng.
+            description = "Danh sách từ khoá (cách nhau bằng dấu phẩy), chỉ dùng khi chế độ AI (Groq) bật và Groq trả về text thô không phân tích được cấu trúc JSON — hệ thống dò các từ khoá này trong văn bản Groq viết ra để đoán isSuspicious. KHÔNG ảnh hưởng chế độ ML Kit (AI tắt) hay khi Groq lỗi/hết quota — 2 trường hợp đó diff/pHash của hệ thống luôn quyết định báo động, không đọc field này. Dùng cho camera chưa cấu hình riêng."
         ),
         AppConfigEntity(
             key = CAMERA_DEFAULT_NEGATIVE_KW,
-            value = "bình thường,người,xe ô tô,xe máy/xe đạp,chó,mèo,động vật,cây cối,đồ nội thất,quần áo,giày,túi/hành lý,tòa nhà/phòng,ngoài trời/đường,bầu trời,nước,thực phẩm,chuyển động,khuôn mặt",
+            value = "bình thường",
             type = "string",
             pluginId = "camera",
-            label = "Từ khoá bình thường mặc định (danh sách tham khảo nhãn)",
-            description = "KHÔNG còn dùng để loại trừ báo động — đây là DANH SÁCH THAM KHẢO gồm \"bình thường\" (chữ Groq AI tự viết khi không có gì bất thường) + toàn bộ nhãn tiếng Việt mà ML Kit local có thể trả về (xem mapLabelToVietnamese() trong LocalVisionTool.kt). Vì người dùng không biết chính xác ML Kit sẽ phân loại ra nhãn gì, họ chỉ cần COPY đúng từ danh sách này sang ô \"Từ khoá cảnh báo\" (CAMERA_DEFAULT_POSITIVE_KW / aiPositiveKeywords) để bật báo động cho nhãn đó. Dùng cho camera chưa cấu hình riêng."
+            label = "Từ khoá bình thường mặc định",
+            // ✅ SỬA: giá trị cũ là danh sách ~19 nhãn tiếng Việt của ML Kit ("người, xe ô tô, xe
+            // máy/xe đạp, chó, mèo,...") — để làm "nguồn tham khảo cho người dùng copy sang ô
+            // cảnh báo" hồi ML Kit còn tự quyết isSuspicious bằng keyword. Giờ ML Kit không còn
+            // đọc field keyword nào nữa (xem buildMlKitContentAndDecision() trong CameraSkill.kt),
+            // nên danh sách đó không những thừa mà còn là BUG: field này vẫn được
+            // defaultNegativeKw() dùng làm fallback LOẠI TRỪ khi Groq trả text thô (rawTextClean
+            // chứa từ nào trong danh sách -> hasNegative=true -> dập isSuspicious xuống false) —
+            // mà "người", "xe ô tô", "xe máy" lại chính là những từ Groq sẽ viết ra khi phát hiện
+            // CẢNH BÁO THẬT (theo đúng CAMERA_DEFAULT_AI_PROMPT: "Hãy xem có người/xe?..."), nên
+            // vô tình dập nhầm cảnh báo thật thành bình thường. Đổi về đúng 1 từ "bình thường" —
+            // khớp với CAMERA_DEFAULT_AI_PROMPT (yêu cầu Groq viết đúng chữ này khi KHÔNG có gì
+            // bất thường) — không còn liệt kê nhãn ML Kit gây hiểu lầm nữa.
+            description = "Danh sách từ khoá (cách nhau bằng dấu phẩy), chỉ dùng khi chế độ AI (Groq) bật và Groq trả về text thô không phân tích được cấu trúc JSON — nếu văn bản Groq viết ra khớp 1 từ khoá ở đây thì KHÔNG báo động (loại trừ), bất kể có khớp từ khoá cảnh báo hay không. KHÔNG ảnh hưởng chế độ ML Kit (AI tắt) hay khi Groq lỗi/hết quota — 2 trường hợp đó diff/pHash của hệ thống luôn quyết định báo động, không đọc field này. Dùng cho camera chưa cấu hình riêng."
         ),
         AppConfigEntity(
             key = CAMERA_COOLDOWN_MS,

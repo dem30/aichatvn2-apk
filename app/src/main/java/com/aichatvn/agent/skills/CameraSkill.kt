@@ -145,8 +145,12 @@ PluginAction(
     parameters = listOf(
         PluginParameter("cameraId", "string", "Mã camera", true, "camera"),
         PluginParameter("aiPrompt", "string", "Prompt AI mới", false, "string"),
-        PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo (chỉ báo động khi khớp — dùng cho cả AI lẫn ML Kit)", false, "string"),
-        PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường (danh sách tham khảo nhãn ML Kit — copy sang ô cảnh báo để bật báo động cho nhãn đó)", false, "string"),
+        // ✅ SỬA: ML Kit không còn quyết định cảnh báo (xem processImageWithLearning) — 2 field
+        // này giờ CHỈ còn tác dụng khi chế độ AI (Groq) bật và Groq trả text thô/JSON lỗi parse
+        // (fallback phụ trợ đọc từ khoá trong mô tả). Không còn ảnh hưởng gì tới chế độ ML Kit
+        // (AI tắt) hay khi Groq lỗi/hết quota — 2 trường hợp đó luôn dùng diff/pHash quyết định.
+        PluginParameter("aiPositiveKeywords", "string", "Từ khoá cảnh báo (chỉ dùng khi Groq trả text thô không phân tích được cấu trúc — không ảnh hưởng chế độ ML Kit)", false, "string"),
+        PluginParameter("aiNegativeKeywords", "string", "Từ khoá bình thường (chỉ dùng khi Groq trả text thô không phân tích được cấu trúc — không ảnh hưởng chế độ ML Kit)", false, "string"),
         PluginParameter("snapshotUrl", "string", "URL ảnh chụp", false, "string"),
         // ✅ MỚI: Basic Auth cho camera LAN yêu cầu đăng nhập — để trống nếu camera không cần auth.
         PluginParameter("snapshotUsername", "string", "Tên đăng nhập camera (nếu cần)", false, "string"),
@@ -675,15 +679,6 @@ PluginAction(
             PluginResult.Failure("Camera này hiện không đang ghi hình.")
         }
     }
-
-    // ✅ MỚI: forward nguồn sự thật của CameraRecorder ra ngoài — CameraLiveViewViewModel không
-    // được inject thẳng CameraRecorder (nội bộ CameraSkill, đúng ranh giới module), nên cần lối
-    // đi này để biết CHÍNH XÁC khi nào 1 phiên ghi hình tự kết thúc (hết durationSec hoặc bị huỷ)
-    // thay vì tự đoán qua việc người dùng bấm nút — xem KDoc CameraRecorder.RecordingFinished.
-    val recordingFinished: kotlinx.coroutines.flow.SharedFlow<com.aichatvn.agent.tools.camera.CameraRecorder.RecordingFinished>
-        get() = cameraRecorder.recordingFinished
-
-    fun isRecording(cameraId: String): Boolean = cameraRecorder.isRecording(cameraId)
 
     private suspend fun handleListCameras(): PluginResult = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
@@ -1637,7 +1632,18 @@ PluginAction(
                 return PluginResult.Success(mapOf("skipped" to true))
             }
             
-            val result = processImageWithLearning(camera, imageBytes, customerSetting.smartMode == 1 && camera.smartMode == 1)
+            // ✅ SỬA (theo yêu cầu — nhất quán diff/pHash): đây là đường ONVIF relay, gọi liên tục
+            // mỗi khi camera bắn motion event — KHÔNG phải người dùng chủ động yêu cầu quét (khác
+            // hẳn chat "quét camera" / nút Test, dù cả 2 đều không kèm scheduleId). Truyền thẳng
+            // isManualTrigger=false để nhánh isSmartMode/ML Kit bên trong đi đúng cổng
+            // isSuddenChange (diff/pHash) và cooldown, giống hệt quét theo lịch trình — không còn
+            // ép Groq/ML Kit chạy ở MỌI motion event bất kể ảnh có thật sự đổi hay không.
+            val result = processImageWithLearning(
+                camera,
+                imageBytes,
+                customerSetting.smartMode == 1 && camera.smartMode == 1,
+                isManualTrigger = false
+            )
             PluginResult.Success(result)
             
         } catch (e: Exception) {
@@ -1704,13 +1710,97 @@ PluginAction(
         }
     }
 
+    // ✅ MỚI: kết quả của bước "ML Kit chỉ đóng góp nội dung" — dùng chung cho 2 tình huống
+    // gọi ML Kit làm fallback mô tả: (1) Groq lỗi/hết quota dù chế độ AI đang bật, (2) chế độ
+    // AI tắt hẳn (thuần ML Kit). isSuspicious ở đây LUÔN bằng isSuddenChange (diff/pHash) —
+    // ML Kit không còn quyền quyết định cảnh báo ở bất kỳ trường hợp nào trong 2 trường hợp này.
+    private data class MlKitAssistResult(
+        val aiComment: String,
+        val visionObjects: List<String>,
+        val isSuspicious: Boolean,
+        val finalStateJson: String,
+        val analysisSource: String?
+    )
+
+    // ✅ SỬA (theo yêu cầu — ML Kit không còn quyết định cảnh báo): trước đây 2 nhánh gọi ML Kit
+    // (Groq lỗi/hết quota, và chế độ AI tắt) có code gần như trùng lặp và ĐỀU tự quyết
+    // isSuspicious bằng cách so khớp nhãn ML Kit nhận ra với aiPositiveKeywords. Độ chính xác
+    // ML Kit quá thấp trong thực tế (bỏ sót người/xe, đặc biệt thiếu sáng/góc khuất/xa camera,
+    // điểm số confidence thấp) — khiến người dùng gõ đúng từ khoá "người", "xe" mà vẫn không
+    // báo động dù có biến động thật, thua cả so sánh diff/pHash thô. Gộp 2 nhánh thành 1 hàm
+    // dùng chung ở đây: diff/pHash của hệ thống (isSuddenChange — đã qua ngưỡng học ngày/đêm ở
+    // period.deltaTrigger/absDiffTrigger/driftTrigger, xem recomputeThresholdsFromSamples())
+    // quyết định isSuspicious; ML Kit (nếu chạy được) CHỈ còn đóng góp nội dung mô tả (nhãn/
+    // khuôn mặt/màu chủ đạo) cho aiComment và event log, không còn gate bằng bất kỳ từ khoá nào.
+    private suspend fun buildMlKitContentAndDecision(
+        optimizedBytes: ByteArray,
+        isSuddenChange: Boolean,
+        reasonSuffix: String
+    ): MlKitAssistResult {
+        val localResult = try {
+            localVisionTool.analyze(optimizedBytes)
+        } catch (e: CancellationException) {
+            // ✅ Không được nuốt CancellationException — phải ném lại để coroutine hủy đúng cách.
+            throw e
+        } catch (e: Exception) {
+            // Bất kỳ lỗi ML Kit nào khác (thiếu Play Services, model chưa sẵn sàng, OOM...) đều
+            // KHÔNG được làm gián đoạn luồng chính — fallback về suy đoán pixel-diff thuần.
+            logger.w("CameraSkill", "⚠️ ML Kit local analysis lỗi ($reasonSuffix): ${e.message}")
+            null
+        }
+
+        val labels = localResult?.labels.orEmpty()
+        val visionObjects = labels.ifEmpty { if (isSuddenChange) listOf("chuyển động") else emptyList() }
+
+        val aiComment = when {
+            labels.isNotEmpty() || localResult?.hasFace == true -> buildString {
+                append("Ghi nhận cục bộ (ML Kit, $reasonSuffix): ")
+                append(if (labels.isNotEmpty()) labels.joinToString(", ") else "chuyển động")
+                if (localResult?.hasFace == true) append(" [có khuôn mặt]")
+                localResult?.dominantColorName?.let { append(" — màu chủ đạo: $it") }
+                if (isSuddenChange) append(" — biến động vượt ngưỡng pixel-diff")
+            }
+            isSuddenChange -> "Phát hiện biến động vượt ngưỡng pixel-diff ($reasonSuffix)"
+            else -> "Không phát hiện biến động pixel ($reasonSuffix)"
+        }
+
+        // ✅ SỬA: isSuspicious đến thẳng từ diff/pHash — ML Kit không còn tham gia quyết định.
+        val isSuspicious = isSuddenChange
+
+        val finalStateJson = buildVisionStateJson(
+            state = if (isSuspicious) "suspicious" else "normal",
+            description = aiComment,
+            objects = visionObjects,
+            source = if (localResult != null) "ml_kit_local" else "pixel_diff_only",
+            hasFace = localResult?.hasFace ?: false
+        )
+
+        // Chỉ đánh dấu nguồn "ml_kit_local" khi ML Kit thực sự trả được kết quả — nếu localResult
+        // null (lỗi/timeout), đây thực chất là suy đoán pixel-diff thuần, không nên gắn nhãn
+        // "ml_kit_local" gây hiểu nhầm là có phân tích nội dung thật.
+        val analysisSource = if (localResult != null) "ml_kit_local" else null
+
+        return MlKitAssistResult(aiComment, visionObjects, isSuspicious, finalStateJson, analysisSource)
+    }
+
     private suspend fun processImageWithLearning(
         camera: CameraConfigEntity,
         imageBytes: ByteArray,
         isSmartMode: Boolean,
         scheduleId: String? = null,
         forceAi: Boolean = false,
-        overrideAlertActions: List<AlertActionConfig>? = null
+        overrideAlertActions: List<AlertActionConfig>? = null,
+        // ✅ SỬA (theo yêu cầu — nhất quán với việc ML Kit không còn quyết định cảnh báo): trước
+        // đây isManualTrigger LUÔN suy từ "scheduleId rỗng", nên vô tình gộp luôn đường ONVIF
+        // relay (processImage() — motion event bắn liên tục, KHÔNG kèm scheduleId) chung nhóm với
+        // "thủ công" (chat "quét camera" / nút Test — cũng không kèm scheduleId), khiến MỌI motion
+        // event ONVIF đều ép gọi Groq/ML Kit thật, bỏ qua hoàn toàn cổng diff/pHash (isSuddenChange)
+        // và cooldown — không nhất quán với chủ trương diff/pHash mới là nguồn quyết định chính.
+        // Giờ tách riêng bằng tham số tường minh: mặc định vẫn suy từ scheduleId (giữ nguyên hành
+        // vi chat/nút Test — luôn phân tích thật, đúng ý người dùng chủ động yêu cầu), nhưng
+        // processImage() (đường ONVIF) truyền thẳng isManualTrigger=false để buộc đi qua đúng
+        // cổng isSuddenChange/cooldown giống hệt quét theo lịch trình.
+        isManualTrigger: Boolean = scheduleId.isNullOrBlank()
     ): Map<String, Any> {
         val tid = camera.id.trim()
         return getMutexForCamera(tid).withLock {
@@ -1792,7 +1882,13 @@ PluginAction(
                 //     isSuddenChange/cooldown, forceAi chỉ còn là cờ "cá biệt" của riêng lịch đó
                 //     (ScheduleDraft.force) để bỏ qua gate — ĐÚNG nghĩa gốc của Force AI: chỉ dành
                 //     cho cấu hình lịch, không áp cho quét thủ công.
-                val isManualTrigger = scheduleId.isNullOrBlank()
+                //   - ✅ SỬA (theo yêu cầu nhất quán diff/pHash): ONVIF motion event (processImage(),
+                //     cũng KHÔNG kèm scheduleId — trùng "hình dạng lời gọi" với thủ công) KHÔNG
+                //     còn được coi là thủ công nữa — processImage() giờ truyền thẳng
+                //     isManualTrigger=false, nên nhánh này đi đúng cổng isSuddenChange/cooldown
+                //     giống hệt quét theo lịch trình, không còn ép Groq/ML Kit chạy ở MỌI motion
+                //     event bất kể ảnh có thật sự đổi hay không. isManualTrigger giờ là THAM SỐ
+                //     tường minh của hàm (xem chữ ký hàm), không còn suy thuần từ scheduleId nữa.
 
                 val shouldCallAi = isSmartMode &&
                     (isManualTrigger || forceAi || isSuddenChange) &&
@@ -1806,6 +1902,12 @@ PluginAction(
                 // Quota), KHÔNG phải từ mô tả AI đáng tin — dùng để chặn gửi email/thông báo báo động
                 // giả (giữ đúng ý đồ gốc: khi AI lỗi, không làm phiền người dùng bằng cảnh báo không rõ
                 // ràng), trong khi vẫn cho phép world_state/event_log cập nhật đúng biến động thực tế.
+                // ✅ SỬA (theo yêu cầu): từ khi diff/pHash thay thế vai trò ML Kit trong việc QUYẾT ĐỊNH
+                // cảnh báo (xem nhánh isApiError bên dưới), biến này LUÔN false — diff đã qua ngưỡng
+                // học ngày/đêm nên đủ tin cậy để gửi thông báo bình thường, không còn nhánh nào coi
+                // isSuspicious là "suy đoán tạm thời kém tin cậy" nữa. Giữ lại biến/nhánh gate email để
+                // không phải sửa lại luồng emailSent/executeAlertActions bên dưới, phòng khi sau này có
+                // thêm 1 nguồn suy đoán thật sự kém tin cậy khác cần chặn thông báo.
                 var aiWasUnreliable = false
                 // ✅ MỚI: nguồn phân tích thực tế của lần quét này — "groq" (mô tả AI đáng tin),
                 // "ml_kit_local" (fallback ML Kit khi smart mode tắt), hoặc null (suy đoán
@@ -1840,82 +1942,29 @@ PluginAction(
                     val isApiError = aiResult.startsWith(GroqClientTool.AI_ERROR_PREFIX)
 
                     if (isApiError) {
-                        // ✅ SỬA (lần 2): "Force AI" nghĩa là mọi phân tích đều qua Groq, NHƯNG khi Groq
-                        // lỗi/hết quota, fallback giờ PHẢI thử ML Kit local trước (có nhãn thật, đối
-                        // chiếu đúng keyword camera đã cấu hình — giống hệt cách nhánh "AI tắt" phía
-                        // dưới quyết định) — chỉ khi ML Kit CŨNG lỗi/timeout mới rơi về suy đoán pixel
-                        // thô thuần tuý (isSuddenChange) như bản vá trước.
-                        logger.w("CameraSkill", "⚠️ AI gặp sự cố ($aiResult) -> Thử ML Kit local trước khi rơi về so sánh pixel")
+                        // "Force AI" nghĩa là mọi phân tích đều qua Groq, nhưng khi Groq lỗi/hết
+                        // quota, fallback thử ML Kit local trước để LẤY NHÃN THẬT làm nội dung mô tả
+                        // (không dùng để quyết định báo động — xem buildMlKitContentAndDecision()) —
+                        // dù ML Kit có chạy được hay không, isSuspicious vẫn luôn do diff/pHash quyết.
+                        logger.w("CameraSkill", "⚠️ AI gặp sự cố ($aiResult) -> Dùng ML Kit local lấy nội dung mô tả (không dùng để quyết định báo động)")
 
-                        // ✅ SỬA: ML Kit không còn chạy trước (pre-filter) nữa — Groq luôn được gọi
-                        // thẳng khi shouldCallAi=true, nên ở đây luôn cần gọi ML Kit mới làm fallback.
-                        val fallbackLocalResult = try {
-                            localVisionTool.analyze(optimizedBytes)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            logger.w("CameraSkill", "⚠️ ML Kit fallback (Groq lỗi) cũng lỗi: ${e.message}")
-                            null
-                        }
-
-                        if (fallbackLocalResult != null) {
-                            val fallbackLabels = fallbackLocalResult.labels
-                            visionObjects = fallbackLabels.ifEmpty { listOf("chuyển động") }
-
-                            aiComment = if (fallbackLabels.isNotEmpty() || fallbackLocalResult.hasFace) {
-                                buildString {
-                                    append("Phát hiện cục bộ (ML Kit, Groq lỗi/hết Quota): ")
-                                    append(if (fallbackLabels.isNotEmpty()) fallbackLabels.joinToString(", ") else "chuyển động")
-                                    if (fallbackLocalResult.hasFace) append(" [có khuôn mặt]")
-                                    fallbackLocalResult.dominantColorName?.let { append(" — màu chủ đạo: $it") }
-                                }
-                            } else {
-                                "Không thể phân tích AI (Lỗi kết nối/Hết Quota), ML Kit không nhận diện được vật thể cụ thể"
-                            }
-
-                            val fallbackPositiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
-                                camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-                            } else {
-                                emptyList()
-                            }
-                            val fallbackLabelsText = buildString {
-                                append(fallbackLabels.joinToString(" "))
-                                if (fallbackLocalResult.hasFace) append(" khuôn mặt mặt người")
-                            }.lowercase()
-
-                            isSuspicious = fallbackPositiveKeywords.isNotEmpty() &&
-                                fallbackPositiveKeywords.any { fallbackLabelsText.contains(it) }
-
-                            // ML Kit chạy thành công -> có nhãn thật, đủ tin cậy để KHÔNG chặn thông
-                            // báo như suy đoán pixel thuần (khác nhánh else bên dưới) — nếu khớp đúng
-                            // keyword camera tự cấu hình thì vẫn gửi email như bình thường.
-                            aiWasUnreliable = false
-                            finalStateJson = buildVisionStateJson(
-                                state = if (isSuspicious) "suspicious" else "normal",
-                                description = aiComment ?: "",
-                                objects = visionObjects,
-                                source = "ml_kit_local",
-                                hasFace = fallbackLocalResult.hasFace
-                            )
-                            analysisSource = "ml_kit_local"
-                        } else {
-                            // ML Kit CŨNG lỗi/timeout -> fallback cuối cùng: suy đoán thô từ so sánh
-                            // pixel (hành vi cũ) — không có mô tả nào đáng tin, không gửi thông báo.
-                            aiWasUnreliable = true
-                            isSuspicious = isSuddenChange
-                            aiComment = if (isSuddenChange) {
-                                "Phát hiện biến động (AI tạm thời lỗi/hết Quota, ML Kit cũng lỗi, dùng so sánh pixel)"
-                            } else {
-                                "Không thể phân tích AI (Lỗi kết nối/Hết Quota) — không phát hiện biến động pixel"
-                            }
-                            visionObjects = if (isSuddenChange) listOf("chuyển động") else emptyList()
-                            finalStateJson = buildVisionStateJson(
-                                state = if (isSuspicious) "suspicious" else "normal",
-                                description = aiComment ?: "",
-                                objects = visionObjects,
-                                source = "pixel_diff_only"  // Groq lỗi + ML Kit lỗi -> không có mô tả nào đáng tin
-                            )
-                        }
+                        // ✅ SỬA: gọi hàm dùng chung buildMlKitContentAndDecision() — xem giải thích
+                        // đầy đủ ở khai báo hàm phía trên processImageWithLearning(). Diff/pHash
+                        // (isSuddenChange) quyết định isSuspicious, ML Kit chỉ còn góp nội dung mô tả.
+                        val assist = buildMlKitContentAndDecision(
+                            optimizedBytes = optimizedBytes,
+                            isSuddenChange = isSuddenChange,
+                            reasonSuffix = "Groq lỗi/hết Quota"
+                        )
+                        aiComment = assist.aiComment
+                        visionObjects = assist.visionObjects
+                        // ✅ SỬA: không còn coi đây là "suy đoán tạm thời kém tin cậy" (aiWasUnreliable)
+                        // như trước, vì isSuddenChange đã qua hệ thống học ngưỡng ngày/đêm, đủ tin cậy
+                        // để gửi thông báo bình thường, không cần chặn email/push như code cũ.
+                        isSuspicious = assist.isSuspicious
+                        aiWasUnreliable = false
+                        finalStateJson = assist.finalStateJson
+                        analysisSource = assist.analysisSource
                     } else {
                         val visionParsed = parseVisionResult(aiResult)
                         aiComment = visionParsed.displayComment
@@ -1964,88 +2013,32 @@ PluginAction(
                     }
 
                 } else if (!isSmartMode && (isManualTrigger || forceAi || isSuddenChange)) {
-                    // ✅ SỬA (lần 2): trước đây chỉ xét isSuddenChange (không xét forceAi/thủ công) vì
-                    // lo ngại ép chạy khi ảnh không đổi sẽ báo "biến động" giả (khi đó aiComment chỉ
-                    // là chuỗi cứng "chuyển động"). Giờ nhánh dưới đối chiếu nhãn ML Kit thật với
-                    // keyword thay vì hard-code isSuspicious=true, nên ép chạy không còn tạo báo động
-                    // giả nữa. Điều kiện giờ dùng isManualTrigger (không scheduleId — chat "quét
-                    // camera" hoặc nút Test) để LUÔN phân tích thật khi thao tác thủ công, đúng khớp
-                    // hành vi Groq phía trên; forceAi chỉ còn ý nghĩa cho lịch trình (xem giải thích ở
-                    // shouldCallAi phía trên).
-                    // ✅ MỚI: thay "chuyển động" cứng bằng label thật từ ML Kit (on-device, không tốn
-                    // quota Groq) — mục đích DUY NHẤT là làm giàu "summary"/EventLogEntity để search
-                    // local dễ hơn (vd "hôm nay có xe không") khi smart mode tắt. KHÔNG thay thế Groq,
-                    // KHÔNG đổi điều kiện shouldCallAi/isSmartMode ở trên — luồng đó giữ nguyên 100%.
-                    val localResult = try {
-                        localVisionTool.analyze(optimizedBytes)
-                    } catch (e: CancellationException) {
-                        // ✅ Không được nuốt CancellationException — phải ném lại để coroutine
-                        // hủy đúng cách (giống pattern đã dùng ở AgentKernel.kt).
-                        throw e
-                    } catch (e: Exception) {
-                        // Bất kỳ lỗi ML Kit nào khác (thiếu Play Services, model chưa sẵn sàng,
-                        // OOM...) đều KHÔNG được làm gián đoạn luồng chính — fallback về hành vi cũ.
-                        logger.w("CameraSkill", "⚠️ ML Kit local analysis lỗi, dùng fallback cũ: ${e.message}")
-                        null
-                    }
-
-                    val labels = localResult?.labels.orEmpty()
-                    visionObjects = labels.ifEmpty { listOf("chuyển động") }
-
-                    aiComment = if (labels.isNotEmpty() || localResult?.hasFace == true) {
-                        buildString {
-                            append("Phát hiện cục bộ (ML Kit, chế độ AI tắt): ")
-                            append(if (labels.isNotEmpty()) labels.joinToString(", ") else "chuyển động")
-                            if (localResult?.hasFace == true) append(" [có khuôn mặt]")
-                            localResult?.dominantColorName?.let { append(" — màu chủ đạo: $it") }
-                        }
-                    } else {
-                        // ML Kit không nhận ra vật thể cụ thể nào (hoặc bị lỗi/timeout) — fallback
-                        // y hệt hành vi cũ trước khi có ML Kit, không để "summary" trống/gây hiểu nhầm.
-                        "Phát hiện biến động chuyển động (Chế độ AI tắt)"
-                    }
-
-                    // ✅ SỬA (lần 2 — đảo ngược model): field "Bình thường" (aiNegativeKeywords) giờ
-                    // là DANH SÁCH NGUỒN — set sẵn qua AppConfig default (defaultNegativeKw()) TOÀN
-                    // BỘ nhãn ML Kit có thể trả về (xem mapLabelToVietnamese() trong LocalVisionTool.
-                    // kt: người, xe ô tô, xe máy/xe đạp, chó, mèo, động vật, cây cối, đồ nội thất,
-                    // quần áo, giày, túi/hành lý, tòa nhà/phòng, ngoài trời/đường, bầu trời, nước,
-                    // thực phẩm...) — vì người dùng không biết chính xác ML Kit sẽ phân loại ra nhãn
-                    // gì, để họ tự gõ tay dễ sai/thiếu. Field "cảnh báo" (aiPositiveKeywords) mặc
-                    // định BỎ TRỐNG (hoặc để nguyên chữ "bình thường" cũng không sao, không ảnh hưởng
-                    // logic) — người dùng chỉ cần COPY đúng nhãn họ muốn cảnh báo từ field "Bình
-                    // thường" sang field "cảnh báo". CHỈ báo động khi khớp đúng từ khoá cảnh báo —
-                    // KHÔNG còn mặc định báo động khi không khớp gì (khác hẳn model trước). Field
-                    // "Bình thường" giờ KHÔNG tham gia vào việc quyết định isSuspicious nữa — thuần
-                    // là nguồn tham khảo/copy cho người dùng, không dùng để loại trừ.
-                    val positiveKeywords = if (camera.aiPositiveKeywords.isNotEmpty()) {
-                        camera.aiPositiveKeywords.split(",").map { it.trim().lowercase() }.filter { it.isNotEmpty() }
-                    } else {
-                        emptyList()
-                    }
-
-                    val labelsText = buildString {
-                        append(labels.joinToString(" "))
-                        if (localResult?.hasFace == true) append(" khuôn mặt mặt người")
-                    }.lowercase()
-
-                    // Không khớp từ khoá cảnh báo nào (kể cả khi field để trống) -> KHÔNG báo động,
-                    // chỉ ghi log (xem nhánh else phía dưới vẫn lưu aiComment/objects đầy đủ).
-                    isSuspicious = positiveKeywords.isNotEmpty() && positiveKeywords.any { labelsText.contains(it) }
-
-                    finalStateJson = buildVisionStateJson(
-                        state = if (isSuspicious) "suspicious" else "normal",
-                        description = aiComment ?: "",
-                        objects = visionObjects,
-                        source = if (localResult != null) "ml_kit_local" else "pixel_diff_only",
-                        hasFace = localResult?.hasFace ?: false
+                    // Điều kiện dùng isManualTrigger (không scheduleId — chat "quét camera" hoặc nút
+                    // Test) để LUÔN phân tích thật khi thao tác thủ công, đúng khớp hành vi Groq phía
+                    // trên; forceAi chỉ còn ý nghĩa cho lịch trình (xem giải thích ở shouldCallAi
+                    // phía trên). KHÔNG thay thế Groq, KHÔNG đổi điều kiện shouldCallAi/isSmartMode.
+                    //
+                    // ✅ SỬA (theo yêu cầu — ML Kit không còn quyết định cảnh báo): trước đây nhánh
+                    // này tự quyết isSuspicious bằng cách so khớp nhãn ML Kit nhận ra với
+                    // aiPositiveKeywords (field "Bình thường"/aiNegativeKeywords dùng làm danh sách
+                    // nhãn tham khảo để người dùng copy sang) — độ chính xác ML Kit quá thấp trong
+                    // thực tế (bỏ sót người/xe, đặc biệt thiếu sáng/góc khuất/xa camera, confidence
+                    // thấp), khiến người dùng gõ đúng từ khoá "người", "xe" mà vẫn không báo động dù
+                    // có biến động thật — thua cả so sánh diff thô. Đồng bộ với nhánh Groq lỗi phía
+                    // trên: gọi hàm dùng chung buildMlKitContentAndDecision(), diff/pHash
+                    // (isSuddenChange) quyết định isSuspicious, ML Kit chỉ còn góp nội dung mô tả
+                    // (nhãn/khuôn mặt/màu chủ đạo) cho aiComment và event log — không còn field
+                    // keyword nào tham gia quyết định ở chế độ AI tắt (thuần ML Kit) nữa.
+                    val assist = buildMlKitContentAndDecision(
+                        optimizedBytes = optimizedBytes,
+                        isSuddenChange = isSuddenChange,
+                        reasonSuffix = "Chế độ AI tắt"
                     )
-
-                    // Chỉ đánh dấu nguồn "ml_kit_local" khi ML Kit thực sự trả được kết quả — nếu
-                    // localResult null (lỗi/timeout), đây thực chất là suy đoán pixel-diff thuần
-                    // (giống hệt case Groq lỗi phía trên), không nên gắn nhãn "ml_kit_local" gây
-                    // hiểu nhầm là có phân tích nội dung thật.
-                    analysisSource = if (localResult != null) "ml_kit_local" else null
+                    aiComment = assist.aiComment
+                    visionObjects = assist.visionObjects
+                    isSuspicious = assist.isSuspicious
+                    finalStateJson = assist.finalStateJson
+                    analysisSource = assist.analysisSource
                 }
 
                 if (isSuspicious) {
