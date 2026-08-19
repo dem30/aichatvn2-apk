@@ -240,7 +240,18 @@ data class CameraConfigEntity(
     @ColumnInfo(defaultValue = "NULL")
     val ddnsHost: String? = null,
     @ColumnInfo(defaultValue = "NULL")
-    val ddnsPort: Int? = null
+    val ddnsPort: Int? = null,
+    // ✅ MỚI: OnvifEventRelay ghi lại quan sát thật khi PullPoint đã nhận đủ số event mẫu
+    // (xem OnvifEventRelay.MOTION_CAPABILITY_SAMPLE_SIZE) nhưng KHÔNG event nào là chuyển
+    // động (topic không khớp CellMotionDetector/Motion) — một số camera "tương thích ONVIF"
+    // (vd nhiều dòng V380 Pro) chỉ publish topic Imaging (ImageTooBlurry/ImageTooDark), Motion
+    // thật xử lý qua app/cloud riêng của hãng, không đi qua ONVIF Events. 3 trạng thái: null =
+    // chưa đủ mẫu để kết luận (camera mới bật ONVIF, hoặc đang chờ đủ event), 1 = đã thấy
+    // Motion event thật ít nhất 1 lần, 0 = đã quan sát đủ mẫu mà không hề thấy Motion event
+    // nào — SystemAuditor dùng giá trị 0 để báo CONFLICT, gợi ý người dùng tự tắt ONVIF Switch
+    // ở CameraDetailScreen thay vì để PullPoint loop chạy nền vô ích tốn pin/data.
+    @ColumnInfo(defaultValue = "NULL")
+    val onvifMotionObserved: Int? = null
 )
 
 @Entity(tableName = "customer_settings")

@@ -182,6 +182,15 @@ class OnvifEventRelay @Inject constructor(
             "tns1:Monitoring/OperatingTime",
             "tns1:Device/HardwareFailure"
         )
+
+        // ✅ MỚI: số event KHÔNG PHẢI motion cần quan sát được (mỗi event tính 1 mẫu, kể cả
+        // Imaging/Tamper/noise — miễn đã qua được isMotion check) trước khi kết luận camera
+        // không publish Motion topic qua ONVIF — một số camera (nhiều dòng V380 Pro) chỉ có
+        // Imaging events (ImageTooBlurry/ImageTooDark), Motion thật xử lý qua app/cloud riêng
+        // của hãng. 20 mẫu đủ lớn để không kết luận vội (vài event đầu sau subscribe thường là
+        // Initialized trạng thái hiện tại, chưa phải hoạt động thật), nhưng không quá lớn khiến
+        // camera thật sự không hỗ trợ phải chờ quá lâu mới được SystemAuditor cảnh báo.
+        private const val MOTION_CAPABILITY_SAMPLE_SIZE = 20
     }
 
     // ✅ SỬA (thiết kế lại theo đúng chuẩn — xem KDoc đầy đủ ở CameraLanHttpClient.kt): không còn
@@ -215,6 +224,17 @@ class OnvifEventRelay @Inject constructor(
     // cùng 1 camera; camera bị xoá/Job bị huỷ hẳn thì entry cũ trở thành rác vô hại, kích
     // thước tối đa bị chặn bởi số camera thật x số topic thật, không tăng vô hạn).
     private val lastKnownTopicValue = ConcurrentHashMap<String, Boolean>()
+
+    // ✅ MỚI: cameraId -> số event non-motion đã quan sát được kể từ lần Job hiện tại bắt đầu
+    // (reset khi Job bị huỷ/tạo lại, vd người tắt/bật lại Switch ONVIF — coi như "thử lại từ
+    // đầu" hợp lý, không cộng dồn xuyên suốt các lần bật tắt khác nhau). Dùng cho
+    // MOTION_CAPABILITY_SAMPLE_SIZE ở trên.
+    private val nonMotionEventCount = ConcurrentHashMap<String, Int>()
+
+    // cameraId đã ghi xong onvifMotionObserved (dù 0 hay 1) trong vòng đời Job hiện tại — chỉ
+    // để tránh ghi DB lặp lại mỗi lần thấy thêm 1 event motion sau khi đã kết luận motionObserved
+    // = 1 từ trước; không ảnh hưởng gì tới việc phát hiện/relay motion event, vẫn chạy như cũ.
+    private val motionCapabilityConcluded = ConcurrentHashMap<String, Boolean>()
 
     /**
      * Gọi 1 lần từ WebhookGatewayService.onCreate() — vô hại nếu gọi trên máy "client" (không
@@ -313,6 +333,10 @@ class OnvifEventRelay @Inject constructor(
     private fun cancelJob(cameraId: String, reason: String) {
         activeJobs.remove(cameraId)?.cancel()
         activeJobFingerprints.remove(cameraId)
+        // Reset đếm mẫu motion-capability — Job mới (nếu có, vd người dùng bật lại Switch ONVIF
+        // sau khi sửa cấu hình) coi như bắt đầu quan sát lại từ đầu, không cộng dồn từ lần trước.
+        nonMotionEventCount.remove(cameraId)
+        motionCapabilityConcluded.remove(cameraId)
     }
 
     // ===== Vòng lặp subscribe + pull cho 1 camera =====
@@ -520,6 +544,7 @@ class OnvifEventRelay @Inject constructor(
                 }
 
                 val isMotion = looksLikeMotionEvent(event, trueItems)
+                recordMotionCapabilitySample(cameraId, isMotion)
                 val isKnownNoise = NOISE_TOPICS.any {
                     normalizeTopic(event.topic).equals(normalizeTopic(it), ignoreCase = true)
                 }
@@ -635,6 +660,49 @@ class OnvifEventRelay @Inject constructor(
         firstDescendantElement(parent, localName)?.textContent?.trim()
 
     /** Generic motion recognition; does not require one vendor-specific Topic. */
+    /**
+     * ✅ MỚI: đếm mẫu + ghi DB một lần khi đủ dữ kiện kết luận camera này có publish Motion
+     * qua ONVIF Events hay không — xem MOTION_CAPABILITY_SAMPLE_SIZE. Đọc-sửa-ghi tại đây
+     * (thay vì nhận sẵn CameraConfigEntity từ caller) để luôn ghi đè lên bản mới nhất trong DB,
+     * tránh trường hợp entity người dùng đang giữ (vd đang mở CameraDetailScreen sửa gì đó
+     * song song) bị mất khi updateCamera() ghi đè cả object.
+     */
+    private suspend fun recordMotionCapabilitySample(cameraId: String, isMotion: Boolean) {
+        if (motionCapabilityConcluded[cameraId] == true) return
+
+        if (isMotion) {
+            motionCapabilityConcluded[cameraId] = true
+            writeMotionObserved(cameraId, observed = true)
+            return
+        }
+
+        val count = nonMotionEventCount.merge(cameraId, 1, Int::plus) ?: 1
+        if (count >= MOTION_CAPABILITY_SAMPLE_SIZE) {
+            motionCapabilityConcluded[cameraId] = true
+            writeMotionObserved(cameraId, observed = false)
+        }
+    }
+
+    private suspend fun writeMotionObserved(cameraId: String, observed: Boolean) = withContext(Dispatchers.IO) {
+        try {
+            val camera = database.cameraDao().getCameraById(cameraId) ?: return@withContext
+            // Không ghi lại nếu giá trị đã đúng như vậy từ trước (vd Job resubscribe lại nhưng
+            // kết luận cũ vẫn còn nguyên trong DB) — tránh update DB vô ích mỗi lần restart Job.
+            if (camera.onvifMotionObserved == (if (observed) 1 else 0)) return@withContext
+            database.cameraDao().updateCamera(camera.copy(onvifMotionObserved = if (observed) 1 else 0))
+            if (!observed) {
+                logger.i(
+                    TAG,
+                    "ℹ️ Camera $cameraId: đã quan sát $MOTION_CAPABILITY_SAMPLE_SIZE sự kiện ONVIF " +
+                        "mà không có sự kiện chuyển động nào — có thể camera này không publish " +
+                        "Motion qua ONVIF (chỉ Imaging/Tamper...). Xem mục Sức khoẻ hệ thống."
+                )
+            }
+        } catch (e: Exception) {
+            logger.w(TAG, "⚠️ Không ghi được onvifMotionObserved cho camera $cameraId: ${e.message}")
+        }
+    }
+
     private fun looksLikeMotionEvent(event: OnvifNotificationEvent, trueItems: List<OnvifItem>): Boolean {
         val topic = normalizeTopic(event.topic).lowercase()
         val motionTopic = topic.contains("motion") ||

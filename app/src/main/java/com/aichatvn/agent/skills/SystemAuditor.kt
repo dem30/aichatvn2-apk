@@ -151,6 +151,16 @@ class SystemAuditor @Inject constructor(
         val status = when {
             camera.onvifSupported == 0 -> HealthStatus.UNSUPPORTED
             camera.onvifEnabled == 0 -> HealthStatus.IMPROVABLE
+            // ✅ MỚI: đã bật ONVIF (onvifEnabled==1) và OnvifEventRelay đã quan sát đủ mẫu sự
+            // kiện thật mà KHÔNG hề thấy sự kiện chuyển động nào (camera.onvifMotionObserved ==
+            // 0) — probe lúc thêm camera chỉ xác nhận camera CÓ nói chuyện được qua ONVIF, không
+            // xác nhận camera CÓ publish Motion topic hay không (một số camera, đặc biệt nhiều
+            // dòng V380 Pro, chỉ publish Imaging/Tamper events, Motion thật xử lý qua app/cloud
+            // riêng của hãng). Khác DEGRADED bên dưới: đây KHÔNG phải vấn đề mạng tạm thời, mà
+            // là giới hạn cấu hình cần người dùng tự quyết — không tự tắt Switch (safeToAutoApply
+            // = false, xem SystemAutoConfigurer.kt), chỉ đưa nút điều hướng để người dùng tự tắt
+            // ở CameraDetailScreen nếu muốn, tránh vòng PullPoint chạy nền tốn pin/data vô ích.
+            camera.onvifMotionObserved == 0 -> HealthStatus.CONFLICT
             // ✅ MỚI (Giai đoạn 3): đã bật ONVIF thật (onvifEnabled==1), nhưng điện thoại hiện
             // không ở cùng LAN nhà — báo động tức thời trực tiếp KHÔNG hoạt động lúc này (mất
             // kết nối LAN tới camera), dù cấu hình vẫn đúng. Khác CONFLICT: đây không cần
@@ -158,12 +168,20 @@ class SystemAuditor @Inject constructor(
             !isOnHomeSubnet -> HealthStatus.DEGRADED
             else -> HealthStatus.OPTIMIZED
         }
-        val description = if (status == HealthStatus.DEGRADED) {
-            "Camera này hỗ trợ báo động tức thời qua mạng nhà, nhưng điện thoại hiện không ở " +
-                "cùng mạng nhà nên báo động trực tiếp tạm không hoạt động."
-        } else {
-            "Camera này có thể báo động ngay khi phát hiện chuyển động, " +
-                "không cần đợi chụp ảnh định kỳ."
+        val description = when (status) {
+            HealthStatus.CONFLICT ->
+                "Camera này đã bật báo động tức thời qua ONVIF, nhưng chưa từng gửi được sự " +
+                    "kiện chuyển động nào dù đã theo dõi một thời gian — có thể camera chỉ hỗ " +
+                    "trợ ONVIF ở mức tối thiểu (báo ảnh mờ/tối), còn phát hiện chuyển động thật " +
+                    "được xử lý riêng ở app/cloud của hãng, không qua được ONVIF. Có thể tắt " +
+                    "tính năng này để đỡ chạy nền vô ích — app sẽ tự chuyển sang chụp ảnh so " +
+                    "sánh định kỳ như các camera không hỗ trợ ONVIF."
+            HealthStatus.DEGRADED ->
+                "Camera này hỗ trợ báo động tức thời qua mạng nhà, nhưng điện thoại hiện không ở " +
+                    "cùng mạng nhà nên báo động trực tiếp tạm không hoạt động."
+            else ->
+                "Camera này có thể báo động ngay khi phát hiện chuyển động, " +
+                    "không cần đợi chụp ảnh định kỳ."
         }
         return HealthItem(
             id = "camera_onvif_${camera.id}",
@@ -174,7 +192,11 @@ class SystemAuditor @Inject constructor(
             relatedEntityId = camera.id,
             // An toàn tự bật: chỉ bật cờ đọc, camera đã tự xác nhận hỗ trợ qua probe thật,
             // không gọi API bên ngoài, không đổi thông tin đăng nhập.
-            safeToAutoApply = status == HealthStatus.IMPROVABLE
+            safeToAutoApply = status == HealthStatus.IMPROVABLE,
+            // CONFLICT, không IMPROVABLE: tắt ONVIF là quyết định người dùng nên tự xác nhận
+            // (tương tự auditCameraCloudUrl) — cùng route camera_detail đã dùng ở đó, nơi có
+            // Switch ONVIF thật để tắt.
+            manualActionRoute = if (status == HealthStatus.CONFLICT) "camera_detail/${camera.id.trim()}" else null
         )
     }
 
