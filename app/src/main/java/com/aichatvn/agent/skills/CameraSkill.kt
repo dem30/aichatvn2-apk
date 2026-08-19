@@ -1717,8 +1717,17 @@ PluginAction(
             try {
                 recordOnline(tid)
                 
-                val currentPhash = imageHashTool.calculatePhash(imageBytes)
+                // ✅ SỬA: trước đây calculatePhash() nhận thẳng imageBytes THÔ (full độ phân giải
+                // camera, có thể 1080p/2K/4K) — BitmapFactory.decodeByteArray() không hề giảm
+                // mẫu (không có inSampleSize) trước khi tính hash, cấp phát bitmap full-res chỉ
+                // để rút gọn còn 32x32 pixel. Với luồng ONVIF relay gọi processImageWithLearning
+                // liên tục mỗi khi có chuyển động, nhiều lần cấp phát bitmap lớn liên tiếp như
+                // vậy gây OOM khiến hệ thống âm thầm kill process (không có exception Kotlin nào
+                // để log — vì đây là native OOM do hệ điều hành chủ động thu hồi RAM). Optimize
+                // (resize nhỏ) TRƯỚC, dùng đúng 1 bản optimizedBytes cho cả 2 việc — vừa tránh
+                // decode ảnh full-res 2 lần, vừa tránh decode nó dù chỉ 1 lần trong calculatePhash.
                 val optimizedBytes = imageHashTool.optimizeImage(imageBytes)
+                val currentPhash = imageHashTool.calculatePhash(optimizedBytes)
                 
                 var currentDiff = 0
                 if (state.lastPhash.isNotEmpty()) {
