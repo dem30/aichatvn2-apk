@@ -38,6 +38,16 @@ import kotlin.coroutines.resume
  *   nền vô thời hạn.
  * - File output ghi vào cacheDir (không phải Downloads/external) — đây là ảnh trung gian dùng để
  *   đọc bytes ngay rồi xoá, không phải sản phẩm người dùng cần giữ lại.
+ *
+ * ✅ QUAN TRỌNG (đã xác nhận qua thực tế build/test): PHẢI co nhỏ frame ngay trong lệnh FFmpeg
+ * (`-vf scale=...`) trước khi ghi ra file, KHÔNG được bỏ bước này dù ImageHashTool.optimizeImage()
+ * ở tầng sau vẫn downsample an toàn bằng inSampleSize. Lý do: thiếu scale ở đây khiến FFmpeg phải
+ * decode + encode JPEG ở ĐÚNG độ phân giải gốc camera (1080p/2K) — chậm hơn hẳn, và pipeline
+ * ONVIF → relayMotionEvent() → fetchOneSnapshot() → grabFrame() chạy ngay trong luồng khởi động
+ * WebhookGatewayService (serviceScope, chạy cùng lúc app mở) — chậm ở bước native này đủ để kéo
+ * theo hàng loạt việc dồn ứ phía sau, từng khiến app không mở được (thu về nền ngay sau splash,
+ * không có dialog lỗi rõ ràng). Co nhỏ ngay từ FFmpeg (chỉ vài chục KB thay vì vài trăm KB-vài MB)
+ * giữ toàn bộ chuỗi này nhanh và nhẹ ngay từ nguồn.
  */
 @Singleton
 class RtspFrameGrabber @Inject constructor(
@@ -49,6 +59,14 @@ class RtspFrameGrabber @Inject constructor(
         // DESCRIBE probe (2.5s ở CameraCapabilityProber) vì đây là mở stream thật + decode video,
         // không chỉ bắt tay giao thức. Camera LAN bình thường chỉ mất 1-3s; 10s đã rất rộng rãi.
         private const val GRAB_TIMEOUT_MS = 10_000L
+
+        // ✅ Giới hạn cạnh dài nhất của frame xuất ra — mục đích ảnh này là pHash so sánh + AI
+        // Vision (Groq), không phải xem/lưu trữ, nên không cần giữ nguyên độ phân giải gốc camera
+        // (thường 1080p/2K, vài trăm KB/ảnh). 400px cạnh dài đủ chi tiết cho cả 2 mục đích, giảm
+        // dung lượng xuống còn vài chục KB — đỡ tốn băng thông khi gửi ảnh kèm báo động ra ngoài
+        // LAN, giảm chi phí/thời gian gọi Groq Vision API, và (quan trọng nhất) giữ bước decode/
+        // encode native trong FFmpeg đủ nhanh để không kéo chậm chuỗi khởi động ONVIF relay.
+        private const val MAX_FRAME_DIMENSION = 400
     }
 
     /**
@@ -93,12 +111,20 @@ class RtspFrameGrabber @Inject constructor(
      *
      * "-rtsp_transport tcp": BẮT BUỘC — xem giới hạn UDP ở ghi chú đầu file.
      * "-frames:v 1": chỉ decode đúng 1 frame rồi dừng, không phải toàn bộ stream.
+     * "-vf scale=...": co nhỏ cạnh dài nhất về MAX_FRAME_DIMENSION, giữ nguyên tỉ lệ khung hình
+     * gốc (không ép méo ảnh vì camera có thể lắp ngang hoặc dọc). Biểu thức chọn cạnh nào đang
+     * dài hơn (iw=chiều rộng, ih=chiều cao gốc) để giới hạn còn MAX_FRAME_DIMENSION, cạnh còn lại
+     * tính "-2" (FFmpeg tự suy theo tỉ lệ, luôn làm tròn về số chẵn — bắt buộc với codec JPEG/
+     * H.264, số lẻ sẽ lỗi encode). Nếu ảnh gốc đã nhỏ hơn MAX_FRAME_DIMENSION sẵn, scale filter tự
+     * động không phóng to lên (dùng min(iw,W) thay vì gán cứng W).
      * "-y": ghi đè nếu file output đã tồn tại (không nên xảy ra vì tên file có timestamp, nhưng an
      * toàn hơn để không bị FFmpeg hỏi xác nhận và treo).
      */
     private suspend fun runFFmpegGrab(rtspUrl: String, outputPath: String): Boolean =
         suspendCancellableCoroutine { cont ->
-            val command = "-rtsp_transport tcp -i \"$rtspUrl\" -frames:v 1 -y \"$outputPath\""
+            val scaleExpr = "scale='if(gt(iw,ih),min(iw,$MAX_FRAME_DIMENSION),-2)':" +
+                "'if(gt(iw,ih),-2,min(ih,$MAX_FRAME_DIMENSION))'"
+            val command = "-rtsp_transport tcp -i \"$rtspUrl\" -frames:v 1 -vf \"$scaleExpr\" -y \"$outputPath\""
             var session: FFmpegSession? = null
             session = FFmpegKit.executeAsync(command) { completedSession ->
                 if (cont.isActive) {
