@@ -470,8 +470,8 @@ PluginAction(
         const val CLOUD_SNAPSHOT_VERIFY_INTERVAL_MS = 45 * 60 * 1000L
 
         // ✅ MỚI (decay): giá trị mặc định để ngưỡng hạ về khi không còn mẫu nhiễu nào "còn hạn".
-        const val DEFAULT_DELTA_TRIGGER = 10
-        const val DEFAULT_ABS_DIFF_TRIGGER = 18
+        const val DEFAULT_DELTA_TRIGGER = 6
+        const val DEFAULT_ABS_DIFF_TRIGGER = 10
 
         // ✅ MỚI (decay): một mẫu nhiễu (false positive) chỉ có giá trị tham chiếu trong khoảng thời
         // gian này. Quá hạn mà không có mẫu mới nào bổ sung/xác nhận lại thì bị loại khỏi tập học,
@@ -1125,11 +1125,11 @@ PluginAction(
         } else {
             val recentDeltas = period.falseDeltas.takeLast(30).sorted()
             val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, 25)
+            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, 15)
 
             val recentDiffs = period.falseDiffs.takeLast(30).sorted()
             val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, 35)
+            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, 22)
         }
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
