@@ -95,15 +95,16 @@ class CameraLiveViewViewModel @Inject constructor(
     private val _isAudioMuted = MutableStateFlow(false)
     val isAudioMuted: StateFlow<Boolean> = _isAudioMuted.asStateFlow()
 
-    // ✅ MỚI: mã Camera Node ở nhà, đọc sẵn cho màn hình dùng khi bấm "Gọi xem qua Camera Node" —
-    // xem ghi chú đầy đủ ở callHomeCameraNode() bên dưới về LÝ DO ViewModel này
-    // KHÔNG tự gọi CallSkill.execute("start_call", ...) hay tự navController.navigate(...).
+    // ✅ MỚI: đồng bộ TRẠNG THÁI THẬT ngay khi mở màn hình — trường hợp người dùng rời màn hình
+    // giữa lúc đang ghi (vd bấm Back) rồi quay lại: trước đây _isRecording luôn khởi tạo false,
+    // hiện nút "Ghi hình" dù thực ra vẫn còn 1 phiên đang chạy nền cho cameraId này.
     init { load() }
 
     private fun load() {
         viewModelScope.launch {
             val cam = withContext(Dispatchers.IO) { database.cameraDao().getCameraById(cameraId) }
             _camera.value = cam
+            _isRecording.value = cameraSkill.isRecording(cameraId)
 
             _state.value = when {
                 cam == null -> LiveViewState.NotAvailable("Không tìm thấy camera")
@@ -116,6 +117,27 @@ class CameraLiveViewViewModel @Inject constructor(
             if (readyState is LiveViewState.Ready) {
                 startFramePolling(readyState.rtspUrl, cam?.snapshotUsername, cam?.snapshotPassword)
                 startAudioPlayback(readyState.rtspUrl, cam?.snapshotUsername, cam?.snapshotPassword)
+            }
+        }
+
+        // ✅ MỚI: nguồn SỰ THẬT duy nhất cho _isRecording — trước đây chỉ đổi tay khi người dùng
+        // bấm nút (toggleRecording()), không biết khi nào FFmpeg TỰ dừng đúng lúc hết 120s (do
+        // "-t"). Kết quả cũ: nút vẫn hiện "Dừng ghi hình" mãi sau khi video đã ghi/lưu xong,
+        // người dùng tưởng app "chạy không ngừng". Giờ subscribe thẳng CameraSkill.recordingFinished
+        // (forward từ CameraRecorder) — bất kể phiên ghi kết thúc do hết giờ, do lỗi, hay do chính
+        // toggleRecording() gọi dừng, UI luôn phản ánh đúng và hiện thông báo phù hợp với outcome.
+        viewModelScope.launch {
+            cameraSkill.recordingFinished.collect { event ->
+                if (event.cameraId != cameraId) return@collect
+                _isRecording.value = false
+                _actionMessage.value = when (event.outcome) {
+                    com.aichatvn.agent.tools.camera.CameraRecorder.RecordingFinished.Outcome.SAVED ->
+                        "✅ Đã ghi hình xong và lưu vào Thư viện"
+                    com.aichatvn.agent.tools.camera.CameraRecorder.RecordingFinished.Outcome.CANCELLED_AND_SAVED ->
+                        "✅ Đã dừng và lưu video vào Thư viện"
+                    com.aichatvn.agent.tools.camera.CameraRecorder.RecordingFinished.Outcome.FAILED ->
+                        "⚠️ Ghi hình thất bại, không có video nào được lưu"
+                }
             }
         }
     }
@@ -283,8 +305,19 @@ class CameraLiveViewViewModel @Inject constructor(
             }
             when (result) {
                 is com.aichatvn.agent.core.AgentKernel.PluginResult.Success -> {
-                    _isRecording.value = !recording
-                    _actionMessage.value = (result.data as? Map<*, *>)?.get("message") as? String
+                    // ✅ SỬA: chỉ tự đặt _isRecording = true khi BẮT ĐẦU ghi — trạng thái "đã
+                    // dừng" (false) giờ để riêng collector recordingFinished() ở load() xử lý
+                    // (nguồn sự thật duy nhất, chạy dù dừng do người bấm nút hay do tự hết giờ).
+                    // Nếu tự set false ở đây ngay khi stopRecording() trả Success, có thể xảy ra
+                    // trước khi FFmpeg thực sự huỷ xong — _actionMessage bị đè lẫn lộn giữa
+                    // "⏹️ Đã dừng ghi hình" (message tĩnh ở đây) và thông báo outcome thật
+                    // (SAVED/CANCELLED_AND_SAVED/FAILED) đến sau từ collector.
+                    if (!recording) {
+                        _isRecording.value = true
+                        _actionMessage.value = (result.data as? Map<*, *>)?.get("message") as? String
+                    }
+                    // recording == true (đang dừng): không set message ở đây, đợi
+                    // recordingFinished phát ra outcome thật.
                 }
                 is com.aichatvn.agent.core.AgentKernel.PluginResult.Failure -> {
                     _actionMessage.value = result.error

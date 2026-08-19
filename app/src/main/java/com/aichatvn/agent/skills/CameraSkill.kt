@@ -676,6 +676,15 @@ PluginAction(
         }
     }
 
+    // ✅ MỚI: forward nguồn sự thật của CameraRecorder ra ngoài — CameraLiveViewViewModel không
+    // được inject thẳng CameraRecorder (nội bộ CameraSkill, đúng ranh giới module), nên cần lối
+    // đi này để biết CHÍNH XÁC khi nào 1 phiên ghi hình tự kết thúc (hết durationSec hoặc bị huỷ)
+    // thay vì tự đoán qua việc người dùng bấm nút — xem KDoc CameraRecorder.RecordingFinished.
+    val recordingFinished: kotlinx.coroutines.flow.SharedFlow<com.aichatvn.agent.tools.camera.CameraRecorder.RecordingFinished>
+        get() = cameraRecorder.recordingFinished
+
+    fun isRecording(cameraId: String): Boolean = cameraRecorder.isRecording(cameraId)
+
     private suspend fun handleListCameras(): PluginResult = withContext(Dispatchers.IO) {
         val cameras = database.cameraDao().getAllCameras()
         if (cameras.isEmpty()) return@withContext PluginResult.Success(mapOf("message" to "Chưa có camera nào"))

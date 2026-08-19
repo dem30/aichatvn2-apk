@@ -11,6 +11,13 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.ReturnCode
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -27,7 +34,33 @@ class CameraRecorder @Inject constructor(
         private const val MAX_DURATION_SEC = 300
     }
 
+    // ✅ MỚI: kết quả sau khi 1 phiên ghi hình kết thúc — phân biệt SAVED (chạy đủ thời lượng,
+    // returnCode SUCCESS) khỏi CANCELLED_AND_SAVED (người dùng chủ động dừng sớm qua
+    // stopRecording(), returnCode CANCEL nhưng vẫn có output dùng được) khỏi FAILED (không có
+    // output hợp lệ — lỗi thật, ví dụ RTSP rớt kết nối giữa chừng). Nơi gọi (ViewModel/CameraSkill)
+    // dùng outcome này để hiển thị đúng thông báo, không cần tự đoán qua containsKey().
+    data class RecordingFinished(
+        val cameraId: String,
+        val outcome: Outcome,
+        val publicPath: String?
+    ) {
+        enum class Outcome { SAVED, CANCELLED_AND_SAVED, FAILED }
+    }
+
     private val activeSessions = ConcurrentHashMap<String, FFmpegSession>()
+
+    // ✅ MỚI: nguồn SỰ THẬT quan sát được cho UI — trước đây CameraLiveViewViewModel tự lật cờ
+    // _isRecording mỗi khi người dùng bấm nút, không biết khi nào FFmpeg tự dừng đúng lúc hết
+    // durationSec (do "-t"). Giờ UI subscribe trực tiếp thay vì đoán.
+    private val _recordingState = MutableStateFlow<Set<String>>(emptySet())
+    val recordingState: StateFlow<Set<String>> = _recordingState.asStateFlow()
+
+    // ✅ MỚI: sự kiện rời rạc mỗi khi 1 phiên ghi hình (của BẤT KỲ camera nào) kết thúc — dùng
+    // SharedFlow (không phải StateFlow) vì đây không có "giá trị hiện tại" có ý nghĩa để replay;
+    // nhiều lần kết thúc liên tiếp của các camera khác nhau đều cần nhận đủ, không bị chỉ giữ lại
+    // giá trị mới nhất như StateFlow.
+    private val _recordingFinished = MutableSharedFlow<RecordingFinished>(extraBufferCapacity = 8)
+    val recordingFinished: SharedFlow<RecordingFinished> = _recordingFinished.asSharedFlow()
 
     fun isRecording(cameraId: String): Boolean = activeSessions.containsKey(cameraId)
 
@@ -58,24 +91,44 @@ class CameraRecorder @Inject constructor(
         val command = "-rtsp_transport tcp -i \"$rtspUrl\" -t $clamped -c copy \"${outputFile.absolutePath}\""
         val session = FFmpegKit.executeAsync(command) { finished ->
             activeSessions.remove(cameraId)
-            // ⚠️ SỬA: trước đây file ghi xong nằm y nguyên ở getExternalFilesDir() (vùng riêng
-            // của app) — KHÔNG hiện trong Gallery/Files/Trình quản lý file, và bị xoá sạch khi gỡ
-            // app. FFmpeg vẫn ghi vào đây trước (path riêng, chắc chắn ghi được, không cần quyền
-            // nào) — CHỈ SAU KHI ghi xong thành công mới chuyển ra thư mục công khai
-            // Movies/AIChatVN/<cameraId>/, để người dùng tìm lại được video bằng ứng dụng bình
-            // thường và video vẫn còn nếu sau này gỡ cài đặt app.
-            if (ReturnCode.isSuccess(finished.returnCode) && outputFile.exists()) {
+            _recordingState.update { it - cameraId }
+
+            // ⚠️ SỬA (mất dữ liệu): trước đây chỉ coi ReturnCode.isSuccess() là "ghi xong", MỌI
+            // trường hợp khác (kể cả FFmpegKit.cancel() do người dùng chủ động bấm Dừng) đều rơi
+            // vào nhánh "thất bại" và outputFile.delete() luôn — nghĩa là bấm Dừng sớm LUÔN MẤT
+            // video, dù dùng "-c copy" remux nên phần đã ghi trước đó hoàn toàn xem được. cancel()
+            // khiến FFmpeg kết thúc với returnCode CANCEL, không phải SUCCESS. Giờ coi CANCEL có
+            // output > 0 byte là "dừng sớm nhưng vẫn lưu được" — chỉ xoá khi thật sự không có gì
+            // dùng được (lỗi thật, ví dụ RTSP rớt kết nối giữa chừng trước khi ghi được byte nào).
+            val hasUsableOutput = outputFile.exists() && outputFile.length() > 0
+            val treatAsUsable = hasUsableOutput &&
+                (ReturnCode.isSuccess(finished.returnCode) || ReturnCode.isCancel(finished.returnCode))
+
+            if (treatAsUsable) {
+                // ⚠️ SỬA: file ghi xong nằm y nguyên ở getExternalFilesDir() (vùng riêng của app)
+                // — KHÔNG hiện trong Gallery/Files, và bị xoá sạch khi gỡ app. FFmpeg vẫn ghi vào
+                // đây trước (path riêng, chắc chắn ghi được, không cần quyền nào) — CHỈ SAU KHI
+                // ghi xong (thành công hoặc dừng sớm có output) mới chuyển ra thư mục công khai
+                // Movies/AIChatVN/<cameraId>/, để người dùng tìm lại được video và video vẫn còn
+                // nếu sau này gỡ cài đặt app.
                 val publicPath = moveRecordingToPublicStorage(outputFile, cameraId)
+                val outcome = if (ReturnCode.isSuccess(finished.returnCode)) {
+                    RecordingFinished.Outcome.SAVED
+                } else {
+                    RecordingFinished.Outcome.CANCELLED_AND_SAVED
+                }
                 logger.i(
                     "CameraRecorder",
-                    "Ghi hình xong cameraId=$cameraId state=${finished.state} rc=${finished.returnCode} → " +
+                    "Ghi hình xong cameraId=$cameraId state=${finished.state} rc=${finished.returnCode} outcome=$outcome → " +
                         (publicPath ?: "LỖI chuyển ra bộ nhớ công khai, file tạm vẫn còn ở ${outputFile.absolutePath}")
                 )
+                _recordingFinished.tryEmit(RecordingFinished(cameraId, outcome, publicPath))
             } else {
-                // Ghi thất bại/bị huỷ giữa chừng — file tạm (nếu có, thường dở dang) không còn
-                // giá trị, xoá luôn để không rác vùng lưu trữ riêng của app theo thời gian.
+                // Ghi thất bại thật/không có output nào — file tạm (nếu có, thường dở dang) không
+                // còn giá trị, xoá luôn để không rác vùng lưu trữ riêng của app theo thời gian.
                 outputFile.delete()
-                logger.i("CameraRecorder", "Ghi hình xong cameraId=$cameraId state=${finished.state} rc=${finished.returnCode} (thất bại/huỷ, đã xoá file tạm)")
+                logger.i("CameraRecorder", "Ghi hình xong cameraId=$cameraId state=${finished.state} rc=${finished.returnCode} (thất bại, đã xoá file tạm)")
+                _recordingFinished.tryEmit(RecordingFinished(cameraId, RecordingFinished.Outcome.FAILED, null))
             }
         }
 
@@ -86,13 +139,19 @@ class CameraRecorder @Inject constructor(
             logger.w("CameraRecorder", "startRecording: cameraId=$cameraId đang ghi dở, bỏ qua yêu cầu mới")
             return null
         }
+        _recordingState.update { it + cameraId }
 
         logger.i("CameraRecorder", "startRecording cameraId=$cameraId → ${outputFile.absolutePath} (${clamped}s)")
         return outputFile.absolutePath
     }
 
     fun stopRecording(cameraId: String): Boolean {
-        val session = activeSessions.remove(cameraId) ?: return false
+        // ✅ SỬA: KHÔNG remove() khỏi activeSessions ở đây nữa — chỉ đọc (get). Việc gỡ khỏi map
+        // là trách nhiệm DUY NHẤT của callback executeAsync ở trên (nguồn sự thật duy nhất), để
+        // isRecording(cameraId) vẫn phản ánh đúng "còn đang ghi/đợi FFmpeg thật sự dừng" ngay
+        // trong khoảng thời gian ngắn giữa lúc gọi cancel() và lúc callback thực sự chạy, thay vì
+        // báo "đã dừng" sớm hơn thực tế.
+        val session = activeSessions[cameraId] ?: return false
         FFmpegKit.cancel(session.sessionId)
         logger.i("CameraRecorder", "stopRecording cameraId=$cameraId (dừng sớm)")
         return true
