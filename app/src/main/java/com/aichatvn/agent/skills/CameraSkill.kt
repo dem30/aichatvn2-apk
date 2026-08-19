@@ -2182,7 +2182,16 @@ PluginAction(
                         period.baselineWindow.removeAt(0)
                     }
                     
-                    if (isSuddenChange && !isSuspicious) {
+                    // ✅ SỬA (theo yêu cầu — chỉ auto-learn từ Groq): trước đây MỌI lần isSuddenChange
+                    // mà không thành isSuspicious đều tự ghi vào mẫu nhiễu, kể cả khi nguồn phán đoán
+                    // "bình thường" đến từ ML Kit (độ chính xác thấp, hay bỏ sót người/vật — xem
+                    // buildMlKitContentAndDecision()) hoặc suy đoán pixel thuần (Groq lỗi/hết quota).
+                    // Học nhầm từ các nguồn kém tin cậy này âm thầm nâng ngưỡng lên, làm hệ thống
+                    // ngày càng khó phát hiện. Giờ chỉ auto-learn khi chính Groq đã phân tích và xác
+                    // nhận "bình thường" (analysisSource == "groq") — đáng tin cậy hơn hẳn. Với ML
+                    // Kit/suy đoán pixel, người dùng phải chủ động bấm "Báo động giả" (markFalsePositiveAndLearn)
+                    // nếu muốn nâng ngưỡng.
+                    if (isSuddenChange && !isSuspicious && analysisSource == "groq") {
                         period.falseDeltas.add(delta)
                         period.falseDiffs.add(currentDiff)
                         period.falseSampleTimestamps.add(now)
