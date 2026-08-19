@@ -2031,17 +2031,16 @@ PluginAction(
                     // trên; forceAi chỉ còn ý nghĩa cho lịch trình (xem giải thích ở shouldCallAi
                     // phía trên). KHÔNG thay thế Groq, KHÔNG đổi điều kiện shouldCallAi/isSmartMode.
                     //
-                    // ✅ SỬA (theo yêu cầu — ML Kit không còn quyết định cảnh báo): trước đây nhánh
-                    // này tự quyết isSuspicious bằng cách so khớp nhãn ML Kit nhận ra với
-                    // aiPositiveKeywords (field "Bình thường"/aiNegativeKeywords dùng làm danh sách
-                    // nhãn tham khảo để người dùng copy sang) — độ chính xác ML Kit quá thấp trong
-                    // thực tế (bỏ sót người/xe, đặc biệt thiếu sáng/góc khuất/xa camera, confidence
-                    // thấp), khiến người dùng gõ đúng từ khoá "người", "xe" mà vẫn không báo động dù
-                    // có biến động thật — thua cả so sánh diff thô. Đồng bộ với nhánh Groq lỗi phía
-                    // trên: gọi hàm dùng chung buildMlKitContentAndDecision(), diff/pHash
-                    // (isSuddenChange) quyết định isSuspicious, ML Kit chỉ còn góp nội dung mô tả
-                    // (nhãn/khuôn mặt/màu chủ đạo) cho aiComment và event log — không còn field
-                    // keyword nào tham gia quyết định ở chế độ AI tắt (thuần ML Kit) nữa.
+                    // ✅ SỬA (theo yêu cầu — pHash quyết định NGAY, ML Kit chỉ "cho vui"): trước đây
+                    // isSuspicious chỉ được gán SAU KHI buildMlKitContentAndDecision() chạy xong (chờ
+                    // ML Kit tối đa 8s bên trong LocalVisionTool), dù giá trị cuối cùng luôn bằng
+                    // isSuddenChange — nghĩa là mọi lượt quét thủ công qua chat đều bị trì hoãn chờ
+                    // ML Kit dù kết quả không phụ thuộc gì vào nó. Giờ gán isSuspicious NGAY LẬP TỨC
+                    // từ pHash, không chờ ML Kit. ML Kit vẫn chạy ngay sau đó để làm giàu aiComment
+                    // (nhãn/khuôn mặt/màu chủ đạo) cho vui/log — nếu ML Kit lỗi/timeout/chậm, không
+                    // ảnh hưởng gì tới isSuspicious đã có sẵn.
+                    isSuspicious = isSuddenChange
+
                     val assist = buildMlKitContentAndDecision(
                         optimizedBytes = optimizedBytes,
                         isSuddenChange = isSuddenChange,
@@ -2049,7 +2048,6 @@ PluginAction(
                     )
                     aiComment = assist.aiComment
                     visionObjects = assist.visionObjects
-                    isSuspicious = assist.isSuspicious
                     finalStateJson = assist.finalStateJson
                     analysisSource = assist.analysisSource
                 }
