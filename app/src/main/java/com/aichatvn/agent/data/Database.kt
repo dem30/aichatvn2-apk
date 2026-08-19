@@ -662,6 +662,16 @@ val MIGRATION_26_27 = object : Migration(26, 27) {
     }
 }
 
+// ✅ MỚI: version 27 → 28 — CameraConfigEntity thêm cột onvifMotionObserved (xem ghi chú tại
+// khai báo field trong Entity.kt / OnvifEventRelay). Nullable, DEFAULT NULL — camera cũ (chưa
+// từng chạy PullPoint đủ mẫu) giữ nguyên hành vi đọc ra null, cùng khuôn ALTER TABLE ADD COLUMN
+// như mọi migration 17→27 trước đó.
+val MIGRATION_27_28 = object : Migration(27, 28) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cameras ADD COLUMN onvifMotionObserved INTEGER DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -695,9 +705,11 @@ val MIGRATION_26_27 = object : Migration(26, 27) {
     // mới) không khớp version đã export, có nguy cơ crash hoặc rơi vào fallbackToDestructiveMigration()
     // (xoá dữ liệu khách hàng thật, xem cảnh báo ngay trên). Bump version + đăng ký migration khớp
     // với MIGRATION_25_26 đã tồn tại từ trước, không đổi nội dung migration.
-    // ✅ MỚI: bump 26 → 27 — MIGRATION_26_27 (CameraConfigEntity thêm 4 cột verify/DDNS cho
+    // Trước đó bump 26 → 27 — MIGRATION_26_27 (CameraConfigEntity thêm 4 cột verify/DDNS cho
     // snapshotUrlRemote, xem ghi chú tại khai báo migration).
-    version = 27,
+    // ✅ MỚI: bump 27 → 28 — MIGRATION_27_28 (CameraConfigEntity thêm cột onvifMotionObserved,
+    // xem ghi chú tại khai báo migration).
+    version = 28,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -735,7 +747,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
