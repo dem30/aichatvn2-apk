@@ -101,8 +101,19 @@ class IncomingCallNotificationHelper @Inject constructor(
                 Intent.FLAG_ACTIVITY_NO_USER_ACTION
             putExtra(com.aichatvn.agent.skills.NotificationSkill.DEEP_LINK_EXTRA, Screen.CALL_ROUTE)
         }
+        // ✅ SỬA: dùng requestCode RIÊNG (notificationId + FULLSCREEN_REQUEST_CODE_OFFSET) thay
+        // vì trùng notificationId với contentPendingIntent ở trên. PendingIntent.getActivity()
+        // coi 2 lệnh gọi là "cùng 1 PendingIntent" khi requestCode giống nhau VÀ
+        // Intent.filterEquals() khớp (chỉ so action/data/component/category — KHÔNG so extras
+        // hay flags). Vì cả 2 Intent ở đây đều trỏ cùng MainActivity, không khác action/data,
+        // filterEquals() luôn trả về true -> nếu dùng chung notificationId, lệnh getActivity()
+        // gọi SAU (fullScreenPendingIntent) sẽ ÂM THẦM GHI ĐÈ extras của PendingIntent đã tạo
+        // TRƯỚC (contentPendingIntent) do FLAG_UPDATE_CURRENT, dù 2 biến Kotlin trông độc lập.
+        // Hiện tại 2 extras đang giống hệt nhau nên chưa lộ triệu chứng, nhưng là bug tiềm ẩn
+        // nếu sau này 1 trong 2 mang thêm dữ liệu khác — tách hẳn requestCode để mỗi cái là 1
+        // PendingIntent slot riêng, không phụ thuộc nội dung extras có trùng hay không.
         val fullScreenPendingIntent = PendingIntent.getActivity(
-            context, notificationId, fullScreenIntent,
+            context, notificationId + FULLSCREEN_REQUEST_CODE_OFFSET, fullScreenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -188,5 +199,13 @@ class IncomingCallNotificationHelper @Inject constructor(
         // — nhất quán trong codebase, và đủ để CallActionReceiver tính lại ĐÚNG notificationId
         // từ callId nhận được trong Intent, không cần truyền thêm field nào khác.
         fun notificationIdForCall(callId: String): Int = callId.hashCode()
+
+        // ✅ MỚI: offset cộng vào notificationId để tính requestCode riêng cho
+        // fullScreenPendingIntent, tách khỏi contentPendingIntent (xem giải thích ở
+        // showIncomingCallNotification()). Giá trị lớn, lẻ, không liên quan gì tới công thức
+        // notificationId*2 (+0/+1) của actionBroadcast() — 2 hàm getActivity()/getBroadcast()
+        // vốn đã nằm trong 2 "không gian" PendingIntent tách biệt (khác component đích), nên
+        // chỉ cần đảm bảo không tự đụng nhau NGAY TRONG PHẠM VI 2 lệnh getActivity() ở đây.
+        private const val FULLSCREEN_REQUEST_CODE_OFFSET = 987_654_321
     }
 }
