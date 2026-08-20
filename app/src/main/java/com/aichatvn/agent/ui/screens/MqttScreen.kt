@@ -751,7 +751,7 @@ fun MqttDeviceCard(
 fun EmptyMqttState(
     brokerConfigured: Boolean,
     onScan: () -> Unit,
-    onAddDevice: () -> Unit,
+    onManualSetup: () -> Unit,
     onConfigureBroker: () -> Unit,
     // ✅ MỚI: "Quét nhanh" chỉ thấy thiết bị ĐÃ trỏ đúng broker — Tasmota mới mua cần đường
     // riêng (quét LAN qua HTTP, không qua MQTT) để tìm ra rồi tự trỏ broker giúp người dùng,
@@ -759,8 +759,13 @@ fun EmptyMqttState(
     onScanLan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // ✅ SỬA (fix nút cuối bị che): trước đây 4 nút xếp trong 1 Column không cuộn được — khi
+    // tổng chiều cao vượt màn hình, nút cuối ("Thiết lập thủ công") bị cắt/che, đặc biệt khi
+    // FAB nổi đè lên. Bọc verticalScroll + đệm đáy để luôn kéo tới được nút cuối.
     Column(
-        modifier = modifier,
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -778,8 +783,9 @@ fun EmptyMqttState(
             // fallback — xem MqttDeviceController.discoverDevices(). Không nhận diện được gì thì
             // dùng "Thiết lập nhanh" nhập tay, không mất phương án cũ.
             text = if (brokerConfigured)
-                "Nhấn \"Quét nhanh\" để tự phát hiện thiết bị đang publish, hoặc \"Thiết lập " +
-                    "nhanh\" nếu thiết bị của bạn không tự gửi dữ liệu"
+                "Nhấn \"Quét nhanh\" để tự phát hiện thiết bị đang publish, \"Quét LAN Tasmota " +
+                    "mới\" cho thiết bị Tasmota chưa cấu hình broker, hoặc \"Thiết lập thủ công\" " +
+                    "nếu thiết bị của bạn không tự gửi dữ liệu"
             else
                 "Cấu hình broker trước, sau đó quét nhanh hoặc thiết lập nhanh theo tên + topic",
             style = MaterialTheme.typography.bodyMedium,
@@ -816,11 +822,13 @@ fun EmptyMqttState(
                 modifier = Modifier.padding(top = 4.dp, start = 32.dp, end = 32.dp)
             )
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onAddDevice) {
+            TextButton(onClick = onManualSetup) {
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("Thiết lập nhanh")
+                Text("Thiết lập thủ công")
             }
+            // ✅ MỚI: đệm đáy để nút cuối không dính sát mép màn hình khi cuộn tới cùng.
+            Spacer(Modifier.height(24.dp))
         }
     }
 }

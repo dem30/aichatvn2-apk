@@ -779,6 +779,14 @@ fun TuyaScreen(
                         ) {
                             Icon(Icons.Default.Search, contentDescription = "Quét nhanh")
                         }
+                        // ✅ MỚI: bù lại lối vào "Thiết lập thủ công" sau khi bỏ FAB "Thêm thiết
+                        // bị" của tab MQTT (FAB trùng lặp với nút trong EmptyMqttState và từng
+                        // che mất nút cuối). Không có nút này thì khi mqttDevices đã có ít nhất
+                        // 1 thiết bị (không còn ở EmptyMqttState nữa), người dùng mất hẳn cách
+                        // thêm thiết bị MQTT thủ công tiếp theo.
+                        IconButton(onClick = { showAddMqttDialog = true }) {
+                            Icon(Icons.Default.Add, contentDescription = "Thêm thủ công")
+                        }
                         IconButton(onClick = { showBrokerConfigDialog = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Cấu hình Broker MQTT")
                         }
@@ -791,21 +799,17 @@ fun TuyaScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
+            // ✅ SỬA (fix nút cuối EmptyMqttState bị che): tab MQTT trước đây có 1 FAB nổi
+            // "Thêm thiết bị" cố định ở góc màn hình bất kể EmptyMqttState/danh sách có nút
+            // riêng hay không — đây chính là thứ đè lên nút cuối cùng ("Thiết lập thủ công")
+            // trong ảnh chụp gốc. Bỏ FAB này cho tab MQTT (trùng chức năng với nút trong
+            // EmptyMqttState và icon "Thêm thủ công" mới thêm trên TopAppBar); chỉ giữ FAB
+            // cho tab Tuya, nơi không có vấn đề tương tự.
             if (selectedTab == 0) {
                 ExtendedFloatingActionButton(
                     onClick = { viewModel.scanDevices() },
                     icon = { Icon(Icons.Default.Search, contentDescription = null) },
                     text = { Text("Quét thiết bị") },
-                    containerColor = MaterialTheme.colorScheme.primary
-                )
-            } else {
-                // ✅ MỚI (Giai đoạn 2): MQTT không "quét" được (không có Cloud login để liệt
-                // kê) — người dùng tự nhập tên + topic đã publish sẵn từ phía thiết bị/gateway
-                // MQTT của họ, xem AddMqttDeviceDialog.
-                ExtendedFloatingActionButton(
-                    onClick = { showAddMqttDialog = true },
-                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                    text = { Text("Thêm thiết bị") },
                     containerColor = MaterialTheme.colorScheme.primary
                 )
             }
@@ -878,7 +882,7 @@ fun TuyaScreen(
                     EmptyMqttState(
                         brokerConfigured = mqttBrokerUrl.isNotBlank(),
                         onScan = { showScanDialog = true },
-                        onAddDevice = { showAddMqttDialog = true },
+                        onManualSetup = { showAddMqttDialog = true },
                         onConfigureBroker = { showBrokerConfigDialog = true },
                         onScanLan = { showLanScanDialog = true },
                         modifier = Modifier.fillMaxSize()
