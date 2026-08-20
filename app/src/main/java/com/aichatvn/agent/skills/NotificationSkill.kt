@@ -99,7 +99,18 @@ class NotificationSkill @Inject constructor(
         // intent nên bấm vào chỉ mở app về màn mặc định, mất hết ngữ cảnh "đây là cảnh báo của
         // camera nào". Cần MainActivity đọc extra DEEP_LINK_EXTRA này rồi gọi navController
         // tương ứng (phần đó cần xem MainActivity.kt để nối nốt).
-        deepLinkRoute: String? = null
+        deepLinkRoute: String? = null,
+        // ✅ MỚI: Khi nhiều notification liên tiếp cùng 1 nguồn (vd cùng 1 camera) được gửi dồn
+        // dập (do bỏ gộp event ở CameraSkill + tăng độ nhạy pHash), Android sẽ TỰ ĐỘNG gộp
+        // (bundle) chúng lại trên thanh thông báo — nhưng nhóm tự động đó KHÔNG có contentIntent
+        // riêng, nên bấm vào chỉ mở rộng danh sách chứ KHÔNG điều hướng đi đâu cả (đây chính là
+        // nguyên nhân "bấm mở ra một đống, không vào đúng màn"). Truyền groupKey (vd
+        // "camera_alerts_$cameraId") để tự quản lý group tường minh: mỗi notification lẻ vẫn
+        // setGroup(groupKey), đồng thời tự tạo/refresh 1 summary notification riêng (ID ổn định
+        // theo groupKey) có setGroupSummary(true) + CÙNG deepLinkRoute — nên dù người dùng bấm
+        // vào notification lẻ hay bấm vào cái "chồng" summary khi bị gộp, đều điều hướng đúng.
+        // Không truyền -> giữ hành vi cũ (không group tường minh).
+        groupKey: String? = null
     ): Int = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (notificationManager.getNotificationChannel(channelId) == null) {
@@ -109,23 +120,9 @@ class NotificationSkill @Inject constructor(
 
         val id = notificationId ?: notificationCounter.getAndIncrement()
 
-        val launchIntent = context.packageManager
-            .getLaunchIntentForPackage(context.packageName)
-            ?.apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                if (deepLinkRoute != null) {
-                    putExtra(DEEP_LINK_EXTRA, deepLinkRoute)
-                }
-            }
+        val pendingIntent = buildContentPendingIntent(id, deepLinkRoute)
 
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            id,
-            launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(context, channelId)
+        val notificationBuilder = NotificationCompat.Builder(context, channelId)
             // ✅ SỬA: icon silhouette riêng của app (đơn sắc, bắt buộc theo quy định Android
             // từ 5.0 trở đi — không thể hiện logo màu ở đây dù set gì khác đi nữa) — thay
             // cho ic_notification cũ (nhìn giống chuông mặc định).
@@ -143,11 +140,73 @@ class NotificationSkill @Inject constructor(
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setContentIntent(pendingIntent)
+
+        if (groupKey != null) {
+            notificationBuilder.setGroup(groupKey)
+        }
+
+        notificationManager.notify(id, notificationBuilder.build())
+        logger.i("NotificationSkill", "📢 NOTIFICATION POSTED | ID=$id | Title: $title | group=$groupKey")
+
+        if (groupKey != null) {
+            postGroupSummary(groupKey, channelId, title, message, deepLinkRoute)
+        }
+
+        id
+    }
+
+    // ✅ MỚI: notification "cha" đại diện cho cả nhóm — bắt buộc phải có để bấm vào phần bị OS
+    // gộp lại (summary) cũng điều hướng đúng, thay vì chỉ mở rộng danh sách ra xem. ID tính ổn
+    // định từ groupKey nên các lần gọi sau chỉ REFRESH (nội dung mới nhất) chứ không đẻ thêm
+    // summary khác.
+    private fun postGroupSummary(
+        groupKey: String,
+        channelId: String,
+        latestTitle: String,
+        latestMessage: String,
+        deepLinkRoute: String?
+    ) {
+        val summaryId = groupSummaryIdFor(groupKey)
+        val summaryPendingIntent = buildContentPendingIntent(summaryId, deepLinkRoute)
+
+        val summary = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_notification_small)
+            .setContentTitle(latestTitle)
+            .setContentText(latestMessage)
+            .setStyle(
+                NotificationCompat.InboxStyle()
+                    .setSummaryText("Chạm để xem toàn bộ cảnh báo")
+            )
+            .setGroup(groupKey)
+            .setGroupSummary(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(summaryPendingIntent)
             .build()
 
-        notificationManager.notify(id, notification)
-        logger.i("NotificationSkill", "📢 NOTIFICATION POSTED | ID=$id | Title: $title")
-        id
+        notificationManager.notify(summaryId, summary)
+    }
+
+    // ✅ SỬA: target THẲNG vào MainActivity::class.java (thay vì
+    // packageManager.getLaunchIntentForPackage() trước đây) để không phụ thuộc việc hệ thống tự
+    // tra activity LAUNCHER trong manifest, đồng thời dùng FLAG_ACTIVITY_SINGLE_TOP (giống pattern
+    // đã chứng minh hoạt động ở CameraSkill.openLiveView()) thay cho FLAG_ACTIVITY_CLEAR_TOP —
+    // đảm bảo khi app đang mở sẵn thì đi thẳng vào onNewIntent() của instance hiện có, khi app đã
+    // bị kill thì cold-start với đúng extra để MainActivity.onCreate() đọc được.
+    private fun buildContentPendingIntent(requestCode: Int, deepLinkRoute: String?): PendingIntent {
+        val launchIntent = Intent(context, com.aichatvn.agent.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (deepLinkRoute != null) {
+                putExtra(DEEP_LINK_EXTRA, deepLinkRoute)
+            }
+        }
+        return PendingIntent.getActivity(
+            context,
+            requestCode,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
     }
 
     // ✅ MỚI: Huỷ notification hệ thống ứng với 1 alert cụ thể — gọi khi AlertHistoryViewModel
@@ -184,5 +243,11 @@ class NotificationSkill @Inject constructor(
         // alert, mà không cần lưu thêm cột nào trong DB. Notification ID của Android là Int nên
         // dùng hashCode() của UUID string.
         fun notificationIdForAlert(alertId: String): Int = alertId.hashCode()
+
+        // ✅ MỚI: ID ổn định cho summary notification của 1 group, tính từ groupKey — đảm bảo
+        // nhiều lần gọi sendNotification() liên tiếp cùng groupKey chỉ REFRESH một summary duy
+        // nhất (không đẻ thêm), và không trùng với notificationIdForAlert() (thêm hậu tố cố định
+        // trước khi hash để tách không gian ID).
+        fun groupSummaryIdFor(groupKey: String): Int = "summary_$groupKey".hashCode()
     }
 }

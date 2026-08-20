@@ -706,7 +706,13 @@ override suspend fun sendDefaultCameraAlerts(
                 title = "Cảnh Báo Camera ${camera.customername}",
                 message = aiComment.take(100),
                 notificationId = NotificationSkill.notificationIdForAlert(activeAlertId),
-                deepLinkRoute = "alert_history?cameraId=${camera.id.trim()}"
+                deepLinkRoute = "alert_history?cameraId=${camera.id.trim()}",
+                // ✅ MỚI: group theo TỪNG camera (không group chung toàn app) — camera nào bắn
+                // nhiều alert dồn dập chỉ gộp/refresh 1 summary của riêng camera đó, và summary
+                // này trỏ đúng "alert_history?cameraId=..." của đúng camera, nên dù bấm vào
+                // notification lẻ hay bấm vào "chồng" khi bị gộp đều vào đúng màn lịch sử cảnh
+                // báo đã lọc theo camera đó — không mất context.
+                groupKey = "camera_alerts_${camera.id.trim()}"
             )
         } catch (e: Exception) {
             logger.e("HouseManager", "Gửi thông báo đẩy mặc định thất bại: ${e.message}")
