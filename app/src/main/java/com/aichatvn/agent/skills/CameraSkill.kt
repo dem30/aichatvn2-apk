@@ -301,6 +301,11 @@ PluginAction(
         // timestamp tương ứng 1-1 với falseDeltas/falseDiffs theo index, để "hết hạn" các mẫu
         // nhiễu cũ sau một thời gian ổn định, thay vì ngưỡng chỉ tăng mãi mãi.
         val falseSampleTimestamps: MutableList<Long> = mutableListOf(),
+        // ✅ MỚI (bugfix): true nếu mẫu này do người dùng bấm "Báo động giả" xác nhận thủ công,
+        // false nếu do đường tự động (Groq nói "bình thường" cho báo động thật) nạp vào — dùng để
+        // quyết định trần ngưỡng (MANUAL_MAX_* vs AUTO_MAX_*) trong recomputeThresholdsFromSamples().
+        // Luôn cùng độ dài và cùng thao tác thêm/xoá với falseDeltas/falseDiffs/falseSampleTimestamps.
+        val falseSampleIsManual: MutableList<Boolean> = mutableListOf(),
         val baselineWindow: MutableList<Int> = mutableListOf(),
         var deltaTrigger: Int = DEFAULT_DELTA_TRIGGER,
         var absDiffTrigger: Int = DEFAULT_ABS_DIFF_TRIGGER,
@@ -477,6 +482,23 @@ PluginAction(
         // gian này. Quá hạn mà không có mẫu mới nào bổ sung/xác nhận lại thì bị loại khỏi tập học,
         // giúp ngưỡng tự hạ dần khi camera đã ổn định trở lại (ví dụ sau đợt chuyển sáng/tối).
         const val FALSE_SAMPLE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+
+        // ✅ MỚI (bugfix): trần ĐẦY ĐỦ — chỉ đạt được khi trong cửa sổ 30 mẫu gần nhất có ÍT NHẤT
+        // 1 mẫu do NGƯỜI DÙNG xác nhận thủ công (bấm "Báo động giả"). Nếu cửa sổ chỉ toàn mẫu tự
+        // động (Groq nói "bình thường" cho báo động thật), ngưỡng bị giới hạn ở trần THẤP HƠN
+        // (AUTO_MAX_*) — tránh vòng lặp tự củng cố một chiều (mỗi lần trigger thật → mẫu mới luôn
+        // ≥ ngưỡng cũ → ngưỡng luôn tăng → không có cơ chế nào tự động kéo xuống → leo thẳng lên
+        // trần dù chưa chắc là nhiễu nền thật sự ổn định).
+        const val MANUAL_MAX_DELTA_TRIGGER = 10
+        const val MANUAL_MAX_ABS_DIFF_TRIGGER = 14
+        const val AUTO_MAX_DELTA_TRIGGER = 6
+        const val AUTO_MAX_ABS_DIFF_TRIGGER = 9
+
+        // ✅ MỚI (bugfix): mẫu tự động (Groq nói "bình thường") chỉ được nạp vào tập học nhiễu nếu
+        // drift (|currentDiff - baselineDiff|) không vượt quá mức này — biến động "vọt" xa hơn baseline
+        // nhiều khả năng là 1 sự kiện ngoại lệ (ánh sáng chớp, xe/người đi ngang thoáng qua...), không
+        // phải nhiễu nền ổn định, nên không nên dùng để nâng ngưỡng lâu dài.
+        const val AUTO_LEARN_MAX_DRIFT = DRIFT_TRIGGER * 2
     }
 
     private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
@@ -1100,6 +1122,7 @@ PluginAction(
                 period.falseSampleTimestamps.removeAt(i)
                 if (i < period.falseDeltas.size) period.falseDeltas.removeAt(i)
                 if (i < period.falseDiffs.size) period.falseDiffs.removeAt(i)
+                if (i < period.falseSampleIsManual.size) period.falseSampleIsManual.removeAt(i)
                 removedAny = true
             } else {
                 i++
@@ -1113,6 +1136,10 @@ PluginAction(
      * các mẫu nhiễu HIỆN CÒN HẠN của khung giờ đó.
      * - Nếu không còn mẫu nào (đã hết hạn hết) -> hạ thẳng về mặc định (DEFAULT_*).
      * - Nếu còn mẫu -> áp dụng lại đúng công thức percentile-90% + margin như cũ.
+     * - ✅ SỬA (bugfix): trần áp dụng phụ thuộc cửa sổ 30 mẫu gần nhất có mẫu THỦ CÔNG hay không —
+     *   có ít nhất 1 mẫu do người dùng xác nhận -> trần đầy đủ (MANUAL_MAX_*); toàn mẫu tự động
+     *   (Groq) -> trần thấp hơn (AUTO_MAX_*), tránh vòng lặp tự tăng một chiều leo thẳng lên trần
+     *   cao nhất mà chưa từng có người xác nhận đó thực sự là nhiễu nền ổn định.
      * Trả về true nếu deltaTrigger hoặc absDiffTrigger thay đổi.
      */
     private fun recomputeThresholdsFromSamples(period: PeriodLearningState): Boolean {
@@ -1123,13 +1150,18 @@ PluginAction(
             period.deltaTrigger = DEFAULT_DELTA_TRIGGER
             period.absDiffTrigger = DEFAULT_ABS_DIFF_TRIGGER
         } else {
+            val windowStart = (period.falseSampleIsManual.size - 30).coerceAtLeast(0)
+            val hasManualInWindow = period.falseSampleIsManual.subList(windowStart, period.falseSampleIsManual.size).any { it }
+            val deltaCeiling = if (hasManualInWindow) MANUAL_MAX_DELTA_TRIGGER else AUTO_MAX_DELTA_TRIGGER
+            val diffCeiling = if (hasManualInWindow) MANUAL_MAX_ABS_DIFF_TRIGGER else AUTO_MAX_ABS_DIFF_TRIGGER
+
             val recentDeltas = period.falseDeltas.takeLast(30).sorted()
             val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, 10)
+            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, deltaCeiling)
 
             val recentDiffs = period.falseDiffs.takeLast(30).sorted()
             val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, 14)
+            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, diffCeiling)
         }
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
@@ -1165,6 +1197,7 @@ PluginAction(
         put("falseDeltas", JSONArray(period.falseDeltas))
         put("falseDiffs", JSONArray(period.falseDiffs))
         put("falseSampleTimestamps", JSONArray(period.falseSampleTimestamps))
+        put("falseSampleIsManual", JSONArray(period.falseSampleIsManual))
     }
 
     private fun periodFromJson(json: JSONObject?): PeriodLearningState {
@@ -1188,10 +1221,23 @@ PluginAction(
             repeat(falseDeltas.size) { timestamps.add(now) }
         }
 
+        // ✅ MỚI (bugfix): dữ liệu cũ (trước bản vá trần thủ công/tự động) không có trường này —
+        // mặc định TRUE cho toàn bộ mẫu cũ, coi như đã được "tin cậy đầy đủ" như trước khi có bản
+        // vá, tránh việc nâng cấp app tự dưng ép ngưỡng đang có của khách hàng xuống trần AUTO_MAX
+        // thấp hơn chỉ vì thiếu thông tin nguồn gốc mẫu.
+        val isManual = mutableListOf<Boolean>()
+        val isManualArr = json.optJSONArray("falseSampleIsManual")
+        if (isManualArr != null && isManualArr.length() == falseDeltas.size) {
+            for (i in 0 until isManualArr.length()) isManual.add(isManualArr.getBoolean(i))
+        } else {
+            repeat(falseDeltas.size) { isManual.add(true) }
+        }
+
         return PeriodLearningState(
             falseDeltas = falseDeltas,
             falseDiffs = falseDiffs,
             falseSampleTimestamps = timestamps,
+            falseSampleIsManual = isManual,
             deltaTrigger = json.optInt("deltaTrigger", DEFAULT_DELTA_TRIGGER),
             absDiffTrigger = json.optInt("absDiffTrigger", DEFAULT_ABS_DIFF_TRIGGER)
         )
@@ -1268,14 +1314,31 @@ PluginAction(
             // "cõng" mãi những cú sốc sáng/tối từ nhiều ngày trước.
             pruneExpiredFalseSamples(period, now)
 
-            // Nạp mẫu học phản hồi từ người dùng
+            val periodLabel = if (isNight) "BAN ĐÊM" else "BAN NGÀY"
+
+            // ✅ SỬA (bugfix): nếu alert này đã cũ hơn cửa sổ decay (FALSE_SAMPLE_MAX_AGE_MS) tính
+            // từ CHÍNH thời điểm nó xảy ra (alertTimestamp), không nạp vào tập học nữa — báo giả
+            // cho 1 sự kiện đã hết hạn không nên ảnh hưởng ngưỡng nhiễu hiện tại của camera. Trước
+            // đây timestamp lưu là `now` (lúc bấm nút) thay vì alertTimestamp, khiến 1 alert từ rất
+            // lâu vẫn được coi là mẫu "mới nhất trong 24h" và kéo ngưỡng theo giá trị thấp của nó.
+            val ageMs = now - alertTimestamp
+            if (ageMs > FALSE_SAMPLE_MAX_AGE_MS) {
+                return@withLock "⚠️ Cảnh báo này đã quá cũ (>${FALSE_SAMPLE_MAX_AGE_MS / (60 * 60 * 1000L)} giờ) — " +
+                    "không dùng để học ngưỡng nhiễu $periodLabel nữa. Ngưỡng hiện tại giữ nguyên: " +
+                    "diff=${period.absDiffTrigger}, delta=${period.deltaTrigger}."
+            }
+
+            // Nạp mẫu học phản hồi từ người dùng — dùng alertTimestamp (không phải `now`) để mẫu
+            // được "tính tuổi" đúng theo thời điểm alert thật xảy ra ở những lần prune sau này.
             period.falseDeltas.add(delta)
             period.falseDiffs.add(diff)
-            period.falseSampleTimestamps.add(now)
+            period.falseSampleTimestamps.add(alertTimestamp)
+            period.falseSampleIsManual.add(true)
             if (period.falseDeltas.size > 100) {
                 period.falseDeltas.removeAt(0)
                 period.falseDiffs.removeAt(0)
                 period.falseSampleTimestamps.removeAt(0)
+                period.falseSampleIsManual.removeAt(0)
             }
 
             val oldDelta = period.deltaTrigger
@@ -1284,16 +1347,16 @@ PluginAction(
             // Tự động điều chỉnh nâng ngưỡng (dùng chung công thức percentile với decay)
             recomputeThresholdsFromSamples(period)
 
-            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả
+            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả — trần dùng MANUAL_MAX_ABS_DIFF_TRIGGER
+            // (thay vì số ma thuật 35 cũ) để nhất quán với trần "đã có xác nhận thủ công" ở trên.
             if (period.absDiffTrigger <= diff) {
-                period.absDiffTrigger = (diff + 2).coerceAtMost(35)
+                period.absDiffTrigger = (diff + 2).coerceAtMost(MANUAL_MAX_ABS_DIFF_TRIGGER)
             }
 
             // Lưu ngay vào SQLite
             saveLearningStateToDb(tid, state)
             updateDiagnostics()
 
-            val periodLabel = if (isNight) "BAN ĐÊM" else "BAN NGÀY"
             "✅ Đã ghi nhận báo động giả ($periodLabel) cho Camera \"${cam.customername}\". " +
             "Ngưỡng diff nâng từ $oldDiff ➔ ${period.absDiffTrigger}, " +
             "ngưỡng delta nâng từ $oldDelta ➔ ${period.deltaTrigger} (Số mẫu học: ${period.falseDeltas.size})."
@@ -1845,8 +1908,17 @@ PluginAction(
                 if (state.lastPhash.isNotEmpty()) {
                     currentDiff = imageHashTool.calculateHammingDistance(state.lastPhash, currentPhash)
                 }
+
+                // ✅ SỬA (bugfix): chốt lastPhash NGAY sau khi tính ra, TRƯỚC mọi lệnh
+                // saveLearningStateToDb() phía dưới trong hàm này — tránh lưu nhầm phash CŨ (của
+                // lần quét trước) xuống SQLite khi tiến trình bị Android kill giữa các lần quét 5
+                // phút. lastDiff KHÔNG được gán ở đây — delta bên dưới cần so với lastDiff CŨ
+                // (giá trị trước lượt quét này); lastDiff mới chỉ được chốt ngay sau khi tính delta
+                // (xem dòng dưới), vẫn trước mọi lệnh lưu DB nên không còn bị lưu lệch nhịp.
+                state.lastPhash = currentPhash
                 
                 val delta = kotlin.math.abs(currentDiff - state.lastDiff)
+                state.lastDiff = currentDiff
                 val deltaTrigger = period.deltaTrigger
                 val absDiffTrigger = period.absDiffTrigger
                 val driftTrigger = DRIFT_TRIGGER
@@ -1868,17 +1940,27 @@ PluginAction(
                 
                 val shouldReset = checkPendingReset(tid, currentDiff, absDiffTrigger)
                 if (shouldReset) {
-                    val resetState = CameraLearningState(
-                        lastPhash = currentPhash,
-                        lastDiff = currentDiff
-                    )
-                    learningStates[tid] = resetState
-                    saveLearningStateToDb(tid, resetState)
+                    // ✅ SỬA (bugfix): trước đây thay hẳn CameraLearningState() mới tinh — xoá sạch
+                    // deltaTrigger/absDiffTrigger/falseDeltas/falseDiffs đã học của CẢ 2 khung
+                    // ngày/đêm (kể cả khung không liên quan tới cảnh vừa đổi), cũng như
+                    // realEvents/cooldownUntil/lastNormalScanAt. "Pending reset" đúng ra chỉ có
+                    // nghĩa "cảnh nền đã đổi ổn định, cần điểm tham chiếu (baseline) mới" — KHÔNG
+                    // liên quan gì tới "độ dung sai nhiễu" (deltaTrigger/absDiffTrigger) đã học
+                    // được, càng không nên xoá luôn mẫu học tự động vừa nạp từ nhận định Groq
+                    // "bình thường" cho báo động thật (đây chính là nguyên nhân khiến ngưỡng học
+                    // khi bật AI trông như "không bao giờ tăng" — vừa tăng xong đã bị xoá sạch sau
+                    // đúng 1 giờ). Giờ chỉ reset lastPhash/lastDiff (điểm so sánh phash) và
+                    // baselineWindow của ĐÚNG period hiện tại (day/night đang xét) — giữ nguyên mọi
+                    // ngưỡng/mẫu học đã tích luỹ.
+                    state.lastPhash = currentPhash
+                    state.lastDiff = currentDiff
+                    period.baselineWindow.clear()
+                    saveLearningStateToDb(tid, state)
                     return@withLock mapOf(
                         "cameraId" to tid,
                         "success" to true,
                         "hasChange" to false,
-                        "message" to "Learning reset due to stable scene change"
+                        "message" to "Learning baseline reset due to stable scene change (giữ nguyên ngưỡng đã học)"
                     )
                 }
 
@@ -2189,28 +2271,39 @@ PluginAction(
                     // nhận "bình thường" (analysisSource == "groq") — đáng tin cậy hơn hẳn. Với ML
                     // Kit/suy đoán pixel, người dùng phải chủ động bấm "Báo động giả" (markFalsePositiveAndLearn)
                     // nếu muốn nâng ngưỡng.
-                    if (isSuddenChange && !isSuspicious && analysisSource == "groq") {
+                    // ✅ SỬA (bugfix): thêm điều kiện drift <= AUTO_LEARN_MAX_DRIFT — chỉ auto-learn
+                    // khi biến động không phải là 1 cú "vọt" bất thường so với baseline hiện tại (vd
+                    // ánh sáng chớp, xe/người đi ngang thoáng qua). Biến động vọt xa baseline nhiều
+                    // khả năng là ngoại lệ, không phải nhiễu nền ổn định — nạp nó vào tập học sẽ đẩy
+                    // ngưỡng lên sai. Mẫu tự động cũng được đánh dấu isManual=false để
+                    // recomputeThresholdsFromSamples() áp đúng trần thấp hơn (AUTO_MAX_*) khi cửa sổ
+                    // 30 mẫu gần nhất chưa có xác nhận thủ công nào.
+                    if (isSuddenChange && !isSuspicious && analysisSource == "groq" && drift <= AUTO_LEARN_MAX_DRIFT) {
                         period.falseDeltas.add(delta)
                         period.falseDiffs.add(currentDiff)
                         period.falseSampleTimestamps.add(now)
+                        period.falseSampleIsManual.add(false)
                         if (period.falseDeltas.size > 100) {
                             period.falseDeltas.removeAt(0)
                             period.falseDiffs.removeAt(0)
                             period.falseSampleTimestamps.removeAt(0)
+                            period.falseSampleIsManual.removeAt(0)
                         }
                     }
 
-                    val expired = pruneExpiredFalseSamples(period, now)
-                    val changed = recomputeThresholdsFromSamples(period)
-
-                    // TỐI ƯU I/O: Chỉ ghi SQLite khi ngưỡng thực sự thay đổi (bao gồm cả do decay)!
-                    if (changed || expired) {
-                        saveLearningStateToDb(tid, state)
-                    }
+                    pruneExpiredFalseSamples(period, now)
+                    recomputeThresholdsFromSamples(period)
                 }
-                
-                state.lastPhash = currentPhash
-                state.lastDiff = currentDiff
+
+                // ✅ SỬA (bugfix): LUÔN lưu state xuống DB sau MỖI lượt quét — kể cả nhánh alert
+                // (isSuspicious=true), nơi trước đây saveLearningStateToDb() không hề được gọi vì
+                // nằm trong nhánh `if (!shouldCallAi || !isSuspicious)`, nên lastPhash mới chỉ tồn
+                // tại trong RAM, mất trắng nếu tiến trình bị kill trước lần quét sau. Cũng bỏ điều
+                // kiện "chỉ lưu khi ngưỡng thay đổi" (changed || expired) vì lastPhash/lastDiff —
+                // vốn không phụ thuộc ngưỡng — cần được persist mỗi lần để lần quét kế tiếp (kể cả
+                // sau khi process restart) so sánh đúng với ảnh gần nhất, không phải ảnh cũ nhiều
+                // vòng quét trước.
+                saveLearningStateToDb(tid, state)
                 
                 if (camera.isOnline != 1) {
                     withContext(Dispatchers.IO) {
