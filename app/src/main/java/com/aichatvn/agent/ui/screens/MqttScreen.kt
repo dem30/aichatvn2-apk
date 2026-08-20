@@ -110,6 +110,12 @@ class MqttViewModel @Inject constructor(
     // ✅ MỚI (MQTT Symmetric Broker, PATCH C.3): bầu lại vai trò broker mỗi khi người dùng mở
     // tab MQTT — Camera Node có thể vừa online/offline từ lần election cuối (app start/foreground).
     private val electionManager: com.aichatvn.agent.devices.mqtt.MqttBrokerElectionManager,
+    // ✅ MỚI (auto-adopt Tasmota mới mua qua LAN): "Quét nhanh" cũ (discoverDevices() ở trên)
+    // CHỈ nghe được thiết bị ĐÃ publish đúng lên broker app đang dùng — Tasmota mới mua/thiết
+    // bị cũ đang trỏ broker mặc định của hãng sẽ KHÔNG xuất hiện qua đường đó. LAN discovery
+    // (quét HTTP subnet, không qua MQTT) là đường DUY NHẤT tìm ra được nhóm này — xem
+    // TasmotaLanDiscovery.discoverAdoptableDevices().
+    private val tasmotaLanDiscovery: com.aichatvn.agent.devices.mqtt.TasmotaLanDiscovery,
     private val logger: Logger
 ) : ViewModel() {
 
@@ -168,6 +174,18 @@ class MqttViewModel @Inject constructor(
     // Discovery. Tách biệt với `discoveredTopics` cũ (topic thô, vẫn giữ nguyên làm fallback).
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredMqttDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredMqttDevice>> = _discoveredDevices.asStateFlow()
+
+    // ✅ MỚI (auto-adopt Tasmota qua LAN): kết quả 1 lần quét LAN riêng — thiết bị Tasmota tìm
+    // thấy trên subnet nhưng CHƯA có trong DB, đã được TasmotaLanDiscovery push MqttHost trỏ về
+    // đúng broker app đang dùng, CHỜ người dùng xác nhận từng cái (KHÔNG tự lưu — cùng nguyên
+    // tắc "xác nhận trước khi lưu" như _discoveredDevices ở trên).
+    private val _lanAdoptableDevices =
+        MutableStateFlow<List<com.aichatvn.agent.devices.mqtt.TasmotaLanDiscovery.AdoptableTasmotaDevice>>(emptyList())
+    val lanAdoptableDevices: StateFlow<List<com.aichatvn.agent.devices.mqtt.TasmotaLanDiscovery.AdoptableTasmotaDevice>> =
+        _lanAdoptableDevices.asStateFlow()
+
+    private val _isLanScanning = MutableStateFlow(false)
+    val isLanScanning: StateFlow<Boolean> = _isLanScanning.asStateFlow()
 
     init {
         loadDevices()
@@ -405,6 +423,74 @@ class MqttViewModel @Inject constructor(
             // Subscribe stateTopic của thiết bị vừa thêm NGAY, không chờ tới lần reconnect kế
             // tiếp — xem docstring refreshDeviceSubscriptions() trong MqttDeviceController.
             (mqttController() as? MqttDeviceController)?.refreshDeviceSubscriptions()
+        }
+    }
+
+    /**
+     * scanLanForAdoptableDevices ("Quét LAN Tasmota" — bổ sung cho "Quét nhanh" cũ)
+     *
+     * ✅ MỚI: "Quét nhanh" (discoverDevices() ở trên) chỉ nghe được thiết bị ĐÃ publish đúng lên
+     * broker app đang dùng. Tasmota mới mua/thiết bị cũ vẫn đang trỏ broker mặc định của hãng
+     * sẽ KHÔNG bao giờ xuất hiện qua đường đó — im lặng, không phải lỗi. Hàm này quét subnet
+     * qua HTTP (không qua MQTT), tìm Tasmota lạ, tự đẩy MqttHost trỏ về broker app đang dùng,
+     * rồi trả danh sách cho UI xác nhận — KHÔNG tự lưu DB (TasmotaLanDiscovery.
+     * discoverAdoptableDevices() đã tách bạch rõ 2 bước này).
+     */
+    fun scanLanForAdoptableDevices() {
+        viewModelScope.launch {
+            _isLanScanning.value = true
+            _lanAdoptableDevices.value = emptyList()
+            try {
+                val result = withContext(Dispatchers.IO) { tasmotaLanDiscovery.discoverAdoptableDevices() }
+                when {
+                    result.skippedNoBroker -> {
+                        _message.value = "⚠️ Chưa có broker MQTT khả dụng — vào \"Cấu hình Broker\" trước khi quét LAN"
+                    }
+                    result.adoptable.isEmpty() && result.failedIps.isEmpty() -> {
+                        _message.value = "🔍 Không tìm thấy thiết bị Tasmota mới nào trên mạng LAN"
+                    }
+                    result.adoptable.isEmpty() && result.failedIps.isNotEmpty() -> {
+                        _message.value = "⚠️ Tìm thấy ${result.failedIps.size} thiết bị nhưng không trỏ được broker — thử lại hoặc kiểm tra mạng"
+                    }
+                    else -> {
+                        _lanAdoptableDevices.value = result.adoptable
+                        if (result.failedIps.isNotEmpty()) {
+                            _message.value = "✅ Tìm thấy ${result.adoptable.size} thiết bị mới " +
+                                "(${result.failedIps.size} thiết bị khác trỏ broker thất bại, thử quét lại)"
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi quét LAN: ${e.message}"
+                logger.e("MqttViewModel", "scanLanForAdoptableDevices error", e)
+            } finally {
+                _isLanScanning.value = false
+            }
+        }
+    }
+
+    fun clearLanAdoptableDevices() {
+        _lanAdoptableDevices.value = emptyList()
+    }
+
+    /**
+     * confirmLanAdopt — CHỈ gọi SAU khi người dùng xem lại + xác nhận trên UI (đúng nguyên tắc
+     * "không tự động lưu" áp dụng chung cho mọi luồng discovery trong màn này). MqttHost đã được
+     * push xong trong lúc quét (scanLanForAdoptableDevices()) — hàm này chỉ ghi DB, không gọi
+     * lại HTTP command tới thiết bị.
+     */
+    fun confirmLanAdopt(device: com.aichatvn.agent.devices.mqtt.TasmotaLanDiscovery.AdoptableTasmotaDevice) {
+        viewModelScope.launch {
+            try {
+                val entity = withContext(Dispatchers.IO) { tasmotaLanDiscovery.confirmAdopt(device) }
+                _lanAdoptableDevices.value = _lanAdoptableDevices.value.filter { it.ip != device.ip }
+                _message.value = "✅ Đã thêm thiết bị \"${entity.name}\""
+                loadDevices()
+                (mqttController() as? MqttDeviceController)?.refreshDeviceSubscriptions()
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi thêm thiết bị: ${e.message}"
+                logger.e("MqttViewModel", "confirmLanAdopt error", e)
+            }
         }
     }
 
@@ -666,6 +752,10 @@ fun EmptyMqttState(
     onScan: () -> Unit,
     onAddDevice: () -> Unit,
     onConfigureBroker: () -> Unit,
+    // ✅ MỚI: "Quét nhanh" chỉ thấy thiết bị ĐÃ trỏ đúng broker — Tasmota mới mua cần đường
+    // riêng (quét LAN qua HTTP, không qua MQTT) để tìm ra rồi tự trỏ broker giúp người dùng,
+    // vì phần lớn người dùng không biết vào web UI Tasmota đổi MqttHost bằng tay.
+    onScanLan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -709,6 +799,22 @@ fun EmptyMqttState(
                 Text("Quét nhanh")
             }
             Spacer(Modifier.height(8.dp))
+            // ✅ MỚI: đặt dưới "Quét nhanh", trên "Thiết lập nhanh" — thứ tự ưu tiên đúng mức độ
+            // tự động: quét MQTT trước (nhanh nhất nếu thiết bị đã sẵn sàng) → quét LAN Tasmota
+            // (chậm hơn ~5-10s nhưng bắt được thiết bị mới chưa cấu hình) → nhập tay (luôn có
+            // sẵn, không phụ thuộc gì).
+            OutlinedButton(onClick = onScanLan) {
+                Icon(Icons.Default.Wifi, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Quét LAN Tasmota mới")
+            }
+            Text(
+                text = "Dành cho thiết bị Tasmota mới mua, chưa từng cấu hình broker",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, start = 32.dp, end = 32.dp)
+            )
+            Spacer(Modifier.height(8.dp))
             TextButton(onClick = onAddDevice) {
                 Icon(Icons.Default.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
@@ -716,6 +822,81 @@ fun EmptyMqttState(
             }
         }
     }
+}
+
+/**
+ * LanAdoptConfirmDialog ("Quét LAN Tasmota mới" — xác nhận trước khi lưu)
+ *
+ * Hiển thị SAU khi TasmotaLanDiscovery.discoverAdoptableDevices() xong — mỗi dòng là 1 Tasmota
+ * đã được tự động trỏ MqttHost về broker app đang dùng (xem docstring hàm đó), CHỜ người dùng
+ * xác nhận từng cái trước khi thực sự lưu vào DB (confirmLanAdopt()). Cùng nguyên tắc UX với
+ * ScanTopicsDialog phía trên — không tự động lưu bất kỳ thiết bị nào.
+ */
+@Composable
+fun LanAdoptConfirmDialog(
+    devices: List<com.aichatvn.agent.devices.mqtt.TasmotaLanDiscovery.AdoptableTasmotaDevice>,
+    isScanning: Boolean,
+    onRescan: () -> Unit,
+    onConfirm: (com.aichatvn.agent.devices.mqtt.TasmotaLanDiscovery.AdoptableTasmotaDevice) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Thiết bị Tasmota mới trên LAN") },
+        text = {
+            Column {
+                if (isScanning) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Đang quét mạng LAN...")
+                    }
+                } else if (devices.isEmpty()) {
+                    Text(
+                        "Không còn thiết bị nào chờ xác nhận.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(
+                        "Đã tìm thấy và trỏ broker cho các thiết bị sau — bấm để thêm vào danh sách:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                        items(devices, key = { it.ip }) { device ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onConfirm(device) }
+                                    .padding(vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Wifi, contentDescription = null)
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(device.suggestedName, fontWeight = FontWeight.Medium)
+                                    Text(
+                                        device.ip,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Icon(Icons.Default.Add, contentDescription = "Thêm")
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onRescan, enabled = !isScanning) { Text("Quét lại") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Đóng") }
+        }
+    )
 }
 
 /**

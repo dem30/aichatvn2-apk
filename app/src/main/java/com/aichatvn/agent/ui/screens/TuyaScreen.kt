@@ -463,6 +463,14 @@ fun TuyaScreen(
     var showBrokerConfigDialog by remember { mutableStateOf(false) }
     var showScanDialog by remember { mutableStateOf(false) }
     var scanResultTopic by remember { mutableStateOf<String?>(null) }
+    // ✅ MỚI (auto-adopt Tasmota qua LAN): "Quét nhanh" (showScanDialog ở trên) chỉ thấy thiết
+    // bị ĐÃ trỏ đúng broker app đang dùng — Tasmota mới mua/thiết bị cũ vẫn trỏ broker mặc định
+    // của hãng không xuất hiện qua đường đó. showLanScanDialog mở dialog riêng cho
+    // TasmotaLanDiscovery (quét HTTP subnet, không qua MQTT) — xem MqttViewModel.
+    // scanLanForAdoptableDevices()/LanAdoptConfirmDialog trong MqttScreen.kt.
+    val mqttLanAdoptableDevices by mqttViewModel.lanAdoptableDevices.collectAsState()
+    val mqttIsLanScanning by mqttViewModel.isLanScanning.collectAsState()
+    var showLanScanDialog by remember { mutableStateOf(false) }
     // ✅ MỚI: thiết bị vừa chạm "Xác nhận" trong ScanTopicsDialog — mở DiscoveryConfirmDialog
     // để người dùng xem lại/sửa tên trước khi thật sự lưu (confirmDiscoveredDevice()).
     var pendingDiscoveredDevice by remember { mutableStateOf<DiscoveredMqttDevice?>(null) }
@@ -597,6 +605,24 @@ fun TuyaScreen(
                 showScanDialog = false
                 mqttViewModel.clearDiscoveredTopics()
                 mqttViewModel.clearDiscoveredDevices()
+            }
+        )
+    }
+
+    // ✅ MỚI (auto-adopt Tasmota qua LAN): cùng mẫu với showScanDialog ở trên — mở là quét
+    // ngay, LaunchedEffect(showLanScanDialog) chỉ chạy lại khi dialog đóng-rồi-mở lại.
+    if (showLanScanDialog) {
+        LaunchedEffect(showLanScanDialog) {
+            mqttViewModel.scanLanForAdoptableDevices()
+        }
+        LanAdoptConfirmDialog(
+            devices = mqttLanAdoptableDevices,
+            isScanning = mqttIsLanScanning,
+            onRescan = { mqttViewModel.scanLanForAdoptableDevices() },
+            onConfirm = { device -> mqttViewModel.confirmLanAdopt(device) },
+            onDismiss = {
+                showLanScanDialog = false
+                mqttViewModel.clearLanAdoptableDevices()
             }
         )
     }
@@ -854,6 +880,7 @@ fun TuyaScreen(
                         onScan = { showScanDialog = true },
                         onAddDevice = { showAddMqttDialog = true },
                         onConfigureBroker = { showBrokerConfigDialog = true },
+                        onScanLan = { showLanScanDialog = true },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
