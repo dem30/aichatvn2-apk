@@ -2345,13 +2345,17 @@ PluginAction(
                     // recomputeThresholdsFromSamples() áp đúng trần thấp hơn (AUTO_MAX_*) khi cửa sổ
                     // 30 mẫu gần nhất chưa có xác nhận thủ công nào — và cũng học driftTrigger từ
                     // chính mẫu drift của lượt quét này, không chỉ delta/diff.
+                    // ✅ SỬA (theo yêu cầu — Groq nói "bình thường" = coi như người dùng bấm "Báo
+                    // động giả"): trước đây isManual=false nên bị kẹp ở trần THẤP hơn (AUTO_MAX_*),
+                    // không bao giờ đạt mức trần đầy đủ mà xác nhận thủ công đạt được. Giờ tin xác
+                    // nhận "bình thường" của Groq y hệt 1 lượt bấm tay.
                     val autoLearnMaxDrift = period.driftTrigger * AUTO_LEARN_DRIFT_MULTIPLIER
                     if (isSuddenChange && !isSuspicious && analysisSource == "groq" && drift <= autoLearnMaxDrift) {
                         period.falseDeltas.add(delta)
                         period.falseDiffs.add(currentDiff)
                         period.falseDrifts.add(drift)
                         period.falseSampleTimestamps.add(now)
-                        period.falseSampleIsManual.add(false)
+                        period.falseSampleIsManual.add(true)
                         if (period.falseDeltas.size > 100) {
                             period.falseDeltas.removeAt(0)
                             period.falseDiffs.removeAt(0)
