@@ -1177,7 +1177,21 @@ class AgentKernel @Inject constructor(
             // vai trò "lưới an toàn" của đường cũ, không bỏ đi.
             val nowMs = System.currentTimeMillis()
             val normalizedForTime = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(originalMessage.lowercase()) ?: originalMessage.lowercase()
+            // ✅ SỬA: trước đây CHỈ parse câu gốc của user (originalMessage). Nhưng khi câu gốc
+            // không nêu mốc thời gian nào (vd "camera người"), model (Groq) vẫn tự điền timeframe
+            // theo ý hiểu của nó — và model KHÔNG LUÔN dùng đúng enum tiếng Anh "today" như
+            // knownSafeEnum bên dưới yêu cầu, mà hay viết thẳng tiếng Việt tự nhiên (vd "hôm nay").
+            // Giá trị đó trượt cả vnParsedRange (không parse field này) lẫn knownSafeEnum (chỉ
+            // nhận 4 chuỗi Anh) → bị coi là "không xác định", hỏi lại người dùng dù model đã hiểu
+            // đúng ý (Q&A local không hỏi lại trong tình huống tương tự vì nó không phụ thuộc field
+            // này). Sửa: nếu câu gốc không có mốc thời gian, thử parse tiếp CHÍNH field
+            // "timeframe" mà model gửi — cùng 1 parser, chấp nhận các cách viết tự nhiên như
+            // "hôm nay"/"hôm qua" mà model tự điền, không chỉ riêng 4 enum tiếng Anh cố định.
             val vnParsedRange = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedForTime, nowMs)
+                ?: run {
+                    val normalizedFromModelTimeframe = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(rawTimeframe.lowercase()) ?: rawTimeframe.lowercase()
+                    com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedFromModelTimeframe, nowMs)
+                }
 
             // ✅ ĐÃ SỬA (thay thế Cost Guard cũ): trước đây Cost Guard chỉ chặn khi
             // object=all && resolvedSourceCategory==null && khoảng > 24h, ép âm thầm về "today"
