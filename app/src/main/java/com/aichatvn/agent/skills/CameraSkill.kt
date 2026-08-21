@@ -1201,10 +1201,6 @@ PluginAction(
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff || period.driftTrigger != oldDrift
     }
-        }
-
-        return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
-    }
 
     /**
      * 💾 Lưu trạng thái tự học (Mẫu học + Ngưỡng nhạy cảm) vào SQLite.
