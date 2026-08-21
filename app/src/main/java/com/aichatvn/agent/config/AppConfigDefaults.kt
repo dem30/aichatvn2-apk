@@ -358,7 +358,10 @@ object AppConfigDefaults {
         // ── CAMERA ──
         AppConfigEntity(
             key = CAMERA_DEFAULT_AI_PROMPT,
-            value = "Camera giám sát thửa đất. Hãy xem có người/xe? hoặc xây dựng không. Nếu có:dán nhãn mô tả cảnh báo . Ngược lại dán nhãn mô tả bình thường .",
+            value = "BẮT BUỘC:\n" +
+                "Nếu có người/xe:Trả json state là suspicious.\n" +
+                "Ngược lại:Trả json state là normal.\n" +
+                "Object chỉ liệt kê một vài đối tượng có trong ảnh, không bịa object không xuất hiện.",
             type = "string",
             pluginId = "camera",
             label = "Prompt AI mặc định",
@@ -616,7 +619,8 @@ object AppConfigDefaults {
         ),
         AppConfigEntity(
             key = GLOBAL_CHAT_SYSTEM_PROMPT,
-            value = "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp, không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện.\n\n" +
+            value = "Bạn là trợ lý tư vấn. Chỉ trả lời dựa trên thông tin được cung cấp.\n" +
+                "không bịa. Trả lời ngắn gọn, tự nhiên, thân thiện. có thể trả lời câu hỏi kiến thức chung, tán gẫu.\n\n" +
                 "⚠️ Khi khách muốn đặt hàng/hẹn lịch/thanh toán: hệ thống KHÔNG tự xử lý được — chỉ trả lời rằng tin nhắn đã được ghi nhận và nhân viên sẽ xem, phản hồi sớm nhất có thể. Không tự nhận đã xử lý/xác nhận đơn hàng/lịch hẹn, không hứa hẹn thời gian phản hồi cụ thể.",
             type = "string",
             pluginId = "global",
@@ -626,11 +630,12 @@ object AppConfigDefaults {
         AppConfigEntity(
             key = GLOBAL_TOOL_GUARD_RULES,
             value = "category: camera|tuya|call|facebook|telegram|website|chat|qa. Không rõ/chung/sản phẩm/giá/chính sách → qa.\n" +
-                "target: tên/ID theo danh sách dưới. category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
-                "keyword: lấy từ khoá trong câu hỏi của người dùng. category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status. category=camera không có keywords → để trống.\n" +
+                "target: tên/ID theo danh sách dưới.\n" +
+                "category=chat không rõ kênh → \"all\". Rõ kênh → đúng 1 tên kênh.\n" +
+                "keyword: lấy từ khoá ý định tìm kiếm trong câu hỏi của người dùng (bắt buộc). category=tuya hỏi chung chung bật/tắt/tình trạng → để trống, dùng state. category=call hỏi kết quả cuộc gọi → để trống, dùng call_status.\n" +
                 "state: category=tuya, hỏi rõ bật/tắt → on|off. Không rõ → để trống.\n" +
                 "call_status: category=call, hỏi kết quả cuộc gọi → missed|rejected|answered|failed. Không rõ → để trống.\n" +
-                "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian rõ ràng → hôm nay.\n" +
+                "timeframe: COPY NGUYÊN VĂN tiếng Việt cụm thời gian trong câu hỏi (không dịch/diễn giải sang ngôn ngữ khác, không tự đổi định dạng). Không có cụm thời gian → hôm nay.\n" +
                 "object: person|car|motorbike|dog|cat|package|all.\n" +
                 "granularity: summary|detail.\n" +
                 "Thiết bị không có trong danh sách → báo chưa lắp đặt, không gọi tool.\n" +

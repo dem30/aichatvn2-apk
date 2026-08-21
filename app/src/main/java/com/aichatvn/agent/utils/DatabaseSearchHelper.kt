@@ -166,47 +166,79 @@ class DatabaseSearchHelper @Inject constructor(
             }
         }
 
-        // ✅ SỬA: targetObject (person/car/dog...) chỉ có ý nghĩa cho camera/tuya (vật thể vật lý
-        // trong khung hình/trạng thái thiết bị) — áp filter này lên summary của chat/call/brain
-        // (dạng "Tin nhắn từ [telegram]...", "Cuộc gọi đến...") luôn luôn KHÔNG khớp
-        // objectAliasResolver.matches(), nên trước đây chỉ cần model lỡ điền object="person" là
-        // toàn bộ log chat/call/brain bị lọc sạch, dù sourceCategory đã resolve đúng.
-        if (contract.targetObject != null && contract.targetObject.lowercase() != "all" && contract.targetObject.lowercase() != "none" &&
-            !isChatCategory && !isSpecificChatPlatform && !isCallCategory && !isBrainCategory) {
-            filtered = filtered.filter { log ->
-                objectAliasResolver.matches(log.summary, contract.targetObject)
-            }
-        }
+        // ✅ SỬA (bug chuẩn hoá dấu): trước đây so khớp bằng .contains(keyword, ignoreCase=true)
+        // thô — KHÔNG bỏ dấu tiếng Việt. Người dùng thường gõ/keyword hệ thống sinh ra không dấu
+        // ("trom", "nguoi la") trong khi log.summary do Groq Vision trả về THƯỜNG CÓ DẤU ("phát
+        // hiện người lạ trước cửa"), nên 2 bên gần như không bao giờ khớp được — cùng loại lỗi đã
+        // được sửa cho sourceIdOrName ở filter phía trên bằng StringSimilarityUtil.normalizeVietnamese.
+        val normalizedKeywords = contract.detailsKeywords.map { StringSimilarityUtil.normalizeVietnamese(it.lowercase()) }
 
-        if (contract.detailsKeywords.isNotEmpty()) {
-            filtered = filtered.filter { log ->
-                val matchesSummary = contract.detailsKeywords.any { keyword ->
-                    log.summary.contains(keyword, ignoreCase = true)
-                }
-                // ✅ MỚI: với chat/facebook/telegram/website, log.summary CHỈ chứa ý định/khẩn
-                // cấp (vd "ý định=order_request"), KHÔNG chứa nội dung tin nhắn thật — nội dung
-                // đó nằm trong log.value (JSON field "last_message", xem nhánh isChatCategory ở
-                // summaryText bên dưới). Nếu chỉ so trên summary, keyword như "đặt hàng" sẽ
-                // KHÔNG BAO GIỜ khớp dù tin nhắn thật có chứa từ đó → filter trả rỗng sai.
-                // Parse thêm last_message để so khớp, cùng convention try/catch an toàn đã dùng
-                // ở filter sourceIdOrName phía trên.
+        // ✅ MỚI (chấm điểm thay vì lọc cứng): trước đây targetObject và detailsKeywords được
+        // áp lần lượt như 2 bộ lọc AND riêng biệt — log phải khớp CẢ HAI mới được giữ lại. Vấn đề
+        // thực tế: Groq Vision mô tả cảnh bằng ngôn ngữ tự nhiên, không phải danh sách nhãn cố
+        // định — vd người dùng hỏi "có trộm không" (targetObject=person, keyword="trộm") nhưng
+        // Groq chỉ mô tả "một người đàn ông mặc áo đen đứng trước cửa" (không có chữ "trộm" nào)
+        // → keyword filter loại bỏ log dù objectAliasResolver đã khớp đúng "person". Kết quả: câu
+        // hỏi hợp lý nhưng trả về rỗng dù đúng là có ảnh phù hợp trong DB.
+        //
+        // Cách sửa: khi CẢ 2 tiêu chí cùng được chỉ định, không còn bắt buộc khớp cả 2 (AND) —
+        // chỉ cần khớp ÍT NHẤT 1 tiêu chí là giữ lại (OR), nhưng chấm điểm số tiêu chí khớp được
+        // để xếp hạng ở bước sort bên dưới: log khớp CẢ 2 tiêu chí luôn đứng đầu, log chỉ khớp 1
+        // tiêu chí xếp sau, trước khi bị cắt bớt theo `limit`. Khi CHỈ 1 tiêu chí được chỉ định,
+        // hành vi giữ nguyên như cũ (bắt buộc khớp — không nới lỏng, tránh trả về quá rộng).
+        val applyObjectFilter = contract.targetObject != null &&
+            contract.targetObject.lowercase() !in setOf("all", "none") &&
+            !isChatCategory && !isSpecificChatPlatform && !isCallCategory && !isBrainCategory
+        val hasKeywords = normalizedKeywords.isNotEmpty()
+        val criteriaCount = (if (applyObjectFilter) 1 else 0) + (if (hasKeywords) 1 else 0)
+
+        // matchScore: 0 = không khớp tiêu chí nào, 1 = khớp 1/2 tiêu chí (hoặc khớp đúng tiêu chí
+        // duy nhất khi criteriaCount=1), 2 = khớp cả 2 tiêu chí cùng lúc.
+        fun matchScore(log: EventLogEntity): Int {
+            var score = 0
+            if (applyObjectFilter && objectAliasResolver.matches(log.summary, contract.targetObject!!)) score++
+            if (hasKeywords) {
+                val normSummary = StringSimilarityUtil.normalizeVietnamese(log.summary.lowercase())
+                val matchesSummary = normalizedKeywords.any { kw -> normSummary.contains(kw) }
                 val matchesLastMessage = if (!matchesSummary && (isChatCategory || isSpecificChatPlatform)) {
                     try {
                         val lastMessage = JSONObject(log.value).optString("last_message", "")
-                        lastMessage.isNotBlank() && contract.detailsKeywords.any { keyword ->
-                            lastMessage.contains(keyword, ignoreCase = true)
-                        }
+                        val normLastMessage = StringSimilarityUtil.normalizeVietnamese(lastMessage.lowercase())
+                        normLastMessage.isNotBlank() && normalizedKeywords.any { kw -> normLastMessage.contains(kw) }
                     } catch (_: Exception) { false }
                 } else false
-
-                matchesSummary || matchesLastMessage
+                if (matchesSummary || matchesLastMessage) score++
             }
+            return score
+        }
+
+        // ✅ MỚI: cờ đánh dấu kết quả có phải "khớp một phần" hay không — dùng để chèn ghi chú
+        // cho AI ở summaryText, tránh AI mặc định coi mọi dòng trả về đều khớp 100% ý người hỏi.
+        var hasPartialMatchOnly = false
+
+        if (criteriaCount > 0) {
+            val scored = filtered.map { it to matchScore(it) }
+            // criteriaCount == 1 -> minScore=1 (bắt buộc khớp, hành vi cũ, không đổi)
+            // criteriaCount == 2 -> minScore=1 (chỉ cần khớp ÍT NHẤT 1/2, nới lỏng có kiểm soát)
+            filtered = scored.filter { (_, score) -> score >= 1 }.map { it.first }
+            hasPartialMatchOnly = criteriaCount == 2 && scored.none { (_, score) -> score == 2 } && filtered.isNotEmpty()
         }
 
         val totalCount = filtered.size
         val isTruncated = totalCount > limit
-        val sortedLogs = filtered.sortedByDescending { it.timestamp }
-        val truncatedLogs = sortedLogs.take(limit).reversed()
+        // ✅ MỚI: khi phải cắt bớt (totalCount > limit), ưu tiên theo thứ tự:
+        // 1. matchScore cao hơn trước (khớp cả 2 tiêu chí > khớp 1 tiêu chí) — chỉ có ý nghĩa khi
+        //    criteriaCount > 0, ngược lại mọi log đều điểm 0 nên không đổi thứ tự.
+        // 2. Log CÓ ẢNH (imagePath != null) trước — vì đây thường là lý do người dùng hỏi ("cho
+        //    xem hình camera lúc..."). Trước đây chỉ sort theo timestamp — log camera có ảnh có
+        //    thể bị log tuya/chat/call mới hơn (không ảnh) đẩy ra khỏi top N.
+        // 3. Timestamp mới nhất trước, trong cùng nhóm ưu tiên ở trên.
+        val sortedLogs = filtered.sortedWith(
+            compareByDescending<EventLogEntity> { if (criteriaCount > 0) matchScore(it) else 0 }
+                .thenByDescending { it.imagePath != null }
+                .thenByDescending { it.timestamp }
+        )
+        val truncatedLogs = sortedLogs.take(limit).sortedBy { it.timestamp }
 
         val summaryText = buildString {
             val resolvedLabel = contract.timeframeLabel ?: "hôm nay"
@@ -412,6 +444,13 @@ class DatabaseSearchHelper @Inject constructor(
                     }
 
                     append("\nChi tiết nhật ký hoạt động:\n")
+                    // ✅ MỚI: khi kết quả chỉ đến từ chấm điểm mềm (không log nào khớp CẢ 2 tiêu
+                    // chí targetObject + detailsKeywords cùng lúc), báo rõ cho AI Pass 2 biết đây
+                    // là kết quả GẦN ĐÚNG — để AI diễn đạt đúng mức độ chắc chắn ("có thể là...",
+                    // "gần giống mô tả...") thay vì khẳng định chắc nịch như khớp hoàn toàn.
+                    if (hasPartialMatchOnly) {
+                        append("⚠️ Lưu ý: không có sự kiện nào khớp ĐỦ CẢ hai tiêu chí (vật thể + từ khoá) trong câu hỏi — các dòng dưới đây chỉ khớp MỘT PHẦN, hãy diễn đạt với mức độ chắc chắn phù hợp (vd \"có thể là...\"), không khẳng định tuyệt đối.\n")
+                    }
                     truncatedLogs.forEach { log ->
                         val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
                         append("• [$timeStr] ${log.summary}\n")
