@@ -298,17 +298,20 @@ PluginAction(
     private data class PeriodLearningState(
         val falseDeltas: MutableList<Int> = mutableListOf(),
         val falseDiffs: MutableList<Int> = mutableListOf(),
-        // timestamp tương ứng 1-1 với falseDeltas/falseDiffs theo index, để "hết hạn" các mẫu
-        // nhiễu cũ sau một thời gian ổn định, thay vì ngưỡng chỉ tăng mãi mãi.
+        // ✅ MỚI (bugfix): driftTrigger giờ cũng tự học per-period, y hệt falseDeltas/falseDiffs —
+        // trước đây drift dùng thẳng hằng số cố định DRIFT_TRIGGER=6, không bao giờ thay đổi, nên
+        // với camera có nền "trôi" ổn định > 6 (cây rung theo gió...), 1 mình điều kiện drift cũng
+        // đủ giữ isSuddenChange=true mãi mãi dù delta/diff đã học đủ cao — gửi ảnh cho AI liên tục.
+        val falseDrifts: MutableList<Int> = mutableListOf(),
+        // timestamp tương ứng 1-1 với falseDeltas/falseDiffs/falseDrifts theo index, để "hết hạn"
+        // các mẫu nhiễu cũ sau một thời gian ổn định, thay vì ngưỡng chỉ tăng mãi mãi.
         val falseSampleTimestamps: MutableList<Long> = mutableListOf(),
         // ✅ MỚI (bugfix): true nếu mẫu này do người dùng bấm "Báo động giả" xác nhận thủ công,
         // false nếu do đường tự động (Groq nói "bình thường" cho báo động thật) nạp vào — dùng để
         // quyết định trần ngưỡng (MANUAL_MAX_* vs AUTO_MAX_*) trong recomputeThresholdsFromSamples().
-        // Luôn cùng độ dài và cùng thao tác thêm/xoá với falseDeltas/falseDiffs/falseSampleTimestamps.
+        // Luôn cùng độ dài và cùng thao tác thêm/xoá với falseDeltas/falseDiffs/falseDrifts/
+        // falseSampleTimestamps.
         val falseSampleIsManual: MutableList<Boolean> = mutableListOf(),
-        // ✅ MỚI: mẫu "trôi nền" (drift) song song 1-1 theo index với falseDeltas/falseDiffs —
-        // dùng để driftTrigger cũng tự học được thay vì đứng yên ở hằng số DRIFT_TRIGGER mãi mãi.
-        val falseDrifts: MutableList<Int> = mutableListOf(),
         val baselineWindow: MutableList<Int> = mutableListOf(),
         var deltaTrigger: Int = DEFAULT_DELTA_TRIGGER,
         var absDiffTrigger: Int = DEFAULT_ABS_DIFF_TRIGGER,
@@ -464,9 +467,10 @@ PluginAction(
         private val DATETIME_FORMATTER: DateTimeFormatter =
             DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).withZone(ZoneId.systemDefault())
         // Ngưỡng "trôi nền" (|currentDiff - baselineDiff|) — điều kiện thứ 3 kích hoạt isSuddenChange,
-        // độc lập với deltaTrigger/absDiffTrigger. Đặt thành hằng số dùng chung để tránh lệch giá trị
-        // giữa nơi tính toán (scanCamera) và nơi báo cáo chẩn đoán (updateDiagnostics).
-        const val DRIFT_TRIGGER = 6
+        // độc lập với deltaTrigger/absDiffTrigger. Đây là giá trị MẶC ĐỊNH/SÀN dùng khi chưa có mẫu
+        // học nào (period.driftTrigger rỗng) — bản thân driftTrigger giờ tự học per-period y hệt
+        // deltaTrigger/absDiffTrigger, xem PeriodLearningState.driftTrigger.
+        const val DEFAULT_DRIFT_TRIGGER = 6
 
         // ✅ MỚI: khoảng cách tối thiểu giữa 2 ảnh "nền" (không do biến động) ở nhánh "Bình
         // thường" — đảm bảo luôn có ít nhất 1 ảnh/tiếng để tra cứu dù camera đứng yên hoàn toàn
@@ -493,26 +497,24 @@ PluginAction(
         // (AUTO_MAX_*) — tránh vòng lặp tự củng cố một chiều (mỗi lần trigger thật → mẫu mới luôn
         // ≥ ngưỡng cũ → ngưỡng luôn tăng → không có cơ chế nào tự động kéo xuống → leo thẳng lên
         // trần dù chưa chắc là nhiễu nền thật sự ổn định).
-        const val MANUAL_MAX_DELTA_TRIGGER = 16
-        const val MANUAL_MAX_ABS_DIFF_TRIGGER = 22
+        const val MANUAL_MAX_DELTA_TRIGGER = 10
+        const val MANUAL_MAX_ABS_DIFF_TRIGGER = 14
         const val AUTO_MAX_DELTA_TRIGGER = 6
         const val AUTO_MAX_ABS_DIFF_TRIGGER = 9
+
+        // ✅ MỚI (bugfix): driftTrigger dùng ĐÚNG cặp trần auto/manual như delta/diff ở trên — cùng
+        // lý do: chỉ Groq xác nhận "bình thường" nhiều lần không nên tự đưa driftTrigger lên mức
+        // cao nhất một mình, cần ít nhất 1 lần người dùng xác nhận thủ công mới đạt trần đầy đủ.
+        const val MANUAL_MAX_DRIFT_TRIGGER = 18
+        const val AUTO_MAX_DRIFT_TRIGGER = 12
 
         // ✅ MỚI (bugfix): mẫu tự động (Groq nói "bình thường") chỉ được nạp vào tập học nhiễu nếu
         // drift (|currentDiff - baselineDiff|) không vượt quá mức này — biến động "vọt" xa hơn baseline
         // nhiều khả năng là 1 sự kiện ngoại lệ (ánh sáng chớp, xe/người đi ngang thoáng qua...), không
-        // phải nhiễu nền ổn định, nên không nên dùng để nâng ngưỡng lâu dài.
-        const val AUTO_LEARN_MAX_DRIFT = DRIFT_TRIGGER * 2
-
-        // ✅ MỚI (theo yêu cầu — Groq nói "bình thường" tính như người bấm "Báo động giả"): trước
-        // đây DRIFT_TRIGGER là hằng số CỐ ĐỊNH, không bao giờ tự học — nên với cảnh có nền "trôi"
-        // tự nhiên ổn định ở mức quanh 6-7 (cây cối rung theo gió, ánh sáng nhá...), điều kiện
-        // `drift >= driftTrigger` cứ bắn isSuddenChange lặp lại vô hạn dù delta/absDiffTrigger đã
-        // học lên đủ cao, khiến ảnh bình thường vẫn liên tục bị gửi cho AI. Giờ driftTrigger cũng
-        // là 1 ngưỡng tự học per-period (giống deltaTrigger/absDiffTrigger), với trần riêng.
-        const val DEFAULT_DRIFT_TRIGGER = DRIFT_TRIGGER
-        const val MANUAL_MAX_DRIFT_TRIGGER = DRIFT_TRIGGER * 4
-        const val AUTO_MAX_DRIFT_TRIGGER = DRIFT_TRIGGER * 2
+        // phải nhiễu nền ổn định, nên không nên dùng để nâng ngưỡng lâu dài. Hệ số này áp dụng lên
+        // period.driftTrigger HIỆN TẠI (không phải hằng số cố định) — co giãn đúng theo mức đã học
+        // được của từng camera/khung giờ, thay vì đứng yên ở 1 con số chung cho mọi trường hợp.
+        const val AUTO_LEARN_DRIFT_MULTIPLIER = 2
     }
 
     private suspend fun buildCameraStatusText(cam: CameraConfigEntity): String {
@@ -597,7 +599,9 @@ PluginAction(
 
         val diffToLearn = alert?.diff ?: 20
         val deltaToLearn = alert?.delta ?: 12
-        val driftToLearn = alert?.drift ?: DEFAULT_DRIFT_TRIGGER
+        // ✅ MỚI (bugfix): truyền alert.drift để lần báo giả này cũng học driftTrigger (sentinel -1
+        // nếu alert cũ chưa có cột này/không tìm thấy alert) — xem doc markFalsePositiveAndLearn.
+        val driftToLearn = alert?.drift ?: -1
 
         // ✅ MỚI (day/night split): truyền THẲNG alert.timestamp (thời điểm báo động THẬT xảy ra)
         // vào markFalsePositiveAndLearn — hàm tự quyết định ngày/đêm bên trong, không bắt call
@@ -1137,8 +1141,8 @@ PluginAction(
                 period.falseSampleTimestamps.removeAt(i)
                 if (i < period.falseDeltas.size) period.falseDeltas.removeAt(i)
                 if (i < period.falseDiffs.size) period.falseDiffs.removeAt(i)
-                if (i < period.falseSampleIsManual.size) period.falseSampleIsManual.removeAt(i)
                 if (i < period.falseDrifts.size) period.falseDrifts.removeAt(i)
+                if (i < period.falseSampleIsManual.size) period.falseSampleIsManual.removeAt(i)
                 removedAny = true
             } else {
                 i++
@@ -1148,15 +1152,17 @@ PluginAction(
     }
 
     /**
-     * ✅ MỚI (decay, day/night split): Tính lại deltaTrigger/absDiffTrigger của MỘT khung giờ từ
-     * các mẫu nhiễu HIỆN CÒN HẠN của khung giờ đó.
+     * ✅ MỚI (decay, day/night split): Tính lại deltaTrigger/absDiffTrigger/driftTrigger của MỘT
+     * khung giờ từ các mẫu nhiễu HIỆN CÒN HẠN của khung giờ đó.
      * - Nếu không còn mẫu nào (đã hết hạn hết) -> hạ thẳng về mặc định (DEFAULT_*).
      * - Nếu còn mẫu -> áp dụng lại đúng công thức percentile-90% + margin như cũ.
      * - ✅ SỬA (bugfix): trần áp dụng phụ thuộc cửa sổ 30 mẫu gần nhất có mẫu THỦ CÔNG hay không —
      *   có ít nhất 1 mẫu do người dùng xác nhận -> trần đầy đủ (MANUAL_MAX_*); toàn mẫu tự động
      *   (Groq) -> trần thấp hơn (AUTO_MAX_*), tránh vòng lặp tự tăng một chiều leo thẳng lên trần
      *   cao nhất mà chưa từng có người xác nhận đó thực sự là nhiễu nền ổn định.
-     * Trả về true nếu deltaTrigger hoặc absDiffTrigger thay đổi.
+     * - ✅ SỬA (bugfix): driftTrigger giờ tự học y hệt delta/diff, cùng cặp trần MANUAL_MAX_DRIFT_
+     *   TRIGGER/AUTO_MAX_DRIFT_TRIGGER — trước đây cố định DEFAULT_DRIFT_TRIGGER=6 mãi mãi.
+     * Trả về true nếu deltaTrigger/absDiffTrigger/driftTrigger có bất kỳ giá trị nào thay đổi.
      */
     private fun recomputeThresholdsFromSamples(period: PeriodLearningState): Boolean {
         val oldDelta = period.deltaTrigger
@@ -1182,8 +1188,10 @@ PluginAction(
             val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
             period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, diffCeiling)
 
-            // ✅ MỚI: driftTrigger giờ cũng tự học theo cùng công thức percentile-90% + margin —
-            // nếu không có mẫu drift nào (dữ liệu cũ trước bản vá này), giữ nguyên hằng số mặc định.
+            // ✅ MỚI: chỉ recompute driftTrigger khi ĐÃ có mẫu drift thực sự — dữ liệu cũ migrate
+            // từ trước khi có tính năng này sẽ có falseDrifts rỗng cho tới khi tích luỹ mẫu mới;
+            // giữ nguyên driftTrigger hiện tại (mặc định DEFAULT_DRIFT_TRIGGER) thay vì ép về mặc
+            // định chỉ vì thiếu lịch sử riêng cho drift.
             if (period.falseDrifts.isNotEmpty()) {
                 val recentDrifts = period.falseDrifts.takeLast(30).sorted()
                 val idxDrift = (recentDrifts.size * 0.9).toInt().coerceIn(0, recentDrifts.size - 1)
@@ -1192,6 +1200,10 @@ PluginAction(
         }
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff || period.driftTrigger != oldDrift
+    }
+        }
+
+        return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
     }
 
     /**
@@ -1241,15 +1253,12 @@ PluginAction(
             for (i in 0 until arr.length()) falseDiffs.add(arr.getInt(i))
         }
 
-        // ✅ MỚI: falseDrifts — dữ liệu cũ (trước bản vá driftTrigger tự học) không có trường
-        // này, điền mặc định DEFAULT_DRIFT_TRIGGER cho các mẫu cũ (trung tính, không kéo
-        // driftTrigger lên/xuống ngay khi migrate) rồi để nó tự học tiếp từ đây.
+        // ✅ MỚI (bugfix): dữ liệu cũ (trước bản vá driftTrigger tự học) không có mảng này — để
+        // rỗng là đúng ý đồ: recomputeThresholdsFromSamples() đã có guard `falseDrifts.isNotEmpty()`
+        // nên driftTrigger sẽ giữ nguyên (không bị ép về mặc định) cho tới khi có mẫu drift mới.
         val falseDrifts = mutableListOf<Int>()
-        val falseDriftsArr = json.optJSONArray("falseDrifts")
-        if (falseDriftsArr != null && falseDriftsArr.length() == falseDeltas.size) {
-            for (i in 0 until falseDriftsArr.length()) falseDrifts.add(falseDriftsArr.getInt(i))
-        } else {
-            repeat(falseDeltas.size) { falseDrifts.add(DEFAULT_DRIFT_TRIGGER) }
+        json.optJSONArray("falseDrifts")?.let { arr ->
+            for (i in 0 until arr.length()) falseDrifts.add(arr.getInt(i))
         }
 
         val now = System.currentTimeMillis()
@@ -1336,15 +1345,18 @@ PluginAction(
      * ngày/đêm bên trong bằng isNightTime() — cố tình KHÔNG bắt caller tự tính rồi truyền
      * Boolean vào, vì đã có 1 call site (AlertHistoryViewModel.markAsFalsePositive) bị bỏ sót và
      * làm vỡ build khi tham số đó được thêm vào signature không có giá trị mặc định.
+     * ✅ MỚI (bugfix): [drift] — sentinel mặc định -1 (không phải 0!) để phân biệt "call site cũ
+     * chưa truyền" với "drift thực sự đo được = 0". Call site nào chưa cập nhật (vd
+     * AlertHistoryViewModel nếu chưa sửa theo) vẫn build được, chỉ đơn giản KHÔNG học driftTrigger
+     * cho lần báo giả đó — không học nhầm giá trị 0 giả vào tập mẫu, tránh kéo driftTrigger xuống
+     * sai lệch.
      */
     suspend fun markFalsePositiveAndLearn(
         cameraId: String,
         diff: Int,
         delta: Int,
         alertTimestamp: Long = System.currentTimeMillis(),
-        // ✅ MỚI: drift của alert đang bị báo giả — mặc định DEFAULT_DRIFT_TRIGGER (trung tính)
-        // cho các call site cũ chưa truyền giá trị này, để không phá build hiện có.
-        drift: Int = DEFAULT_DRIFT_TRIGGER
+        drift: Int = -1
     ): String {
         val tid = cameraId.trim()
         val cam = database.cameraDao().getCameraById(tid) ?: return "Không tìm thấy camera $tid"
@@ -1370,26 +1382,31 @@ PluginAction(
             if (ageMs > FALSE_SAMPLE_MAX_AGE_MS) {
                 return@withLock "⚠️ Cảnh báo này đã quá cũ (>${FALSE_SAMPLE_MAX_AGE_MS / (60 * 60 * 1000L)} giờ) — " +
                     "không dùng để học ngưỡng nhiễu $periodLabel nữa. Ngưỡng hiện tại giữ nguyên: " +
-                    "diff=${period.absDiffTrigger}, delta=${period.deltaTrigger}."
+                    "diff=${period.absDiffTrigger}, delta=${period.deltaTrigger}, drift=${period.driftTrigger}."
             }
 
             // Nạp mẫu học phản hồi từ người dùng — dùng alertTimestamp (không phải `now`) để mẫu
             // được "tính tuổi" đúng theo thời điểm alert thật xảy ra ở những lần prune sau này.
             period.falseDeltas.add(delta)
             period.falseDiffs.add(diff)
-            period.falseDrifts.add(drift)
             period.falseSampleTimestamps.add(alertTimestamp)
             period.falseSampleIsManual.add(true)
+            // ✅ MỚI (bugfix): chỉ nạp mẫu drift khi caller thực sự truyền giá trị đo được (>= 0) —
+            // xem sentinel -1 ở doc phía trên.
+            if (drift >= 0) {
+                period.falseDrifts.add(drift)
+            }
             if (period.falseDeltas.size > 100) {
                 period.falseDeltas.removeAt(0)
                 period.falseDiffs.removeAt(0)
-                period.falseDrifts.removeAt(0)
                 period.falseSampleTimestamps.removeAt(0)
                 period.falseSampleIsManual.removeAt(0)
+                if (period.falseDrifts.isNotEmpty()) period.falseDrifts.removeAt(0)
             }
 
             val oldDelta = period.deltaTrigger
             val oldDiff = period.absDiffTrigger
+            val oldDrift = period.driftTrigger
 
             // Tự động điều chỉnh nâng ngưỡng (dùng chung công thức percentile với decay)
             recomputeThresholdsFromSamples(period)
@@ -1399,9 +1416,6 @@ PluginAction(
             if (period.absDiffTrigger <= diff) {
                 period.absDiffTrigger = (diff + 2).coerceAtMost(MANUAL_MAX_ABS_DIFF_TRIGGER)
             }
-            if (period.driftTrigger <= drift) {
-                period.driftTrigger = (drift + 2).coerceAtMost(MANUAL_MAX_DRIFT_TRIGGER)
-            }
 
             // Lưu ngay vào SQLite
             saveLearningStateToDb(tid, state)
@@ -1409,7 +1423,8 @@ PluginAction(
 
             "✅ Đã ghi nhận báo động giả ($periodLabel) cho Camera \"${cam.customername}\". " +
             "Ngưỡng diff nâng từ $oldDiff ➔ ${period.absDiffTrigger}, " +
-            "ngưỡng delta nâng từ $oldDelta ➔ ${period.deltaTrigger} (Số mẫu học: ${period.falseDeltas.size})."
+            "ngưỡng delta nâng từ $oldDelta ➔ ${period.deltaTrigger}, " +
+            "ngưỡng drift nâng từ $oldDrift ➔ ${period.driftTrigger} (Số mẫu học: ${period.falseDeltas.size})."
         }
     }
     
@@ -1971,10 +1986,10 @@ PluginAction(
                 state.lastDiff = currentDiff
                 val deltaTrigger = period.deltaTrigger
                 val absDiffTrigger = period.absDiffTrigger
-                // ✅ SỬA (theo yêu cầu — driftTrigger tự học): trước đây đọc thẳng hằng số
-                // DRIFT_TRIGGER cố định, không bao giờ đổi dù bao nhiêu lần AI xác nhận "bình
-                // thường" — khiến cảnh có nền trôi ổn định quanh mức đó cứ báo động lặp lại vô
-                // hạn. Giờ đọc từ period.driftTrigger (tự học per-period, xem recomputeThresholdsFromSamples()).
+                // ✅ SỬA (bugfix): dùng driftTrigger ĐÃ HỌC của period (ngày/đêm hiện tại) thay vì
+                // hằng số cố định — trước đây drift dùng thẳng DEFAULT_DRIFT_TRIGGER=6 không đổi,
+                // nên camera có nền "trôi" ổn định > 6 (cây rung theo gió...) bị gửi ảnh cho AI liên
+                // tục vô thời hạn dù delta/diff đã học đủ cao.
                 val driftTrigger = period.driftTrigger
                 
                 val baselineDiff = if (period.baselineWindow.isNotEmpty()) {
@@ -2325,30 +2340,28 @@ PluginAction(
                     // nhận "bình thường" (analysisSource == "groq") — đáng tin cậy hơn hẳn. Với ML
                     // Kit/suy đoán pixel, người dùng phải chủ động bấm "Báo động giả" (markFalsePositiveAndLearn)
                     // nếu muốn nâng ngưỡng.
-                    // ✅ SỬA (theo yêu cầu — Groq nói "bình thường" = coi như người dùng bấm "Báo
-                    // động giả"): trước đây mẫu tự động bị đánh dấu isManual=false nên luôn bị kẹp ở
-                    // trần THẤP hơn (AUTO_MAX_*), khiến ngưỡng không bao giờ lên được mức người dùng
-                    // có thể đạt bằng tay — ảnh bình thường (đặc biệt là do drift, xem driftTrigger
-                    // ở trên) cứ liên tục vượt ngưỡng cũ và bị gửi cho AI lặp lại dù chính AI vừa
-                    // xác nhận "bình thường". Giờ Groq xác nhận "bình thường" được tin y hệt 1 lượt
-                    // bấm tay: isManual=true, dùng thẳng trần ĐẦY ĐỦ (MANUAL_MAX_*).
-                    // Vẫn giữ điều kiện drift <= gate để loại các cú "vọt" bất thường một lần (ánh
-                    // sáng chớp, xe/người đi ngang thoáng qua) khỏi tập học — nhưng gate giờ scale
-                    // theo driftTrigger ĐANG học được (thay vì hằng số cố định AUTO_LEARN_MAX_DRIFT),
-                    // để không tự kẹt trần khi driftTrigger đã học lên cao hơn hằng số gốc.
-                    val driftLearnGate = (period.driftTrigger * 2).coerceAtLeast(AUTO_LEARN_MAX_DRIFT)
-                    if (isSuddenChange && !isSuspicious && analysisSource == "groq" && drift <= driftLearnGate) {
+                    // ✅ SỬA (bugfix): gate "vọt bất thường" giờ co giãn theo period.driftTrigger HIỆN
+                    // TẠI (đã học được) thay vì hằng số cố định — chỉ auto-learn khi biến động không
+                    // phải là 1 cú "vọt" bất thường so với baseline hiện tại (vd ánh sáng chớp,
+                    // xe/người đi ngang thoáng qua). Biến động vọt xa baseline nhiều khả năng là
+                    // ngoại lệ, không phải nhiễu nền ổn định — nạp nó vào tập học sẽ đẩy ngưỡng lên
+                    // sai. Mẫu tự động cũng được đánh dấu isManual=false để
+                    // recomputeThresholdsFromSamples() áp đúng trần thấp hơn (AUTO_MAX_*) khi cửa sổ
+                    // 30 mẫu gần nhất chưa có xác nhận thủ công nào — và cũng học driftTrigger từ
+                    // chính mẫu drift của lượt quét này, không chỉ delta/diff.
+                    val autoLearnMaxDrift = period.driftTrigger * AUTO_LEARN_DRIFT_MULTIPLIER
+                    if (isSuddenChange && !isSuspicious && analysisSource == "groq" && drift <= autoLearnMaxDrift) {
                         period.falseDeltas.add(delta)
                         period.falseDiffs.add(currentDiff)
                         period.falseDrifts.add(drift)
                         period.falseSampleTimestamps.add(now)
-                        period.falseSampleIsManual.add(true)
+                        period.falseSampleIsManual.add(false)
                         if (period.falseDeltas.size > 100) {
                             period.falseDeltas.removeAt(0)
                             period.falseDiffs.removeAt(0)
-                            period.falseDrifts.removeAt(0)
                             period.falseSampleTimestamps.removeAt(0)
                             period.falseSampleIsManual.removeAt(0)
+                            if (period.falseDrifts.isNotEmpty()) period.falseDrifts.removeAt(0)
                         }
                     }
 
@@ -2815,6 +2828,8 @@ PluginAction(
                 "baselineSize" to p.baselineWindow.size,
                 "baselineDiff" to p.lastBaselineDiff,
                 "drift" to p.lastDrift,
+                // ✅ SỬA (bugfix): trước đây luôn báo hằng số cố định DRIFT_TRIGGER, không phản ánh
+                // driftTrigger THẬT đã học riêng cho period này.
                 "driftTrigger" to p.driftTrigger
             )
             // ✅ SỬA: inCooldown trước đây chỉ xét cooldownUntil > now, không quan tâm
@@ -2847,7 +2862,7 @@ PluginAction(
         absDiffTrigger: Int,
         drift: Int = 0,
         baselineDiff: Int = 0,
-        driftTrigger: Int = DRIFT_TRIGGER,
+        driftTrigger: Int = DEFAULT_DRIFT_TRIGGER,
         emailSent: Boolean,
         scheduleId: String? = null,
         aiStateJson: String? = null,
