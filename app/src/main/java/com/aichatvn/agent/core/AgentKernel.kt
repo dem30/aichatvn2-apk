@@ -867,44 +867,71 @@ class AgentKernel @Inject constructor(
             return ChatResponse(wrapWithExpired(msg), "search_time_range_pending", null)
         }
 
-        val m = Regex("(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})\\s*-\\s*(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})")
-            .find(userMessage.trim())
+        // ✅ SỬA: trước đây hàm này CHỈ chấp nhận đúng định dạng số "dd/mm/yy - dd/mm/yy" qua
+        // regex bên dưới, trong khi câu hỏi lại chính mình đưa ra (xem interceptAndExecuteToolCall,
+        // dòng ~1180) lại nói người dùng có thể "nói kiểu 'tuần 1 tháng 3' cũng được" — và trên
+        // thực tế người dùng thường chỉ gõ lại đúng cụm tự nhiên ban đầu (vd "hôm nay"). Vì hàm
+        // không hề gọi VietnameseTimeRangeParser nên MỌI câu trả lời dạng tự nhiên đều rơi vào
+        // askAgain(), lặp vô hạn dù bot đã tự mời người dùng nói kiểu đó. Sửa: thử
+        // VietnameseTimeRangeParser (cùng parser đang dùng ở runLocalQAEventAnalysis /
+        // interceptAndExecuteToolCall) trước — parser này tự đảm bảo kết quả <= 7 ngày
+        // (capOrAskAgain nội bộ) nên không cần validate lại độ dài ở nhánh này — chỉ fallback về
+        // regex số dd/mm/yy - dd/mm/yy khi parser không nhận diện được cụm thời gian nào.
+        val normalizedForResume = com.aichatvn.agent.core.text.VietnameseTextNormalizer.normalize(userMessage.lowercase()) ?: ""
+        val vnParsedResume = com.aichatvn.agent.core.text.VietnameseTimeRangeParser.parse(normalizedForResume, System.currentTimeMillis())
 
-        // Không đọc được định dạng ngày -> huỷ pending ngay, tránh lặp vô hạn nếu người dùng
-        // liên tục nhập sai hoặc thực ra đã đổi chủ đề khác hẳn.
-        if (m == null) {
-            return askAgain("Mình chưa đọc được khoảng ngày trong tin nhắn vừa rồi.", keepPending = false)
-        }
+        val since: Long
+        val until: Long
+        val label: String
 
-        val d1 = m.groupValues[1]; val mo1 = m.groupValues[2]; val y1 = m.groupValues[3]
-        val d2 = m.groupValues[4]; val mo2 = m.groupValues[5]; val y2 = m.groupValues[6]
+        if (vnParsedResume != null) {
+            since = vnParsedResume.since
+            until = vnParsedResume.until
+            label = vnParsedResume.label
+        } else {
+            val m = Regex("(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})\\s*-\\s*(\\d{1,2})[/\\-](\\d{1,2})[/\\-](\\d{2,4})")
+                .find(userMessage.trim())
 
-        fun toMillis(d: String, mo: String, y: String): Long? = try {
-            val yr = y.toInt().let { if (it < 100) it + 2000 else it }
-            val cal = java.util.Calendar.getInstance().apply {
-                isLenient = false
-                set(yr, mo.toInt() - 1, d.toInt(), 0, 0, 0)
-                set(java.util.Calendar.MILLISECOND, 0)
-                timeInMillis // ép kích hoạt validation ngày (isLenient=false), cùng cách parseAbsoluteDate() đang dùng
+            // Không đọc được định dạng ngày -> huỷ pending ngay, tránh lặp vô hạn nếu người dùng
+            // liên tục nhập sai hoặc thực ra đã đổi chủ đề khác hẳn.
+            if (m == null) {
+                return askAgain("Mình chưa đọc được khoảng ngày trong tin nhắn vừa rồi.", keepPending = false)
             }
-            cal.timeInMillis
-        } catch (e: Exception) { null }
 
-        val since = toMillis(d1, mo1, y1)
-        val untilStart = toMillis(d2, mo2, y2)
+            val d1 = m.groupValues[1]; val mo1 = m.groupValues[2]; val y1 = m.groupValues[3]
+            val d2 = m.groupValues[4]; val mo2 = m.groupValues[5]; val y2 = m.groupValues[6]
 
-        if (since == null || untilStart == null) {
-            return askAgain("Ngày bạn nhập không hợp lệ.", keepPending = false)
-        }
-        val until = untilStart + 24 * 60 * 60 * 1000L - 1
+            fun toMillis(d: String, mo: String, y: String): Long? = try {
+                val yr = y.toInt().let { if (it < 100) it + 2000 else it }
+                val cal = java.util.Calendar.getInstance().apply {
+                    isLenient = false
+                    set(yr, mo.toInt() - 1, d.toInt(), 0, 0, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                    timeInMillis // ép kích hoạt validation ngày (isLenient=false), cùng cách parseAbsoluteDate() đang dùng
+                }
+                cal.timeInMillis
+            } catch (e: Exception) { null }
 
-        if (until <= since) {
-            return askAgain("Ngày kết thúc phải sau ngày bắt đầu.", keepPending = false)
-        }
-        if (until - since > 7L * 24 * 60 * 60 * 1000L) {
-            // Giữ nguyên pending (KHÔNG xoá) để người dùng thử lại đúng khoảng ngay ở lượt kế
-            // tiếp, không phải trả lời cả câu hỏi gốc lại từ đầu.
-            return askAgain("Khoảng bạn nhập dài hơn 7 ngày.", keepPending = true)
+            val sinceParsed = toMillis(d1, mo1, y1)
+            val untilStart = toMillis(d2, mo2, y2)
+
+            if (sinceParsed == null || untilStart == null) {
+                return askAgain("Ngày bạn nhập không hợp lệ.", keepPending = false)
+            }
+            val untilParsed = untilStart + 24 * 60 * 60 * 1000L - 1
+
+            if (untilParsed <= sinceParsed) {
+                return askAgain("Ngày kết thúc phải sau ngày bắt đầu.", keepPending = false)
+            }
+            if (untilParsed - sinceParsed > 7L * 24 * 60 * 60 * 1000L) {
+                // Giữ nguyên pending (KHÔNG xoá) để người dùng thử lại đúng khoảng ngay ở lượt kế
+                // tiếp, không phải trả lời cả câu hỏi gốc lại từ đầu.
+                return askAgain("Khoảng bạn nhập dài hơn 7 ngày.", keepPending = true)
+            }
+
+            since = sinceParsed
+            until = untilParsed
+            label = "$d1/$mo1/$y1 - $d2/$mo2/$y2"
         }
 
         chatHistoryManager.clearPendingSearchTimeRange(username)
@@ -917,7 +944,6 @@ class AgentKernel @Inject constructor(
         // Tái tạo lại baseGuard tương đương nhánh admin/Combined trong chat() (buildFullGuard),
         // vì đây là 1 lượt resume KHÔNG đi qua nhánh mode gốc đó nữa.
         val baseGuard = buildFullGuard(routerFailed = false, outcome = null, maxSentences = maxSentences)
-        val label = "$d1/$mo1/$y1 - $d2/$mo2/$y2"
 
         val outcome = interceptAndExecuteToolCall(
             originalMessage = pending.originalQuestion,

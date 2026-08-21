@@ -144,6 +144,23 @@ object VietnameseTimeRangeParser {
             }
         }
 
+        // ✅ MỚI: "giờ qua" / "tiếng qua" / "giờ trước" / "tiếng trước" KHÔNG kèm số cụ thể —
+        // khác với rule digit ngay phía trên (bắt buộc có \d+ đứng trước "giờ"/"tiếng"), người
+        // dùng hay nói tắt kiểu này (vd "cho xem camera giờ qua") với ý ngầm hiểu "1 tiếng gần
+        // nhất". Đặt SAU rule digit nên chỉ chạy tới đây khi câu KHÔNG có số (rule digit đã
+        // return trước nếu có) — không cần lookbehind chặn số thủ công.
+        firstMatch(normalizedMsg, "gio qua", "tieng qua", "gio truoc", "tieng truoc")?.let { hit ->
+            return TimeRange(now - HOUR_MS, now, "1 giờ gần nhất", words(hit))
+        }
+
+        // ✅ MỚI: "mấy giờ/tiếng trước" — lượng từ phiếm chỉ "mấy" (không rõ số, khác digit rõ
+        // ràng ở rule trên) nên không khớp được rule "(\d+)...". Ước lượng mặc định 3 giờ gần
+        // nhất (giữa mức "1-2 tiếng" và "vài tiếng") — đủ dùng làm mặc định hợp lý, không cần
+        // validate lại vì luôn nằm trong MAX_DAYS_BACK.
+        firstMatch(normalizedMsg, "may gio", "may tieng")?.let { hit ->
+            return TimeRange(now - 3 * HOUR_MS, now, "3 giờ gần nhất (ước lượng cho \"mấy giờ/tiếng\")", words(hit))
+        }
+
         // 2. Ngày tương đối cố định
         val startToday = startOfDay(now)
 
