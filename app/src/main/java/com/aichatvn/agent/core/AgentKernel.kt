@@ -660,7 +660,7 @@ class AgentKernel @Inject constructor(
                 matchedCam?.customername?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
                 matchedDev?.name?.let { stripped = stripped.replace(it, "", ignoreCase = true) }
 
-                stripped
+                val meaningfulWords = stripped
                     .split(Regex("\\s+"))
                     .map { it.trim() }
                     .filter { word ->
@@ -670,6 +670,21 @@ class AgentKernel @Inject constructor(
                         normWord.length > 1 && normWord !in STOPWORD_KEYWORDS
                     }
                     // ✅ Đảm bảo keywords trả về GIỮ NGUYÊN DẤU (không gọi normalize() sau filter)
+
+                // 🐛 SỬA BUG (QA local "camera người đàn ông" trả về gần như MỌI log camera 24h
+                // thay vì chỉ log thật sự có người): trước đây trả thẳng meaningfulWords làm list
+                // nhiều từ đơn lẻ cho DatabaseSearchHelper.matchScore() (contains() theo TỪNG từ,
+                // khớp kiểu "any" — chỉ cần 1/N từ khớp là giữ log). Từ ngắn phổ biến như "ông"
+                // (bỏ dấu -> "ong") lại là SUBSTRING của rất nhiều từ khác không liên quan
+                // ("phòng" -> "phong", "không" -> "khong", "trong" -> "trong"...) vì contains()
+                // không xét ranh giới từ -> gần như mọi log camera đều "khớp" -> bộ lọc mất tác
+                // dụng, trả về top-N theo mới nhất thay vì theo nội dung thật. Đường AI/Groq không
+                // dính lỗi này vì model luôn truyền keyword là 1 CỤM liền ("người đàn ông"), không
+                // tách rời từng từ.
+                // Fix: ghép các từ còn lại (đã lọc sạch stopword/thời gian/tên camera) thành 1 cụm
+                // duy nhất, đồng bộ hành vi với đường AI — contains() giờ khớp theo CỤM, tránh khớp
+                // nhầm substring giữa các từ không liên quan.
+                if (meaningfulWords.isEmpty()) emptyList() else listOf(meaningfulWords.joinToString(" "))
             } else {
                 emptyList()
             }
