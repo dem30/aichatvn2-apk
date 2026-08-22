@@ -92,7 +92,13 @@ class AlertHistoryViewModel @Inject constructor(
                 delta = alert.delta,
                 // ✅ MỚI (day/night split): truyền đúng thời điểm alert THẬT xảy ra để CameraSkill
                 // học vào đúng bộ ngưỡng ngày/đêm — không phải giờ hiện tại lúc bấm nút này.
-                alertTimestamp = alert.timestamp
+                alertTimestamp = alert.timestamp,
+                // ✅ SỬA (bugfix): thiếu tham số này khiến driftTrigger dùng sentinel mặc định -1
+                // của markFalsePositiveAndLearn -> KHÔNG BAO GIỜ học driftTrigger từ nút bấm này,
+                // dù diff/delta vẫn học bình thường (2 tham số đó bắt buộc, không có sentinel).
+                // Đường chat (CameraSkill.handleMarkFalsePositive) đã truyền đúng alert.drift từ
+                // trước; đường nút bấm này bị bỏ sót khi thêm tham số drift vào signature.
+                drift = alert.drift
             )
             // Đánh dấu cảnh báo này thành không nghi vấn (isSuspicious = 0)
             database.alertDao().insertAlert(
