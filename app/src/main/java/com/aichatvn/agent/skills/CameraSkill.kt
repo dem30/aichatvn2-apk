@@ -507,8 +507,8 @@ PluginAction(
         //      các cú spike ngoại lệ (ánh sáng chớp, xe đi ngang) không cho lọt vào tập học.
         // falseSampleIsManual vẫn giữ lại (không xoá) — vẫn hữu ích để hiển thị chẩn đoán "ngưỡng
         // này có từng được người dùng xác nhận trực tiếp chưa", chỉ không còn dùng để phân trần nữa.
-        const val MAX_DELTA_TRIGGER = 10
-        const val MAX_ABS_DIFF_TRIGGER = 14
+        const val MAX_DELTA_TRIGGER = 15  // ✅ SỬA từ 10 — camera nhiễu nền cao bị kẹt trần, bắn cảnh báo liên tục
+        const val MAX_ABS_DIFF_TRIGGER = 20  // ✅ SỬA từ 14 — cùng lý do trên
         const val MAX_DRIFT_TRIGGER = 18
 
         // ✅ MỚI (bugfix): mẫu tự động (Groq nói "bình thường") chỉ được nạp vào tập học nhiễu nếu
@@ -1410,6 +1410,15 @@ PluginAction(
             // (thay vì số ma thuật 35 cũ) để nhất quán với trần chung ở trên.
             if (period.absDiffTrigger <= diff) {
                 period.absDiffTrigger = (diff + 2).coerceAtMost(MAX_ABS_DIFF_TRIGGER)
+            }
+
+            // ✅ MỚI: safety-net tương tự absDiffTrigger ở trên — percentile-90 cần nhiều mẫu mới
+            // đẩy driftTrigger lên rõ rệt, nên 1 lần báo giả đơn lẻ với drift cao có thể không đủ
+            // để recomputeThresholdsFromSamples() nâng ngưỡng kịp. Chỉ áp dụng khi caller thực sự
+            // truyền drift đo được (>= 0, xem sentinel -1 ở doc phía trên) — nếu không có giá trị
+            // drift thật, không ép tăng gì (tránh tăng ngưỡng dựa trên dữ liệu không tồn tại).
+            if (drift >= 0 && period.driftTrigger <= drift) {
+                period.driftTrigger = (drift + 2).coerceAtMost(MAX_DRIFT_TRIGGER)
             }
 
             // Lưu ngay vào SQLite
