@@ -316,6 +316,18 @@ PluginAction(
         var deltaTrigger: Int = DEFAULT_DELTA_TRIGGER,
         var absDiffTrigger: Int = DEFAULT_ABS_DIFF_TRIGGER,
         var driftTrigger: Int = DEFAULT_DRIFT_TRIGGER,
+        // ✅ MỚI: biên "Thấp nhất"/"Cao nhất" người dùng nhập tay ở dialog "Cài đặt ngưỡng thủ
+        // công" (CameraDetailScreen.ManualThresholdForm) — CHỈ để lưu lại/hiển thị lại đúng giá
+        // trị đã nhập ở lần mở dialog tiếp theo, KHÔNG được recomputeThresholdsFromSamples() hay
+        // bất kỳ logic tự học nào khác đọc/áp dụng — tự học tiếp tục dùng riêng cặp hằng số
+        // DEFAULT_*/MANUAL_MAX_*/AUTO_MAX_* như trước, đúng như dialog đã ghi rõ với người dùng
+        // ("Ghi thẳng vào hệ thống, không ràng buộc gì").
+        var minDeltaTrigger: Int = DEFAULT_DELTA_TRIGGER,
+        var maxDeltaTrigger: Int = MANUAL_MAX_DELTA_TRIGGER,
+        var minAbsDiffTrigger: Int = DEFAULT_ABS_DIFF_TRIGGER,
+        var maxAbsDiffTrigger: Int = MANUAL_MAX_ABS_DIFF_TRIGGER,
+        var minDriftTrigger: Int = DEFAULT_DRIFT_TRIGGER,
+        var maxDriftTrigger: Int = MANUAL_MAX_DRIFT_TRIGGER,
         // chỉ để hiển thị chẩn đoán (CameraDetailScreen) — không ảnh hưởng logic isSuddenChange.
         var lastBaselineDiff: Int = 0,
         var lastDrift: Int = 0
@@ -1201,10 +1213,6 @@ PluginAction(
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff || period.driftTrigger != oldDrift
     }
-        }
-
-        return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
-    }
 
     /**
      * 💾 Lưu trạng thái tự học (Mẫu học + Ngưỡng nhạy cảm) vào SQLite.
@@ -1234,6 +1242,14 @@ PluginAction(
         put("deltaTrigger", period.deltaTrigger)
         put("absDiffTrigger", period.absDiffTrigger)
         put("driftTrigger", period.driftTrigger)
+        // ✅ MỚI: biên thủ công (xem ghi chú ở PeriodLearningState) — lưu cùng JSON để đọc lại
+        // đúng giá trị người dùng đã nhập ở lần sau, thay vì luôn hiện mặc định cứng trên UI.
+        put("minDeltaTrigger", period.minDeltaTrigger)
+        put("maxDeltaTrigger", period.maxDeltaTrigger)
+        put("minAbsDiffTrigger", period.minAbsDiffTrigger)
+        put("maxAbsDiffTrigger", period.maxAbsDiffTrigger)
+        put("minDriftTrigger", period.minDriftTrigger)
+        put("maxDriftTrigger", period.maxDriftTrigger)
         put("falseDeltas", JSONArray(period.falseDeltas))
         put("falseDiffs", JSONArray(period.falseDiffs))
         put("falseDrifts", JSONArray(period.falseDrifts))
@@ -1290,7 +1306,16 @@ PluginAction(
             falseSampleIsManual = isManual,
             deltaTrigger = json.optInt("deltaTrigger", DEFAULT_DELTA_TRIGGER),
             absDiffTrigger = json.optInt("absDiffTrigger", DEFAULT_ABS_DIFF_TRIGGER),
-            driftTrigger = json.optInt("driftTrigger", DEFAULT_DRIFT_TRIGGER)
+            driftTrigger = json.optInt("driftTrigger", DEFAULT_DRIFT_TRIGGER),
+            // ✅ MỚI: dữ liệu cũ (trước khi có dialog "Cài đặt ngưỡng thủ công") không có các key
+            // này — optInt rơi về đúng mặc định ban đầu của PeriodLearningState (giống hành vi
+            // Screen đang dùng qua toán tử `?:` trước khi có bản vá này).
+            minDeltaTrigger = json.optInt("minDeltaTrigger", DEFAULT_DELTA_TRIGGER),
+            maxDeltaTrigger = json.optInt("maxDeltaTrigger", MANUAL_MAX_DELTA_TRIGGER),
+            minAbsDiffTrigger = json.optInt("minAbsDiffTrigger", DEFAULT_ABS_DIFF_TRIGGER),
+            maxAbsDiffTrigger = json.optInt("maxAbsDiffTrigger", MANUAL_MAX_ABS_DIFF_TRIGGER),
+            minDriftTrigger = json.optInt("minDriftTrigger", DEFAULT_DRIFT_TRIGGER),
+            maxDriftTrigger = json.optInt("maxDriftTrigger", MANUAL_MAX_DRIFT_TRIGGER)
         )
     }
 
@@ -2798,6 +2823,47 @@ PluginAction(
         logger.i("CameraSkill", "🧠 Learning state reset manually for camera $tid (day+night)")
     }
 
+    /**
+     * ✅ MỚI: Ghi thủ công delta/diff/drift (thấp nhất/hiện tại/cao nhất) cho MỘT khung giờ
+     * (ngày/đêm) của một camera — nguồn UI: CameraDetailScreen → ManualThresholdDialog.
+     * Ghi thẳng vào state trong RAM rồi lưu SQLite ngay, KHÔNG khoá tự học: recomputeThresholds
+     * FromSamples() vẫn chạy tiếp bình thường sau đó và có thể học đè lên "hiện tại" vừa set —
+     * đúng như dòng mô tả đã hiển thị cho người dùng trong dialog.
+     * min/max chỉ được lưu lại để hiển thị đúng giá trị đã nhập ở lần mở dialog kế tiếp — không
+     * dùng làm cận trong bất kỳ phép coerceIn nào của logic tự học (xem ghi chú ở
+     * PeriodLearningState).
+     */
+    suspend fun setManualThresholds(
+        cameraId: String,
+        isNight: Boolean,
+        minDelta: Int, maxDelta: Int, curDelta: Int,
+        minDiff: Int, maxDiff: Int, curDiff: Int,
+        minDrift: Int, maxDrift: Int, curDrift: Int
+    ): String {
+        val tid = cameraId.trim()
+        val state = learningStates.getOrPut(tid) { CameraLearningState() }
+        val period = if (isNight) state.night else state.day
+
+        period.minDeltaTrigger = minDelta
+        period.maxDeltaTrigger = maxDelta
+        period.deltaTrigger = curDelta
+
+        period.minAbsDiffTrigger = minDiff
+        period.maxAbsDiffTrigger = maxDiff
+        period.absDiffTrigger = curDiff
+
+        period.minDriftTrigger = minDrift
+        period.maxDriftTrigger = maxDrift
+        period.driftTrigger = curDrift
+
+        saveLearningStateToDb(tid, state)
+
+        val periodLabel = if (isNight) "🌙 Ban đêm" else "☀️ Ban ngày"
+        val message = "✅ Đã lưu ngưỡng thủ công ($periodLabel): delta=$curDelta diff=$curDiff drift=$curDrift"
+        logger.i("CameraSkill", "setManualThresholds id=$tid isNight=$isNight delta=$curDelta diff=$curDiff drift=$curDrift")
+        return message
+    }
+
     fun resetAllCircuitBreakers() {
         circuitBreakers.keys.forEach { id ->
             val tid = id.trim()
@@ -2830,7 +2896,16 @@ PluginAction(
                 "drift" to p.lastDrift,
                 // ✅ SỬA (bugfix): trước đây luôn báo hằng số cố định DRIFT_TRIGGER, không phản ánh
                 // driftTrigger THẬT đã học riêng cho period này.
-                "driftTrigger" to p.driftTrigger
+                "driftTrigger" to p.driftTrigger,
+                // ✅ MỚI: biên thủ công đã lưu — CameraDetailScreen.ManualThresholdForm đọc các key
+                // này để hiện lại đúng "Thấp nhất"/"Cao nhất" người dùng từng nhập, thay vì luôn
+                // rơi về mặc định cứng (trước bản vá này các key này không tồn tại trong map).
+                "minDeltaTrigger" to p.minDeltaTrigger,
+                "maxDeltaTrigger" to p.maxDeltaTrigger,
+                "minDiffTrigger" to p.minAbsDiffTrigger,
+                "maxDiffTrigger" to p.maxAbsDiffTrigger,
+                "minDriftTrigger" to p.minDriftTrigger,
+                "maxDriftTrigger" to p.maxDriftTrigger
             )
             // ✅ SỬA: inCooldown trước đây chỉ xét cooldownUntil > now, không quan tâm
             // camera.enableCooldown đang bật/tắt. Hệ quả: sau khi người dùng gạt TẮT cooldown,
