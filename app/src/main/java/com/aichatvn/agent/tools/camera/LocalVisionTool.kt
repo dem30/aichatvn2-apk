@@ -56,14 +56,13 @@ class LocalVisionTool @Inject constructor(
     @ApplicationContext private val context: Context,
     private val logger: Logger,
 ) {
-    // ✅ SỬA: Giảm threshold từ 0.6 → 0.35 (ML Kit default) để nhạy cảm hơn.
-    // Giải thích: threshold 0.6 quá cao, loại bỏ nhiều vật thể hợp lệ. Khi dùng local fallback
-    // (smartMode TẮT), mục đích chỉ là enrichment event log cho search, KHÔNG quyết định cảnh báo
-    // quan trọng, nên lower threshold được.
+    // ✅ SỬA: Tăng threshold từ 0.35 → 0.7 để giảm nhận diện sai/lung tung. 0.35 quá thấp trong
+    // thực tế, khiến ML Kit gán nhãn cho vật thể không thực sự có trong ảnh (false positive),
+    // làm summary/EventLogEntity nhiễu, khó tin cậy khi search local.
     private val imageLabeler by lazy {
         ImageLabeling.getClient(
             ImageLabelerOptions.Builder()
-                .setConfidenceThreshold(0.35f)  // ✅ SỬA từ 0.6
+                .setConfidenceThreshold(0.7f)  // ✅ SỬA từ 0.35
                 .build()
         )
     }
@@ -130,7 +129,7 @@ class LocalVisionTool @Inject constructor(
                     val rawLabels = labels.map { it.text to it.confidence }  // ✅ NEW: giữ lại raw
                     val mapped = labels
                         .sortedByDescending { it.confidence }
-                        .take(10)  // ✅ SỬA từ 5 → 10 để lấy thêm labels (threshold đã giảm nên có thể nhiều hơn)
+                        .take(3)  // ✅ SỬA từ 10 → 3, chỉ giữ nhãn nổi bật nhất (threshold đã tăng lên 0.7)
                         .mapNotNull { mapLabelToVietnamese(it.text) }
                         .distinct()
                     
