@@ -672,6 +672,93 @@ val MIGRATION_27_28 = object : Migration(27, 28) {
     }
 }
 
+// ✅ MỚI: version 28 → 29 — vá lệch schema bảng cameras phát hiện qua crash
+// "Migration didn't properly handle: cameras" trên máy đã cài từ bản cũ (đi qua đủ
+// chuỗi migration), không xảy ra trên máy cài mới (Room tự CREATE TABLE đúng entity).
+//
+// Nguyên nhân: MIGRATION_25_26 vẫn ADD COLUMN deviceId/vendor, nhưng CameraConfigEntity
+// đã bỏ 2 field này từ lâu. Đồng thời entity đã thêm field onvifDeviceServiceUrl
+// (@ColumnInfo defaultValue NULL) nhưng CHƯA từng có migration nào ADD COLUMN nó vào DB
+// thật — 2 lỗi cộng dồn khiến "Found" (DB thật) và "Expected" (entity) không khớp:
+// Found thừa deviceId/vendor, thiếu onvifDeviceServiceUrl.
+//
+// SQLite trên nhiều bản Android còn hỗ trợ hạn chế ALTER TABLE DROP COLUMN, nên xoá cột
+// theo cách chuẩn Room khuyến nghị: tạo bảng mới đúng khớp entity hiện tại (giữ đúng thứ
+// tự cột trong Entity.kt để khỏi lệch TableInfo lần nữa), copy dữ liệu qua bằng danh sách
+// cột tường minh (bỏ deviceId/vendor, cột mới onvifDeviceServiceUrl lấy default NULL), xoá
+// bảng cũ, đổi tên bảng mới về "cameras".
+val MIGRATION_28_29 = object : Migration(28, 29) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS cameras_new (
+                id TEXT NOT NULL PRIMARY KEY,
+                customerId TEXT NOT NULL,
+                customername TEXT NOT NULL,
+                customeremail TEXT NOT NULL,
+                snapshoturl TEXT NOT NULL,
+                landinfo TEXT,
+                snapshotPath TEXT,
+                timestamp INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                isOnline INTEGER NOT NULL,
+                manualOff INTEGER NOT NULL,
+                smartMode INTEGER NOT NULL,
+                aiPrompt TEXT NOT NULL,
+                aiPositiveKeywords TEXT NOT NULL,
+                aiNegativeKeywords TEXT NOT NULL,
+                enableCooldown INTEGER NOT NULL,
+                enableNotification INTEGER NOT NULL,
+                alertActions TEXT NOT NULL,
+                snapshotUsername TEXT,
+                snapshotPassword TEXT,
+                snapshotUrlRemote TEXT,
+                enableAlarmPush INTEGER NOT NULL DEFAULT 0,
+                alarmSecret TEXT DEFAULT NULL,
+                onvifSupported INTEGER NOT NULL DEFAULT 0,
+                onvifEventUrl TEXT DEFAULT NULL,
+                onvifDeviceServiceUrl TEXT DEFAULT NULL,
+                onvifEnabled INTEGER NOT NULL DEFAULT 0,
+                rtspSupported INTEGER NOT NULL DEFAULT 0,
+                rtspUrl TEXT DEFAULT NULL,
+                rtspEnabled INTEGER NOT NULL DEFAULT 0,
+                snapshotUrlRemoteLastVerifiedAt INTEGER DEFAULT NULL,
+                snapshotUrlRemoteHealthy INTEGER DEFAULT NULL,
+                ddnsHost TEXT DEFAULT NULL,
+                ddnsPort INTEGER DEFAULT NULL,
+                onvifMotionObserved INTEGER DEFAULT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            INSERT INTO cameras_new (
+                id, customerId, customername, customeremail, snapshoturl, landinfo,
+                snapshotPath, timestamp, status, isOnline, manualOff, smartMode, aiPrompt,
+                aiPositiveKeywords, aiNegativeKeywords, enableCooldown, enableNotification,
+                alertActions, snapshotUsername, snapshotPassword, snapshotUrlRemote,
+                enableAlarmPush, alarmSecret, onvifSupported, onvifEventUrl,
+                onvifDeviceServiceUrl, onvifEnabled, rtspSupported, rtspUrl, rtspEnabled,
+                snapshotUrlRemoteLastVerifiedAt, snapshotUrlRemoteHealthy, ddnsHost, ddnsPort,
+                onvifMotionObserved
+            )
+            SELECT
+                id, customerId, customername, customeremail, snapshoturl, landinfo,
+                snapshotPath, timestamp, status, isOnline, manualOff, smartMode, aiPrompt,
+                aiPositiveKeywords, aiNegativeKeywords, enableCooldown, enableNotification,
+                alertActions, snapshotUsername, snapshotPassword, snapshotUrlRemote,
+                enableAlarmPush, alarmSecret, onvifSupported, onvifEventUrl,
+                NULL, onvifEnabled, rtspSupported, rtspUrl, rtspEnabled,
+                snapshotUrlRemoteLastVerifiedAt, snapshotUrlRemoteHealthy, ddnsHost, ddnsPort,
+                onvifMotionObserved
+            FROM cameras
+            """.trimIndent()
+        )
+        db.execSQL("DROP TABLE cameras")
+        db.execSQL("ALTER TABLE cameras_new RENAME TO cameras")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -709,7 +796,11 @@ val MIGRATION_27_28 = object : Migration(27, 28) {
     // snapshotUrlRemote, xem ghi chú tại khai báo migration).
     // ✅ MỚI: bump 27 → 28 — MIGRATION_27_28 (CameraConfigEntity thêm cột onvifMotionObserved,
     // xem ghi chú tại khai báo migration).
-    version = 28,
+    // ✅ MỚI: bump 28 → 29 — MIGRATION_28_29 vá lệch schema bảng cameras: entity đã bỏ
+    // deviceId/vendor (còn sót lại từ MIGRATION_25_26) và đã thêm onvifDeviceServiceUrl
+    // (chưa từng có migration ADD COLUMN tương ứng) — xem ghi chú đầy đủ tại khai báo
+    // MIGRATION_28_29 phía trên, và crash "Migration didn't properly handle: cameras".
+    version = 29,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -747,7 +838,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
