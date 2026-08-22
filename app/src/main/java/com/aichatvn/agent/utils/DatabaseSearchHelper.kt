@@ -437,7 +437,7 @@ class DatabaseSearchHelper @Inject constructor(
                             .sortedByDescending { it.value.size }
                             .forEach { (sourceId, logsForCam) ->
                                 val label = logsForCam.first().summary
-                                    .substringAfter("Camera ", missingDelimiter = "")
+                                    .substringAfter("Camera ", missingDelimiterValue = "")
                                     .substringBefore(" phát hiện:")
                                     .substringBefore("):")
                                     .let { if (it.isNotBlank()) "$it)" else sourceId }
@@ -471,7 +471,7 @@ class DatabaseSearchHelper @Inject constructor(
                     // JSON thật. Đếm số LOG có chứa mỗi đối tượng (không đếm trùng lặp trong 1 log).
                     val objectCounts = mutableMapOf<String, Int>()
                     filtered.forEach { log ->
-                        val objectsPart = log.summary.substringAfter("[objects: ", missingDelimiter = "")
+                        val objectsPart = log.summary.substringAfter("[objects: ", missingDelimiterValue = "")
                             .substringBefore("]")
                         if (objectsPart.isNotBlank()) {
                             objectsPart.split(",")
