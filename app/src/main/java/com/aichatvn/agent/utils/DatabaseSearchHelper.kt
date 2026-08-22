@@ -116,6 +116,7 @@ class DatabaseSearchHelper @Inject constructor(
         // filter generic ở dưới (contract.sourceCategory != null -> filter theo source) đã tự
         // hoạt động; nhánh này chỉ để hiển thị summaryText đẹp hơn thay vì rơi vào nhánh chung.
         val isCallCategory = contract.sourceCategory?.equals("call", ignoreCase = true) == true
+        val isCameraCategory = contract.sourceCategory?.equals("camera", ignoreCase = true) == true
 
         var filtered = when {
             isChatCategory -> {
@@ -411,6 +412,94 @@ class DatabaseSearchHelper @Inject constructor(
                     truncatedLogs.forEach { log ->
                         val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
                         append("• [$timeStr] ${log.summary}\n")
+                    }
+                }
+            } else if (isCameraCategory) {
+                append("--- Nhật ký Camera [${resolvedLabel.uppercase()}] ---\n")
+                if (filtered.isEmpty()) {
+                    if (contract.questionType == QuestionType.YES_NO) {
+                        append("💡 Câu trả lời: KHÔNG. Camera không ghi nhận sự kiện nào trùng khớp.\n")
+                    } else {
+                        append("Camera hoạt động bình thường, không ghi nhận sự kiện phù hợp.\n")
+                    }
+                } else {
+                    // 🆕 THỐNG KÊ CAMERA (theo camera / theo ngày / cảnh báo / đối tượng): trước
+                    // đây camera rơi vào nhánh `else` dùng chung với tuya (chỉ đếm on/off — vô
+                    // nghĩa với log camera) hoặc block COMPARE (chỉ so camera-vs-tuya tổng quát).
+                    // Đếm theo sourceId (convention định danh camera dùng xuyên suốt file này,
+                    // xem comment ở nhánh isCallCategory) — tên hiển thị (vd "khach") đã có sẵn
+                    // lồng trong summary dạng "Camera <tên> (<id>) phát hiện:...", nên lấy nhãn
+                    // trực tiếp từ summary thay vì cần tra thêm bảng camera.
+                    val byCamera = filtered.groupBy { it.sourceId }
+                    if (byCamera.size > 1) {
+                        append("💡 Thống kê theo camera:\n")
+                        byCamera.entries
+                            .sortedByDescending { it.value.size }
+                            .forEach { (sourceId, logsForCam) ->
+                                val label = logsForCam.first().summary
+                                    .substringAfter("Camera ", missingDelimiter = "")
+                                    .substringBefore(" phát hiện:")
+                                    .substringBefore("):")
+                                    .let { if (it.isNotBlank()) "$it)" else sourceId }
+                                append("• $label: ${logsForCam.size} lần\n")
+                            }
+                    } else {
+                        append("💡 Tổng số lần ghi nhận: $totalCount lần\n")
+                    }
+
+                    // 🆕 Theo ngày: nhóm theo dd/MM (tái dùng CALL_SUMMARY_DATE_FORMATTER thay vì
+                    // tạo formatter riêng), sắp xếp theo thứ tự thời gian tăng dần cho dễ đọc.
+                    val byDay = filtered.groupBy { CALL_SUMMARY_DATE_FORMATTER.format(Instant.ofEpochMilli(it.timestamp)) }
+                    if (byDay.size > 1) {
+                        append("💡 Thống kê theo ngày:\n")
+                        byDay.entries
+                            .sortedBy { it.value.minOf { log -> log.timestamp } }
+                            .forEach { (day, logsForDay) -> append("• Ngày $day: ${logsForDay.size} lần\n") }
+                    }
+
+                    // 🆕 Cảnh báo: camera.value chỉ là chuỗi coarse "Bình thường"/"Phát hiện bất
+                    // thường" (xem audit trong ghi chú AgentKernel — camera không có eventType
+                    // riêng biệt cho cảnh báo, chỉ có field value này), nên đếm theo đó.
+                    val alertCount = filtered.count { it.value.contains("bất thường", ignoreCase = true) }
+                    if (alertCount > 0) {
+                        append("💡 Số lần cảnh báo bất thường: $alertCount lần\n")
+                    }
+
+                    // 🆕 Theo đối tượng: parse hậu tố "[objects: a,b,c]" mà CameraSkill.kt luôn
+                    // nối vào cuối summary (xem audit trong ghi chú AgentKernel) — KHÔNG parse
+                    // JSON, chỉ tách chuỗi đơn giản vì đây là định dạng text cố định, không phải
+                    // JSON thật. Đếm số LOG có chứa mỗi đối tượng (không đếm trùng lặp trong 1 log).
+                    val objectCounts = mutableMapOf<String, Int>()
+                    filtered.forEach { log ->
+                        val objectsPart = log.summary.substringAfter("[objects: ", missingDelimiter = "")
+                            .substringBefore("]")
+                        if (objectsPart.isNotBlank()) {
+                            objectsPart.split(",")
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() }
+                                .toSet() // tránh đếm trùng nếu 1 log liệt kê lặp cùng 1 object
+                                .forEach { obj -> objectCounts[obj] = (objectCounts[obj] ?: 0) + 1 }
+                        }
+                    }
+                    if (objectCounts.isNotEmpty()) {
+                        append("💡 Thống kê theo đối tượng phát hiện (số lần xuất hiện trong log):\n")
+                        objectCounts.entries
+                            .sortedByDescending { it.value }
+                            .take(10) // tránh làm loãng context nếu có quá nhiều loại đối tượng lạ
+                            .forEach { (obj, count) -> append("• $obj: $count lần\n") }
+                    }
+
+                    append("\n")
+                    if (hasPartialMatchOnly) {
+                        append("⚠️ Lưu ý: không có sự kiện nào khớp ĐỦ CẢ hai tiêu chí (vật thể + từ khoá) trong câu hỏi — các dòng dưới đây chỉ khớp MỘT PHẦN, hãy diễn đạt với mức độ chắc chắn phù hợp (vd \"có thể là...\"), không khẳng định tuyệt đối.\n")
+                    }
+                    append("\nChi tiết nhật ký hoạt động:\n")
+                    truncatedLogs.forEach { log ->
+                        val timeStr = DATETIME_FORMATTER.format(Instant.ofEpochMilli(log.timestamp))
+                        append("• [$timeStr] ${log.summary}\n")
+                    }
+                    if (isTruncated) {
+                        append("*(Đã ẩn bớt ${totalCount - limit} sự kiện cũ để tối ưu)*\n")
                     }
                 }
             } else {
