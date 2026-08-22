@@ -812,7 +812,64 @@ class AgentKernel @Inject constructor(
                         .distinct()
                         .filter { path -> try { File(path).exists() } catch (e: Exception) { false } }
                         .ifEmpty { null }
-                    "Trong $label, ghi nhận $total hoạt động của $targetName:\n• $details" to images
+
+                    // 🐛 SỬA BUG (Vinh báo cáo: "camera hôm nay" ở QA mode không hiện thống kê dù
+                    // DatabaseSearchHelper.executeSearchContract() ĐÃ build sẵn khối thống kê camera
+                    // trong searchResult.summaryText — vì nhánh QA-local NÀY (bộ sinh câu Kotlin
+                    // thuần, xem comment "0 AI" ở trên) không hề đọc summaryText, chỉ dùng total/logs
+                    // thô để tự dựng câu riêng. summaryText chỉ thực sự được dùng ở nhánh "call" (xem
+                    // return sớm phía trên) và ở đường AI/Combined (nhồi vào <SYSTEM_MEMORY>). Camera
+                    // không thể return thẳng summaryText như call vì sẽ MẤT khả năng đính kèm ảnh
+                    // (summaryText chỉ là text, không có imagePaths) — nên thay vào đó, thêm thống kê
+                    // TRỰC TIẾP vào đây, chỉ cho sourceCategory=camera, giữ nguyên phần ảnh không đổi.
+                    val camStatsNote = if (sourceCategory == "camera") {
+                        val byCamera = logs.groupBy { it.sourceId }
+                        val byDay = logs.groupBy {
+                            java.text.SimpleDateFormat("dd/MM", java.util.Locale.getDefault()).format(java.util.Date(it.timestamp))
+                        }
+                        val alertCount = logs.count { it.value.contains("bất thường", ignoreCase = true) }
+                        val objectCounts = mutableMapOf<String, Int>()
+                        logs.forEach { log ->
+                            log.summary.substringAfter("[objects: ", missingDelimiterValue = "")
+                                .substringBefore("]")
+                                .takeIf { it.isNotBlank() }
+                                ?.split(",")
+                                ?.map { it.trim() }
+                                ?.filter { it.isNotEmpty() }
+                                ?.toSet()
+                                ?.forEach { obj -> objectCounts[obj] = (objectCounts[obj] ?: 0) + 1 }
+                        }
+                        buildString {
+                            if (byCamera.size > 1) {
+                                append("\n💡 Theo camera: ")
+                                append(byCamera.entries.sortedByDescending { it.value.size }
+                                    .joinToString(", ") { (id, l) ->
+                                        val label = l.first().summary
+                                            .substringAfter("Camera ", missingDelimiterValue = "")
+                                            .substringBefore(" phát hiện:")
+                                            .substringBefore("):")
+                                            .let { if (it.isNotBlank()) "$it)" else id }
+                                        "$label: ${l.size} lần"
+                                    })
+                            }
+                            if (byDay.size > 1) {
+                                append("\n💡 Theo ngày: ")
+                                append(byDay.entries.sortedBy { it.value.minOf { log -> log.timestamp } }
+                                    .joinToString(", ") { (day, l) -> "$day: ${l.size} lần" })
+                            }
+                            if (alertCount > 0) {
+                                append("\n💡 Cảnh báo bất thường: $alertCount lần")
+                            }
+                            if (objectCounts.isNotEmpty()) {
+                                append("\n💡 Theo đối tượng: ")
+                                append(objectCounts.entries.sortedByDescending { it.value }
+                                    .take(10)
+                                    .joinToString(", ") { (obj, count) -> "$obj: $count lần" })
+                            }
+                        }
+                    } else ""
+
+                    "Trong $label, ghi nhận $total hoạt động của $targetName:$camStatsNote\n• $details" to images
                 }
                 else -> "Trong $label, $targetName hoạt động bình thường, không có bản ghi mới." to null
             }
