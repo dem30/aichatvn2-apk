@@ -222,10 +222,11 @@ fun CameraDetailScreen(
     // absDiffTrigger/driftTrigger + biên min/max vào DB qua CameraSkill.setManualThresholds().
     // KHÔNG khoá học tập: báo giả/AI tự học vẫn chạy tiếp sau đó, có thể ghi đè lại "Hiện tại".
     if (showManualThresholdDialog) {
+        val diagSnapshot = diagnostics
         @Suppress("UNCHECKED_CAST")
-        val dayStats = diagnostics["day"] as? Map<String, Any> ?: emptyMap()
+        val dayStats = diagSnapshot?.get("day") as? Map<String, Any> ?: emptyMap()
         @Suppress("UNCHECKED_CAST")
-        val nightStats = diagnostics["night"] as? Map<String, Any> ?: emptyMap()
+        val nightStats = diagSnapshot?.get("night") as? Map<String, Any> ?: emptyMap()
         ManualThresholdDialog(
             dayStats = dayStats,
             nightStats = nightStats,
