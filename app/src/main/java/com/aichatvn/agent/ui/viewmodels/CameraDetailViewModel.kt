@@ -1132,6 +1132,46 @@ class CameraDetailViewModel @Inject constructor(
         }
     }
 
+    // ✅ MỚI: kết quả set ngưỡng thủ công (thấp nhất/cao nhất/hiện tại) — CameraDetailScreen
+    // hiển thị qua snackbar.
+    private val _manualThresholdResult = MutableStateFlow<String?>(null)
+    val manualThresholdResult: StateFlow<String?> = _manualThresholdResult.asStateFlow()
+
+    /**
+     * Set thủ công thấp nhất/cao nhất/hiện tại cho delta/diff/drift của MỘT khung giờ (ngày/đêm).
+     * Ghi thẳng vào DB qua CameraSkill.setManualThresholds() — KHÔNG khoá, báo giả/AI tự học vẫn
+     * chạy tiếp bình thường sau đó và có thể học đè lên giá trị "hiện tại" (đúng như đã chọn).
+     */
+    fun setManualThresholds(
+        isNight: Boolean,
+        minDelta: Int, maxDelta: Int, curDelta: Int,
+        minDiff: Int, maxDiff: Int, curDiff: Int,
+        minDrift: Int, maxDrift: Int, curDrift: Int
+    ) {
+        viewModelScope.launch {
+            val message = cameraSkill.setManualThresholds(
+                cameraId = cameraId,
+                isNight = isNight,
+                minDelta = minDelta, maxDelta = maxDelta, curDelta = curDelta,
+                minDiff = minDiff, maxDiff = maxDiff, curDiff = curDiff,
+                minDrift = minDrift, maxDrift = maxDrift, curDrift = curDrift
+            )
+            // ✅ Giống toggleCooldown(): refreshDiagnostics() ép tính lại ngay (không chờ tick
+            // polling 5s trong init{}), rồi đọc lại đúng key cameraId để cập nhật UI tức thì.
+            withContext(Dispatchers.IO) {
+                cameraSkill.refreshDiagnostics()
+                val diagMap = cameraSkill.getDiagnostics()
+                _diagnostics.value = diagMap[cameraId] as? Map<String, Any>
+            }
+            _manualThresholdResult.value = message
+            logger.i("CameraDetailViewModel", "setManualThresholds id=$cameraId isNight=$isNight -> $message")
+        }
+    }
+
+    fun clearManualThresholdResult() {
+        _manualThresholdResult.value = null
+    }
+
 
 
 }

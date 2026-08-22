@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.ClipboardManager // ✅ MỚI: copy alarmPus
 import androidx.compose.ui.platform.LocalClipboardManager // ✅ MỚI
 import androidx.compose.ui.text.AnnotatedString // ✅ MỚI
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.aichatvn.agent.data.model.AlertEntity
@@ -79,6 +80,9 @@ fun CameraDetailScreen(
 
     var showTestDialog by remember { mutableStateOf(false) }
     var showResetLearningDialog by remember { mutableStateOf(false) }
+    // ✅ MỚI: dialog set ngưỡng thủ công (thấp nhất/cao nhất/hiện tại) — ghi thẳng vào DB, không
+    // ràng buộc gì, báo giả/AI tự học vẫn tiếp tục chạy sau đó như bình thường.
+    var showManualThresholdDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(testResult) {
@@ -94,6 +98,14 @@ fun CameraDetailScreen(
         scheduleResult?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearScheduleResult()
+        }
+    }
+    // ✅ MỚI: báo kết quả set ngưỡng thủ công qua snackbar (xem ViewModel bổ sung bên dưới).
+    val manualThresholdResult by viewModel.manualThresholdResult.collectAsState()
+    LaunchedEffect(manualThresholdResult) {
+        manualThresholdResult?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearManualThresholdResult()
         }
     }
     // ✅ MỚI: báo kết quả "Kiểm tra kết nối" qua snackbar — Success/TimedOut là 2 trạng
@@ -202,6 +214,30 @@ fun CameraDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showResetLearningDialog = false }) { Text("Huỷ") }
+            }
+        )
+    }
+
+    // ✅ MỚI: dialog set ngưỡng thủ công — tách riêng Ngày/Đêm, ghi thẳng deltaTrigger/
+    // absDiffTrigger/driftTrigger + biên min/max vào DB qua CameraSkill.setManualThresholds().
+    // KHÔNG khoá học tập: báo giả/AI tự học vẫn chạy tiếp sau đó, có thể ghi đè lại "Hiện tại".
+    if (showManualThresholdDialog) {
+        @Suppress("UNCHECKED_CAST")
+        val dayStats = diagnostics["day"] as? Map<String, Any> ?: emptyMap()
+        @Suppress("UNCHECKED_CAST")
+        val nightStats = diagnostics["night"] as? Map<String, Any> ?: emptyMap()
+        ManualThresholdDialog(
+            dayStats = dayStats,
+            nightStats = nightStats,
+            onDismiss = { showManualThresholdDialog = false },
+            onSave = { isNight, minDelta, maxDelta, curDelta, minDiff, maxDiff, curDiff, minDrift, maxDrift, curDrift ->
+                viewModel.setManualThresholds(
+                    isNight = isNight,
+                    minDelta = minDelta, maxDelta = maxDelta, curDelta = curDelta,
+                    minDiff = minDiff, maxDiff = maxDiff, curDiff = curDiff,
+                    minDrift = minDrift, maxDrift = maxDrift, curDrift = curDrift
+                )
+                showManualThresholdDialog = false
             }
         )
     }
@@ -675,6 +711,15 @@ fun CameraDetailScreen(
                             // chỉ có thể vô tình xoá học tập qua nút "Test ngay" (đã sửa để không
                             // còn làm vậy nữa). Có dialog xác nhận vì đây là hành động xoá dữ liệu.
                             Spacer(Modifier.height(8.dp))
+                            // ✅ MỚI: set tay thấp nhất/cao nhất/hiện tại — ghi thẳng vào DB, không
+                            // ràng buộc gì (khác nút Reset ở dưới, cái này KHÔNG xoá mẫu học/baseline).
+                            OutlinedButton(
+                                onClick = { showManualThresholdDialog = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("⚙️ Cài đặt ngưỡng thủ công")
+                            }
+                            Spacer(Modifier.height(8.dp))
                             OutlinedButton(
                                 onClick = { showResetLearningDialog = true },
                                 modifier = Modifier.fillMaxWidth(),
@@ -1115,6 +1160,130 @@ private fun PeriodLearningStats(p: Map<String, Any>) {
         "Drift hiện tại",
         "$driftVal/$driftLimit" + if (driftVal >= driftLimit) " ⚠️" else ""
     )
+}
+
+// ✅ MỚI: dialog "Cài đặt ngưỡng thủ công" — 2 tab Ngày/Đêm, mỗi tab tự lưu riêng (chuyển tab
+// không mất dữ liệu tab kia vì mỗi ManualThresholdForm giữ state độc lập theo key isNight).
+@Composable
+private fun ManualThresholdDialog(
+    dayStats: Map<String, Any>,
+    nightStats: Map<String, Any>,
+    onDismiss: () -> Unit,
+    onSave: (
+        isNight: Boolean,
+        minDelta: Int, maxDelta: Int, curDelta: Int,
+        minDiff: Int, maxDiff: Int, curDiff: Int,
+        minDrift: Int, maxDrift: Int, curDrift: Int
+    ) -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) } // 0 = Ban ngày, 1 = Ban đêm
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.large, tonalElevation = 4.dp, modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text("⚙️ Cài đặt ngưỡng thủ công", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Ghi thẳng vào hệ thống, không ràng buộc gì — nhập bao nhiêu tuỳ ý. Sau khi lưu, " +
+                        "báo giả/AI tự học vẫn chạy tiếp bình thường và có thể thay đổi lại \"Hiện tại\".",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+
+                TabRow(selectedTabIndex = selectedTab) {
+                    Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("☀️ Ban ngày") })
+                    Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("🌙 Ban đêm") })
+                }
+                Spacer(Modifier.height(12.dp))
+
+                if (selectedTab == 0) {
+                    ManualThresholdForm(stats = dayStats, isNight = false, onSave = onSave, onDismiss = onDismiss)
+                } else {
+                    ManualThresholdForm(stats = nightStats, isNight = true, onSave = onSave, onDismiss = onDismiss)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManualThresholdForm(
+    stats: Map<String, Any>,
+    isNight: Boolean,
+    onSave: (
+        isNight: Boolean,
+        minDelta: Int, maxDelta: Int, curDelta: Int,
+        minDiff: Int, maxDiff: Int, curDiff: Int,
+        minDrift: Int, maxDrift: Int, curDrift: Int
+    ) -> Unit,
+    onDismiss: () -> Unit
+) {
+    // remember(isNight) để mỗi tab giữ state nhập liệu riêng, không lẫn giữa Ngày/Đêm.
+    var minDelta by remember(isNight) { mutableStateOf("${stats["minDeltaTrigger"] ?: 3}") }
+    var maxDelta by remember(isNight) { mutableStateOf("${stats["maxDeltaTrigger"] ?: 15}") }
+    var curDelta by remember(isNight) { mutableStateOf("${stats["deltaTrigger"] ?: 3}") }
+
+    var minDiff by remember(isNight) { mutableStateOf("${stats["minDiffTrigger"] ?: 5}") }
+    var maxDiff by remember(isNight) { mutableStateOf("${stats["maxDiffTrigger"] ?: 20}") }
+    var curDiff by remember(isNight) { mutableStateOf("${stats["absDiffTrigger"] ?: 5}") }
+
+    var minDrift by remember(isNight) { mutableStateOf("${stats["minDriftTrigger"] ?: 6}") }
+    var maxDrift by remember(isNight) { mutableStateOf("${stats["maxDriftTrigger"] ?: 18}") }
+    var curDrift by remember(isNight) { mutableStateOf("${stats["driftTrigger"] ?: 6}") }
+
+    ThresholdMetricRow("Delta", minDelta, curDelta, maxDelta,
+        onMinChange = { minDelta = it }, onCurChange = { curDelta = it }, onMaxChange = { maxDelta = it })
+    ThresholdMetricRow("Diff", minDiff, curDiff, maxDiff,
+        onMinChange = { minDiff = it }, onCurChange = { curDiff = it }, onMaxChange = { maxDiff = it })
+    ThresholdMetricRow("Drift", minDrift, curDrift, maxDrift,
+        onMinChange = { minDrift = it }, onCurChange = { curDrift = it }, onMaxChange = { maxDrift = it })
+
+    Spacer(Modifier.height(8.dp))
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        TextButton(onClick = onDismiss) { Text("Huỷ") }
+        Spacer(Modifier.width(8.dp))
+        Button(onClick = {
+            onSave(
+                isNight,
+                minDelta.toIntOrNull() ?: 0, maxDelta.toIntOrNull() ?: 0, curDelta.toIntOrNull() ?: 0,
+                minDiff.toIntOrNull() ?: 0, maxDiff.toIntOrNull() ?: 0, curDiff.toIntOrNull() ?: 0,
+                minDrift.toIntOrNull() ?: 0, maxDrift.toIntOrNull() ?: 0, curDrift.toIntOrNull() ?: 0
+            )
+        }) { Text("Lưu") }
+    }
+}
+
+@Composable
+private fun ThresholdMetricRow(
+    label: String,
+    min: String, cur: String, max: String,
+    onMinChange: (String) -> Unit, onCurChange: (String) -> Unit, onMaxChange: (String) -> Unit
+) {
+    Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
+    Spacer(Modifier.height(4.dp))
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        OutlinedTextField(
+            value = min, onValueChange = onMinChange,
+            label = { Text("Thấp nhất") }, modifier = Modifier.weight(1f), singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+        OutlinedTextField(
+            value = cur, onValueChange = onCurChange,
+            label = { Text("Hiện tại") }, modifier = Modifier.weight(1f), singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+        OutlinedTextField(
+            value = max, onValueChange = onMaxChange,
+            label = { Text("Cao nhất") }, modifier = Modifier.weight(1f), singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+    }
+    Spacer(Modifier.height(12.dp))
 }
 
 @Composable

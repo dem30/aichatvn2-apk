@@ -307,10 +307,8 @@ PluginAction(
         // các mẫu nhiễu cũ sau một thời gian ổn định, thay vì ngưỡng chỉ tăng mãi mãi.
         val falseSampleTimestamps: MutableList<Long> = mutableListOf(),
         // ✅ MỚI (bugfix): true nếu mẫu này do người dùng bấm "Báo động giả" xác nhận thủ công,
-        // false nếu do đường tự động (Groq nói "bình thường" cho báo động thật) nạp vào. Trước đây
-        // dùng để phân trần thấp/cao (AUTO_MAX_* vs MANUAL_MAX_*) — đã bỏ vì gây kẹt ngưỡng dưới
-        // mức nhiễu thật (xem MAX_DELTA_TRIGGER/MAX_ABS_DIFF_TRIGGER/MAX_DRIFT_TRIGGER). Vẫn giữ lại
-        // trường này để phục vụ chẩn đoán ("ngưỡng hiện tại từng có người xác nhận trực tiếp chưa").
+        // false nếu do đường tự động (Groq nói "bình thường" cho báo động thật) nạp vào — dùng để
+        // quyết định trần ngưỡng (MANUAL_MAX_* vs AUTO_MAX_*) trong recomputeThresholdsFromSamples().
         // Luôn cùng độ dài và cùng thao tác thêm/xoá với falseDeltas/falseDiffs/falseDrifts/
         // falseSampleTimestamps.
         val falseSampleIsManual: MutableList<Boolean> = mutableListOf(),
@@ -493,23 +491,22 @@ PluginAction(
         // giúp ngưỡng tự hạ dần khi camera đã ổn định trở lại (ví dụ sau đợt chuyển sáng/tối).
         const val FALSE_SAMPLE_MAX_AGE_MS = 24 * 60 * 60 * 1000L
 
-        // ✅ SỬA (bugfix, theo phản hồi thực tế): TỪNG có ý định tách trần thấp riêng cho mẫu tự
-        // động (AUTO_MAX_* < MANUAL_MAX_*) để tránh Groq tự đẩy ngưỡng lên tối đa mà chưa có người
-        // xác nhận. Nhưng thực tế cho thấy trần thấp đó có hại nhiều hơn có lợi: camera có nhiễu
-        // nền thật ổn định cao hơn cả trần auto (vd delta thật=9-10 nhưng AUTO_MAX_DELTA_TRIGGER=6)
-        // thì bị kẹt VĨNH VIỄN dưới mức nhiễu thật — Groq xác nhận "bình thường" bao nhiêu lần cũng
-        // vô ích, ảnh vẫn tiếp tục bị gửi cho AI phân tích mỗi vòng quét, tốn token vô nghĩa.
-        // Bỏ tầng trần thấp này — dùng CHUNG 1 trần cho cả auto lẫn manual. Vẫn còn 2 lớp bảo vệ
-        // khác chống học sai:
-        //  (1) percentile-90% trên cửa sổ 30 mẫu — 1 mẫu đơn lẻ không thể tự nhảy thẳng lên trần,
-        //      cần nhiều lần xác nhận liên tiếp mới đẩy ngưỡng lên cao.
-        //  (2) bộ lọc "vọt bất thường" (drift <= driftTrigger × AUTO_LEARN_DRIFT_MULTIPLIER) chặn
-        //      các cú spike ngoại lệ (ánh sáng chớp, xe đi ngang) không cho lọt vào tập học.
-        // falseSampleIsManual vẫn giữ lại (không xoá) — vẫn hữu ích để hiển thị chẩn đoán "ngưỡng
-        // này có từng được người dùng xác nhận trực tiếp chưa", chỉ không còn dùng để phân trần nữa.
-        const val MAX_DELTA_TRIGGER = 15  // ✅ SỬA từ 10 — camera nhiễu nền cao bị kẹt trần, bắn cảnh báo liên tục
-        const val MAX_ABS_DIFF_TRIGGER = 20  // ✅ SỬA từ 14 — cùng lý do trên
-        const val MAX_DRIFT_TRIGGER = 18
+        // ✅ MỚI (bugfix): trần ĐẦY ĐỦ — chỉ đạt được khi trong cửa sổ 30 mẫu gần nhất có ÍT NHẤT
+        // 1 mẫu do NGƯỜI DÙNG xác nhận thủ công (bấm "Báo động giả"). Nếu cửa sổ chỉ toàn mẫu tự
+        // động (Groq nói "bình thường" cho báo động thật), ngưỡng bị giới hạn ở trần THẤP HƠN
+        // (AUTO_MAX_*) — tránh vòng lặp tự củng cố một chiều (mỗi lần trigger thật → mẫu mới luôn
+        // ≥ ngưỡng cũ → ngưỡng luôn tăng → không có cơ chế nào tự động kéo xuống → leo thẳng lên
+        // trần dù chưa chắc là nhiễu nền thật sự ổn định).
+        const val MANUAL_MAX_DELTA_TRIGGER = 10
+        const val MANUAL_MAX_ABS_DIFF_TRIGGER = 14
+        const val AUTO_MAX_DELTA_TRIGGER = 6
+        const val AUTO_MAX_ABS_DIFF_TRIGGER = 9
+
+        // ✅ MỚI (bugfix): driftTrigger dùng ĐÚNG cặp trần auto/manual như delta/diff ở trên — cùng
+        // lý do: chỉ Groq xác nhận "bình thường" nhiều lần không nên tự đưa driftTrigger lên mức
+        // cao nhất một mình, cần ít nhất 1 lần người dùng xác nhận thủ công mới đạt trần đầy đủ.
+        const val MANUAL_MAX_DRIFT_TRIGGER = 18
+        const val AUTO_MAX_DRIFT_TRIGGER = 12
 
         // ✅ MỚI (bugfix): mẫu tự động (Groq nói "bình thường") chỉ được nạp vào tập học nhiễu nếu
         // drift (|currentDiff - baselineDiff|) không vượt quá mức này — biến động "vọt" xa hơn baseline
@@ -1159,14 +1156,12 @@ PluginAction(
      * khung giờ từ các mẫu nhiễu HIỆN CÒN HẠN của khung giờ đó.
      * - Nếu không còn mẫu nào (đã hết hạn hết) -> hạ thẳng về mặc định (DEFAULT_*).
      * - Nếu còn mẫu -> áp dụng lại đúng công thức percentile-90% + margin như cũ.
-     * - ✅ SỬA (bugfix, theo phản hồi thực tế): TỪNG tách trần thấp riêng cho mẫu tự động (Groq)
-     *   thấp hơn mẫu thủ công, nhưng gây kẹt ngưỡng dưới cả mức nhiễu thật của camera (Groq xác
-     *   nhận "bình thường" bao nhiêu lần cũng vô ích, ảnh vẫn bị gửi cho AI liên tục). Bỏ tách trần
-     *   — dùng chung 1 trần (MAX_*) cho mọi nguồn mẫu. Bảo vệ chống học sai vẫn còn nguyên: percentile
-     *   90% cần nhiều mẫu liên tiếp mới đẩy ngưỡng lên cao (không nhảy thẳng lên trần từ 1 mẫu), và
-     *   bộ lọc "vọt bất thường" (xem drift <= driftTrigger×AUTO_LEARN_DRIFT_MULTIPLIER ở nơi gọi)
-     *   chặn các cú spike ngoại lệ không cho lọt vào tập học.
-     * - driftTrigger giờ tự học y hệt delta/diff — trước đây cố định DEFAULT_DRIFT_TRIGGER=6 mãi mãi.
+     * - ✅ SỬA (bugfix): trần áp dụng phụ thuộc cửa sổ 30 mẫu gần nhất có mẫu THỦ CÔNG hay không —
+     *   có ít nhất 1 mẫu do người dùng xác nhận -> trần đầy đủ (MANUAL_MAX_*); toàn mẫu tự động
+     *   (Groq) -> trần thấp hơn (AUTO_MAX_*), tránh vòng lặp tự tăng một chiều leo thẳng lên trần
+     *   cao nhất mà chưa từng có người xác nhận đó thực sự là nhiễu nền ổn định.
+     * - ✅ SỬA (bugfix): driftTrigger giờ tự học y hệt delta/diff, cùng cặp trần MANUAL_MAX_DRIFT_
+     *   TRIGGER/AUTO_MAX_DRIFT_TRIGGER — trước đây cố định DEFAULT_DRIFT_TRIGGER=6 mãi mãi.
      * Trả về true nếu deltaTrigger/absDiffTrigger/driftTrigger có bất kỳ giá trị nào thay đổi.
      */
     private fun recomputeThresholdsFromSamples(period: PeriodLearningState): Boolean {
@@ -1179,13 +1174,19 @@ PluginAction(
             period.absDiffTrigger = DEFAULT_ABS_DIFF_TRIGGER
             period.driftTrigger = DEFAULT_DRIFT_TRIGGER
         } else {
+            val windowStart = (period.falseSampleIsManual.size - 30).coerceAtLeast(0)
+            val hasManualInWindow = period.falseSampleIsManual.subList(windowStart, period.falseSampleIsManual.size).any { it }
+            val deltaCeiling = if (hasManualInWindow) MANUAL_MAX_DELTA_TRIGGER else AUTO_MAX_DELTA_TRIGGER
+            val diffCeiling = if (hasManualInWindow) MANUAL_MAX_ABS_DIFF_TRIGGER else AUTO_MAX_ABS_DIFF_TRIGGER
+            val driftCeiling = if (hasManualInWindow) MANUAL_MAX_DRIFT_TRIGGER else AUTO_MAX_DRIFT_TRIGGER
+
             val recentDeltas = period.falseDeltas.takeLast(30).sorted()
             val idx = (recentDeltas.size * 0.9).toInt().coerceIn(0, recentDeltas.size - 1)
-            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, MAX_DELTA_TRIGGER)
+            period.deltaTrigger = (recentDeltas[idx] + 2).coerceIn(DEFAULT_DELTA_TRIGGER, deltaCeiling)
 
             val recentDiffs = period.falseDiffs.takeLast(30).sorted()
             val idxDiff = (recentDiffs.size * 0.9).toInt().coerceIn(0, recentDiffs.size - 1)
-            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, MAX_ABS_DIFF_TRIGGER)
+            period.absDiffTrigger = (recentDiffs[idxDiff] + 3).coerceIn(DEFAULT_ABS_DIFF_TRIGGER, diffCeiling)
 
             // ✅ MỚI: chỉ recompute driftTrigger khi ĐÃ có mẫu drift thực sự — dữ liệu cũ migrate
             // từ trước khi có tính năng này sẽ có falseDrifts rỗng cho tới khi tích luỹ mẫu mới;
@@ -1194,11 +1195,15 @@ PluginAction(
             if (period.falseDrifts.isNotEmpty()) {
                 val recentDrifts = period.falseDrifts.takeLast(30).sorted()
                 val idxDrift = (recentDrifts.size * 0.9).toInt().coerceIn(0, recentDrifts.size - 1)
-                period.driftTrigger = (recentDrifts[idxDrift] + 2).coerceIn(DEFAULT_DRIFT_TRIGGER, MAX_DRIFT_TRIGGER)
+                period.driftTrigger = (recentDrifts[idxDrift] + 2).coerceIn(DEFAULT_DRIFT_TRIGGER, driftCeiling)
             }
         }
 
         return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff || period.driftTrigger != oldDrift
+    }
+        }
+
+        return period.deltaTrigger != oldDelta || period.absDiffTrigger != oldDiff
     }
 
     /**
@@ -1406,19 +1411,10 @@ PluginAction(
             // Tự động điều chỉnh nâng ngưỡng (dùng chung công thức percentile với decay)
             recomputeThresholdsFromSamples(period)
 
-            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả — trần dùng MAX_ABS_DIFF_TRIGGER
-            // (thay vì số ma thuật 35 cũ) để nhất quán với trần chung ở trên.
+            // Đảm bảo ngưỡng mới luôn cao hơn nhiễu vừa báo giả — trần dùng MANUAL_MAX_ABS_DIFF_TRIGGER
+            // (thay vì số ma thuật 35 cũ) để nhất quán với trần "đã có xác nhận thủ công" ở trên.
             if (period.absDiffTrigger <= diff) {
-                period.absDiffTrigger = (diff + 2).coerceAtMost(MAX_ABS_DIFF_TRIGGER)
-            }
-
-            // ✅ MỚI: safety-net tương tự absDiffTrigger ở trên — percentile-90 cần nhiều mẫu mới
-            // đẩy driftTrigger lên rõ rệt, nên 1 lần báo giả đơn lẻ với drift cao có thể không đủ
-            // để recomputeThresholdsFromSamples() nâng ngưỡng kịp. Chỉ áp dụng khi caller thực sự
-            // truyền drift đo được (>= 0, xem sentinel -1 ở doc phía trên) — nếu không có giá trị
-            // drift thật, không ép tăng gì (tránh tăng ngưỡng dựa trên dữ liệu không tồn tại).
-            if (drift >= 0 && period.driftTrigger <= drift) {
-                period.driftTrigger = (drift + 2).coerceAtMost(MAX_DRIFT_TRIGGER)
+                period.absDiffTrigger = (diff + 2).coerceAtMost(MANUAL_MAX_ABS_DIFF_TRIGGER)
             }
 
             // Lưu ngay vào SQLite
@@ -2349,10 +2345,10 @@ PluginAction(
                     // phải là 1 cú "vọt" bất thường so với baseline hiện tại (vd ánh sáng chớp,
                     // xe/người đi ngang thoáng qua). Biến động vọt xa baseline nhiều khả năng là
                     // ngoại lệ, không phải nhiễu nền ổn định — nạp nó vào tập học sẽ đẩy ngưỡng lên
-                    // sai. Mẫu tự động vẫn đánh dấu isManual=false (phục vụ chẩn đoán), nhưng
-                    // recomputeThresholdsFromSamples() giờ dùng CHUNG 1 trần (MAX_*) cho mọi nguồn —
-                    // không còn phân trần thấp/cao theo isManual nữa (xem lý do ở khai báo MAX_*).
-                    // Cũng học driftTrigger từ chính mẫu drift của lượt quét này, không chỉ delta/diff.
+                    // sai. Mẫu tự động cũng được đánh dấu isManual=false để
+                    // recomputeThresholdsFromSamples() áp đúng trần thấp hơn (AUTO_MAX_*) khi cửa sổ
+                    // 30 mẫu gần nhất chưa có xác nhận thủ công nào — và cũng học driftTrigger từ
+                    // chính mẫu drift của lượt quét này, không chỉ delta/diff.
                     val autoLearnMaxDrift = period.driftTrigger * AUTO_LEARN_DRIFT_MULTIPLIER
                     if (isSuddenChange && !isSuspicious && analysisSource == "groq" && drift <= autoLearnMaxDrift) {
                         period.falseDeltas.add(delta)
