@@ -124,8 +124,13 @@ class TuyaViewModel @Inject constructor(
     private val _localLab = MutableStateFlow<TuyaLocalLabState>(TuyaLocalLabState())
     val localLab: StateFlow<TuyaLocalLabState> = _localLab.asStateFlow()
 
+    // ✅ MỚI: giữ tham chiếu Job của lần dò LAN đang chạy — để hủy nếu user chuyển sang thao
+    // tác thiết bị khác trước khi lần dò cũ kịp trả về, tránh kết quả trễ ghi đè nhầm state.
+    private var localLabJob: kotlinx.coroutines.Job? = null
+
     fun localLabDiscover(device: TuyaDeviceEntity) {
-        viewModelScope.launch {
+        localLabJob?.cancel()
+        localLabJob = viewModelScope.launch {
             _localLab.value = TuyaLocalLabState(
                 deviceId = device.id,
                 deviceName = device.name,
@@ -153,12 +158,29 @@ class TuyaViewModel @Inject constructor(
                     "✅ version=${discovery.version}"
                 )
             )
+
+            // ✅ SỬA: dò LAN thành công trước đây chỉ lưu vào _localLab (RAM của màn Lab) —
+            // TuyaManager.trySetDeviceStateLocal() lại đọc lastKnownIp/protocolVersion TỪ DB,
+            // nên IP vừa dò được KHÔNG bao giờ tới tay luồng bật/tắt thật, khiến local luôn
+            // fail và rơi xuống Cloud (dùng creds cũ/sai → "clientId is invalid"). Ghi thẳng
+            // xuống DB ngay khi dò được, giữ nguyên localKey/dpId đã có.
+            withContext(Dispatchers.IO) {
+                database.tuyaDeviceDao().updateLocalControlInfo(
+                    device.id, device.localKey, discovery.ip, discovery.version, device.localSwitchDpId
+                )
+            }
+            loadDevices()
         }
     }
 
     fun localLabStatus(device: TuyaDeviceEntity) {
         viewModelScope.launch {
-            val discovery = _localLab.value.discovery
+            // ✅ SỬA: _localLab là 1 state DÙNG CHUNG cho cả ViewModel, không tách theo từng
+            // thiết bị. Nếu coroutine dò LAN của thiết bị TRƯỚC đó về trễ (hoặc user thao tác
+            // nhanh), discovery cũ có thể còn nằm trong state dù màn hình đang hiển thị thiết
+            // bị KHÁC — dẫn tới lấy nhầm IP của thiết bị A gán cho thiết bị B. Chỉ tin
+            // discovery khi nó thực sự thuộc về device đang thao tác (so deviceId).
+            val discovery = _localLab.value.discovery.takeIf { _localLab.value.deviceId == device.id }
             val ip = discovery?.ip ?: device.lastKnownIp
             val key = device.localKey
             if (ip.isNullOrBlank()) {
@@ -198,7 +220,9 @@ class TuyaViewModel @Inject constructor(
 
     fun localLabPower(device: TuyaDeviceEntity, on: Boolean) {
         viewModelScope.launch {
-            val discovery = _localLab.value.discovery
+            // ✅ SỬA: cùng lý do như localLabStatus() — chỉ tin discovery nếu đúng là của
+            // device đang thao tác, tránh gửi lệnh Bật/Tắt tới nhầm IP của thiết bị khác.
+            val discovery = _localLab.value.discovery.takeIf { _localLab.value.deviceId == device.id }
             val ip = discovery?.ip ?: device.lastKnownIp
             val key = device.localKey
             val dpId = device.localSwitchDpId
@@ -232,6 +256,7 @@ class TuyaViewModel @Inject constructor(
     }
 
     fun clearLocalLab() {
+        localLabJob?.cancel()
         _localLab.value = TuyaLocalLabState()
     }
 
