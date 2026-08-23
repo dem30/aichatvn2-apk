@@ -84,4 +84,9 @@ class CallViewModel @Inject constructor(
     fun deleteContact(deviceCode: String) {
         viewModelScope.launch { callSkill.deleteContact(deviceCode) }
     }
+
+    // ✅ MỚI: xoá 1 dòng lịch sử cụ thể, gọi từ dialog chi tiết ở tab "Gần đây".
+    fun deleteCallLog(callId: String) {
+        viewModelScope.launch { callSkill.deleteCallLog(callId) }
+    }
 }

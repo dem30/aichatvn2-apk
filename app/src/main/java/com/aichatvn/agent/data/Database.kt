@@ -759,6 +759,49 @@ val MIGRATION_28_29 = object : Migration(28, 29) {
     }
 }
 
+// ✅ MỚI: version 29 → 30 — call_contacts/call_logs (CallContactEntity/CallLogEntity) đã có
+// trong entities = [...] và Dao dùng thẳng NHƯNG chưa từng bump version hay viết migration
+// tạo bảng cho chúng. Version annotation vẫn ở 29 trong khi entity list đã thêm 2 bảng mới
+// → schema thật (Room tính từ entities) và schema lưu trong room_master_table của máy đã
+// cài từ trước (chưa có 2 bảng call_*) LỆCH NHAU dù version number không đổi. Room phát
+// hiện lệch khi checkIdentity() ở onOpen(), không tìm được migration nào khớp (không có
+// version nào tăng để onUpgrade() kích hoạt) → rơi thẳng vào fallbackToDestructiveMigration()
+// đang bật ở dưới, XOÁ SẠCH toàn bộ DB (không chỉ call_contacts — cả chat_messages, cameras,
+// tuya_devices... mất theo) rồi tạo lại rỗng. Đây là nguyên nhân "đã lưu số nhưng bị mất
+// danh bạ" — bảng được tạo lại nhưng rỗng vì toàn bộ DB vừa bị destructive-recreate.
+val MIGRATION_29_30 = object : Migration(29, 30) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS call_contacts (
+                deviceCode TEXT NOT NULL PRIMARY KEY,
+                displayName TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                isFavorite INTEGER NOT NULL DEFAULT 0,
+                createdAt INTEGER NOT NULL,
+                lastCalledAt INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS call_logs (
+                callId TEXT NOT NULL PRIMARY KEY,
+                peerDeviceCode TEXT NOT NULL,
+                peerName TEXT,
+                direction TEXT NOT NULL,
+                status TEXT NOT NULL,
+                isVideo INTEGER NOT NULL,
+                startedAt INTEGER NOT NULL,
+                durationSec INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_call_logs_peerDeviceCode ON call_logs(peerDeviceCode)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_call_logs_startedAt ON call_logs(startedAt)")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -800,7 +843,12 @@ val MIGRATION_28_29 = object : Migration(28, 29) {
     // deviceId/vendor (còn sót lại từ MIGRATION_25_26) và đã thêm onvifDeviceServiceUrl
     // (chưa từng có migration ADD COLUMN tương ứng) — xem ghi chú đầy đủ tại khai báo
     // MIGRATION_28_29 phía trên, và crash "Migration didn't properly handle: cameras".
-    version = 29,
+    // ✅ SỬA (root cause "mất danh bạ"): bump 29 → 30 — MIGRATION_29_30 tạo bảng
+    // call_contacts/call_logs, vốn đã có trong entities list từ lâu nhưng CHƯA TỪNG có
+    // migration tạo bảng thật, khiến máy cũ bị fallbackToDestructiveMigration() xoá sạch
+    // DB mỗi lần schema lệch mà version không đổi — xem ghi chú đầy đủ tại khai báo
+    // MIGRATION_29_30 phía trên.
+    version = 30,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -838,7 +886,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

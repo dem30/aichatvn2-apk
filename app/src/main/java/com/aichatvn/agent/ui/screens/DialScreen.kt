@@ -166,10 +166,16 @@ fun DialScreen(
                 )
                 2 -> RecentTab(
                     callLogs = callLogs,
+                    contacts = contacts,
                     isBusy = isBusy,
                     // ✅ SỬA: gọi lại đúng loại cuộc gọi (thoại/video) của lần gọi TRƯỚC ĐÓ,
                     // khớp với icon Videocam/Call đã hiển thị trên từng dòng lịch sử.
-                    onCall = { code, isVideo -> requestCallOrPermission(code, isVideo) }
+                    onCall = { code, isVideo -> requestCallOrPermission(code, isVideo) },
+                    // ✅ MỚI: lưu số mới hoặc đổi tên số đã lưu, từ dialog chi tiết 1 dòng
+                    // lịch sử — saveContact() dùng upsert(REPLACE) nên dùng chung được cho
+                    // cả 2 trường hợp.
+                    onSaveOrEditName = { code, name -> vm.saveContact(code, name) },
+                    onDeleteLog = { callId -> vm.deleteCallLog(callId) }
                 )
             }
         }
@@ -368,18 +374,43 @@ private fun ContactRow(
 @Composable
 private fun RecentTab(
     callLogs: List<CallLogEntity>,
+    contacts: List<CallContactEntity>,
     isBusy: Boolean,
-    onCall: (String, Boolean) -> Unit
+    onCall: (String, Boolean) -> Unit,
+    onSaveOrEditName: (String, String) -> Unit,
+    onDeleteLog: (String) -> Unit
 ) {
     if (callLogs.isEmpty()) {
         EmptyState("Chưa có cuộc gọi nào trong lịch sử.")
         return
     }
+
+    // ✅ MỚI: tap vào dòng để xem chi tiết + lưu số/đổi tên/xoá — trước đây cả dòng chỉ để
+    // gọi lại ngay, không có cách nào xem thông tin hay lưu/sửa tên người gọi đến.
+    var selectedLog by remember { mutableStateOf<CallLogEntity?>(null) }
+
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(callLogs, key = { it.callId }) { log ->
-            CallLogRow(log = log, enabled = !isBusy, onCall = { onCall(log.peerDeviceCode, log.isVideo) })
+            CallLogRow(
+                log = log,
+                enabled = !isBusy,
+                onClick = { selectedLog = log },
+                onCall = { onCall(log.peerDeviceCode, log.isVideo) }
+            )
             HorizontalDivider()
         }
+    }
+
+    selectedLog?.let { log ->
+        val existingName = contacts.find { it.deviceCode == log.peerDeviceCode }?.displayName
+        CallLogDetailDialog(
+            log = log,
+            existingContactName = existingName,
+            onDismiss = { selectedLog = null },
+            onCall = { onCall(log.peerDeviceCode, log.isVideo); selectedLog = null },
+            onSaveOrEditName = { name -> onSaveOrEditName(log.peerDeviceCode, name); selectedLog = null },
+            onDelete = { onDeleteLog(log.callId); selectedLog = null }
+        )
     }
 }
 
@@ -387,6 +418,7 @@ private fun RecentTab(
 private fun CallLogRow(
     log: CallLogEntity,
     enabled: Boolean,
+    onClick: () -> Unit,
     onCall: () -> Unit
 ) {
     val timeFormat = remember { SimpleDateFormat("HH:mm dd/MM", Locale.getDefault()) }
@@ -406,7 +438,7 @@ private fun CallLogRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled) { onCall() }
+            .clickable(enabled = enabled) { onClick() }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -428,6 +460,70 @@ private fun CallLogRow(
             Icon(if (log.isVideo) Icons.Default.Videocam else Icons.Default.Call, contentDescription = "Gọi lại", tint = MaterialTheme.colorScheme.primary)
         }
     }
+}
+
+@Composable
+private fun CallLogDetailDialog(
+    log: CallLogEntity,
+    existingContactName: String?,
+    onDismiss: () -> Unit,
+    onCall: () -> Unit,
+    onSaveOrEditName: (String) -> Unit,
+    onDelete: () -> Unit
+) {
+    // key theo log.callId — đổi dòng lịch sử khác (dialog mới) thì reset lại input, không
+    // giữ nhầm tên đang gõ dở của dòng trước.
+    var name by remember(log.callId) { mutableStateOf(existingContactName ?: "") }
+    val timeFormat = remember { SimpleDateFormat("HH:mm dd/MM/yyyy", Locale.getDefault()) }
+    val statusLabel = when (log.status) {
+        CallLogStatus.MISSED -> "Nhỡ"
+        CallLogStatus.REJECTED -> "Đã từ chối"
+        CallLogStatus.FAILED -> "Không kết nối được"
+        else -> "Đã trả lời (${formatDuration(log.durationSec)})"
+    }
+    val directionLabel = if (log.direction == CallDirection.OUTGOING) "Gọi đi" else "Gọi đến"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(log.peerName ?: log.peerDeviceCode) },
+        text = {
+            Column {
+                Text("Mã máy: ${log.peerDeviceCode}", style = MaterialTheme.typography.bodyMedium)
+                Text("$directionLabel • ${if (log.isVideo) "Video" else "Thoại"}", style = MaterialTheme.typography.bodyMedium)
+                Text(statusLabel, style = MaterialTheme.typography.bodyMedium)
+                Text(timeFormat.format(Date(log.startedAt)), style = MaterialTheme.typography.bodyMedium)
+
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(if (existingContactName != null) "Đổi tên gợi nhớ" else "Lưu thành tên gợi nhớ") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onCall, modifier = Modifier.weight(1f)) { Text("Gọi lại") }
+                    OutlinedButton(
+                        onClick = { if (name.isNotBlank()) onSaveOrEditName(name) },
+                        // Chỉ bật khi có tên hợp lệ VÀ khác tên đã lưu (tránh lưu lại y hệt).
+                        enabled = name.isNotBlank() && name != existingContactName,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (existingContactName != null) "Lưu tên" else "Lưu số") }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Đóng") }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDelete,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) { Text("Xoá") }
+        }
+    )
 }
 
 @Composable

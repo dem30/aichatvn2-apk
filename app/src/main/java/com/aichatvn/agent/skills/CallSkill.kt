@@ -280,6 +280,16 @@ class CallSkill @Inject constructor(
         }
     }
 
+    // ✅ MỚI: xoá 1 dòng lịch sử cụ thể — dùng cho nút "Xoá" trong dialog chi tiết ở
+    // tab "Gần đây" (khác với việc xoá toàn bộ lịch sử, hiện chưa có UI riêng).
+    suspend fun deleteCallLog(callId: String) {
+        try {
+            database.callLogDao().delete(callId)
+        } catch (e: Exception) {
+            logger.e("CallSkill", "Không xoá được lịch sử cuộc gọi: ${e.message}")
+        }
+    }
+
     private suspend fun resolvePeerDisplayName(deviceCode: String): String? =
         try {
             database.callContactDao().getByDeviceCode(deviceCode)?.displayName

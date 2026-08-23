@@ -19,4 +19,9 @@ interface CallLogDao {
 
     @Query("DELETE FROM call_logs")
     suspend fun clearAll()
+
+    // ✅ MỚI: xoá 1 dòng lịch sử cụ thể — dùng cho nút "Xoá" trong dialog chi tiết ở
+    // tab "Gần đây", khác với clearAll() (xoá toàn bộ lịch sử).
+    @Query("DELETE FROM call_logs WHERE callId = :callId")
+    suspend fun delete(callId: String)
 }
