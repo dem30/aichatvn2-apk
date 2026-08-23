@@ -72,7 +72,13 @@ sealed class Screen(val route: String, val titleRes: Int, val icon: ImageVector)
 @Composable
 fun AppNavigator(
     pendingDeepLinkRoute: String? = null,
-    onDeepLinkConsumed: () -> Unit = {}
+    onDeepLinkConsumed: () -> Unit = {},
+    // ✅ MỚI: callId cần tự động trả lời khi Activity được mở từ nút "Nghe" trên notification
+    // cuộc gọi đến (PendingIntent.getActivity() trực tiếp, thay cho đường vòng qua
+    // BroadcastReceiver bị Android chặn "notification trampoline" — xem
+    // IncomingCallNotificationHelper + MainActivity).
+    pendingAutoAnswerCallId: String? = null,
+    onAutoAnswerConsumed: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -113,6 +119,21 @@ fun AppNavigator(
 
     val callViewModel: CallViewModel = hiltViewModel()
     val callState by callViewModel.callUiState.collectAsState()
+
+    // ✅ MỚI: xử lý cờ tự động trả lời — Activity vừa được mở (hoặc đã mở sẵn, nhận lại qua
+    // onNewIntent) do người dùng bấm "Nghe" trên notification. Tự navigate sang CALL_ROUTE
+    // (không đợi LaunchedEffect(callState.state) bên dưới, vì lúc app vừa cold-start,
+    // callState có thể chưa kịp cập nhật thành RINGING) rồi gọi answer() ngay — khớp đúng
+    // 1 lần nhờ key theo pendingAutoAnswerCallId + gọi onAutoAnswerConsumed() để reset về
+    // null, tránh answer() lặp lại nếu AppNavigator recompose vì lý do khác.
+    LaunchedEffect(pendingAutoAnswerCallId) {
+        val callId = pendingAutoAnswerCallId
+        if (callId != null) {
+            navController.navigate(Screen.CALL_ROUTE) { launchSingleTop = true }
+            callViewModel.answer(callId)
+            onAutoAnswerConsumed()
+        }
+    }
 
     // Tự động bật CallScreen khi có cuộc gọi đến (RINGING)
     LaunchedEffect(callState.state) {

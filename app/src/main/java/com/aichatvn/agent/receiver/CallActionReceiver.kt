@@ -4,10 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationManagerCompat
-import com.aichatvn.agent.MainActivity
 import com.aichatvn.agent.skills.CallSkill
-import com.aichatvn.agent.skills.NotificationSkill
-import com.aichatvn.agent.ui.navigation.Screen
 import com.aichatvn.agent.utils.IncomingCallNotificationHelper
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -21,16 +18,17 @@ import kotlinx.coroutines.launch
 /**
  * CallActionReceiver
  *
- * Xử lý 2 nút "Nghe"/"Từ chối" gắn trực tiếp trên notification cuộc gọi đến
- * (xem IncomingCallNotificationHelper.showIncomingCallNotification()) — gọi thẳng
- * CallSkill.execute() rồi tắt notification.
+ * Xử lý nút "Từ chối" trên notification cuộc gọi đến (xem
+ * IncomingCallNotificationHelper.showIncomingCallNotification()) — gọi thẳng
+ * CallSkill.execute("reject_call") rồi tắt notification. KHÔNG cần mở Activity nào
+ * (Từ chối không có gì để hiển thị).
  *
- * ✅ SỬA (root cause "bấm Nghe khi đang ở app khác, nói chuyện được nhưng app không mở
- * lên để 2 bên nhìn thấy nhau"): trước đây nhánh ACTION_ANSWER chỉ chạy answer_call() ngầm,
- * không có dòng nào đưa MainActivity lên foreground. CallSkill là @Singleton (không phụ
- * thuộc UI) nên WebRTC vẫn setup track/kết nối audio bình thường — nhưng CallScreen (video)
- * không bao giờ hiện ra nếu app đang ở nền. Giờ ACTION_ANSWER mở thêm MainActivity kèm deep
- * link CALL_ROUTE, xem onReceive().
+ * ✅ SỬA: nút "Nghe" KHÔNG còn đi qua receiver này nữa — trước đây answer_call() chạy
+ * ngầm ở đây rồi tự startActivity(MainActivity) để mở UI, nhưng Android (10+/12+) chặn
+ * kiểu "notification trampoline" này (startActivity() từ trong BroadcastReceiver), xác
+ * nhận qua test thật trên 3 máy đều thất bại. "Nghe" giờ dùng PendingIntent.getActivity()
+ * TRỰC TIẾP mở MainActivity kèm cờ tự trả lời — xem IncomingCallNotificationHelper +
+ * AppNavigator.kt (LaunchedEffect xử lý cờ này, gọi CallViewModel.answer()).
  *
  * CallSkill là @Singleton do Hilt quản lý trong tiến trình app, nhưng BroadcastReceiver
  * không hỗ trợ @Inject field như Activity/Fragment/Service (không có ComponentTreeInternal
@@ -48,7 +46,7 @@ class CallActionReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val callId = intent.getStringExtra(EXTRA_CALL_ID) ?: return
-        val action = intent.action ?: return
+        if (intent.action != ACTION_REJECT) return
 
         val appContext = context.applicationContext
         val entryPoint = EntryPointAccessors.fromApplication(appContext, CallSkillEntryPoint::class.java)
@@ -59,35 +57,16 @@ class CallActionReceiver : BroadcastReceiver() {
         NotificationManagerCompat.from(appContext)
             .cancel(IncomingCallNotificationHelper.notificationIdForCall(callId))
 
-        // ✅ MỚI: chỉ ACTION_ANSWER cần mở UI (Từ chối không cần hiện gì). PHẢI gọi
-        // startActivity() ĐỒNG BỘ ngay tại đây, KHÔNG đưa vào receiverScope.launch{} bên
-        // dưới — hệ thống chỉ cấp quyền tạm thời "khởi động Activity từ nền" (background
-        // activity launch) cho đúng lượt onReceive() được kích hoạt trực tiếp từ thao tác
-        // bấm nút trên notification. Nếu trì hoãn sang 1 coroutine chạy sau (dù chỉ vài
-        // mili-giây), cửa sổ quyền tạm này đã đóng và Android 10+ sẽ âm thầm chặn
-        // startActivity(), không có lỗi rõ ràng nào hiện ra để biết vì sao app không mở.
-        if (action == ACTION_ANSWER) {
-            val openCallIntent = Intent(appContext, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(NotificationSkill.DEEP_LINK_EXTRA, Screen.CALL_ROUTE)
-            }
-            appContext.startActivity(openCallIntent)
-        }
-
         // BroadcastReceiver.onReceive() chạy trên main thread và PHẢI return nhanh — không
         // được block chờ coroutine suspend fun (CallSkill.execute() là suspend). Dùng scope
         // riêng sống độc lập với receiver (receiver bị hệ thống hủy ngay sau onReceive trả
         // về), SupervisorJob để lỗi 1 lệnh không hủy scope.
         receiverScope.launch {
-            when (action) {
-                ACTION_ANSWER -> callSkill.execute("answer_call", mapOf("callId" to callId))
-                ACTION_REJECT -> callSkill.execute("reject_call", mapOf("callId" to callId))
-            }
+            callSkill.execute("reject_call", mapOf("callId" to callId))
         }
     }
 
     companion object {
-        const val ACTION_ANSWER = "com.aichatvn.agent.action.CALL_ANSWER"
         const val ACTION_REJECT = "com.aichatvn.agent.action.CALL_REJECT"
         const val EXTRA_CALL_ID = "call_id"
 

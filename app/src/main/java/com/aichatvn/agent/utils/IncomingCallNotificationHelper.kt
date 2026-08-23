@@ -22,8 +22,10 @@ import javax.inject.Singleton
  *
  * Bắn 1 notification kiểu "cuộc gọi đến" thật sự (dùng NotificationCompat.CallStyle,
  * API tương đương ConnectionService của app thoại hệ thống) — full-screen intent để tự
- * bật màn hình + hiện trên lock screen dù app đang đóng hoàn toàn, kèm 2 nút Nghe/Từ
- * chối xử lý NGAY qua CallActionReceiver (không cần mở Activity).
+ * bật màn hình + hiện trên lock screen dù app đang đóng hoàn toàn. Nút "Nghe" mở thẳng
+ * MainActivity (PendingIntent.getActivity() + AUTO_ANSWER_CALL_ID_EXTRA — CallViewModel.answer()
+ * chạy từ AppNavigator sau khi Activity đã mở), nút "Từ chối" xử lý ngầm qua
+ * CallActionReceiver (không cần mở UI).
  *
  * TÁCH RIÊNG khỏi NotificationSkill.kt — channel/hành vi khác hẳn (rung+ping 1 lần của
  * cảnh báo camera so với chuông đổ liên tục + full-screen của cuộc gọi), và
@@ -117,7 +119,25 @@ class IncomingCallNotificationHelper @Inject constructor(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val answerIntent = actionBroadcast(CallActionReceiver.ACTION_ANSWER, callId, notificationId)
+        // ✅ SỬA (root cause "bấm Nghe ở app khác không mở được app/mất video, chỉ chạy khi
+        // cả 2 máy đã mở sẵn"): trước đây nút "Nghe" dùng PendingIntent.getBroadcast() ->
+        // CallActionReceiver tự startActivity() — bị Android (10+/12+) chặn kiểu "notification
+        // trampoline" (xác nhận qua test thật trên 3 máy đều thất bại, có máy còn cảnh báo
+        // "không mở được thông báo"). Giờ dùng PendingIntent.getActivity() TRỰC TIẾP mở
+        // MainActivity — CHÍNH XÁC cùng cơ chế mà notification cảnh báo camera đang dùng và
+        // đã hoạt động đúng — kèm AUTO_ANSWER_CALL_ID_EXTRA để AppNavigator tự gọi
+        // CallViewModel.answer(callId) SAU KHI Activity đã thực sự mở lên (xem AppNavigator.kt).
+        val answerIntent = PendingIntent.getActivity(
+            context,
+            notificationId * 2,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(com.aichatvn.agent.skills.NotificationSkill.DEEP_LINK_EXTRA, Screen.CALL_ROUTE)
+                putExtra(AUTO_ANSWER_CALL_ID_EXTRA, callId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        // Từ chối không cần mở UI gì — vẫn xử lý ngầm qua CallActionReceiver như cũ.
         val rejectIntent = actionBroadcast(CallActionReceiver.ACTION_REJECT, callId, notificationId)
 
         val appLogoIcon = androidx.core.graphics.drawable.IconCompat.createWithResource(
@@ -178,14 +198,11 @@ class IncomingCallNotificationHelper @Inject constructor(
             this.action = action
             putExtra(CallActionReceiver.EXTRA_CALL_ID, callId)
         }
-        // requestCode khác nhau theo action (notificationId*2 +0/+1) để 2 PendingIntent
-        // Nghe/Từ chối của CÙNG 1 callId không bị hệ thống coi là trùng nhau rồi gộp/đè.
-        val requestCode = when (action) {
-            CallActionReceiver.ACTION_ANSWER -> notificationId * 2
-            else -> notificationId * 2 + 1
-        }
+        // ✅ SỬA: chỉ còn dùng cho ACTION_REJECT (nút "Nghe" đã chuyển sang
+        // PendingIntent.getActivity() ở trên) — requestCode notificationId*2+1 giữ nguyên
+        // công thức cũ để không đụng slot notificationId*2 của answerIntent.
         return PendingIntent.getBroadcast(
-            context, requestCode, intent,
+            context, notificationId * 2 + 1, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }
@@ -199,6 +216,13 @@ class IncomingCallNotificationHelper @Inject constructor(
         // — nhất quán trong codebase, và đủ để CallActionReceiver tính lại ĐÚNG notificationId
         // từ callId nhận được trong Intent, không cần truyền thêm field nào khác.
         fun notificationIdForCall(callId: String): Int = callId.hashCode()
+
+        // ✅ MỚI: extra đánh dấu "mở app này để TỰ ĐỘNG trả lời cuộc gọi có callId này" — gắn
+        // vào PendingIntent.getActivity() của nút "Nghe" (xem showIncomingCallNotification()).
+        // MainActivity đọc extra này (giống cách đọc NotificationSkill.DEEP_LINK_EXTRA) rồi
+        // truyền xuống AppNavigator để gọi CallViewModel.answer(callId) đúng 1 lần sau khi
+        // Activity đã thực sự mở lên — xem AppNavigator.kt.
+        const val AUTO_ANSWER_CALL_ID_EXTRA = "com.aichatvn.agent.extra.AUTO_ANSWER_CALL_ID"
 
         // ✅ MỚI: offset cộng vào notificationId để tính requestCode riêng cho
         // fullScreenPendingIntent, tách khỏi contentPendingIntent (xem giải thích ở

@@ -19,6 +19,7 @@ import com.aichatvn.agent.data.dataStore
 import com.aichatvn.agent.skills.NotificationSkill
 import com.aichatvn.agent.ui.navigation.AppNavigator
 import com.aichatvn.agent.ui.theme.AIChatVN2Theme
+import com.aichatvn.agent.utils.IncomingCallNotificationHelper
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
@@ -34,6 +35,12 @@ class MainActivity : ComponentActivity() {
 
     private var pendingDeepLinkRoute by mutableStateOf<String?>(null)
 
+    // ✅ MỚI: callId cần tự động trả lời — set khi Activity được mở từ nút "Nghe" trên
+    // notification cuộc gọi đến (PendingIntent.getActivity() kèm AUTO_ANSWER_CALL_ID_EXTRA,
+    // xem IncomingCallNotificationHelper). AppNavigator đọc giá trị này để gọi
+    // CallViewModel.answer(callId) đúng 1 lần rồi báo lại qua onAutoAnswerConsumed.
+    private var pendingAutoAnswerCallId by mutableStateOf<String?>(null)
+
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -42,6 +49,7 @@ class MainActivity : ComponentActivity() {
         logger.i("MainActivity", "🚀 App khởi động - v3")
 
         pendingDeepLinkRoute = consumeDeepLinkExtra(intent)
+        pendingAutoAnswerCallId = consumeAutoAnswerExtra(intent)
 
         setContent {
             // Giữ lại quyền RECORD_AUDIO để SpeechRecognizer có thể sử dụng khi chạm nói
@@ -79,7 +87,9 @@ class MainActivity : ComponentActivity() {
             AIChatVN2Theme(darkTheme = darkMode) {
                 AppNavigator(
                     pendingDeepLinkRoute = pendingDeepLinkRoute,
-                    onDeepLinkConsumed = { pendingDeepLinkRoute = null }
+                    onDeepLinkConsumed = { pendingDeepLinkRoute = null },
+                    pendingAutoAnswerCallId = pendingAutoAnswerCallId,
+                    onAutoAnswerConsumed = { pendingAutoAnswerCallId = null }
                 )
             }
         }
@@ -102,6 +112,13 @@ class MainActivity : ComponentActivity() {
         if (newRoute != null) {
             pendingDeepLinkRoute = newRoute
         }
+
+        // ✅ MỚI: cùng lý do như trên — app đang mở sẵn (dù ở màn hình nào) mà người dùng
+        // bấm "Nghe" trên notification, Activity nhận lại qua onNewIntent() thay vì onCreate().
+        val newAutoAnswerCallId = consumeAutoAnswerExtra(intent)
+        if (newAutoAnswerCallId != null) {
+            pendingAutoAnswerCallId = newAutoAnswerCallId
+        }
     }
 
     /**
@@ -115,5 +132,12 @@ class MainActivity : ComponentActivity() {
         val route = intent?.getStringExtra(NotificationSkill.DEEP_LINK_EXTRA)
         intent?.removeExtra(NotificationSkill.DEEP_LINK_EXTRA)
         return route
+    }
+
+    /** Tương tự consumeDeepLinkExtra() nhưng cho cờ tự động trả lời cuộc gọi — xem ghi chú ở pendingAutoAnswerCallId. */
+    private fun consumeAutoAnswerExtra(intent: Intent?): String? {
+        val callId = intent?.getStringExtra(IncomingCallNotificationHelper.AUTO_ANSWER_CALL_ID_EXTRA)
+        intent?.removeExtra(IncomingCallNotificationHelper.AUTO_ANSWER_CALL_ID_EXTRA)
+        return callId
     }
 }
