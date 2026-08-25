@@ -1,8 +1,10 @@
 package com.aichatvn.agent.ui.screens
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +25,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -69,10 +72,25 @@ fun CallScreen(
     val localVideoTrack by vm.localVideoTrack.collectAsState()
     val remoteVideoTrack by vm.remoteVideoTrack.collectAsState()
 
+    val context = LocalContext.current
+
+    // ✅ MỚI: chặn Android tự tắt màn hình theo thời gian chờ trong lúc đang ở CallScreen —
+    // mặc định hệ thống vẫn áp dụng "Tự khoá màn hình" bình thường dù đang gọi video sống,
+    // vì app không hề can thiệp gì vào Window. FLAG_KEEP_SCREEN_ON là đúng cơ chế app gọi
+    // điện thật dùng. PHẢI clearFlags() ở onDispose (rời CallScreen dù do CÚP MÁY, back, hay
+    // bị điều hướng đi nơi khác) — nếu quên, màn hình sẽ giữ sáng vĩnh viễn cho toàn bộ app
+    // sau khi cuộc gọi đã kết thúc từ lâu, tốn pin nghiêm trọng.
+    DisposableEffect(Unit) {
+        val activity = context as? Activity
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     // ✅ MỚI: bấm "Nghe" cũng chạm camera/mic — cần xin quyền runtime giống DialScreen,
     // không thể giả định người dùng đã cấp quyền từ trước (VD: nhận cuộc gọi lần đầu, chưa
     // từng tự gọi đi bao giờ nên chưa qua bước xin quyền ở DialScreen).
-    val context = LocalContext.current
     var pendingAnswerCallId by remember { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
