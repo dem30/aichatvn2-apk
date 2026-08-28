@@ -978,6 +978,7 @@ fun DashboardScreen(
 // đủ ở ScheduleScreen.kt (vốn phải hỏi cả Plugin/Action/tham số từ đầu). Ở đây pluginId/action/
 // params đã có sẵn từ ngữ cảnh thiết bị đang xem, chỉ còn hỏi giờ + lặp lại — đúng tinh thần
 // "chọn thiết bị trước, hỏi ít nhất có thể" mà Smart Life làm.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun QuickScheduleDialog(
     node: DeviceNode,
