@@ -3,6 +3,7 @@ package com.aichatvn.agent.ui.viewmodels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.aichatvn.agent.core.AgentKernel
+import com.aichatvn.agent.core.AgentKernel.PluginResult
 import com.aichatvn.agent.core.plugin.Plugin
 import com.aichatvn.agent.data.AppDatabase
 import com.aichatvn.agent.data.model.ScheduleEntity
@@ -28,6 +29,20 @@ class ScheduleViewModel @Inject constructor(
 ) : ViewModel() {
 
     val schedules: StateFlow<List<ScheduleEntity>> = scheduleSkill.schedules
+
+    // ✅ MỚI: bề mặt kết quả thật của lần lưu gần nhất — trước đây saveSchedule() gọi
+    // scheduleSkill.execute() nhưng KHÔNG đọc PluginResult trả về, nên khi handleAdd() từ
+    // chối lưu (thiếu tham số bắt buộc, ví dụ "device"/"cameraId" khi tạo lịch nhanh từ
+    // Dashboard mà quên merge node.defaultParams), lỗi bị nuốt âm thầm — UI tưởng đã lưu
+    // xong (dialog đóng bình thường) trong khi DB không hề có bản ghi mới. Nơi gọi
+    // (DashboardScreen/ScheduleScreen) tự quyết định hiển thị (snackbar/toast) rồi gọi
+    // clearSaveResultMessage(), không ép buộc UI cụ thể ở đây.
+    private val _saveResultMessage = MutableStateFlow<String?>(null)
+    val saveResultMessage: StateFlow<String?> = _saveResultMessage.asStateFlow()
+
+    fun clearSaveResultMessage() {
+        _saveResultMessage.value = null
+    }
 
     val schedulablePlugins: List<Plugin> =
         agentKernel.getAvailablePluginsForUI().filter { it.id != "schedule" }
@@ -100,7 +115,23 @@ class ScheduleViewModel @Inject constructor(
             executionParams["id"] = schedule.id
         }
 
-        scheduleSkill.execute(actionName, executionParams)
+        // ✅ MỚI: đọc PluginResult thật thay vì bỏ qua — xem ghi chú ở _saveResultMessage.
+        when (val result = scheduleSkill.execute(actionName, executionParams)) {
+            is PluginResult.Success -> {
+                val isDuplicate = (result.data as? Map<*, *>)?.get("duplicate") as? Boolean ?: false
+                _saveResultMessage.value = if (isDuplicate) {
+                    "ℹ️ Lịch trình tương tự đã tồn tại — không tạo thêm bản trùng."
+                } else {
+                    "✅ Đã lưu lịch trình."
+                }
+            }
+            is PluginResult.Failure -> {
+                _saveResultMessage.value = "❌ Không thể lưu lịch trình: ${result.error}"
+            }
+            is PluginResult.NeedMoreInfo -> {
+                _saveResultMessage.value = "⚠️ Yêu cầu thông tin thêm: ${result.question}"
+            }
+        }
         loadSchedules()
     }
 }

@@ -43,7 +43,19 @@ fun ScheduleScreen(
         viewModel.loadSchedules()
     }
 
+    // ✅ MỚI: hiện kết quả lưu thật (thất bại/trùng lịch) — trước đây bị nuốt âm thầm,
+    // xem ghi chú tại ScheduleViewModel._saveResultMessage.
+    val snackbarHostState = remember { SnackbarHostState() }
+    val saveResult by viewModel.saveResultMessage.collectAsState()
+    LaunchedEffect(saveResult) {
+        saveResult?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearSaveResultMessage()
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Lịch trình") },

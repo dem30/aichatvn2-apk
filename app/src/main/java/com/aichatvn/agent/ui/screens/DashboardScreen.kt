@@ -232,6 +232,17 @@ fun DashboardScreen(
         }
     }
 
+    // ✅ MỚI: hiện kết quả thật khi lưu lịch nhanh (QuickScheduleDialog) — trước đây
+    // saveSchedule() không trả kết quả nên lỗi "thiếu tham số bắt buộc" (thiếu device/
+    // cameraId) bị nuốt âm thầm, dialog đóng như đã lưu xong dù DB không có gì mới.
+    val scheduleSaveResult by scheduleViewModel.saveResultMessage.collectAsState()
+    LaunchedEffect(scheduleSaveResult) {
+        scheduleSaveResult?.let {
+            snackbarHostState.showSnackbar(it)
+            scheduleViewModel.clearSaveResultMessage()
+        }
+    }
+
     // ✅ MỚI: khi tạo mã mời thành công, mở Share Sheet ngay; khi lỗi, hiện Snackbar.
     // Gọi clearInviteUiState() sau khi xử lý để tránh mở lại Share Sheet oan lúc recompose.
     LaunchedEffect(inviteUiState) {
@@ -1061,7 +1072,7 @@ private fun QuickScheduleDialog(
                         "weekly" -> "${timePickerState.minute} ${timePickerState.hour} * * ${selectedWeekdays.sorted().joinToString(",")}"
                         else -> "${timePickerState.minute} ${timePickerState.hour} * * *"
                     }
-                    val paramsJson = JSONObject(action.defaultParams).toString()
+                    val paramsJson = JSONObject(node.defaultParams + action.defaultParams).toString()
                     val schedule = ScheduleEntity(
                         id = UUID.randomUUID().toString(),
                         pluginId = node.pluginId,
