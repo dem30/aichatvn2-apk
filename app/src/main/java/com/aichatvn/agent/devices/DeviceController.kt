@@ -73,8 +73,8 @@ interface DeviceController {
      * "tối ưu quota API" ở SmartSwitchSkill.getDashboardNodes() bản cũ.
      *
      * Trả về danh sách CHƯA gán x/y layout (SmartSwitchSkill.getDashboardNodes() gán sau, dùng
-     * layout_x_*/layout_y_* đã lưu — logic đó dùng chung mọi giao thức, không đặc thù driver
-     * nào nên KHÔNG lặp lại ở đây). x=0f/y=0f là giá trị tạm, sẽ bị ghi đè.
+     * layout toạ độ đã lưu theo từng deviceId — logic đó dùng chung mọi giao thức, không đặc
+     * thù driver nào nên KHÔNG lặp lại ở đây). x=0f/y=0f là giá trị tạm, sẽ bị ghi đè.
      *
      * Default trả rỗng — driver không hỗ trợ Dashboard (hiếm, hầu như mọi driver điều khiển
      * được đều nên hiện trên Dashboard) không bắt buộc override.
