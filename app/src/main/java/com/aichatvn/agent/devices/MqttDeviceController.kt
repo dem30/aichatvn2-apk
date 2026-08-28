@@ -734,8 +734,9 @@ class MqttDeviceController @Inject constructor(
                 icon = deviceIcon,
                 // MQTT không có khái niệm "lastKnownIp" như Tuya Local — thiết bị MQTT được xác
                 // định bằng topic, không phải IP cụ thể trong tầng app này (broker lo phần định
-                // tuyến mạng). null để bottom sheet hiển thị "Chưa xác định", nhất quán với Tuya.
-                ip = null,
+                // tuyến mạng). Chuỗi rỗng để bottom sheet hiển thị "Chưa xác định" (xem
+                // DashboardScreen ip.ifBlank{}), nhất quán với Tuya khi lastKnownIp null.
+                ip = "",
                 battery = null,
                 status = when {
                     runtimeStatus == MqttDeviceRuntimeStatus.OFFLINE -> "Mất kết nối"

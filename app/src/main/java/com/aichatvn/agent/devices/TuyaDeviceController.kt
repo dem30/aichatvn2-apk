@@ -204,7 +204,7 @@ class TuyaDeviceController @Inject constructor(
                 // discoverIp()) — null nếu chưa từng điều khiển Local (thiết bị mới, hoặc luôn
                 // đi qua Cloud). Bottom sheet Dashboard cần tự hiển thị "Chưa xác định" khi null,
                 // KHÔNG bịa số để lấp chỗ trống.
-                ip = dev.lastKnownIp,
+                ip = dev.lastKnownIp ?: "",
                 battery = null,
                 status = if (isOnline) {
                     if (isDeviceOn) "Đang bật" else "Đang tắt"

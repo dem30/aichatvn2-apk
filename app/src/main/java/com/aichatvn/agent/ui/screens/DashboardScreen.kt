@@ -625,9 +625,15 @@ fun DashboardScreen(
                             }
                         }
 
+                        // ✅ SỬA (dứt điểm bug room hardcode): room giờ là String? — trước đây
+                        // luôn là "Phòng chung" (hardcode ở SmartSwitchSkill cũ) nên khối vẽ
+                        // khung phòng này CHƯA BAO GIỜ chạy thật (bị chính filter này loại hết).
+                        // Giờ room đọc thật từ Entity (TuyaDeviceController/MqttDeviceController.
+                        // buildDashboardNodes()) — null hoặc rỗng nghĩa là chưa đặt tên phòng,
+                        // vẫn loại khỏi khung vẽ (không có tên gì để hiện nhãn).
                         val rooms = deviceNodes
-                            .filter { it.room.isNotBlank() && it.room != "Phòng chung" }
-                            .groupBy { it.room }
+                            .filter { !it.room.isNullOrBlank() }
+                            .groupBy { it.room!! }
 
                         rooms.forEach { (roomName, nodes) ->
                             if (nodes.isNotEmpty()) {
@@ -806,7 +812,11 @@ fun DashboardScreen(
                         ) {
                             Column {
                                 Text("Địa chỉ IP", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(node.ip, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    node.ip.ifBlank { "Chưa xác định" },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                             Column {
                                 Text("Pin / Nguồn điện", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

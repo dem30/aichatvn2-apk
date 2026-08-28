@@ -23,7 +23,12 @@ data class DeviceNode(
     val status: String = "",          // Trạng thái hiển thị (ví dụ: "Đang bật", "Công suất 45W")
     val lastSeen: Long = System.currentTimeMillis(), // Lần cuối phản hồi hệ thống
     val rssi: Int? = null,            // Cường độ sóng Wi-Fi (dBm)
-    val room: String = "Phòng chung",  // Phân bổ không gian phòng
+    // ✅ SỬA (dứt điểm bug room hardcode): đổi sang nullable — trước đây default cứng
+    // "Phòng chung" khiến MỌI nơi build DeviceNode (kể cả khi chưa biết phòng thật) đều
+    // phải gán chuỗi giả, không phân biệt được "chưa đặt tên phòng" với "người dùng đặt
+    // tên phòng là Phòng chung". null = chưa đặt — nơi hiển thị (DashboardScreen) tự
+    // hiện "Chưa phân loại" khi gặp null.
+    val room: String? = null,
     val scene: String = "",           // Kịch bản tự động liên kết
     val group: String = "",            // Nhóm thiết bị liên kết vật lý
 
