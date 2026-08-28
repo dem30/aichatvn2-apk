@@ -134,9 +134,12 @@ fun ScheduleScreen(
                                 showAddDialog = true
                             },
                             // ✅ MỚI: sao chép — tạo bản ghi mới cùng pluginId/action/params/cron,
-                            // chỉ đổi id mới + nhãn thêm hậu tố "(bản sao)" để phân biệt.
+                            // chỉ đổi id mới + nhãn thêm hậu tố "(bản sao)" để phân biệt. Dùng
+                            // copySchedule() (KHÔNG phải addSchedule()) để bỏ qua kiểm tra trùng —
+                            // bản sao lúc mới tạo giống hệt bản gốc nên chắc chắn bị chặn nếu đi
+                            // qua addSchedule() thường (xem ScheduleViewModel.copySchedule()).
                             onCopy = {
-                                viewModel.addSchedule(
+                                viewModel.copySchedule(
                                     schedule.copy(
                                         id = java.util.UUID.randomUUID().toString(),
                                         label = "${schedule.label.ifBlank { "${schedule.pluginId}.${schedule.action}" }} (bản sao)",

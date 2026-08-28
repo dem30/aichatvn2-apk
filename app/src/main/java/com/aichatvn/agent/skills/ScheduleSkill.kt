@@ -240,11 +240,20 @@ class ScheduleSkill @Inject constructor(
 
         // ✅ MỚI: chặn tạo trùng ngay tại nguồn — áp dụng cho MỌI lời gọi "add" (kể cả từ
         // approvePattern, chat NLU, hay UI thêm lịch thủ công), không chỉ riêng luồng gợi ý.
-        findDuplicateSchedule(pluginId, action, cron, intervalMinutes, nestedParams)?.let { dup ->
-            return success(
-                message = "ℹ️ Lịch trình tương tự đã tồn tại: \"${dup.label}\" — không tạo thêm bản trùng.",
-                data = mapOf("schedule" to dup, "duplicate" to true)
-            )
+        // NGOẠI LỆ: người dùng chủ động bấm "Sao chép" một lịch có sẵn — lúc đó params["copy"]
+        // = true được gửi kèm để BỎ QUA kiểm tra này. Khác với NLU/chat/gợi ý tự động (nơi
+        // "trùng" thường là do hiểu nhầm/lặp lại ý định), copy là hành động CÓ CHỦ ĐÍCH của
+        // người dùng để lấy 1 bản giống hệt rồi tự chỉnh sửa sau (đổi giờ/thiết bị...) — chặn
+        // ở đây khiến nút Copy KHÔNG BAO GIỜ hoạt động được (bản sao ban đầu luôn giống hệt bản
+        // gốc 100%, chưa kịp sửa gì).
+        val skipDuplicateCheck = params["copy"] as? Boolean ?: false
+        if (!skipDuplicateCheck) {
+            findDuplicateSchedule(pluginId, action, cron, intervalMinutes, nestedParams)?.let { dup ->
+                return success(
+                    message = "ℹ️ Lịch trình tương tự đã tồn tại: \"${dup.label}\" — không tạo thêm bản trùng.",
+                    data = mapOf("schedule" to dup, "duplicate" to true)
+                )
+            }
         }
 
         val label = (params["label"] as? String)?.trim()?.takeIf { it.isNotBlank() }

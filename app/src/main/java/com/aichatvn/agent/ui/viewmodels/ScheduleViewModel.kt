@@ -61,6 +61,14 @@ class ScheduleViewModel @Inject constructor(
         saveSchedule(schedule, isEdit = false)
     }
 
+    // ✅ MỚI: sao chép lịch có sẵn — KHÁC addSchedule() thường ở chỗ gửi kèm "copy" = true để
+    // ScheduleSkill.handleAdd() bỏ qua kiểm tra trùng (xem ghi chú tại ScheduleSkill.kt). Bản
+    // sao lúc mới tạo giống hệt bản gốc 100% (chỉ khác id/label) nên chắc chắn sẽ bị chặn nếu
+    // đi qua addSchedule() thường — đó chính là lý do nút "Sao chép" trước đây luôn báo trùng.
+    fun copySchedule(schedule: ScheduleEntity) {
+        saveSchedule(schedule, isEdit = false, isCopy = true)
+    }
+
     fun updateSchedule(schedule: ScheduleEntity) {
         saveSchedule(schedule, isEdit = true)
     }
@@ -68,7 +76,7 @@ class ScheduleViewModel @Inject constructor(
 
 
     
-    private fun saveSchedule(schedule: ScheduleEntity, isEdit: Boolean) {
+    private fun saveSchedule(schedule: ScheduleEntity, isEdit: Boolean, isCopy: Boolean = false) {
     viewModelScope.launch {
         // ✅ GIẢI PHÁP PHÒNG THỦ: Nếu là chỉnh sửa (isEdit = true), truy xuất bản ghi cũ
         // trong DB để giữ lại các trường cấu hình nâng cao (alertActions, force), tránh việc UI lịch chung ghi đè làm mất.
@@ -113,6 +121,9 @@ class ScheduleViewModel @Inject constructor(
         )
         if (isEdit) {
             executionParams["id"] = schedule.id
+        }
+        if (isCopy) {
+            executionParams["copy"] = true
         }
 
         // ✅ MỚI: đọc PluginResult thật thay vì bỏ qua — xem ghi chú ở _saveResultMessage.
