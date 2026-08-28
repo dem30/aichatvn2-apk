@@ -1,5 +1,9 @@
 package com.aichatvn.agent.devices
 
+// ✅ MỚI (Nhất quán Dashboard): DeviceNode định nghĩa ở package ui.dashboard — dùng cho
+// buildDashboardNodes() bên dưới.
+import com.aichatvn.agent.ui.dashboard.DeviceNode
+
 /**
  * DeviceController
  *
@@ -61,6 +65,21 @@ interface DeviceController {
      * driver không phải override nếu chưa hỗ trợ khái niệm dimmer.
      */
     suspend fun isDeviceDimmable(deviceId: String): Boolean = false
+
+    /**
+     * ✅ MỚI (Nhất quán Dashboard): mỗi driver tự build DeviceNode cho TOÀN BỘ thiết bị của
+     * mình — KHÔNG phải build từng cái theo id đơn lẻ, để driver tự do dùng getStatusBatch()
+     * nội bộ (1 API call cho N thiết bị) thay vì N call rời rạc nếu tách theo id — xem comment
+     * "tối ưu quota API" ở SmartSwitchSkill.getDashboardNodes() bản cũ.
+     *
+     * Trả về danh sách CHƯA gán x/y layout (SmartSwitchSkill.getDashboardNodes() gán sau, dùng
+     * layout_x_*/layout_y_* đã lưu — logic đó dùng chung mọi giao thức, không đặc thù driver
+     * nào nên KHÔNG lặp lại ở đây). x=0f/y=0f là giá trị tạm, sẽ bị ghi đè.
+     *
+     * Default trả rỗng — driver không hỗ trợ Dashboard (hiếm, hầu như mọi driver điều khiển
+     * được đều nên hiện trên Dashboard) không bắt buộc override.
+     */
+    suspend fun buildDashboardNodes(): List<DeviceNode> = emptyList()
 
     /**
      * Đọc trạng thái hiện tại của 1 thiết bị. Trả về null nếu controller không xác định

@@ -40,6 +40,13 @@ data class TuyaDeviceEntity(
     @ColumnInfo(defaultValue = "NULL")
     val localSwitchDpId: String? = null,
 
+    // ✅ MỚI (Nhất quán Dashboard): trước đây getDashboardNodes() hardcode room="Phòng chung"
+    // cho MỌI thiết bị Tuya (xem SmartSwitchSkill.kt cũ) — giờ đọc thật từ đây. null = chưa
+    // đặt tên phòng, UI (DashboardScreen) tự hiển thị "Chưa phân loại" khi gặp null, KHÔNG
+    // default cứng ở tầng Entity để phân biệt được "chưa đặt" với "đặt tên là Phòng chung".
+    @ColumnInfo(defaultValue = "NULL")
+    val room: String? = null,
+
     // ✅ MỚI (Dimmer): DP id THẬT của lệnh chỉnh mức độ (vd "3" cho bright_value), tách riêng
     // khỏi localSwitchDpId — cùng 1 thiết bị có thể vừa có DP switch (bật/tắt) vừa có DP
     // dimmer (mức độ), không loại trừ nhau. null = thiết bị không phải loại dimmer, hoặc
@@ -130,7 +137,13 @@ data class MqttDeviceEntity(
 
     // ✅ MỚI (Dimmer): đánh dấu thiết bị này có hỗ trợ điều chỉnh mức độ hay không — cùng vai
     // trò với isDimmable của TuyaDeviceEntity, dùng cho DeviceController.capabilities.
-    val isDimmable: Boolean = false
+    val isDimmable: Boolean = false,
+
+    // ✅ MỚI (Nhất quán Dashboard): cùng vai trò với room của TuyaDeviceEntity — null = chưa
+    // đặt tên phòng. Thêm cột riêng ở đây (không dùng chung bảng) vì mqtt_devices vốn đã
+    // tách bảng riêng khỏi tuya_devices (xem comment "Tầng 3" đầu MqttDeviceEntity).
+    @ColumnInfo(defaultValue = "NULL")
+    val room: String? = null
 )
 
 // ==================== CHAT MESSAGE ====================

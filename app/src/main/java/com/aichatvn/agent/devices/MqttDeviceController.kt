@@ -4,6 +4,9 @@ import com.aichatvn.agent.config.AppConfigProvider
 import com.aichatvn.agent.data.MqttDeviceDao
 import com.aichatvn.agent.devices.mqtt.MqttDiscoveryEngine
 import com.aichatvn.agent.devices.mqtt.DiscoveredMqttDevice
+import com.aichatvn.agent.ui.dashboard.DeviceNode
+import com.aichatvn.agent.ui.dashboard.DeviceAction
+import com.aichatvn.agent.ui.dashboard.DeviceType
 import com.aichatvn.agent.utils.Logger
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
@@ -672,6 +675,97 @@ class MqttDeviceController @Inject constructor(
             DeviceActionResult.Success
         } catch (e: Exception) {
             DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi xoá thiết bị MQTT")
+        }
+    }
+
+    // ✅ MỚI (Nhất quán Dashboard): LẦN ĐẦU thiết bị MQTT xuất hiện trên Dashboard chính — trước
+    // đây getDashboardNodes() (SmartSwitchSkill.kt) chỉ đọc tuyaDeviceDao(), MQTT chỉ điều
+    // khiển được qua tab MQTT riêng/chat/lịch. Không cần getStatusBatch() như Tuya — MQTT đã
+    // cache lastKnownState/lastKnownLevel trực tiếp qua subscribe realtime (xem
+    // DeviceCapability.REALTIME_STATUS), đọc thẳng cột Entity là đủ, không cần gọi gì thêm.
+    override suspend fun buildDashboardNodes(): List<DeviceNode> {
+        val mqttDevices = mqttDeviceDao.getAllDevices()
+
+        return mqttDevices.map { dev ->
+            // ✅ SỬA: _realtimeStates lưu MqttRealtimeState (enum 4 trạng thái: UNKNOWN/ON/OFF/
+            // OFFLINE — xem MqttDeviceCard ở MqttScreen.kt), KHÔNG phải Boolean đơn giản như
+            // giả định ban đầu. Map đúng 4 trạng thái để nhất quán với cách tab MQTT hiển thị,
+            // OFFLINE (mất kết nối realtime) ưu tiên hiển thị khác biệt với "Đang tắt" thường.
+            val runtimeStatus = _realtimeStates.value[dev.id]?.status ?: MqttDeviceRuntimeStatus.UNKNOWN
+            val isOnline = dev.online && runtimeStatus != MqttDeviceRuntimeStatus.OFFLINE
+            val isDeviceOn = when (runtimeStatus) {
+                MqttDeviceRuntimeStatus.ON -> true
+                MqttDeviceRuntimeStatus.OFF -> false
+                // UNKNOWN/OFFLINE: chưa có tín hiệu realtime — dùng lastKnownState cache DB
+                // làm fallback, giống hành vi Tuya khi offline (coi tắt để hiển thị an toàn).
+                else -> dev.lastKnownState
+            }
+            val (deviceIcon, deviceLabel, deviceType) = resolveDeviceVisual(dev)
+
+            DeviceNode(
+                id = dev.id,
+                name = dev.name,
+                type = deviceType,
+                pluginId = "smart_switch", // xem ghi chú convention ở TuyaDeviceController.buildDashboardNodes()
+                defaultAction = "status",
+                defaultParams = mapOf("device" to dev.id),
+                supportedActions = listOf(
+                    DeviceAction(
+                        id = "set",
+                        title = "Bật $deviceLabel",
+                        icon = deviceIcon,
+                        defaultParams = mapOf("state" to true)
+                    ),
+                    DeviceAction(
+                        id = "set",
+                        title = "Tắt $deviceLabel",
+                        icon = "🔌",
+                        defaultParams = mapOf("state" to false)
+                    ),
+                    DeviceAction(
+                        id = "status",
+                        title = "Trạng thái",
+                        icon = "ℹ️"
+                    )
+                ),
+                x = 0f, // gán thật ở SmartSwitchSkill.getDashboardNodes() sau khi gộp
+                y = 0f,
+                online = isOnline,
+                icon = deviceIcon,
+                // MQTT không có khái niệm "lastKnownIp" như Tuya Local — thiết bị MQTT được xác
+                // định bằng topic, không phải IP cụ thể trong tầng app này (broker lo phần định
+                // tuyến mạng). null để bottom sheet hiển thị "Chưa xác định", nhất quán với Tuya.
+                ip = null,
+                battery = null,
+                status = when {
+                    runtimeStatus == MqttDeviceRuntimeStatus.OFFLINE -> "Mất kết nối"
+                    !isOnline -> "Mất kết nối"
+                    isDeviceOn -> "Đang bật"
+                    else -> "Đang tắt"
+                },
+                room = dev.room,
+                isDimmable = dev.isDimmable,
+                // MqttDeviceEntity CÓ cache lastKnownLevel thật (khác Tuya) — dùng ngay, không
+                // để null như bên Tuya.
+                dimmerLevel = dev.lastKnownLevel
+            )
+        }
+    }
+
+    private fun resolveDeviceVisual(dev: com.aichatvn.agent.data.model.MqttDeviceEntity): Triple<String, String, DeviceType> {
+        val name = dev.name.lowercase()
+        return when {
+            name.contains("bơm") || name.contains("pump")                    -> Triple("🚰", "Máy Bơm", DeviceType.PUMP)
+            name.contains("giặt")                                            -> Triple("🧺", "Máy Giặt", DeviceType.SWITCH)
+            name.contains("điều hòa") || name.contains("điều hoà") || name.contains("máy lạnh") -> Triple("❄️", "Điều Hòa", DeviceType.SWITCH)
+            name.contains("hút bụi")                                         -> Triple("🧹", "Máy Hút Bụi", DeviceType.SWITCH)
+            name.contains("tủ lạnh")                                         -> Triple("🧊", "Tủ Lạnh", DeviceType.SWITCH)
+            name.contains("lò vi sóng")                                      -> Triple("♨️", "Lò Vi Sóng", DeviceType.SWITCH)
+            name.contains("nóng lạnh") || name.contains("bình nóng")         -> Triple("🚿", "Bình Nóng Lạnh", DeviceType.SWITCH)
+            name.contains("quạt")                                            -> Triple("🌀", "Quạt", DeviceType.SWITCH)
+            name.contains("ổ cắm") || name.contains("ổ điện")                -> Triple("🔌", "Ổ Cắm", DeviceType.SWITCH)
+            name.contains("công tắc")                                        -> Triple("🔘", "Công Tắc", DeviceType.SWITCH)
+            else                                                             -> Triple("💡", "Đèn", DeviceType.LIGHT)
         }
     }
 }

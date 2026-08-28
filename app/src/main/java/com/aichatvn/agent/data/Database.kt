@@ -182,6 +182,12 @@ interface TuyaDeviceDao {
     // (TuyaManager) vẫn tự dò lại qua Cloud API resolveDimmerCode() khi cần dùng thật.
     @Query("UPDATE tuya_devices SET isDimmable = :isDimmable, localDimmerDpId = :localDimmerDpId WHERE id = :deviceId")
     suspend fun updateDimmable(deviceId: String, isDimmable: Boolean, localDimmerDpId: String?)
+
+    // ✅ MỚI (Nhất quán Dashboard): tách riêng khỏi insertAllDevices() — cùng lý do như
+    // updateLocalControlInfo()/updateDimmable() ở trên, KHÔNG được để scanDevices() định kỳ
+    // ghi đè mất tên phòng người dùng tự đặt qua dialog "Sửa thiết bị" (TuyaScreen.kt).
+    @Query("UPDATE tuya_devices SET room = :room WHERE id = :deviceId")
+    suspend fun updateRoom(deviceId: String, room: String?)
     
     @Query("DELETE FROM tuya_devices WHERE id = :deviceId")
     suspend fun deleteDevice(deviceId: String)
@@ -222,6 +228,11 @@ interface MqttDeviceDao {
 
     @Query("DELETE FROM mqtt_devices WHERE id = :deviceId")
     suspend fun deleteDevice(deviceId: String)
+
+    // ✅ MỚI (Nhất quán Dashboard): cùng vai trò với TuyaDeviceDao.updateRoom() — tách riêng
+    // khỏi insertDevice() (REPLACE, ghi đè nguyên dòng) để không mất tên phòng đã đặt.
+    @Query("UPDATE mqtt_devices SET room = :room WHERE id = :deviceId")
+    suspend fun updateRoom(deviceId: String, room: String?)
 
     // ✅ MỚI (version 25 — mục 4.3 kế hoạch): cập nhật RIÊNG deviceLanIp/deviceMac, tách khỏi
     // insertDevice() (REPLACE, ghi đè nguyên dòng) đúng lý do TuyaDeviceDao.updateLocalControlInfo()
@@ -833,6 +844,16 @@ val MIGRATION_30_31 = object : Migration(30, 31) {
     }
 }
 
+// ✅ MỚI: version 31 → 32 — dọn dứt điểm bug "room hardcode Phòng chung" trên Dashboard (xem
+// SmartSwitchSkill.getDashboardNodes() cũ). Thêm cột room nullable cho cả 2 bảng — null = chưa
+// đặt tên phòng, PHÂN BIỆT với chuỗi "Phòng chung" (một lựa chọn người dùng có thể tự đặt).
+val MIGRATION_31_32 = object : Migration(31, 32) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN room TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN room TEXT DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -880,7 +901,7 @@ val MIGRATION_30_31 = object : Migration(30, 31) {
     // migration tạo bảng thật, khiến máy cũ bị fallbackToDestructiveMigration() xoá sạch
     // DB mỗi lần schema lệch mà version không đổi — xem ghi chú đầy đủ tại khai báo
     // MIGRATION_29_30 phía trên.
-    version = 31,
+    version = 32,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -918,7 +939,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
