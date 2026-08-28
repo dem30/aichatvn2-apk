@@ -556,6 +556,46 @@ class MqttDeviceController @Inject constructor(
     override suspend fun turnOff(deviceId: String): DeviceActionResult =
         publish(deviceId, newState = false)
 
+    // ✅ MỚI (Dimmer): publish mức độ qua levelCommandTopic riêng (KHÁC commandTopic của
+    // publish() bên dưới — commandTopic chỉ nhận onPayload/offPayload nhị phân). Payload gửi
+    // thẳng chuỗi số 0-100 — khác Tuya (không cần quy đổi thang đo vì MQTT không có khái
+    // niệm DPS chuẩn hoá, mỗi thiết bị Tasmota/Home Assistant tự parse số nguyên % ở firmware).
+    // Trả Failure rõ ràng nếu levelCommandTopic chưa cấu hình, KHÔNG thử publish vào
+    // commandTopic (payload số sẽ bị hiểu nhầm thành lệnh on/off ở phía thiết bị).
+    override suspend fun setLevel(deviceId: String, percent: Int): DeviceActionResult {
+        val entity = mqttDeviceDao.getDeviceById(deviceId)
+            ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị MQTT id=$deviceId")
+        val levelTopic = entity.levelCommandTopic
+            ?: return DeviceActionResult.Failure(
+                "Thiết bị này chưa cấu hình topic điều chỉnh mức độ (levelCommandTopic)."
+            )
+        val safePercent = percent.coerceIn(0, 100)
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val mqttClient = getOrConnect()
+                    ?: return@withContext DeviceActionResult.Failure(
+                        "Chưa cấu hình broker MQTT — vào tab MQTT để nhập địa chỉ broker."
+                    )
+                mqttClient.publish(levelTopic, MqttMessage(safePercent.toString().toByteArray()))
+                // Phản hồi lạc quan tức thời cho UI, giống publish() — nếu thiết bị CÓ
+                // levelStateTopic, message thật (khi được implement subscribe riêng) sẽ ghi đè
+                // lại sau. online=true vì publish thành công nghĩa là broker đã nhận.
+                mqttDeviceDao.updateLevel(
+                    deviceId, level = safePercent, online = true, timestamp = System.currentTimeMillis()
+                )
+                DeviceActionResult.Success
+            } catch (e: Exception) {
+                logger.e("MqttDeviceController", "setLevel($deviceId, $safePercent%) lỗi: ${e.message}", e)
+                DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi chỉnh mức độ MQTT")
+            }
+        }
+    }
+
+    override suspend fun isDeviceDimmable(deviceId: String): Boolean {
+        return mqttDeviceDao.getDeviceById(deviceId)?.isDimmable ?: false
+    }
+
     private suspend fun publish(deviceId: String, newState: Boolean): DeviceActionResult {
         val entity = mqttDeviceDao.getDeviceById(deviceId)
             ?: return DeviceActionResult.Failure("Không tìm thấy thiết bị MQTT id=$deviceId")

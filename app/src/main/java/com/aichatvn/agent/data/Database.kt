@@ -174,6 +174,14 @@ interface TuyaDeviceDao {
         protocolVersion: String?,
         localSwitchDpId: String?
     )
+
+    // ✅ MỚI (Dimmer): cùng lý do tách riêng như updateLocalControlInfo() ở trên — người dùng
+    // tự đánh dấu thủ công qua nút "Đèn này có chỉnh độ sáng?" (TuyaScreen.markDimmable())
+    // KHÔNG được để scanDevices() định kỳ ghi đè mất qua insertAllDevices(). localDimmerDpId
+    // nullable vì có thể người dùng đánh dấu tay dù chưa dò được mã DP cụ thể — setLevel()
+    // (TuyaManager) vẫn tự dò lại qua Cloud API resolveDimmerCode() khi cần dùng thật.
+    @Query("UPDATE tuya_devices SET isDimmable = :isDimmable, localDimmerDpId = :localDimmerDpId WHERE id = :deviceId")
+    suspend fun updateDimmable(deviceId: String, isDimmable: Boolean, localDimmerDpId: String?)
     
     @Query("DELETE FROM tuya_devices WHERE id = :deviceId")
     suspend fun deleteDevice(deviceId: String)
@@ -205,6 +213,12 @@ interface MqttDeviceDao {
     // sau này có nơi khác insertDevice() lại với entity dựng thiếu field.
     @Query("UPDATE mqtt_devices SET lastKnownState = :state, online = :online, lastSeen = :timestamp WHERE id = :deviceId")
     suspend fun updateState(deviceId: String, state: Boolean, online: Boolean, timestamp: Long)
+
+    // ✅ MỚI (Dimmer): cập nhật RIÊNG lastKnownLevel, cùng lý do tách riêng như updateState()
+    // ở trên — publish level KHÔNG nên đụng tới lastKnownState (boolean on/off vẫn là 2 khái
+    // niệm độc lập, 1 thiết bị dimmer có thể đang ON ở mức 40%).
+    @Query("UPDATE mqtt_devices SET lastKnownLevel = :level, online = :online, lastSeen = :timestamp WHERE id = :deviceId")
+    suspend fun updateLevel(deviceId: String, level: Int, online: Boolean, timestamp: Long)
 
     @Query("DELETE FROM mqtt_devices WHERE id = :deviceId")
     suspend fun deleteDevice(deviceId: String)
@@ -802,6 +816,23 @@ val MIGRATION_29_30 = object : Migration(29, 30) {
     }
 }
 
+// ✅ MỚI: version 30 → 31 — thêm hỗ trợ Dimmer (điều chỉnh mức độ 0-100%, xem
+// DeviceController.setLevel()). tuya_devices thêm localDimmerDpId + isDimmable; mqtt_devices
+// thêm levelCommandTopic/lastKnownLevel/levelStateTopic + isDimmable. Tất cả nullable hoặc có
+// DEFAULT rõ ràng — thiết bị cũ (không phải dimmer) đọc ra null/false, giữ nguyên hành vi cũ,
+// cùng khuôn ALTER TABLE ADD COLUMN như mọi migration 17→30 trước đó.
+val MIGRATION_30_31 = object : Migration(30, 31) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN localDimmerDpId TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE tuya_devices ADD COLUMN isDimmable INTEGER NOT NULL DEFAULT 0")
+
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN levelCommandTopic TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN lastKnownLevel INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN levelStateTopic TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE mqtt_devices ADD COLUMN isDimmable INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -822,6 +853,7 @@ val MIGRATION_29_30 = object : Migration(29, 30) {
         CallLogEntity::class,
         MqttDeviceEntity::class
     ],
+    // ✅ MỚI: bump 30 → 31 — thêm hỗ trợ Dimmer, xem MIGRATION_30_31.
     // bump 24 → 25 để track MQTT Symmetric Broker (mục 4.2) thêm deviceLanIp/deviceMac/
     // brokerMode vào MqttDeviceEntity (xem MIGRATION_24_25).
     // Trước đó bump 23 → 24 để track Cloud Broker V1 thêm cột MqttDeviceEntity (xem MIGRATION_23_24).
@@ -848,7 +880,7 @@ val MIGRATION_29_30 = object : Migration(29, 30) {
     // migration tạo bảng thật, khiến máy cũ bị fallbackToDestructiveMigration() xoá sạch
     // DB mỗi lần schema lệch mà version không đổi — xem ghi chú đầy đủ tại khai báo
     // MIGRATION_29_30 phía trên.
-    version = 30,
+    version = 31,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -886,7 +918,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

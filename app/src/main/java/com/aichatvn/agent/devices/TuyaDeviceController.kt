@@ -65,6 +65,26 @@ class TuyaDeviceController @Inject constructor(
         }
     }
 
+    // ✅ MỚI (Dimmer): tuyaManager.setLevel() đã nhận thẳng deviceId (getDeviceInfo() bên
+    // trong tự thử theo id trước), KHÔNG cần dịch qua tên như turnOn/turnOff ở trên — xem
+    // TuyaManager.kt. capabilities cấp controller KHÔNG khai báo DIMMABLE ở đây vì không
+    // phải mọi thiết bị Tuya đều là dimmer (khác LOCAL_CONTROL/BATCH_STATUS vốn đúng cho mọi
+    // thiết bị Tuya không phân biệt) — nơi gọi (SmartSwitchSkill) tự kiểm tra cột
+    // isDimmable của từng thiết bị trước khi gọi setLevel(), không dựa vào capabilities
+    // chung của cả controller cho việc này.
+    override suspend fun setLevel(deviceId: String, percent: Int): DeviceActionResult {
+        return try {
+            tuyaManager.setLevel(deviceId, percent)
+            DeviceActionResult.Success
+        } catch (e: Exception) {
+            DeviceActionResult.Failure(e.message ?: "Lỗi không xác định khi chỉnh mức độ")
+        }
+    }
+
+    override suspend fun isDeviceDimmable(deviceId: String): Boolean {
+        return tuyaDeviceDao.getDeviceById(deviceId)?.isDimmable ?: false
+    }
+
     override suspend fun getStatus(deviceId: String): DeviceStatus? {
         val entity = tuyaDeviceDao.getDeviceById(deviceId) ?: return null
         return try {

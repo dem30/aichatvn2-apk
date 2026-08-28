@@ -118,6 +118,21 @@ class HouseholdEventPublisher @Inject constructor(
             put("source", source)
         })
 
+    // ✅ MỚI (Dimmer): song song publishTuyaStateChange()/publishMqttStateChange() ở trên,
+    // KHÔNG tái dùng 2 hàm đó vì payload của chúng cố định "newState: Boolean" — mức độ %
+    // là Int, ép kiểu vào đó sẽ sai ngữ nghĩa. Dùng chung "protocol" để phân biệt nguồn
+    // (SmartSwitchSkill biết controller.protocol khi gọi), thay vì tách 2 hàm riêng như trên
+    // — vì cả Tuya lẫn MQTT dimmer chia sẻ đúng 1 hình dạng payload (deviceId/deviceName/
+    // percent), không có khác biệt nào cần tách như "source" của MQTT (subscribe vs lệnh
+    // chủ động — dimmer hiện chưa có luồng subscribe realtime riêng để phân biệt).
+    suspend fun publishLevelChange(deviceId: String, deviceName: String, percent: Int, protocol: String): Boolean =
+        publish("device_level_change", deviceId, JSONObject().apply {
+            put("deviceId", deviceId)
+            put("deviceName", deviceName)
+            put("level", percent)
+            put("protocol", protocol)
+        })
+
     // ✅ MỚI: máy đang publish camera_alarm mà ĐANG CÙNG LAN với camera đó (mới tự fetch được
     // ảnh LAN thật lúc trigger scan sớm — xem OnvifEventRelay.relayMotionEvent() và nhánh nhận
     // camera_alarm_push trong WebhookGatewayService) truyền kèm imageBytes vào đây. Ảnh được

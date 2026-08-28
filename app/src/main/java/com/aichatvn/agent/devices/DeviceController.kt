@@ -37,6 +37,32 @@ interface DeviceController {
     suspend fun turnOff(deviceId: String): DeviceActionResult
 
     /**
+     * ✅ MỚI (Dimmer): đặt mức độ 0-100% cho thiết bị hỗ trợ điều chỉnh mức (đèn dimmer, quạt
+     * nhiều nấc quy đổi ra %...), thay vì chỉ bật/tắt nhị phân. Có default trả Failure để
+     * driver nào không hỗ trợ (đa số công tắc/ổ cắm thường) KHÔNG bắt buộc override — đúng
+     * nguyên tắc "thêm method mới với giá trị mặc định" đã ghi ở đầu file.
+     *
+     * percent ngoài khoảng 0-100 → driver tự clamp hoặc trả Failure rõ ràng, KHÔNG ném
+     * exception (giữ đúng triết lý DeviceActionResult bọc thành/bại).
+     *
+     * ⚠️ CHỈ gọi cho deviceId có capabilities chứa DIMMABLE — nơi gọi (SmartSwitchSkill)
+     * chịu trách nhiệm kiểm tra trước, driver KHÔNG tự kiểm tra lại capabilities của chính
+     * mình ở đây để tránh lặp logic.
+     */
+    suspend fun setLevel(deviceId: String, percent: Int): DeviceActionResult =
+        DeviceActionResult.Failure("Giao thức này không hỗ trợ điều chỉnh mức độ (dimmer)")
+
+    /**
+     * ✅ MỚI (Dimmer): thiết bị CỤ THỂ này (không phải cả giao thức) có hỗ trợ setLevel()
+     * hay không — vd trong cùng driver Tuya, có bóng đèn dimmer VÀ ổ cắm thường không dimmer.
+     * SmartSwitchSkill gọi hàm này để quyết định có gửi params["level"] xuống setLevel() hay
+     * không, KHÔNG tự query DAO cụ thể (TuyaDeviceDao/MqttDeviceDao) — giữ đúng nguyên tắc
+     * "mọi nghiệp vụ chỉ nói chuyện qua DeviceController" đã nêu ở đầu file. Default false để
+     * driver không phải override nếu chưa hỗ trợ khái niệm dimmer.
+     */
+    suspend fun isDeviceDimmable(deviceId: String): Boolean = false
+
+    /**
      * Đọc trạng thái hiện tại của 1 thiết bị. Trả về null nếu controller không xác định
      * được trạng thái (mất kết nối, thiết bị không tồn tại...) — nghiệp vụ gọi phải tự
      * xử lý trường hợp null, không được giả định luôn có giá trị.
@@ -157,7 +183,9 @@ enum class DeviceCapability {
     /** Có thể subscribe nhận trạng thái theo thời gian thực (không cần poll). */
     REALTIME_STATUS,
     /** Hỗ trợ đọc trạng thái hàng loạt hiệu quả hơn gọi từng cái. */
-    BATCH_STATUS
+    BATCH_STATUS,
+    /** ✅ MỚI: hỗ trợ setLevel() — điều chỉnh mức độ 0-100%, không chỉ bật/tắt nhị phân. */
+    DIMMABLE
 }
 
 /**
@@ -168,7 +196,11 @@ enum class DeviceCapability {
 data class DeviceStatus(
     val isOn: Boolean,
     val isOnline: Boolean,
-    val raw: String? = null
+    val raw: String? = null,
+    // ✅ MỚI (Dimmer): mức độ hiện tại 0-100%, null nếu thiết bị không phải loại DIMMABLE
+    // hoặc driver chưa đọc được mức thật (vd MQTT chỉ có state ON/OFF, không report %).
+    // Nghiệp vụ đọc field này PHẢI tự kiểm tra null, không giả định luôn có giá trị.
+    val level: Int? = null
 )
 
 /**

@@ -108,7 +108,9 @@ class SmartSwitchSkill @Inject constructor(
                     "bật đèn", "tắt đèn",
                     "bật ổ cắm", "tắt ổ cắm",
                     "bật quạt", "tắt quạt",
-                    "bật máy bơm", "tắt máy bơm"
+                    "bật máy bơm", "tắt máy bơm",
+                    // ✅ MỚI (Dimmer)
+                    "để đèn 50%", "chỉnh đèn phòng khách xuống 30%"
                 ),
                 exampleOverrides = mapOf(
                     "bật đèn" to mapOf("state" to true),
@@ -118,7 +120,10 @@ class SmartSwitchSkill @Inject constructor(
                     "bật quạt" to mapOf("state" to true),
                     "tắt quạt" to mapOf("state" to false),
                     "bật máy bơm" to mapOf("state" to true),
-                    "tắt máy bơm" to mapOf("state" to false)
+                    "tắt máy bơm" to mapOf("state" to false),
+                    // ✅ MỚI (Dimmer): không kèm "state" — handleSet() ưu tiên nhánh level khi có mặt.
+                    "để đèn 50%" to mapOf("level" to 50),
+                    "chỉnh đèn phòng khách xuống 30%" to mapOf("level" to 30)
                 ),
                 tags = listOf(
                     "light", "switch", "socket", "fan", "pump", "relay", "device",
@@ -128,7 +133,15 @@ class SmartSwitchSkill @Inject constructor(
                 ),
                 parameters = listOf(
                     PluginParameter("device", "string", "Tên thiết bị", true, "device"),
-                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean")
+                    PluginParameter("state", "boolean", "true: bật, false: tắt", true, "boolean"),
+                    // ✅ MỚI (Dimmer): KHÔNG required — chỉ có ý nghĩa với thiết bị dimmable
+                    // (đèn dimmer...). Khi có mặt, handleSet() ưu tiên nhánh setLevel() và bỏ
+                    // qua "state" hoàn toàn (xem handleSet()). type="number" đã được
+                    // PluginParameter.normalize() hỗ trợ sẵn (Plugin.kt), không cần thêm type mới.
+                    PluginParameter(
+                        "level", "number", "Mức độ 0-100% (chỉ áp dụng cho thiết bị dimmer)",
+                        required = false, semanticType = "percent"
+                    )
                 ),
                 // ✅ MỚI (Tuần 5 - Phase 5): Ràng buộc thế giới thực mặc định để trống cho người dùng lên lịch tự đặt
                 requiredWorldState = ""
@@ -411,6 +424,53 @@ class SmartSwitchSkill @Inject constructor(
     private suspend fun handleSet(params: Map<String, Any>): AgentKernel.PluginResult {
         val deviceKey = params["device"] as? String
             ?: return failure("Thiếu tên thiết bị")
+
+        // ✅ MỚI (Dimmer): nhánh RIÊNG, tách khỏi luồng on/off phức tạp bên dưới (retry MQTT
+        // election, fallback Gateway/Local-only...) — cố tình CHƯA cho setLevel() thừa hưởng
+        // cơ chế đó vì (1) DeviceCommandGatewayClient/Camera Node hiện chỉ biết chuyển tiếp
+        // lệnh on/off (xem WebhookGatewayService.handleTuyaCommand()), gọi setLevel() qua đó
+        // sẽ cần thêm việc riêng chưa làm; (2) muốn giữ handleSet() cũ (on/off) NGUYÊN VẸN,
+        // không chạm vào để tránh regression cho phần đã chạy ổn định. Nếu sau này cần
+        // dimmer cũng có Gateway fallback, làm ở đây trước, không gộp chung với nhánh dưới.
+        val levelParam = params["level"]
+        if (levelParam != null) {
+            val (summary, controller) = resolveDevice(deviceKey)
+                ?: return failure("Không tìm thấy thiết bị '$deviceKey'")
+            val deviceId = summary.id
+
+            if (!controller.isDeviceDimmable(deviceId)) {
+                return failure("Thiết bị '${summary.displayName}' không hỗ trợ điều chỉnh mức độ (dimmer).")
+            }
+            val percent = when (levelParam) {
+                is Number -> levelParam.toInt()
+                is String -> levelParam.toDoubleOrNull()?.toInt()
+                    ?: return failure("Giá trị mức độ không hợp lệ: '$levelParam'")
+                else -> return failure("Giá trị mức độ không hợp lệ: '$levelParam'")
+            }
+
+            return when (val result = controller.setLevel(deviceId, percent)) {
+                is DeviceActionResult.Success -> {
+                    // ✅ MỚI (Dimmer): broadcast cho máy khác trong household biết mức độ vừa
+                    // đổi — dùng publishLevelChange() (xem HouseholdEventPublisher.kt), song
+                    // song với cách turnOn/turnOff broadcast qua publishTuyaStateChange/
+                    // publishMqttStateChange ở nhánh on/off phía dưới. protocol lấy từ
+                    // controller.protocol.name để khớp đúng "tuya"/"mqtt" — KHÔNG hardcode.
+                    try {
+                        val protocolStr = when (controller.protocol) {
+                            DeviceProtocol.TUYA_CLOUD, DeviceProtocol.TUYA_LOCAL -> "tuya"
+                            DeviceProtocol.MQTT -> "mqtt"
+                            else -> controller.protocol.name.lowercase()
+                        }
+                        householdEventPublisher.publishLevelChange(deviceId, summary.displayName, percent, protocolStr)
+                    } catch (e: Exception) {
+                        logger.d("SmartSwitchSkill", "publishLevelChange sau setLevel lỗi (bỏ qua): ${e.message}")
+                    }
+                    PluginResult.Success(mapOf("message" to "✅ Đã đặt ${summary.displayName} ở mức $percent%."))
+                }
+                is DeviceActionResult.Failure -> failure("Lỗi điều chỉnh mức độ: ${result.reason}")
+            }
+        }
+
         val state = params["state"] as? Boolean
             ?: return failure("Thiếu trạng thái")
 

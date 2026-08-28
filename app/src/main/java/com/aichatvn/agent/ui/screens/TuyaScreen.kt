@@ -335,6 +335,32 @@ class TuyaViewModel @Inject constructor(
     // TuyaDeviceCard, và là đích đến khi người dùng bấm "Đi tới cài đặt" từ màn "Sức khoẻ
     // hệ thống" (mục CONFLICT "Điều khiển nhanh cho ..."). Dùng chung _loadingDevices theo
     // deviceId — đúng pattern toggleDevice()/deleteDevice() đã có, để Card tự hiện spinner.
+    // ✅ MỚI (Dimmer): người dùng tự xác nhận thiết bị có dimmer khi scanDevices() tự động
+    // (resolveDimmerCode() trong TuyaManager) không xác định được — thử dò lại 1 lần ngay
+    // khi bấm (không chỉ set cứng true) để CÓ localDimmerDpId thật ngay nếu Cloud trả về
+    // được lần này; nếu vẫn thất bại, vẫn set isDimmable=true (tin người dùng) nhưng để
+    // TuyaManager.setLevel() tự dò lại qua Cloud API lúc thực sự gọi lệnh.
+    fun markDimmable(device: TuyaDeviceEntity) {
+        viewModelScope.launch {
+            _loadingDevices.value = _loadingDevices.value + device.id
+            try {
+                val dpId = try {
+                    withContext(Dispatchers.IO) { tuyaManager.resolveDimmerCodePublic(device.id) }
+                } catch (e: Exception) {
+                    null
+                }
+                database.tuyaDeviceDao().updateDimmable(device.id, isDimmable = true, localDimmerDpId = dpId)
+                _message.value = "🔆 Đã bật thanh trượt độ sáng cho \"${device.name}\""
+                loadDevices()
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi: ${e.message}"
+                logger.e("TuyaViewModel", "markDimmable error", e)
+            } finally {
+                _loadingDevices.value = _loadingDevices.value - device.id
+            }
+        }
+    }
+
     fun enableLocalControl(device: TuyaDeviceEntity) {
         viewModelScope.launch {
             _loadingDevices.value = _loadingDevices.value + device.id
@@ -384,6 +410,37 @@ class TuyaViewModel @Inject constructor(
             } catch (e: Exception) {
                 _message.value = "❌ Lỗi: ${e.message}"
                 logger.e("TuyaViewModel", "toggleDevice error", e)
+            } finally {
+                _loadingDevices.value = _loadingDevices.value - device.id
+            }
+        }
+    }
+
+    // ✅ MỚI (Dimmer): song song toggleDevice() ở trên — gửi "level" thay vì "state" trong
+    // params, để agentKernel.executePluginAction("smart_switch","set",...) rơi đúng nhánh
+    // dimmer mới trong SmartSwitchSkill.handleSet() (nhánh đó ưu tiên "level" nếu có mặt,
+    // bỏ qua "state" hoàn toàn — xem SmartSwitchSkill.kt). Đi qua agentKernel giống hệt
+    // toggleDevice(), KHÔNG gọi thẳng controller.setLevel() — để hưởng đúng guard/world_state
+    // nhất quán với mọi đường điều khiển khác (chat, Dashboard, form Action).
+    fun setLevel(device: TuyaDeviceEntity, percent: Int) {
+        viewModelScope.launch {
+            _loadingDevices.value = _loadingDevices.value + device.id
+            try {
+                val params = mapOf("device" to device.id, "level" to percent)
+                val result = withContext(Dispatchers.IO) {
+                    agentKernel.executePluginAction("smart_switch", "set", params)
+                }
+                when (result) {
+                    is PluginResult.Success -> {
+                        _message.value = "🔆 Đã đặt ${device.name} ở mức $percent%"
+                        loadDevices()
+                    }
+                    is PluginResult.Failure -> _message.value = "❌ ${result.error}"
+                    else -> {}
+                }
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi: ${e.message}"
+                logger.e("TuyaViewModel", "setLevel error", e)
             } finally {
                 _loadingDevices.value = _loadingDevices.value - device.id
             }
@@ -552,8 +609,8 @@ fun TuyaScreen(
                 showAddMqttDialog = false
                 scanResultTopic = null
             },
-            onSave = { name, commandTopic, stateTopic, onPayload, offPayload ->
-                mqttViewModel.addDevice(name, commandTopic, stateTopic, onPayload, offPayload)
+            onSave = { name, commandTopic, stateTopic, onPayload, offPayload, levelCommandTopic ->
+                mqttViewModel.addDevice(name, commandTopic, stateTopic, onPayload, offPayload, levelCommandTopic)
                 showAddMqttDialog = false
                 scanResultTopic = null
             }
@@ -894,7 +951,10 @@ fun TuyaScreen(
                                 onRefresh = { viewModel.refreshStatus(device) },
                                 onDelete = { deviceToDelete = device },
                                 onConfigureGuard = { guardTargetDevice = device.id to device.name },
-                                onEnableLocalControl = { viewModel.enableLocalControl(device) }
+                                onEnableLocalControl = { viewModel.enableLocalControl(device) },
+                                // ✅ MỚI (Dimmer)
+                                onSetLevel = { percent -> viewModel.setLevel(device, percent) },
+                                onMarkDimmable = { viewModel.markDimmable(device) }
                             )
                         }
                         item { Spacer(Modifier.height(80.dp)) }
@@ -939,7 +999,9 @@ fun TuyaScreen(
                                 onTurnOn = { mqttViewModel.toggleDevice(device, true) },
                                 onTurnOff = { mqttViewModel.toggleDevice(device, false) },
                                 onDelete = { mqttDeviceToDelete = device },
-                                onConfigureGuard = { guardTargetDevice = device.id to device.name }
+                                onConfigureGuard = { guardTargetDevice = device.id to device.name },
+                                // ✅ MỚI (Dimmer)
+                                onSetLevel = { percent -> mqttViewModel.setLevel(device, percent) }
                             )
                         }
                         item { Spacer(Modifier.height(80.dp)) }
@@ -961,7 +1023,14 @@ private fun TuyaDeviceCard(
     onRefresh: () -> Unit,
     onDelete: () -> Unit,
     onConfigureGuard: () -> Unit,
-    onEnableLocalControl: () -> Unit
+    onEnableLocalControl: () -> Unit,
+    // ✅ MỚI (Dimmer): callback riêng, chỉ được gọi khi device.isDimmable == true (xem Slider
+    // bên dưới) — percent 0-100, ViewModel.setLevel() tự lo phần gửi qua agentKernel.
+    onSetLevel: (Int) -> Unit = {},
+    // ✅ MỚI (Dimmer): người dùng tự xác nhận thiết bị này có dimmer khi quét tự động không
+    // chắc chắn (category "dj"/"dj2" nhưng resolveDimmerCode() không tìm ra mã) — xem nút
+    // "🔆 Đèn này có chỉnh độ sáng?" bên dưới.
+    onMarkDimmable: () -> Unit = {}
 ) {
     // Bóc tách chuỗi khóa bảo vệ theo định dạng "camera.id.state_scheduleId=value"
     val friendlyGuardLabel = remember(currentGuard, allSchedules) {
@@ -1161,6 +1230,49 @@ private fun TuyaDeviceCard(
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(Modifier.height(12.dp))
+
+            // ✅ MỚI (Dimmer): chỉ hiển thị khi thiết bị thật sự hỗ trợ — không phải mọi
+            // thiết bị Tuya đều dimmer (đa số công tắc/ổ cắm chỉ on/off). remember state cục
+            // bộ để kéo mượt trên UI, CHỈ gọi onSetLevel() lúc thả tay (onValueChangeFinished)
+            // — tránh gọi executePluginAction() dồn dập theo từng pixel kéo, mỗi lần gọi đều
+            // là 1 lệnh Local/Cloud thật xuống thiết bị.
+            if (device.isDimmable) {
+                var sliderPercent by remember(device.id) {
+                    // TuyaDeviceEntity KHÔNG có cột lastKnownLevel (khác MqttDeviceEntity) —
+                    // Tuya không cache mức % cuối cùng ở tầng Entity, chỉ gửi lệnh Local/Cloud
+                    // mỗi lần. Mặc định 50% cho lần hiển thị đầu, người dùng tự kéo lại đúng ý.
+                    mutableStateOf(50f)
+                }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "🔆 Mức độ: ${sliderPercent.toInt()}%",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = sliderPercent,
+                        onValueChange = { sliderPercent = it },
+                        onValueChangeFinished = { onSetLevel(sliderPercent.toInt()) },
+                        valueRange = 0f..100f,
+                        steps = 99,
+                        enabled = !isLoading
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            } else if (device.category == "dj" || device.category == "dj2") {
+                // ✅ MỚI (Dimmer): chỉ gợi ý nút này cho category đèn ("dj"/"dj2") mà quét tự
+                // động (scanDevices() → resolveDimmerCode()) KHÔNG xác định được là dimmer —
+                // có thể do đèn đó chỉ on/off thật (không dimmer), hoặc do lỗi mạng tạm thời
+                // lúc quét. KHÔNG hiện cho category khác (công tắc/ổ cắm...) — tránh gợi ý sai
+                // cho thiết bị chắc chắn không phải đèn.
+                TextButton(
+                    onClick = onMarkDimmable,
+                    enabled = !isLoading,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("🔆 Đèn này có chỉnh độ sáng? Bấm để bật thanh trượt", fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {

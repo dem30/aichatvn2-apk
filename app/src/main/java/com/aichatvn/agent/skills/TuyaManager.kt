@@ -81,6 +81,9 @@ class TuyaManager @Inject constructor(
     // có thể dùng code khác nhau ("switch", "switch_1", "switch_led"...). Không hardcode "1"
     // như trước nữa — đó là nguyên nhân lỗi "command or value not support".
     private val switchCodeCache = mutableMapOf<String, String>()
+    // ✅ MỚI (Dimmer): cache riêng cho mã lệnh dimmer, tách khỏi switchCodeCache vì 1 thiết bị
+    // có thể có cả 2 code (switch bật/tắt + dimmer chỉnh mức) không loại trừ nhau.
+    private val dimmerCodeCache = mutableMapOf<String, String>()
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -215,6 +218,30 @@ class TuyaManager @Inject constructor(
                     // bình thường — sẽ được fetchLocalKey()/discoverIp() điền vào lần đầu điều
                     // khiển hoặc lần đầu bấm "Kích hoạt điều khiển local" ở UI.
                     val existing = existingEntities[id]
+
+                    // ✅ MỚI (Dimmer): chỉ THỬ dò dimmer cho category "dj"/"dj2" (đèn) — khớp
+                    // đúng danh sách categoryIcon() đã dùng ở TuyaScreen.kt, KHÔNG đoán thêm
+                    // category khác. "kg"/"cz" (công tắc/ổ cắm) chắc chắn không dimmer, bỏ qua
+                    // để tránh gọi resolveDimmerCode() (1 lượt fetchDeviceStatusList()) lãng
+                    // phí cho từng thiết bị không liên quan mỗi lần quét. Kế thừa isDimmable/
+                    // localDimmerDpId cũ nếu đã dò trước đó — chỉ dò LẠI khi existing == null
+                    // (thiết bị mới) hoặc existing.isDimmable == false (chưa từng dò ra, có thể
+                    // do lần trước Cloud lỗi tạm thời) — KHÔNG dò lại nếu đã xác nhận true, đỡ
+                    // tốn 1 API call mỗi lần refresh cho thiết bị đã biết chắc là dimmer.
+                    var isDimmable = existing?.isDimmable ?: false
+                    var dimmerDpId = existing?.localDimmerDpId
+                    if (!isDimmable && (category == "dj" || category == "dj2")) {
+                        try {
+                            dimmerDpId = resolveDimmerCode(id)
+                            isDimmable = true
+                        } catch (e: Exception) {
+                            // Không có mã dimmer (đèn chỉ on/off loại "dj" đơn giản, hoặc lỗi
+                            // mạng tạm thời) — giữ isDimmable = false, KHÔNG throw để không làm
+                            // hỏng cả lượt scanDevices() vì 1 thiết bị.
+                            logger.d("TuyaManager", "Thiết bị $id (category=$category) không có mã dimmer: ${e.message}")
+                        }
+                    }
+
                     deviceList.add(
                         TuyaDeviceEntity(
                             id = id,
@@ -226,7 +253,10 @@ class TuyaManager @Inject constructor(
                             localKey = existing?.localKey,
                             lastKnownIp = existing?.lastKnownIp,
                             protocolVersion = existing?.protocolVersion,
-                            localSwitchDpId = existing?.localSwitchDpId
+                            localSwitchDpId = existing?.localSwitchDpId,
+                            // ✅ MỚI (Dimmer)
+                            localDimmerDpId = dimmerDpId,
+                            isDimmable = isDimmable
                         )
                     )
                 }
@@ -767,6 +797,147 @@ class TuyaManager @Inject constructor(
         val device = getDeviceInfo(deviceName)
         setDeviceState(device, false)
         logger.i("TuyaManager", "💡 TẮT ${device.name}")
+    }
+
+    // ✅ MỚI (Dimmer): đặt mức độ 0-100% — dùng RIÊNG cho thiết bị DIMMABLE (đèn dimmer...).
+    // Đi theo ĐÚNG khuôn setDeviceState(): thử Local trước (dpId riêng cho dimmer, KHÔNG
+    // dùng chung localSwitchDpId của switch), fallback Cloud nếu Local thất bại, tôn trọng
+    // LOCAL_ONLY_MODE_ENABLED giống hệt turnOn()/turnOff(). Không tái dùng setDeviceState()
+    // (vốn chỉ nhận Boolean) — viết hàm song song để KHÔNG đổi chữ ký/hành vi cũ.
+    suspend fun setLevel(deviceId: String, percent: Int): Boolean = withContext(Dispatchers.IO) {
+        val safePercent = percent.coerceIn(0, 100)
+        // getDeviceInfo() tự thử theo id trước (duy nhất, không lo trùng) rồi mới fallback
+        // tên — dùng thẳng deviceId đúng như setDeviceState()/turnOn()/turnOff() đang làm.
+        val device = getDeviceInfo(deviceId)
+
+        val localDpId = tuyaDeviceDao.getDeviceById(deviceId)?.localDimmerDpId
+        if (localDpId != null && trySetDeviceLevelLocal(deviceId, localDpId, safePercent)) {
+            updateDeviceStatus(deviceId, true)
+            return@withContext true
+        }
+
+        if (configProvider.getBoolean(AppConfigDefaults.LOCAL_ONLY_MODE_ENABLED)) {
+            throw Exception(
+                "Chế độ Local-only đang bật: điều khiển mức độ LOCAL thất bại và Cloud đã bị tắt cho thiết bị này."
+            )
+        }
+
+        val token = getAccessToken()
+        val prefs = context.dataStore.data.first()
+        val clientId = prefs[CLIENT_ID] ?: ""
+        val clientSecret = prefs[CLIENT_SECRET] ?: ""
+        val baseUrl = getApiBaseUrl()
+        val dimmerCode = resolveDimmerCode(deviceId)
+        // Tuya Cloud DPS cho dimmer thường dùng thang 10-1000 (bright_value/bright_value_v2),
+        // KHÔNG phải 0-100 — quy đổi tại đây, giữ percent 0-100 làm giao diện chung cho toàn
+        // bộ app (SmartActionFormSheet, AgentKernel...), không rò rỉ chi tiết thang đo Tuya
+        // ra ngoài TuyaManager.
+        val tuyaValue = 10 + (safePercent * 990 / 100)
+
+        val urlPath = "/v1.0/devices/$deviceId/commands"
+        val timestamp = System.currentTimeMillis()
+        val nonce = UUID.randomUUID().toString()
+
+        val bodyJson = JSONObject().apply {
+            put("commands", org.json.JSONArray().apply {
+                put(JSONObject().apply {
+                    put("code", dimmerCode)
+                    put("value", tuyaValue)
+                })
+            })
+        }
+        val bodyStr = bodyJson.toString()
+
+        val sign = calculateSignature(
+            clientId = clientId,
+            accessToken = token,
+            timestamp = timestamp,
+            nonce = nonce,
+            secret = clientSecret,
+            method = "POST",
+            urlPathAndQuery = urlPath,
+            bodyStr = bodyStr
+        )
+
+        val url = "$baseUrl$urlPath"
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("client_id", clientId)
+            .addHeader("access_token", token)
+            .addHeader("sign", sign)
+            .addHeader("t", timestamp.toString())
+            .addHeader("nonce", nonce)
+            .addHeader("sign_method", "HMAC-SHA256")
+            .addHeader("Content-Type", "application/json")
+            .post(bodyStr.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) {
+            throw Exception("Điều khiển mức độ thất bại: ${response.code}")
+        }
+
+        val json = JSONObject(response.body?.string() ?: "")
+        val success = json.optBoolean("success")
+        if (!success) {
+            val msg = json.optString("msg", "Unknown error")
+            throw Exception("Control API error (dimmer): $msg")
+        }
+
+        updateDeviceStatus(deviceId, true)
+        true
+    }
+
+    // Tự động dò mã lệnh dimmer (DP code) — tách riêng khỏi resolveSwitchCode() vì cùng 1
+    // thiết bị có thể có CẢ HAI code (switch để bật/tắt, dimmer để chỉnh mức), không phải
+    // lựa chọn loại trừ nhau. Cache riêng theo deviceId, KHÔNG dùng chung switchCodeCache.
+    // ✅ MỚI (Dimmer): bản public để TuyaViewModel.markDimmable() gọi khi người dùng bấm "Đèn
+    // này có chỉnh độ sáng?" — KHÔNG đổi private của resolveDimmerCode() gốc (dùng nội bộ ở
+    // setLevel()/scanDevices()), chỉ thêm 1 hàm mỏng public gọi lại, tránh mở rộng phạm vi
+    // truy cập của hàm gốc ra ngoài class không cần thiết.
+    suspend fun resolveDimmerCodePublic(deviceId: String): String = resolveDimmerCode(deviceId)
+
+    private suspend fun resolveDimmerCode(deviceId: String): String {
+        dimmerCodeCache[deviceId]?.let { return it }
+
+        val statusList = fetchDeviceStatusList(deviceId)
+        val codes = (0 until statusList.length()).map { statusList.getJSONObject(it).optString("code") }
+
+        val preferredOrder = listOf("bright_value_v2", "bright_value", "bright_value_1")
+        val resolved = preferredOrder.firstOrNull { it in codes }
+            ?: codes.firstOrNull { it.startsWith("bright_value") }
+            ?: throw Exception("Không tìm thấy mã lệnh dimmer phù hợp cho thiết bị này (codes: $codes)")
+
+        dimmerCodeCache[deviceId] = resolved
+        logger.i("TuyaManager", "🔎 Đã dò mã lệnh dimmer cho $deviceId: $resolved")
+        return resolved
+    }
+
+    // Song song với trySetDeviceStateLocal() nhưng cho giá trị Int (0-100%, đã coerce trước
+    // khi gọi vào đây) thay vì Boolean — KHÔNG sửa trySetDeviceStateLocal() gốc để giữ nguyên
+    // hành vi switch cũ.
+    private suspend fun trySetDeviceLevelLocal(deviceId: String, dpId: String, percent: Int): Boolean {
+        val entity = ensureLocalControlReady(deviceId) ?: return false
+        val ip = entity.lastKnownIp ?: return false
+        val localKey = entity.localKey ?: return false
+        val version = entity.protocolVersion ?: "3.3"
+        // Cùng quy ước thang 10-1000 như nhánh Cloud phía trên — nhất quán trong toàn bộ class.
+        val tuyaValue = 10 + (percent * 990 / 100)
+
+        val sent = if (version == "3.4") {
+            tuyaLocalController.sendCommand34(ip, localKey, deviceId, mapOf(dpId to tuyaValue))
+        } else {
+            tuyaLocalController.sendCommand33(ip, localKey, deviceId, mapOf(dpId to tuyaValue))
+        }
+        if (!sent) {
+            logger.d("TuyaManager", "trySetDeviceLevelLocal($deviceId): gửi lệnh local thất bại — fallback cloud.")
+            return false
+        }
+        // Không xác minh lại chi tiết theo % giống trySetDeviceStateLocal() (khác cấu trúc so
+        // sánh giá trị số so với boolean, và sai số quy đổi 0-100↔10-1000 dễ gây false-negative
+        // nếu so bằng tuyệt đối) — tin ACK, nhất quán với cách xử lý bản 3.4 ở switch.
+        logger.i("TuyaManager", "⚡ ($deviceId) đã gửi lệnh LOCAL dimmer=$percent% qua $ip.")
+        return true
     }
 
     // Gọi API lấy danh sách trạng thái (status) thô của thiết bị — dùng chung cho getStatus() và resolveSwitchCode()

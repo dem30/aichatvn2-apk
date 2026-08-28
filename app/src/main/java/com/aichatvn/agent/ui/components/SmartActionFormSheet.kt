@@ -329,6 +329,22 @@ fun SmartActionFormSheet(
                         onCheckedChange = { paramBooleans[param.name] = it }
                     )
                 }
+            } else if (param.type == "number" && param.semanticType == "percent") {
+                // ✅ MỚI (Dimmer): Slider 0-100%, ghi vào paramValues dạng String (giống mọi
+                // param không phải "boolean") để tương thích cách đóng gói params hiện có —
+                // backend (PluginParameter.normalize()) đã tự parse type="number" từ String,
+                // không cần map lưu trữ riêng cho kiểu số.
+                val currentPercent = paramValues[param.name]?.toFloatOrNull()
+                    ?: (param.defaultValue as? Number)?.toFloat() ?: 50f
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("${param.description}${if (param.required) " *" else ""}: ${currentPercent.toInt()}%")
+                    Slider(
+                        value = currentPercent,
+                        onValueChange = { paramValues[param.name] = it.toInt().toString() },
+                        valueRange = 0f..100f,
+                        steps = 99
+                    )
+                }
             } else {
                 // Tự động load danh sách Option từ DynamicOptionRegistry
                 var options by remember { mutableStateOf<List<OptionItem>>(emptyList()) }

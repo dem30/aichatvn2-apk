@@ -1167,6 +1167,31 @@ class WebhookGatewayService : Service() {
                         }
                     }
                 }
+                // ✅ MỚI (Dimmer): song song "tuya_state_change" ở trên — cập nhật world_state
+                // + node UI theo mức độ % thay vì boolean bật/tắt. worldStateSource dùng đúng
+                // "protocol" gửi kèm trong payload (xem HouseholdEventPublisher.publishLevelChange())
+                // — "tuya" hoặc "mqtt" — KHỚP với DeviceController.worldStateSource của từng
+                // driver, để PreconditionGuardDialog (nếu sau này hỗ trợ điều kiện theo %) đọc
+                // đúng khoá. status hiển thị dạng "Đang bật (35%)" thay vì chỉ "Đang bật" — không
+                // đổi field "status" cũ (vẫn String) để không phải sửa DeviceNode/UI khác.
+                "device_level_change" -> {
+                    val deviceId = payload.optString("deviceId", "").trim()
+                    val percent = payload.optInt("level", -1)
+                    val protocol = payload.optString("protocol", "tuya").trim()
+                    if (deviceId.isNotEmpty() && percent in 0..100) {
+                        logger.i("HouseholdEventSSE", "🔁 Đồng bộ mức độ từ máy khác trong household: $deviceId -> $percent%")
+                        com.aichatvn.agent.utils.WorldStateHelper.setAttribute(
+                            database.worldStateDao(), protocol, deviceId, "level", percent.toString()
+                        )
+                        deviceRegistry.updateNode(deviceId) { current ->
+                            current.copy(
+                                online = true,
+                                status = "Đang bật ($percent%)",
+                                lastSeen = System.currentTimeMillis()
+                            )
+                        }
+                    }
+                }
                 // ✅ MỚI: Client (không nhất thiết cùng LAN với camera) xin 1 ảnh mới. Broadcast
                 // tới cả household — máy này CHỈ trả lời nếu đang thật sự cùng subnet Wi-Fi đã
                 // lưu của chính camera đó (không đoán vai trò trước, không cần biết

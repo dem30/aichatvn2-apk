@@ -38,7 +38,19 @@ data class TuyaDeviceEntity(
     // trong TuyaManager (lưu CODE dạng tên như "switch_1" dùng cho Cloud API). Giao thức
     // LOCAL cần đúng số DP id, không phải code — xem TuyaManager.resolveLocalDpId().
     @ColumnInfo(defaultValue = "NULL")
-    val localSwitchDpId: String? = null
+    val localSwitchDpId: String? = null,
+
+    // ✅ MỚI (Dimmer): DP id THẬT của lệnh chỉnh mức độ (vd "3" cho bright_value), tách riêng
+    // khỏi localSwitchDpId — cùng 1 thiết bị có thể vừa có DP switch (bật/tắt) vừa có DP
+    // dimmer (mức độ), không loại trừ nhau. null = thiết bị không phải loại dimmer, hoặc
+    // chưa dò được qua Cloud (xem TuyaManager.resolveDimmerCode()).
+    @ColumnInfo(defaultValue = "NULL")
+    val localDimmerDpId: String? = null,
+
+    // ✅ MỚI (Dimmer): đánh dấu thiết bị này có hỗ trợ điều chỉnh mức độ hay không — dùng để
+    // DeviceController.capabilities trả về DIMMABLE mà KHÔNG phải gọi Cloud API dò lại mỗi
+    // lần app khởi động. Được set true lần đầu khi resolveDimmerCode() thành công.
+    val isDimmable: Boolean = false
 )
 
 // ==================== MQTT DEVICE ====================
@@ -96,7 +108,29 @@ data class MqttDeviceEntity(
     // thiết bị nào đang trỏ vào broker nào. Default 'cloud' khớp đúng brokerSource mặc định
     // đã có từ MIGRATION_23_24, không tạo trạng thái mới mâu thuẫn cho dữ liệu cũ.
     @ColumnInfo(defaultValue = "cloud")
-    val brokerMode: String = "cloud"
+    val brokerMode: String = "cloud",
+
+    // ✅ MỚI (Dimmer): topic riêng để publish mức độ 0-100% — KHÁC commandTopic (vốn chỉ
+    // nhận onPayload/offPayload nhị phân). null = thiết bị này không phải loại dimmer, hoặc
+    // chưa cấu hình topic dimmer (MqttDeviceController.setLevel() trả Failure khi null).
+    @ColumnInfo(defaultValue = "NULL")
+    val levelCommandTopic: String? = null,
+
+    // ✅ MỚI (Dimmer): mức độ cuối cùng nhận được qua subscribe (nếu levelStateTopic có cấu
+    // hình) — song song với lastKnownState (boolean) đã có, không thay thế. null = chưa từng
+    // nhận được giá trị nào, hoặc thiết bị không report mức độ ngược (chỉ nhận lệnh 1 chiều).
+    @ColumnInfo(defaultValue = "NULL")
+    val lastKnownLevel: Int? = null,
+
+    // ✅ MỚI (Dimmer): topic subscribe để nhận mức độ realtime — null nghĩa là app chỉ dựa
+    // vào lastKnownLevel tự cập nhật ngay sau khi publish (giống cách lastKnownState hoạt
+    // động khi stateTopic null), không subscribe thêm.
+    @ColumnInfo(defaultValue = "NULL")
+    val levelStateTopic: String? = null,
+
+    // ✅ MỚI (Dimmer): đánh dấu thiết bị này có hỗ trợ điều chỉnh mức độ hay không — cùng vai
+    // trò với isDimmable của TuyaDeviceEntity, dùng cho DeviceController.capabilities.
+    val isDimmable: Boolean = false
 )
 
 // ==================== CHAT MESSAGE ====================

@@ -512,11 +512,16 @@ class MqttViewModel @Inject constructor(
         commandTopic: String,
         stateTopic: String = "",
         onPayload: String = "ON",
-        offPayload: String = "OFF"
+        offPayload: String = "OFF",
+        // ✅ MỚI (Dimmer): rỗng = không dimmer. isDimmable suy ra thẳng từ trường này, không
+        // cần tham số Boolean riêng — tránh 2 giá trị (topic + cờ) có thể mâu thuẫn nhau
+        // (vd cờ true nhưng topic rỗng).
+        levelCommandTopic: String = ""
     ) {
         viewModelScope.launch {
             val trimmedCommandTopic = commandTopic.trim()
             val trimmedStateTopic = stateTopic.trim()
+            val trimmedLevelTopic = levelCommandTopic.trim()
             val entity = MqttDeviceEntity(
                 id = java.util.UUID.randomUUID().toString(),
                 name = name.trim(),
@@ -525,7 +530,10 @@ class MqttViewModel @Inject constructor(
                 stateTopic = trimmedStateTopic.ifBlank { null },
                 onPayload = onPayload.ifBlank { "ON" },
                 offPayload = offPayload.ifBlank { "OFF" },
-                discoverySource = "manual"
+                discoverySource = "manual",
+                // ✅ MỚI (Dimmer)
+                levelCommandTopic = trimmedLevelTopic.ifBlank { null },
+                isDimmable = trimmedLevelTopic.isNotBlank()
             )
             withContext(Dispatchers.IO) { database.mqttDeviceDao().insertDevice(entity) }
             _message.value = "✅ Đã thêm thiết bị \"${entity.name}\""
@@ -555,6 +563,33 @@ class MqttViewModel @Inject constructor(
             } catch (e: Exception) {
                 _message.value = "❌ Lỗi: ${e.message}"
                 logger.e("MqttViewModel", "toggleDevice error", e)
+            } finally {
+                _loadingDevices.value = _loadingDevices.value - device.id
+            }
+        }
+    }
+
+    // ✅ MỚI (Dimmer): song song toggleDevice() ở trên, cùng khuôn với TuyaViewModel.setLevel()
+    // — gửi "level" thay vì "state" để rơi đúng nhánh dimmer trong SmartSwitchSkill.handleSet().
+    fun setLevel(device: MqttDeviceEntity, percent: Int) {
+        viewModelScope.launch {
+            _loadingDevices.value = _loadingDevices.value + device.id
+            try {
+                val params = mapOf("device" to device.id, "level" to percent)
+                val result = withContext(Dispatchers.IO) {
+                    agentKernel.executePluginAction("smart_switch", "set", params)
+                }
+                when (result) {
+                    is PluginResult.Success -> {
+                        _message.value = "🔆 Đã đặt ${device.name} ở mức $percent%"
+                        loadDevices()
+                    }
+                    is PluginResult.Failure -> _message.value = "❌ ${result.error}"
+                    else -> {}
+                }
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi: ${e.message}"
+                logger.e("MqttViewModel", "setLevel error", e)
             } finally {
                 _loadingDevices.value = _loadingDevices.value - device.id
             }
@@ -613,7 +648,9 @@ fun MqttDeviceCard(
     onDelete: () -> Unit,
     // ✅ MỚI: mở PreconditionGuardDialog cho thiết bị MQTT này — trước đây MQTT không có
     // đường nào để bị đặt làm điều kiện hay được gán khóa an toàn.
-    onConfigureGuard: () -> Unit
+    onConfigureGuard: () -> Unit,
+    // ✅ MỚI (Dimmer): song song TuyaDeviceCard.onSetLevel — chỉ gọi khi device.isDimmable.
+    onSetLevel: (Int) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -715,6 +752,30 @@ fun MqttDeviceCard(
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(Modifier.height(12.dp))
+
+            // ✅ MỚI (Dimmer): khác TuyaDeviceCard — MqttDeviceEntity CÓ lastKnownLevel thật
+            // (cache từ lần publish/subscribe gần nhất), dùng làm giá trị khởi tạo, không cần
+            // mặc định cứng 50% như bên Tuya.
+            if (device.isDimmable) {
+                var sliderPercent by remember(device.id) {
+                    mutableStateOf((device.lastKnownLevel ?: 50).toFloat())
+                }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "🔆 Mức độ: ${sliderPercent.toInt()}%",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Slider(
+                        value = sliderPercent,
+                        onValueChange = { sliderPercent = it },
+                        onValueChangeFinished = { onSetLevel(sliderPercent.toInt()) },
+                        valueRange = 0f..100f,
+                        steps = 99,
+                        enabled = !isLoading
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -1096,13 +1157,18 @@ fun DiscoveryConfirmDialog(
 fun AddMqttDeviceDialog(
     initialCommandTopic: String = "",
     onDismiss: () -> Unit,
-    onSave: (name: String, commandTopic: String, stateTopic: String, onPayload: String, offPayload: String) -> Unit
+    // ✅ MỚI (Dimmer): thêm levelCommandTopic ở cuối (tuỳ chọn, mặc định "" = không dimmer)
+    // — KHÔNG chèn giữa để giữ nguyên vị trí 5 tham số cũ, tránh phải sửa lại các lambda
+    // khác đang destructure theo thứ tự.
+    onSave: (name: String, commandTopic: String, stateTopic: String, onPayload: String, offPayload: String, levelCommandTopic: String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var commandTopic by remember { mutableStateOf(initialCommandTopic) }
     var stateTopic by remember { mutableStateOf("") }
     var onPayload by remember { mutableStateOf("ON") }
     var offPayload by remember { mutableStateOf("OFF") }
+    // ✅ MỚI (Dimmer): để trống = thiết bị không phải dimmer (isDimmable=false ở addDevice()).
+    var levelCommandTopic by remember { mutableStateOf("") }
     val canSave = name.isNotBlank() && commandTopic.isNotBlank()
 
     AlertDialog(
@@ -1165,11 +1231,21 @@ fun AddMqttDeviceDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // ✅ MỚI (Dimmer): tuỳ chọn — để trống nếu thiết bị chỉ on/off (đa số). Nhập
+                // vào nếu đây là đèn/thiết bị dimmer, publish số 0-100 vào topic này.
+                OutlinedTextField(
+                    value = levelCommandTopic,
+                    onValueChange = { levelCommandTopic = it },
+                    label = { Text("Level Command Topic (tuỳ chọn — chỉ cho đèn dimmer)") },
+                    placeholder = { Text("vd: cmnd/den_phong_khach/Dimmer") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(name, commandTopic, stateTopic, onPayload, offPayload) },
+                onClick = { onSave(name, commandTopic, stateTopic, onPayload, offPayload, levelCommandTopic) },
                 enabled = canSave
             ) { Text("Thêm") }
         },
