@@ -77,6 +77,23 @@ fun ScheduleScreen(
                 }
             }
         } else {
+            // ✅ MỚI: nhóm lịch theo thiết bị/nguồn — trích "device" (hoặc "camera_id" cho
+            // camera.*) từ params JSON, KHÔNG có cột deviceId riêng ở ScheduleEntity nên phải
+            // parse mỗi lần render (chấp nhận được, danh sách lịch không lớn, không phải hot
+            // path như DeviceNodeWidget). Lịch không xác định được thiết bị (camera.scan quét
+            // toàn hệ thống, hoặc params rỗng/hỏng) rơi vào nhóm "Khác" ở cuối.
+            //
+            // deviceNames: map id -> tên hiển thị, lấy qua viewModel.optionRegistry (đã gộp mọi
+            // driver Tuya/MQTT — xem DynamicOptionRegistry.getOptions("device")), KHÔNG tự query
+            // database.tuyaDeviceDao() ở đây để tránh lặp lại logic gộp driver đã có sẵn.
+            var deviceNames by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+            LaunchedEffect(schedules) {
+                deviceNames = viewModel.optionRegistry.getOptions("device")
+                    .associate { it.value to it.label }
+            }
+            val grouped = remember(schedules, deviceNames) {
+                groupSchedulesByDevice(schedules, deviceNames)
+            }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
@@ -84,18 +101,40 @@ fun ScheduleScreen(
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(schedules.size) { index ->
-                    val schedule = schedules[index]
-                    ScheduleCard(
-                        index = index + 1,
-                        schedule = schedule,
-                        onToggle = { viewModel.toggleSchedule(it) },
-                        onDelete = { viewModel.deleteSchedule(it) },
-                        onEdit = {
-                            editingSchedule = it
-                            showAddDialog = true
-                        }
-                    )
+                grouped.forEach { (groupLabel, groupSchedules) ->
+                    item(key = "header_$groupLabel") {
+                        Text(
+                            groupLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp, bottom = 2.dp, start = 4.dp)
+                        )
+                    }
+                    items(groupSchedules.size, key = { "item_${groupSchedules[it].id}" }) { i ->
+                        val schedule = groupSchedules[i]
+                        ScheduleCard(
+                            index = schedules.indexOf(schedule) + 1,
+                            schedule = schedule,
+                            onToggle = { viewModel.toggleSchedule(it) },
+                            onDelete = { viewModel.deleteSchedule(it) },
+                            onEdit = {
+                                editingSchedule = it
+                                showAddDialog = true
+                            },
+                            // ✅ MỚI: sao chép — tạo bản ghi mới cùng pluginId/action/params/cron,
+                            // chỉ đổi id mới + nhãn thêm hậu tố "(bản sao)" để phân biệt.
+                            onCopy = {
+                                viewModel.addSchedule(
+                                    schedule.copy(
+                                        id = java.util.UUID.randomUUID().toString(),
+                                        label = "${schedule.label.ifBlank { "${schedule.pluginId}.${schedule.action}" }} (bản sao)",
+                                        lastRunAt = 0,
+                                        createdAt = System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -123,13 +162,43 @@ fun ScheduleScreen(
     }
 }
 
+// ✅ MỚI: nhóm danh sách lịch theo thiết bị — đọc "device" (SmartSwitchSkill dùng key này,
+// xem PluginParameter("device", "string", ...) ở SmartSwitchSkill.kt) hoặc "camera_id"
+// (CameraSkill) từ params JSON. Không sửa được ScheduleEntity thêm cột deviceId trong phạm vi
+// này (cần migration DB riêng, rủi ro hơn so với việc chỉ parse JSON lúc hiển thị).
+private fun groupSchedulesByDevice(
+    schedules: List<ScheduleEntity>,
+    deviceNames: Map<String, String>
+): Map<String, List<ScheduleEntity>> {
+    val result = LinkedHashMap<String, MutableList<ScheduleEntity>>()
+    schedules.forEach { schedule ->
+        val deviceId = try {
+            val json = JSONObject(schedule.params.ifBlank { "{}" })
+            json.optString("device", "").takeIf { it.isNotBlank() }
+                ?: json.optString("camera_id", "").takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+        // deviceNames đã chứa "displayName (id 4 số cuối)" (xem DynamicOptionRegistry) — dùng
+        // trực tiếp làm groupKey nếu tìm thấy id, fallback về chính id thô nếu id lạ (thiết bị
+        // đã bị xoá khỏi hệ thống nhưng lịch cũ vẫn còn), cuối cùng mới rơi về nhóm "Khác".
+        val groupKey = deviceId?.let { deviceNames[it] ?: it }
+            ?: "⚙️ Khác (${schedule.pluginId})"
+        result.getOrPut(groupKey) { mutableListOf() }.add(schedule)
+    }
+    return result
+}
+
 @Composable
 fun ScheduleCard(
     index: Int,
     schedule: ScheduleEntity,
     onToggle: (String) -> Unit,
     onDelete: (String) -> Unit,
-    onEdit: (ScheduleEntity) -> Unit
+    onEdit: (ScheduleEntity) -> Unit,
+    // ✅ MỚI: sao chép lịch — mặc định rỗng để KHÔNG bắt buộc mọi nơi gọi ScheduleCard() khác
+    // (nếu có) phải sửa theo, dù hiện chỉ có đúng 1 nơi gọi trong ScheduleScreen.kt.
+    onCopy: (ScheduleEntity) -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -183,6 +252,11 @@ fun ScheduleCard(
 
             IconButton(onClick = { onEdit(schedule) }) {
                 Icon(Icons.Default.Edit, "Sửa", tint = MaterialTheme.colorScheme.primary)
+            }
+
+            // ✅ MỚI: Sao chép
+            IconButton(onClick = { onCopy(schedule) }) {
+                Icon(Icons.Default.ContentCopy, "Sao chép", tint = MaterialTheme.colorScheme.secondary)
             }
 
             IconButton(onClick = { onDelete(schedule.id) }) {

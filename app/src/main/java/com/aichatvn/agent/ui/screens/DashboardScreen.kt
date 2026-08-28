@@ -20,6 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+// ✅ MỚI (Dimmer + Đặt lịch nhanh): import cho QuickScheduleDialog
+import com.aichatvn.agent.data.model.ScheduleEntity
+import org.json.JSONObject
+import java.util.UUID
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -101,7 +105,10 @@ private fun Color.toArgbInt(): Int {
 @Composable
 fun DashboardScreen(
     navController: NavController,
-    viewModel: DashboardViewModel = hiltViewModel()
+    viewModel: DashboardViewModel = hiltViewModel(),
+    // ✅ MỚI: tự inject qua Hilt như viewModel ở trên — không cần sửa nơi gọi
+    // NavHost(DashboardScreen(...)) hiện có.
+    scheduleViewModel: com.aichatvn.agent.ui.viewmodels.ScheduleViewModel = hiltViewModel()
 ) {
     val deviceNodes by viewModel.deviceNodes.collectAsState()
     val isProcessing by viewModel.isProcessing.collectAsState()
@@ -114,6 +121,9 @@ fun DashboardScreen(
     val inviteUiState by viewModel.inviteUiState.collectAsState()
 
     var selectedNode by remember { mutableStateOf<DeviceNode?>(null) }
+    // ✅ MỚI: node + action được chọn để đặt lịch nhanh (khác selectedNode — vẫn giữ bottom
+    // sheet đang mở phía sau, dialog lịch nổi lên trên).
+    var scheduleQuickAddTarget by remember { mutableStateOf<Pair<DeviceNode, DeviceAction>?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -828,6 +838,32 @@ fun DashboardScreen(
 
                     Text("Hành động", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
+                    // ✅ MỚI (Dimmer): Slider đầy đủ (khác 2 nút +/-10% ở DeviceNodeWidget thẻ
+                    // nhỏ) — bottom sheet có đủ chỗ để kéo mượt như TuyaScreen. Cùng khuôn
+                    // remember cục bộ + onValueChangeFinished mới gọi API thật, tránh gọi dồn
+                    // dập theo pixel kéo.
+                    if (node.isDimmable) {
+                        var sliderPercent by remember(node.id) {
+                            mutableStateOf((node.dimmerLevel ?: 50).toFloat())
+                        }
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                "🔆 Mức độ: ${sliderPercent.toInt()}%",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Slider(
+                                value = sliderPercent,
+                                onValueChange = { sliderPercent = it },
+                                onValueChangeFinished = {
+                                    viewModel.sendDeviceAction(node, "set", mapOf("level" to sliderPercent.toInt()))
+                                },
+                                valueRange = 0f..100f,
+                                steps = 99
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+
                     if (node.supportedActions.isNotEmpty()) {
                         Column(
                             modifier = Modifier.fillMaxWidth(),
@@ -843,34 +879,51 @@ fun DashboardScreen(
                                         val isPositive = uppercaseId in setOf("ON", "UNLOCK", "TAKEOFF", "PATROL")
                                         val isNegative = uppercaseId in setOf("OFF", "LOCK", "STOP", "LAND")
 
-                                        Button(
-                                            onClick = {
-                                                coroutineScope.launch {
-                                                    try {
-                                                        sheetState.hide()
-                                                    } finally {
-                                                        selectedNode = null
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Button(
+                                                onClick = {
+                                                    coroutineScope.launch {
+                                                        try {
+                                                            sheetState.hide()
+                                                        } finally {
+                                                            selectedNode = null
+                                                        }
                                                     }
-                                                }
-                                                viewModel.sendDeviceAction(node, action, emptyMap())
-                                            },
-                                            colors = when {
-                                                isPositive -> ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
-                                                isNegative -> ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                                                else -> ButtonDefaults.buttonColors()
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(action.icon, fontSize = 16.sp)
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(
-                                                text = action.title,
-                                                fontSize = 12.sp,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                                lineHeight = 14.sp
-                                            )
+                                                    viewModel.sendDeviceAction(node, action, emptyMap())
+                                                },
+                                                colors = when {
+                                                    isPositive -> ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                                                    isNegative -> ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                                    else -> ButtonDefaults.buttonColors()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(action.icon, fontSize = 16.sp)
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(
+                                                    text = action.title,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    lineHeight = 14.sp
+                                                )
+                                            }
+                                            // ✅ MỚI: nút "Đặt lịch" cho ĐÚNG action này — pluginId/
+                                            // action.id/defaultParams đã có sẵn từ context (thiết bị
+                                            // + hành động người dùng vừa xem), KHÔNG cần hỏi lại như
+                                            // AddScheduleDialog đầy đủ. Chỉ mở dialog hỏi giờ/lặp lại.
+                                            TextButton(
+                                                onClick = {
+                                                    scheduleQuickAddTarget = node to action
+                                                },
+                                                contentPadding = PaddingValues(vertical = 0.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Đặt lịch", fontSize = 11.sp)
+                                            }
                                         }
                                     }
                                     if (rowActions.size < 2) {
@@ -904,6 +957,130 @@ fun DashboardScreen(
             }
         }
     }
+
+    // ✅ MỚI: dialog rút gọn đặt lịch nhanh — pluginId/action.id/defaultParams đã có sẵn từ
+    // context (bottom sheet vừa mở), chỉ hỏi thêm giờ + lặp lại ngày nào. Với action "set" có
+    // "level" trong defaultParams (dimmer), value đã đúng % người dùng vừa xem, không hỏi lại.
+    scheduleQuickAddTarget?.let { (node, action) ->
+        QuickScheduleDialog(
+            node = node,
+            action = action,
+            onDismiss = { scheduleQuickAddTarget = null },
+            onSave = { schedule ->
+                scheduleViewModel.addSchedule(schedule)
+                scheduleQuickAddTarget = null
+            }
+        )
+    }
+}
+
+// ✅ MỚI: dialog rút gọn cho "Đặt lịch" từ bottom sheet Dashboard — KHÁC AddScheduleDialog đầy
+// đủ ở ScheduleScreen.kt (vốn phải hỏi cả Plugin/Action/tham số từ đầu). Ở đây pluginId/action/
+// params đã có sẵn từ ngữ cảnh thiết bị đang xem, chỉ còn hỏi giờ + lặp lại — đúng tinh thần
+// "chọn thiết bị trước, hỏi ít nhất có thể" mà Smart Life làm.
+@Composable
+private fun QuickScheduleDialog(
+    node: DeviceNode,
+    action: DeviceAction,
+    onDismiss: () -> Unit,
+    onSave: (ScheduleEntity) -> Unit
+) {
+    val timePickerState = rememberTimePickerState(is24Hour = true)
+    var repeatMode by remember { mutableStateOf("daily") } // "daily" | "weekly"
+    var selectedWeekdays by remember { mutableStateOf(setOf(1, 2, 3, 4, 5, 6, 7)) } // 1=CN theo cron Quartz đã dùng ở AddScheduleDialog
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Đặt lịch: ${action.title} — ${node.name}") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                TimePicker(state = timePickerState)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = repeatMode == "daily",
+                        onClick = { repeatMode = "daily" },
+                        label = { Text("Hàng ngày") }
+                    )
+                    FilterChip(
+                        selected = repeatMode == "weekly",
+                        onClick = { repeatMode = "weekly" },
+                        label = { Text("Chọn ngày") }
+                    )
+                }
+
+                if (repeatMode == "weekly") {
+                    // 1=CN,2=T2...7=T7 — cùng quy ước với AddScheduleDialog (ScheduleScreen.kt)
+                    val weekdayLabels = listOf(1 to "CN", 2 to "T2", 3 to "T3", 4 to "T4", 5 to "T5", 6 to "T6", 7 to "T7")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        weekdayLabels.forEach { (value, label) ->
+                            val isSelected = value in selectedWeekdays
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isSelected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                                    .clickable {
+                                        selectedWeekdays = if (isSelected) {
+                                            selectedWeekdays - value
+                                        } else {
+                                            selectedWeekdays + value
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    label,
+                                    fontSize = 11.sp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = repeatMode == "daily" || selectedWeekdays.isNotEmpty(),
+                onClick = {
+                    val finalCron = when (repeatMode) {
+                        "weekly" -> "${timePickerState.minute} ${timePickerState.hour} * * ${selectedWeekdays.sorted().joinToString(",")}"
+                        else -> "${timePickerState.minute} ${timePickerState.hour} * * *"
+                    }
+                    val paramsJson = JSONObject(action.defaultParams).toString()
+                    val schedule = ScheduleEntity(
+                        id = UUID.randomUUID().toString(),
+                        pluginId = node.pluginId,
+                        action = action.id,
+                        params = paramsJson,
+                        cron = finalCron,
+                        intervalMinutes = 0,
+                        enabled = 1,
+                        lastRunAt = 0,
+                        createdAt = System.currentTimeMillis(),
+                        label = "${action.title} — ${node.name}"
+                    )
+                    onSave(schedule)
+                }
+            ) { Text("Lưu") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Hủy") }
+        }
+    )
 }
 
 @Composable

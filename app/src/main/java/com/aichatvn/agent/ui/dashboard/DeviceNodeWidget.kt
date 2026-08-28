@@ -154,7 +154,48 @@ fun DeviceNodeWidget(
             }
 
             // Footer: Các nút điều khiển tác vụ nhanh trực tiếp
-            if (isOnline && node.supportedActions.isNotEmpty()) {
+            // ✅ MỚI (Dimmer): thiết bị dimmer hiện % + 2 nút +/-10% thay vì 2 action
+            // Bật/Tắt thường — vì thẻ nhỏ 150x115dp không đủ chỗ cho Slider kéo mượt như ở
+            // TuyaScreen/bottom sheet đầy đủ (bước 4). onActionClick tái dùng ĐÚNG action
+            // "set" đã có sẵn trong supportedActions (xem SmartSwitchSkill.getDashboardNodes())
+            // với params {"level": <giá trị mới>} — KHÔNG cần thêm callback riêng, giữ chữ ký
+            // onActionClick(actionId, params) không đổi.
+            if (isOnline && node.isDimmable) {
+                val currentLevel = node.dimmerLevel ?: 50
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔆 $currentLevel%", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Row {
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                                .clickable {
+                                    val newLevel = (currentLevel - 10).coerceIn(0, 100)
+                                    onActionClick("set", mapOf("level" to newLevel))
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            contentAlignment = Alignment.Center
+                        ) { Text("－", fontSize = 11.sp) }
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                                .clickable {
+                                    val newLevel = (currentLevel + 10).coerceIn(0, 100)
+                                    onActionClick("set", mapOf("level" to newLevel))
+                                }
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                            contentAlignment = Alignment.Center
+                        ) { Text("＋", fontSize = 11.sp) }
+                    }
+                }
+            } else if (isOnline && node.supportedActions.isNotEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

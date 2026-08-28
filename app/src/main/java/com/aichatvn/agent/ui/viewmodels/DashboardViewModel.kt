@@ -483,7 +483,19 @@ class DashboardViewModel @Inject constructor(
             _isProcessing.value = true
             _executionMessage.value = null
             try {
-                val finalParams = node.defaultParams + action.defaultParams + extraParams
+                // ✅ MỚI (Dimmer): khi extraParams có "level" (Slider dimmer), loại bỏ "state"
+                // khỏi finalParams TRƯỚC khi gửi — vì action truyền vào (dò theo actionId="set"
+                // ở overload dưới) có thể lấy NHẦM defaultParams của action "Bật" (2 action Bật/
+                // Tắt cùng id="set", find() luôn khớp cái đầu — xem SmartSwitchSkill.getDashboardNodes()).
+                // handleSet() phía server đã tự ưu tiên "level" nếu có mặt, nhưng KHÔNG dọn ở đây
+                // thì bước cập nhật status bên dưới (dòng "stateValue = ...") sẽ đọc nhầm state=true
+                // và ghi sai "Đang bật" vào deviceRegistry dù người dùng chỉ đang chỉnh %.
+                val rawParams = node.defaultParams + action.defaultParams + extraParams
+                val finalParams = if (rawParams.containsKey("level")) {
+                    rawParams - "state"
+                } else {
+                    rawParams
+                }
                 val result = withContext(Dispatchers.IO) {
                     agentKernel.executePluginAction(node.pluginId, action.id, finalParams)
                 }
@@ -493,6 +505,21 @@ class DashboardViewModel @Inject constructor(
                         val msg = (result.data as? Map<*, *>)?.get("message") as? String
                             ?: "✅ Đã thực hiện thành công"
                         _executionMessage.value = msg
+
+                        // ✅ MỚI (Dimmer): cập nhật dimmerLevel vào registry để Slider/hiển thị %
+                        // trên DeviceNodeWidget và lần mở bottom sheet tiếp theo phản ánh đúng giá
+                        // trị vừa đặt — song song với nhánh "state" bên dưới, không thay thế.
+                        val levelValue = (finalParams["level"] as? Number)?.toInt()
+                        if (levelValue != null) {
+                            deviceRegistry.updateNode(node.id) { current ->
+                                current.copy(
+                                    online = true,
+                                    dimmerLevel = levelValue,
+                                    status = "Đang bật ($levelValue%)",
+                                    lastSeen = System.currentTimeMillis()
+                                )
+                            }
+                        }
 
                         val stateValue = finalParams["state"] as? Boolean
                         if (stateValue != null) {

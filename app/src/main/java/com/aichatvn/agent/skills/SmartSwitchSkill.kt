@@ -189,6 +189,13 @@ class SmartSwitchSkill @Inject constructor(
     }
 
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
+        // ⚠️ LƯU Ý (ngoài phạm vi dimmer, có từ trước): hàm này hiện CHỈ build node cho thiết
+        // bị Tuya (database.tuyaDeviceDao()) — thiết bị MQTT KHÔNG xuất hiện trên Dashboard
+        // chính, dù đã điều khiển được đầy đủ ở tab MQTT riêng (MqttScreen.kt) và ở lịch/chat.
+        // Phần dimmer thêm ở dưới (isDimmable/dimmerLevel) vì vậy CŨNG chỉ áp dụng cho Tuya
+        // trên Dashboard — muốn dimmer MQTT lên Dashboard cần mở rộng hàm này để đọc thêm
+        // mqttDeviceDao().getAllDevices(), việc đó nằm ngoài phạm vi đã thống nhất.
+        //
         // ✅ SỬA (bug "Refresh vẫn báo Mất kết nối"): trước đây hàm này chỉ đọc thẳng
         // dev.online từ Room — là giá trị cache được ghi lần cuối bởi scanDevices() (nền,
         // 10 phút/lần) hoặc bởi setDeviceState() khi bật/tắt. Bấm nút 🔄 Refresh trên
@@ -302,7 +309,14 @@ class SmartSwitchSkill @Inject constructor(
                     } else {
                         "Mất kết nối"
                     },
-                    room = "Phòng chung" 
+                    room = "Phòng chung",
+                    // ✅ MỚI (Dimmer): đọc thẳng cột isDimmable đã lưu ở TuyaDeviceEntity (xem
+                    // Entity.kt + TuyaManager.scanDevices()) — KHÔNG suy luận lại từ category ở
+                    // đây, vì scanDevices() đã là nơi DUY NHẤT quyết định giá trị này (tự động dò
+                    // + nút xác nhận tay ở TuyaScreen). dimmerLevel để null — Tuya không cache %
+                    // cuối cùng ở Entity (khác MQTT), UI tự mặc định 50% khi null (xem TuyaScreen).
+                    isDimmable = dev.isDimmable,
+                    dimmerLevel = null
                 )
             }
         }
