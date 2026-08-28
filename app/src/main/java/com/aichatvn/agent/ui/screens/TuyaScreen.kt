@@ -361,6 +361,25 @@ class TuyaViewModel @Inject constructor(
         }
     }
 
+    // ✅ MỚI (Nhất quán Dashboard): lưu tên phòng — tách riêng khỏi insertAllDevices() (xem
+    // TuyaDeviceDao.updateRoom(), lý do y hệt updateDimmable()/updateLocalControlInfo()).
+    fun updateDeviceRoom(device: TuyaDeviceEntity, room: String?) {
+        viewModelScope.launch {
+            try {
+                database.tuyaDeviceDao().updateRoom(device.id, room)
+                _message.value = if (room != null) {
+                    "📍 Đã đặt \"${device.name}\" vào phòng \"$room\""
+                } else {
+                    "📍 Đã bỏ phòng của \"${device.name}\""
+                }
+                loadDevices()
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi: ${e.message}"
+                logger.e("TuyaViewModel", "updateDeviceRoom error", e)
+            }
+        }
+    }
+
     fun enableLocalControl(device: TuyaDeviceEntity) {
         viewModelScope.launch {
             _loadingDevices.value = _loadingDevices.value + device.id
@@ -557,8 +576,12 @@ fun TuyaScreen(
     // để người dùng xem lại/sửa tên trước khi thật sự lưu (confirmDiscoveredDevice()).
     var pendingDiscoveredDevice by remember { mutableStateOf<DiscoveredMqttDevice?>(null) }
     var mqttDeviceToDelete by remember { mutableStateOf<MqttDeviceEntity?>(null) }
+    // ✅ MỚI (Nhất quán Dashboard): thiết bị MQTT đang mở dialog "Sửa".
+    var editMqttDeviceTarget by remember { mutableStateOf<MqttDeviceEntity?>(null) }
 
     var deviceToDelete by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
+    // ✅ MỚI (Nhất quán Dashboard): thiết bị Tuya đang mở dialog "Sửa" (đặt tên phòng).
+    var editTuyaDeviceTarget by remember { mutableStateOf<TuyaDeviceEntity?>(null) }
     // ✅ SỬA: trước đây kiểu TuyaDeviceEntity? — khiến chỉ thiết bị Tuya có thể mở dialog
     // khóa an toàn. Đổi sang cặp (id, name) trung lập giao thức để MQTT dùng chung được.
     var guardTargetDevice by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -594,6 +617,42 @@ fun TuyaScreen(
             },
             dismissButton = {
                 TextButton(onClick = { mqttDeviceToDelete = null }) { Text("Huỷ") }
+            }
+        )
+    }
+
+    // ✅ MỚI (Nhất quán Dashboard): dialog sửa tên phòng cho thiết bị MQTT.
+    if (editMqttDeviceTarget != null) {
+        val target = editMqttDeviceTarget!!
+        var roomInput by remember(target.id) { mutableStateOf(target.room ?: "") }
+        AlertDialog(
+            onDismissRequest = { editMqttDeviceTarget = null },
+            title = { Text("Sửa thiết bị: ${target.name}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Đặt tên phòng để Dashboard tự nhóm các thiết bị cùng phòng lại với nhau.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = roomInput,
+                        onValueChange = { roomInput = it },
+                        label = { Text("Tên phòng") },
+                        placeholder = { Text("vd: Phòng khách, Phòng ngủ...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    mqttViewModel.updateDeviceRoom(target, roomInput.trim().ifBlank { null })
+                    editMqttDeviceTarget = null
+                }) { Text("Lưu") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editMqttDeviceTarget = null }) { Text("Huỷ") }
             }
         )
     }
@@ -723,6 +782,42 @@ fun TuyaScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deviceToDelete = null }) { Text("Huỷ") }
+            }
+        )
+    }
+
+    // ✅ MỚI (Nhất quán Dashboard): dialog sửa tên phòng cho thiết bị Tuya.
+    if (editTuyaDeviceTarget != null) {
+        val target = editTuyaDeviceTarget!!
+        var roomInput by remember(target.id) { mutableStateOf(target.room ?: "") }
+        AlertDialog(
+            onDismissRequest = { editTuyaDeviceTarget = null },
+            title = { Text("Sửa thiết bị: ${target.name}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Đặt tên phòng để Dashboard tự nhóm các thiết bị cùng phòng lại với nhau.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = roomInput,
+                        onValueChange = { roomInput = it },
+                        label = { Text("Tên phòng") },
+                        placeholder = { Text("vd: Phòng khách, Phòng ngủ...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.updateDeviceRoom(target, roomInput.trim().ifBlank { null })
+                    editTuyaDeviceTarget = null
+                }) { Text("Lưu") }
+            },
+            dismissButton = {
+                TextButton(onClick = { editTuyaDeviceTarget = null }) { Text("Huỷ") }
             }
         )
     }
@@ -954,7 +1049,9 @@ fun TuyaScreen(
                                 onEnableLocalControl = { viewModel.enableLocalControl(device) },
                                 // ✅ MỚI (Dimmer)
                                 onSetLevel = { percent -> viewModel.setLevel(device, percent) },
-                                onMarkDimmable = { viewModel.markDimmable(device) }
+                                onMarkDimmable = { viewModel.markDimmable(device) },
+                                // ✅ MỚI (Nhất quán Dashboard)
+                                onEditDevice = { editTuyaDeviceTarget = device }
                             )
                         }
                         item { Spacer(Modifier.height(80.dp)) }
@@ -1001,7 +1098,9 @@ fun TuyaScreen(
                                 onDelete = { mqttDeviceToDelete = device },
                                 onConfigureGuard = { guardTargetDevice = device.id to device.name },
                                 // ✅ MỚI (Dimmer)
-                                onSetLevel = { percent -> mqttViewModel.setLevel(device, percent) }
+                                onSetLevel = { percent -> mqttViewModel.setLevel(device, percent) },
+                                // ✅ MỚI (Nhất quán Dashboard)
+                                onEditDevice = { editMqttDeviceTarget = device }
                             )
                         }
                         item { Spacer(Modifier.height(80.dp)) }
@@ -1024,6 +1123,8 @@ private fun TuyaDeviceCard(
     onDelete: () -> Unit,
     onConfigureGuard: () -> Unit,
     onEnableLocalControl: () -> Unit,
+    // ✅ MỚI (Nhất quán Dashboard): mở dialog sửa tên phòng.
+    onEditDevice: () -> Unit = {},
     // ✅ MỚI (Dimmer): callback riêng, chỉ được gọi khi device.isDimmable == true (xem Slider
     // bên dưới) — percent 0-100, ViewModel.setLevel() tự lo phần gửi qua agentKernel.
     onSetLevel: (Int) -> Unit = {},
@@ -1108,6 +1209,16 @@ private fun TuyaDeviceCard(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        // ✅ MỚI (Nhất quán Dashboard): hiển thị tên phòng ngay dưới tên thiết bị
+                        // nếu đã đặt — giúp người dùng biết thiết bị này đang thuộc phòng nào mà
+                        // không cần mở dialog sửa. Không hiện gì nếu chưa đặt (room null/rỗng).
+                        if (!device.room.isNullOrBlank()) {
+                            Text(
+                                text = "📍 ${device.room}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
 
@@ -1122,6 +1233,18 @@ private fun TuyaDeviceCard(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+
+                    // ✅ MỚI (Nhất quán Dashboard): nút "Sửa" — đặt/đổi tên phòng. Đặt TRƯỚC nút
+                    // khoá an toàn, cùng nhóm hành động quản lý thiết bị (khác onDelete mang tính
+                    // phá huỷ, cố tình để cuối cùng, xa nhất khỏi các nút hay bấm nhầm).
+                    IconButton(onClick = onEditDevice, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Sửa thiết bị",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 

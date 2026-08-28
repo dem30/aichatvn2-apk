@@ -170,157 +170,69 @@ class SmartSwitchSkill @Inject constructor(
         )
     )
 
-    private fun resolveDeviceVisual(dev: com.aichatvn.agent.data.model.TuyaDeviceEntity): Triple<String, String, DeviceType> {
-        val name = dev.name.lowercase()
-        val category = dev.category.lowercase()
-        return when {
-            name.contains("bơm") || name.contains("pump")                    -> Triple("🚰", "Máy Bơm", DeviceType.PUMP)
-            name.contains("giặt")                                            -> Triple("🧺", "Máy Giặt", DeviceType.SWITCH)
-            name.contains("điều hòa") || name.contains("điều hoà") || name.contains("máy lạnh") -> Triple("❄️", "Điều Hòa", DeviceType.SWITCH)
-            name.contains("hút bụi")                                         -> Triple("🧹", "Máy Hút Bụi", DeviceType.SWITCH)
-            name.contains("tủ lạnh")                                         -> Triple("🧊", "Tủ Lạnh", DeviceType.SWITCH)
-            name.contains("lò vi sóng")                                      -> Triple("♨️", "Lò Vi Sóng", DeviceType.SWITCH)
-            name.contains("nóng lạnh") || name.contains("bình nóng")         -> Triple("🚿", "Bình Nóng Lạnh", DeviceType.SWITCH)
-            category in setOf("fs", "fsd") || name.contains("quạt")          -> Triple("🌀", "Quạt", DeviceType.SWITCH)
-            category in setOf("cz", "pc") || name.contains("ổ cắm") || name.contains("ổ điện") -> Triple("🔌", "Ổ Cắm", DeviceType.SWITCH)
-            category == "kg" || name.contains("công tắc")                    -> Triple("🔘", "Công Tắc", DeviceType.SWITCH)
-            else                                                             -> Triple("💡", "Đèn", DeviceType.LIGHT) 
-        }
-    }
+    // ✅ ĐÃ CHUYỂN: resolveDeviceVisual() giờ nằm trong TuyaDeviceController.kt (dùng bởi
+    // buildDashboardNodes() ở đó) — bản ở đây đã dọn bỏ vì SmartSwitchSkill.getDashboardNodes()
+    // không còn tự build DeviceNode cho Tuya nữa, chỉ gọi qua controller.
+
 
     override suspend fun getDashboardNodes(): List<DeviceNode> = withContext(Dispatchers.IO) {
-        // ⚠️ LƯU Ý (ngoài phạm vi dimmer, có từ trước): hàm này hiện CHỈ build node cho thiết
-        // bị Tuya (database.tuyaDeviceDao()) — thiết bị MQTT KHÔNG xuất hiện trên Dashboard
-        // chính, dù đã điều khiển được đầy đủ ở tab MQTT riêng (MqttScreen.kt) và ở lịch/chat.
-        // Phần dimmer thêm ở dưới (isDimmable/dimmerLevel) vì vậy CŨNG chỉ áp dụng cho Tuya
-        // trên Dashboard — muốn dimmer MQTT lên Dashboard cần mở rộng hàm này để đọc thêm
-        // mqttDeviceDao().getAllDevices(), việc đó nằm ngoài phạm vi đã thống nhất.
-        //
-        // ✅ SỬA (bug "Refresh vẫn báo Mất kết nối"): trước đây hàm này chỉ đọc thẳng
-        // dev.online từ Room — là giá trị cache được ghi lần cuối bởi scanDevices() (nền,
-        // 10 phút/lần) hoặc bởi setDeviceState() khi bật/tắt. Bấm nút 🔄 Refresh trên
-        // Dashboard KHÔNG hề gọi Tuya Cloud, chỉ đọc lại y nguyên cache đó — nên nếu cache
-        // đang là false (mới mở app, chưa tới chu kỳ sync nền) thì Refresh mãi vẫn báo
-        // "Mất kết nối" dù thiết bị vật lý đang online thật. Chỉ khi người dùng bật/tắt tay
-        // (gọi API thật qua setDeviceState) thì cache mới được cập nhật đúng.
-        //
-        // Giờ chủ động sync cache trước khi build node, nhưng chỉ khi có ít nhất 1 thiết bị
-        // đang bị đánh dấu offline trong cache — tránh tốn thêm 1 API call Tuya mỗi lần mở
-        // Dashboard/chuyển tab khi mọi thứ đã online sẵn (trường hợp phổ biến nhất).
+        // ✅ SỬA (dứt điểm bug "MQTT không có trên Dashboard"): trước đây hàm này CHỈ đọc
+        // database.tuyaDeviceDao() trực tiếp — giờ lặp deviceRegistry.all() và để MỖI driver tự
+        // build node của mình (TuyaDeviceController/MqttDeviceController.buildDashboardNodes()),
+        // đúng nguyên tắc "thêm giao thức mới không sửa file này lần nữa" mà DeviceModule.kt/
+        // resolveDevice() đã áp dụng. Phần hậu xử lý ĐẶC THÙ TUYA (sync cache online,
+        // detectAndBroadcastPhysicalChange — dùng publishTuyaStateChange() riêng, KHÔNG dùng
+        // chung được cho MQTT) vẫn giữ nguyên ở ĐÂY thay vì chuyển vào TuyaDeviceController, vì
+        // đó là Plugin gọi vào Controller — chuyển ngược lại (Controller gọi lên Plugin) sẽ sai
+        // hướng phụ thuộc.
         try {
             val hasOfflineCached = database.tuyaDeviceDao().getAllDevices().any { !it.online }
             if (hasOfflineCached) {
                 tuyaManager.scanDevices()
             }
         } catch (e: Exception) {
-            // Không có UID/credentials, mất mạng, v.v. — bỏ qua, vẫn hiển thị Dashboard
-            // với dữ liệu cache hiện có thay vì làm crash/treo màn hình.
             logger.e("SmartSwitchSkill", "Không sync được trạng thái online từ Tuya Cloud khi làm mới Dashboard: ${e.message}")
         }
 
-        val tuyaDevices = database.tuyaDeviceDao().getAllDevices()
-
-        // ✅ SỬA (tối ưu quota API): trước đây mỗi node async bên dưới tự gọi
-        // tuyaManager.getStatus(dev.name) RIÊNG (N call cho N thiết bị, mỗi lần Dashboard
-        // build/refresh/chuyển tab). Giờ gọi 1 lần getStatusBatch() cho TẤT CẢ thiết bị đang
-        // online trước vòng lặp, các node bên dưới chỉ tra cứu trong map có sẵn — 1 call
-        // (hoặc ceil(N/20) nếu >20 thiết bị) thay vì N call mỗi lần mở/làm mới Dashboard.
-        val onlineDeviceIds = tuyaDevices.filter { it.online }.map { it.id }
-        // ✅ SỬA: gọi qua controller.getStatusBatch() (trả về Map<String, DeviceStatus>)
-        // thay vì tuyaManager.getStatusBatch() thẳng (trả về Map<String, Boolean>) — cùng 1
-        // API batch bên dưới (TuyaDeviceController.getStatusBatch() vẫn gọi
-        // tuyaManager.getStatusBatch() y hệt trước), chỉ đổi kiểu dữ liệu bọc ngoài.
-        val batchStates = try {
-            tuyaController()?.getStatusBatch(onlineDeviceIds) ?: emptyMap()
-        } catch (e: Exception) {
-            logger.e("SmartSwitchSkill", "Lỗi lấy trạng thái hàng loạt cho Dashboard: ${e.message}")
-            emptyMap()
-        }
-
-        val deferredNodes = tuyaDevices.mapIndexed { index, dev ->
+        // Gộp node từ MỌI driver (Tuya, MQTT, và bất kỳ giao thức nào thêm sau này) — không còn
+        // biết/quan tâm driver nào build ra sao, chỉ gọi đúng 1 hàm chuẩn của interface.
+        val allNodesDeferred = deviceControlRegistry.all().map { controller ->
             async {
-                val defaultX = 40f + (index % 2) * 160f
-                val defaultY = 200f + (index / 2) * 160f
-
-                val savedX = configProvider.getFloat("layout_x_${dev.id}", -1f)
-                val savedY = configProvider.getFloat("layout_y_${dev.id}", -1f)
-                val finalX = if (savedX >= 0f) savedX else defaultX
-                val finalY = if (savedY >= 0f) savedY else defaultY
-
-                val isOnline = dev.online 
-
-                // Thiếu key trong batchStates (offline, lỗi call, hoặc không dò được switch
-                // code) -> coi là tắt để hiển thị an toàn, giống hành vi cũ khi getStatus() lỗi.
-                val isDeviceOn = if (isOnline) {
-                    batchStates[dev.id]?.isOn ?: false
-                } else {
-                    false
+                try {
+                    controller.buildDashboardNodes()
+                } catch (e: Exception) {
+                    logger.e("SmartSwitchSkill", "Lỗi buildDashboardNodes() từ controller ${controller.protocol}: ${e.message}")
+                    emptyList()
                 }
-
-                // ✅ MỚI: Dashboard vừa hỏi trạng thái BẬT/TẮT thật từ Tuya Cloud ở trên (miễn phí,
-                // không tốn thêm request nào) — tranh thủ ghi luôn vào world_state ngay tại đây,
-                // thay vì chỉ trông chờ vòng lặp nền WebhookGatewayService.syncTuyaDeviceStates()
-                // (10 phút/lần) mới cập nhật. Nhờ vậy HouseManagerSkillImpl.startWorldStateReactiveObserver()
-                // (đang lắng nghe world_state đổi để kích hoạt Nhóm kịch bản) phản ứng gần như NGAY
-                // khi người dùng mở app/bấm 🔄 làm mới Dashboard, thay vì phải đợi tới 10 phút.
-                // Chỉ ghi khi thực sự đổi (so với world_state hiện có) — tránh kích hoạt observer
-                // 2 lần thừa cho cùng 1 lần thiết bị đổi trạng thái (vòng lặp nền vẫn sẽ tự no-op
-                // vì lúc đó world_state đã khớp rồi).
-                if (isOnline) {
-                    detectAndBroadcastPhysicalChange(dev.id, dev.name, isDeviceOn)
-                }
-
-                val (deviceIcon, deviceLabel, deviceType) = resolveDeviceVisual(dev)
-
-                DeviceNode(
-                    id = dev.id,
-                    name = dev.name,
-                    type = deviceType,
-                    pluginId = manifest.id,
-                    defaultAction = "status",
-                    defaultParams = mapOf("device" to dev.id),
-                    supportedActions = listOf(
-                        DeviceAction(
-                            id = "set",
-                            title = "Bật $deviceLabel",
-                            icon = deviceIcon,
-                            defaultParams = mapOf("state" to true)
-                        ),
-                        DeviceAction(
-                            id = "set",
-                            title = "Tắt $deviceLabel",
-                            icon = "🔌",
-                            defaultParams = mapOf("state" to false)
-                        ),
-                        DeviceAction(
-                            id = "status",
-                            title = "Trạng thái",
-                            icon = "ℹ️"
-                        )
-                    ),
-                    x = finalX,
-                    y = finalY,
-                    online = isOnline,
-                    icon = deviceIcon,
-                    ip = "192.168.1.${50 + index}",
-                    battery = null,
-                    status = if (isOnline) {
-                        if (isDeviceOn) "Đang bật" else "Đang tắt"
-                    } else {
-                        "Mất kết nối"
-                    },
-                    room = "Phòng chung",
-                    // ✅ MỚI (Dimmer): đọc thẳng cột isDimmable đã lưu ở TuyaDeviceEntity (xem
-                    // Entity.kt + TuyaManager.scanDevices()) — KHÔNG suy luận lại từ category ở
-                    // đây, vì scanDevices() đã là nơi DUY NHẤT quyết định giá trị này (tự động dò
-                    // + nút xác nhận tay ở TuyaScreen). dimmerLevel để null — Tuya không cache %
-                    // cuối cùng ở Entity (khác MQTT), UI tự mặc định 50% khi null (xem TuyaScreen).
-                    isDimmable = dev.isDimmable,
-                    dimmerLevel = null
-                )
             }
         }
-        deferredNodes.awaitAll()
+        val allNodes = allNodesDeferred.awaitAll().flatten()
+
+        // Hậu xử lý ĐẶC THÙ TUYA: chỉ áp dụng cho node có worldStateSource khớp Tuya, đúng
+        // hành vi cũ (detectAndBroadcastPhysicalChange trước đây CHỈ chạy trong vòng lặp
+        // tuyaDevices, chưa từng chạy cho MQTT). Nhận diện qua controller.protocol thay vì đoán
+        // theo pluginId (mọi node đều "smart_switch" như nhau, không phân biệt được).
+        val tuyaDeviceIds = try {
+            database.tuyaDeviceDao().getAllDevices().map { it.id }.toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+        allNodes.filter { it.online && it.id in tuyaDeviceIds }.forEach { node ->
+            detectAndBroadcastPhysicalChange(node.id, node.name, node.status == "Đang bật")
+        }
+
+        // Gán layout x/y CHUNG cho mọi node bất kể giao thức — logic này vốn dùng chung, đúng
+        // dự tính ban đầu, KHÔNG lặp lại trong từng driver.
+        allNodes.mapIndexed { index, node ->
+            val defaultX = 40f + (index % 2) * 160f
+            val defaultY = 200f + (index / 2) * 160f
+            val savedX = configProvider.getFloat("layout_x_${node.id}", -1f)
+            val savedY = configProvider.getFloat("layout_y_${node.id}", -1f)
+            node.copy(
+                x = if (savedX >= 0f) savedX else defaultX,
+                y = if (savedY >= 0f) savedY else defaultY
+            )
+        }
     }
 
     // ✅ MỚI: tách từ khối detect-lệch vốn nằm trong getDashboardNodes() — dùng chung cho cả

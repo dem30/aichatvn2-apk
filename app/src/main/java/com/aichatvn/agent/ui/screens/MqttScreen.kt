@@ -596,6 +596,24 @@ class MqttViewModel @Inject constructor(
         }
     }
 
+    // ✅ MỚI (Nhất quán Dashboard): cùng vai trò TuyaViewModel.updateDeviceRoom().
+    fun updateDeviceRoom(device: MqttDeviceEntity, room: String?) {
+        viewModelScope.launch {
+            try {
+                database.mqttDeviceDao().updateRoom(device.id, room)
+                _message.value = if (room != null) {
+                    "📍 Đã đặt \"${device.name}\" vào phòng \"$room\""
+                } else {
+                    "📍 Đã bỏ phòng của \"${device.name}\""
+                }
+                loadDevices()
+            } catch (e: Exception) {
+                _message.value = "❌ Lỗi: ${e.message}"
+                logger.e("MqttViewModel", "updateDeviceRoom error", e)
+            }
+        }
+    }
+
     fun deleteDevice(device: MqttDeviceEntity) {
         viewModelScope.launch {
             _loadingDevices.value = _loadingDevices.value + device.id
@@ -650,7 +668,9 @@ fun MqttDeviceCard(
     // đường nào để bị đặt làm điều kiện hay được gán khóa an toàn.
     onConfigureGuard: () -> Unit,
     // ✅ MỚI (Dimmer): song song TuyaDeviceCard.onSetLevel — chỉ gọi khi device.isDimmable.
-    onSetLevel: (Int) -> Unit = {}
+    onSetLevel: (Int) -> Unit = {},
+    // ✅ MỚI (Nhất quán Dashboard): mở dialog sửa tên phòng.
+    onEditDevice: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -695,6 +715,14 @@ fun MqttDeviceCard(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        // ✅ MỚI (Nhất quán Dashboard): cùng cách hiển thị phòng như TuyaDeviceCard.
+                        if (!device.room.isNullOrBlank()) {
+                            Text(
+                                text = "📍 ${device.room}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
 
@@ -718,6 +746,17 @@ fun MqttDeviceCard(
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
+
+                    // ✅ MỚI (Nhất quán Dashboard): cùng vị trí/vai trò với TuyaDeviceCard.
+                    IconButton(onClick = onEditDevice, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Sửa thiết bị",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     // ✅ MỚI: cùng nút khóa an toàn như TuyaDeviceCard — trước đây MQTT không
                     // có nút này, khiến không thể đặt điều kiện an toàn cho thiết bị MQTT.
                     IconButton(onClick = onConfigureGuard, modifier = Modifier.size(32.dp)) {
