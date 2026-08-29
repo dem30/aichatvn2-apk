@@ -175,6 +175,24 @@ class PendingIntentResolver @Inject constructor(
         val activeOptions = pending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
         val askedParamNow = pending.missingParams.firstOrNull()
 
+        // ✅ SỬA (Bug nghiêm trọng, vỡ TOÀN BỘ nút bấm chọn nhanh): nút bấm gửi thẳng VALUE thật
+        // (vd "smart_switch", "true", mã camera dài) làm tin nhắn — trước đây 2 nhánh khớp bên
+        // dưới chỉ nhận diện được LABEL text (khớp mờ với "Số N. label" trong câu hỏi) hoặc SỐ thứ
+        // tự (regex bắt chữ số), không nhánh nào khớp trực tiếp value. Value không chứa chữ số (vd
+        // "smart_switch") và không khớp label hiển thị → cả 2 nhánh cũ đều trượt → heuristicFilled
+        // rỗng → hệ thống coi là "đổi chủ đề", HUỶ pending ngay (xem nhánh else phía dưới) — đúng
+        // nguyên nhân "bấm nút không vào được action bên trong" / "lên lịch bị nhầm sang hỏi đáp".
+        // Thêm nhánh khớp CHÍNH XÁC theo value, chạy TRƯỚC 2 nhánh fuzzy — vì đây là so khớp tuyệt
+        // đối (button chỉ gửi đúng giá trị đã có sẵn trong activeOptions.values), không cần đoán.
+        if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
+            val trimmed = userMessage.trim()
+            val exactValueMatch = activeOptions.values.firstOrNull { it == trimmed }
+            if (exactValueMatch != null) {
+                heuristicFilled[askedParamNow] = exactValueMatch
+                logger.d("PendingIntentResolver", "[$traceId] Người dùng bấm nút -> value \"$exactValueMatch\" khớp chính xác (bypass LLM)")
+            }
+        }
+
         if (askedParamNow != null && activeOptions.isNotEmpty() && !heuristicFilled.containsKey(askedParamNow)) {
             val userNorm = StringSimilarityUtil.normalizeVietnamese(userMessage.lowercase().trim())
             if (userNorm.isNotBlank()) {
