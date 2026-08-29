@@ -854,6 +854,16 @@ val MIGRATION_31_32 = object : Migration(31, 32) {
     }
 }
 
+// ✅ MỚI: version 32 → 33 — nút bấm chọn nhanh trong chat (thay vì gõ số/tên khi
+// PluginResult.NeedMoreInfo có displayOptions, xem AgentKernel.ChatResponse.quickReplies). Thêm
+// cột nullable — NULL với toàn bộ tin nhắn cũ đã có trong DB (đúng ngữ nghĩa: tin nhắn cũ không
+// có nút để bấm lại), chỉ tin nhắn assistant MỚI đang hỏi chọn mới có giá trị.
+val MIGRATION_32_33 = object : Migration(32, 33) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE chat_messages ADD COLUMN quickRepliesJson TEXT DEFAULT NULL")
+    }
+}
+
 // ==================== DATABASE ====================
 
 @Database(
@@ -874,6 +884,7 @@ val MIGRATION_31_32 = object : Migration(31, 32) {
         CallLogEntity::class,
         MqttDeviceEntity::class
     ],
+    // ✅ MỚI: bump 32 → 33 — nút bấm chọn nhanh trong chat, xem MIGRATION_32_33.
     // ✅ MỚI: bump 30 → 31 — thêm hỗ trợ Dimmer, xem MIGRATION_30_31.
     // bump 24 → 25 để track MQTT Symmetric Broker (mục 4.2) thêm deviceLanIp/deviceMac/
     // brokerMode vào MqttDeviceEntity (xem MIGRATION_24_25).
@@ -901,7 +912,7 @@ val MIGRATION_31_32 = object : Migration(31, 32) {
     // migration tạo bảng thật, khiến máy cũ bị fallbackToDestructiveMigration() xoá sạch
     // DB mỗi lần schema lệch mà version không đổi — xem ghi chú đầy đủ tại khai báo
     // MIGRATION_29_30 phía trên.
-    version = 32,
+    version = 33,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -939,7 +950,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // đường đi này trước (giữ nguyên dữ liệu khách hàng). fallbackToDestructiveMigration()
                     // chỉ còn là lưới an toàn cho các bản version < 16 (nếu còn tồn tại, không rõ
                     // lịch sử) — KHÔNG áp dụng cho các bước đã có Migration cụ thể.
-                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32)
+                    .addMigrations(MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20, MIGRATION_20_21, MIGRATION_21_22, MIGRATION_22_23, MIGRATION_23_24, MIGRATION_24_25, MIGRATION_25_26, MIGRATION_26_27, MIGRATION_27_28, MIGRATION_28_29, MIGRATION_29_30, MIGRATION_30_31, MIGRATION_31_32, MIGRATION_32_33)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

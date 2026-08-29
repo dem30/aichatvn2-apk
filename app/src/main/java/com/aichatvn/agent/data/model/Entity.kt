@@ -162,7 +162,15 @@ data class ChatMessageEntity(
     // Nguồn gốc câu trả lời của Assistant (human, learn, camera, v.v.)
     val sourcePlugin: String? = null,
     // Trạng thái đã đọc — CHỈ có ý nghĩa với tin nhắn role="user" của khách ngoại kênh
-    val isRead: Boolean = true
+    val isRead: Boolean = true,
+    // ✅ MỚI (nút bấm chọn nhanh trong chat, xem AgentKernel.ChatResponse.quickReplies): mảng
+    // JSON dạng [[label,value],[label,value],...] — CHỈ có ý nghĩa với tin nhắn role="assistant"
+    // đang hỏi PluginResult.NeedMoreInfo có displayOptions (device/camera/plugin_id/action_id/
+    // boolean...). null với MỌI tin nhắn khác (user, hoặc assistant trả lời bình thường không cần
+    // chọn). Lưu chuỗi JSON thô thay vì kiểu có cấu trúc vì Room cần TypeConverter riêng cho
+    // List<Pair<String,String>> — JSON string đơn giản hơn, ChatScreen.kt tự parse khi vẽ nút.
+    @ColumnInfo(defaultValue = "NULL")
+    val quickRepliesJson: String? = null
 )
 
 // ==================== Q&A ====================

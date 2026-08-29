@@ -13,8 +13,11 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -337,8 +340,13 @@ fun ChatScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
-                    items(messages, key = { it.id }) { message ->
-                        ChatBubble(message = message)
+                    itemsIndexed(messages, key = { _, m -> m.id }) { index, message ->
+                        ChatBubble(
+                            message = message,
+                            isLatest = index == messages.lastIndex,
+                            enabled = !isLoading,
+                            onOptionSelected = { value -> viewModel.sendMessage(value) }
+                        )
                     }
 
                     if (isTyping) {
@@ -725,15 +733,45 @@ private fun pluginBadgeLabel(sourcePlugin: String): String = when (sourcePlugin)
     else -> "⚡ ${sourcePlugin.replaceFirstChar { it.uppercase() }}"
 }
 
+// ✅ MỚI (nút bấm chọn nhanh trong chat): parse mảng JSON [[label,value],[label,value],...] đã
+// lưu vào ChatMessageEntity.quickRepliesJson (xem ChatSkill.kt). Không quăng exception ra ngoài —
+// trả rỗng nếu dữ liệu hỏng/cũ, để UI đơn giản là không vẽ nút, không crash cả bong bóng chat.
+private fun parseQuickReplies(json: String?): List<Pair<String, String>> {
+    if (json.isNullOrBlank()) return emptyList()
+    return try {
+        val arr = org.json.JSONArray(json)
+        (0 until arr.length()).mapNotNull { i ->
+            val pair = arr.optJSONArray(i) ?: return@mapNotNull null
+            val label = pair.optString(0, "")
+            val value = pair.optString(1, "")
+            if (label.isBlank() || value.isBlank()) null else label to value
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
 
 
 
 // ✅ MỚI: 3 trạng thái tải ảnh cho ChatBubble — xem comment chi tiết bên trong ChatBubble().
 private enum class ImgLoadState { LOADING, LOADED, FAILED }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
-fun ChatBubble(message: ChatMessageEntity) {
+fun ChatBubble(
+    message: ChatMessageEntity,
+    // ✅ MỚI (nút bấm chọn nhanh trong chat): chỉ vẽ nút cho tin nhắn AI MỚI NHẤT — tin nhắn cũ
+    // hơn (dù có sẵn quickReplies từ trước) không còn khớp với pending intent hiện tại nữa (đã bị
+    // pending mới ghi đè hoặc đã resolve xong), bấm vào sẽ gửi 1 giá trị không còn ý nghĩa gì với
+    // ngữ cảnh hội thoại lúc này — PendingIntentResolver luôn chỉ đọc "_options" của PENDING HIỆN
+    // TẠI (xem PendingIntentResolver.kt), không phải của tin nhắn cụ thể nào.
+    isLatest: Boolean = false,
+    // ✅ MỚI: vô hiệu hoá nút khi đang có 1 lượt xử lý khác đang chạy (isLoading ở ChatScreen) —
+    // giống hệt lý do nút Gửi/Ảnh/Mic cũng disable theo isLoading, tránh gửi trùng lặp.
+    enabled: Boolean = true,
+    onOptionSelected: (String) -> Unit = {}
+) {
     val isUser = message.role == "user"
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -823,6 +861,33 @@ fun ChatBubble(message: ChatMessageEntity) {
                         text = message.content,
                         style = MaterialTheme.typography.bodyMedium
                     )
+                }
+
+                // ✅ MỚI (nút bấm chọn nhanh trong chat): parse quickRepliesJson (mảng [label,value]
+                // đã lưu ở ChatSkill.kt từ ChatResponse.quickReplies — xem AgentKernel.kt) thành nút
+                // bấm thay vì bắt người dùng gõ lại số/tên. Chỉ hiện ở tin nhắn AI mới nhất
+                // (isLatest) và khi không đang xử lý lượt khác (enabled).
+                if (!isUser && isLatest && !message.quickRepliesJson.isNullOrBlank()) {
+                    val quickReplies = remember(message.quickRepliesJson) {
+                        parseQuickReplies(message.quickRepliesJson)
+                    }
+                    if (quickReplies.isNotEmpty()) {
+                        FlowRow(
+                            modifier = Modifier.padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            quickReplies.forEach { (label, value) ->
+                                OutlinedButton(
+                                    onClick = { onOptionSelected(value) },
+                                    enabled = enabled,
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Text(label, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

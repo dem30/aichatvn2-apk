@@ -250,30 +250,21 @@ class PendingIntentResolver @Inject constructor(
 
         val normalizedMergedParams = ParameterResolver.normalizeParams(mergedParams, targetPlugin, pending.action, plugins, userMessage)
 
-        val stillMissing = pending.missingParams.filter { key ->
-            if (key.startsWith("params.")) {
-                val nestedKey = key.removePrefix("params.")
-                @Suppress("UNCHECKED_CAST")
-                val nested = normalizedMergedParams["params"] as? Map<String, Any>?
-                val v = nested?.get(nestedKey)
-
-                val targetPluginId = normalizedMergedParams["plugin_id"]?.toString()
-                    ?: normalizedMergedParams["pluginId"]?.toString()
-                    ?: normalizedMergedParams["plugin"]?.toString() ?: ""
-                val targetActionName = normalizedMergedParams["action_id"]?.toString()
-                    ?: normalizedMergedParams["action"]?.toString()
-                    ?: normalizedMergedParams["actionId"]?.toString() ?: ""
-                val tPlugin = plugins.find { it.manifest.id == targetPluginId }
-                val tAction = tPlugin?.manifest?.actions?.find { it.name == targetActionName }
-                val param = tAction?.parameters?.find { it.name == nestedKey }
-
-                ParameterResolver.isPlaceholder(v, param)
-            } else {
-                val v = normalizedMergedParams[key]
-                val param = targetAction.parameters.find { it.name == key }
-                ParameterResolver.isPlaceholder(v, param)
-            }
-        }
+        // ✅ SỬA (Bug nghiêm trọng: dialog lịch trình "chốt xong" nhưng bỏ sót tham số lồng):
+        // trước đây chỉ LỌC LẠI đúng cái pending.missingParams đã tính 1 LẦN DUY NHẤT ở lượt đầu
+        // tiên (lúc pluginId/action của schedule.add còn CHƯA có giá trị) — nên nhánh "đào vào
+        // params lồng" của ParameterResolver.getUnresolvedParams() (chỉ chạy được khi
+        // targetPluginId/targetAction đã biết) KHÔNG BAO GIỜ có cơ hội chạy lại sau khi 2 tham số
+        // đó vừa được người dùng điền xong ở chính pending flow này — params.device/params.state
+        // của action đích (vd smart_switch.set) không bao giờ lọt vào danh sách hỏi, dialog coi
+        // như "đủ" rồi gọi thẳng execute(), rơi xuống ScheduleSkill.findMissingRequiredParams()
+        // trả failure() cứng. Gọi lại getUnresolvedParams() ở ĐÂY thay vì lọc list cũ — hàm này
+        // tự idempotent (luôn tính lại dựa trên state params hiện tại), nên gọi lại bao nhiêu lần
+        // cũng ra đúng phần còn thiếu, kể cả các params.* chỉ "lộ diện" được sau khi pluginId/
+        // action đã biết.
+        val stillMissing = ParameterResolver.getUnresolvedParams(
+            normalizedMergedParams, targetPlugin, pending.action, plugins
+        )
 
         if (stillMissing.isNotEmpty()) {
             val madeProgress = stillMissing.size < pending.missingParams.size
@@ -281,7 +272,7 @@ class PendingIntentResolver @Inject constructor(
             // 🌟 SỬA: truyền thêm normalizedMergedParams làm "knownParams" — cần thiết để
             // getQuestionForMissingParam giải quyết đúng các case phân tầng (vd hỏi "action"
             // sau khi "pluginId" vừa được chọn ở lượt trước).
-            val (question, options) = intentExecutor.getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action, normalizedMergedParams)
+            val (question, options, displayOptions) = intentExecutor.getQuestionForMissingParam(stillMissing.first(), targetPlugin, pending.action, normalizedMergedParams)
 
             // ✅ ĐÃ SỬA: giữ nguyên createdAt gốc (để sắp thứ tự hàng đợi ổn định — xem
             // ChatHistoryManager.getActivePendingIntents()), CHỈ cập nhật lastInteractionAt
@@ -301,7 +292,7 @@ class PendingIntentResolver @Inject constructor(
             chatHistoryManager.addTurn(pending.username, userMessage, question)
             return DeviceCommandResult(
                 pluginId = targetPlugin.manifest.id,
-                result = PluginResult.NeedMoreInfo(stillMissing, question, options)
+                result = PluginResult.NeedMoreInfo(stillMissing, question, options, displayOptions)
             )
         }
 

@@ -137,7 +137,12 @@ data class ChatResponse(
     // có cảnh báo gì"), model liệt kê 4-9 mục trong text nhưng chỉ 1 ảnh (dòng cuối/mới nhất)
     // được đính kèm, khiến UI hiển thị lệch với nội dung trả lời. Đổi sang danh sách để mang
     // TẤT CẢ ảnh khớp filter hiện tại — UI hiển thị dạng gallery/carousel thay vì 1 ảnh đại diện.
-    val imagePaths: List<String>? = null
+    val imagePaths: List<String>? = null,
+    // ✅ MỚI (nút bấm chọn nhanh trong chat): mang (label, value) của PluginResult.NeedMoreInfo
+    // lên tới tầng UI — trước đây nhánh NeedMoreInfo ở chat() (xem dưới) chỉ lấy "question" (text
+    // thuần), "options"/"displayOptions" bị vứt bỏ hoàn toàn tại đây, nên dù PendingIntentResolver/
+    // IntentExecutor có tính đúng danh sách lựa chọn, UI cũng không bao giờ nhận được để vẽ nút.
+    val quickReplies: List<Pair<String, String>>? = null
 )
 
 // ✅ MỚI: carrier tối thiểu để interceptAndExecuteToolCall()/handleCatalogSearchToolCall()
@@ -285,8 +290,12 @@ class AgentKernel @Inject constructor(
             }
             val imagePath = (deviceResult as? PluginResult.Success)?.data
                 ?.let { (it as? Map<*, *>)?.get("imagePath") as? String }
+            // ✅ MỚI (nút bấm chọn nhanh trong chat): trước đây displayOptions của NeedMoreInfo
+            // bị bỏ qua hoàn toàn ở đây — chỉ responseText (text thuần) được mang lên ChatResponse.
+            val quickReplies = (deviceResult as? PluginResult.NeedMoreInfo)?.displayOptions
+                ?.takeIf { it.isNotEmpty() }
             val finalMsg = if (expiredNotification != null) "$expiredNotification\n\n$responseText" else responseText
-            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId, imagePath?.let { listOf(it) })
+            return ChatResponse(finalMsg, "device_control", outcome.result.pluginId, imagePath?.let { listOf(it) }, quickReplies)
         }
 
         val routerFailed = outcome is RouterOutcome.RouterFailed
@@ -2518,7 +2527,12 @@ Nếu đã có kết quả tra cứu ở lượt trước trong cùng đoạn h�
         data class NeedMoreInfo(
             val missingParams: List<String>, 
             val question: String,
-            val options: Map<String, String> = emptyMap()
+            val options: Map<String, String> = emptyMap(),
+            // ✅ MỚI (nút bấm chọn nhanh trong chat): (label, value) đúng thứ tự hiển thị — UI
+            // dùng field này để vẽ nút, "options" (index→value) giữ nguyên cho luồng gõ-tay cũ
+            // (PendingIntentResolver parse số/label qua "options"/askedQuestion như trước, không
+            // đổi gì ở đó).
+            val displayOptions: List<Pair<String, String>> = emptyList()
         ) : PluginResult()
     }
 }

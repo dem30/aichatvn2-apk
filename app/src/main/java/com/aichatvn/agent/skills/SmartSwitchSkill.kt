@@ -359,7 +359,13 @@ class SmartSwitchSkill @Inject constructor(
         // không chạm vào để tránh regression cho phần đã chạy ổn định. Nếu sau này cần
         // dimmer cũng có Gateway fallback, làm ở đây trước, không gộp chung với nhánh dưới.
         val levelParam = params["level"]
-        if (levelParam != null) {
+        // ✅ SỬA (Bug: level cướp mất ý định "tắt hẳn"): trước đây chỉ kiểm tra levelParam !=
+        // null — khi router/LLM gửi kèm cả state=false LẪN level=0.0 (vd suy luận nhầm "tắt" =
+        // "0%"), nhánh dimmer luôn thắng dù ý định thật của người dùng là turnOff() qua nhánh
+        // state bên dưới. state, khi có mặt, LUÔN là tín hiệu ý định rõ ràng hơn level (level chỉ
+        // nên dùng khi câu lệnh CHỈ nói về %, không nói bật/tắt — đúng như exampleOverrides ở
+        // trên đã khai: "để đèn 50%"/"chỉnh đèn... 30%" không kèm "state").
+        if (levelParam != null && params["state"] == null) {
             val (summary, controller) = resolveDevice(deviceKey)
                 ?: return failure("Không tìm thấy thiết bị '$deviceKey'")
             val deviceId = summary.id

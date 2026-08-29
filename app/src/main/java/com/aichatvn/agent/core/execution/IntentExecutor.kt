@@ -122,8 +122,8 @@ class IntentExecutor @Inject constructor(
         val executionResult = if (missing.isNotEmpty()) {
             // 🌟 SỬA: truyền thêm normalizedIntent.params làm "knownParams" — để nhánh
             // action_id trong DynamicOptionRegistry biết pluginId đã chọn là gì (dependsOn).
-            val (question, options) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action, normalizedIntent.params)
-            PluginResult.NeedMoreInfo(missing, question, options)
+            val (question, options, displayOptions) = getQuestionForMissingParam(missing.first(), plugin, normalizedIntent.action, normalizedIntent.params)
+            PluginResult.NeedMoreInfo(missing, question, options, displayOptions)
         } else if (worldStateBlocked) {
             PluginResult.Failure("⚠️ Điều kiện thực tế chưa thỏa mãn để thực hiện \"${actionMeta?.description ?: normalizedIntent.action}\" (Cần trạng thái: ${worldStateCondition?.attrKey} = ${worldStateCondition?.expected}).")
         } else if (deviceGuardBlocked != null) {
@@ -433,7 +433,7 @@ class IntentExecutor @Inject constructor(
         // 🌟 MỚI: các tham số ĐÃ BIẾT của intent hiện tại — cần thiết để resolve các case
         // phân tầng kiểu dependsOn (vd action_id phụ thuộc pluginId đã chọn ở bước trước).
         knownParams: Map<String, Any> = emptyMap()
-    ): Pair<String, Map<String, String>> {
+    ): Triple<String, Map<String, String>, List<Pair<String, String>>> {
         val isNested = param.startsWith("params.")
         val actualKey = if (isNested) param.removePrefix("params.") else param
 
@@ -467,16 +467,29 @@ class IntentExecutor @Inject constructor(
 
         val isCronField = semanticType == "time" || actualKey == "cron" || actualKey == "time"
         if (isCronField) {
-            return ("Bạn muốn thiết lập hẹn giờ/lên lịch vào lúc mấy giờ, ngày nào? (Ví dụ: 8h sáng mai, hoặc mỗi ngày lúc 18h)" to emptyMap())
+            return Triple("Bạn muốn thiết lập hẹn giờ/lên lịch vào lúc mấy giờ, ngày nào? (Ví dụ: 8h sáng mai, hoặc mỗi ngày lúc 18h)", emptyMap(), emptyList())
         }
         
         val isIntervalField = semanticType == "interval" || actualKey == "interval" || actualKey == "intervalMinutes"
         if (isIntervalField) {
-            return ("Bạn muốn hoạt động này được lặp lại định kỳ sau mỗi bao nhiêu phút? (Ví dụ: mỗi 10 phút)" to emptyMap())
+            return Triple("Bạn muốn hoạt động này được lặp lại định kỳ sau mỗi bao nhiêu phút? (Ví dụ: mỗi 10 phút)", emptyMap(), emptyList())
+        }
+
+        // ✅ MỚI (nút bấm Có/Không cho tham số boolean, vd "state" của smart_switch.set): trước
+        // đây semanticType="boolean" không có case nào trong DynamicOptionRegistry.getOptions()
+        // (chỉ nhánh device/camera/call/... mới có), nên luôn rơi xuống câu hỏi tự do bên dưới —
+        // người dùng phải gõ "bật"/"tắt" và chờ PluginParameter.normalize() đoán đúng. Thêm case
+        // cứng ở đây (không cần đụng DynamicOptionRegistry — boolean không cần tra DB) để param
+        // nào có type="boolean" cũng tự động ra 2 nút bấm rõ ràng.
+        val isBooleanField = paramMeta?.type?.lowercase() == "boolean"
+        if (isBooleanField) {
+            val prompt = paramMeta?.description?.takeIf { it.isNotBlank() }
+                ?: "Bạn muốn chọn giá trị nào cho '$actualKey'?"
+            return buildNumberedQuestion(prompt, listOf("✅ Bật" to "true", "⛔ Tắt" to "false"))
         }
 
         if (paramMeta != null && paramMeta.description.isNotBlank()) {
-            return ("Bạn vui lòng cung cấp thông tin cho ${paramMeta.description} nhé?" to emptyMap())
+            return Triple("Bạn vui lòng cung cấp thông tin cho ${paramMeta.description} nhé?", emptyMap(), emptyList())
         }
 
         val text = when (actualKey) {
@@ -488,12 +501,22 @@ class IntentExecutor @Inject constructor(
             "pluginId", "plugin_id"                     -> "Bạn muốn lên lịch cho chức năng nào?"
             else                                        -> "Bạn vui lòng cung cấp thông tin cho '$actualKey' nhé?"
         }
-        return (text to emptyMap())
+        return Triple(text, emptyMap(), emptyList())
     }
 
-    private fun buildNumberedQuestion(prompt: String, candidates: List<Pair<String, String>>): Pair<String, Map<String, String>> {
+    private fun buildNumberedQuestion(
+        prompt: String,
+        candidates: List<Pair<String, String>>
+    ): Triple<String, Map<String, String>, List<Pair<String, String>>> {
         val listText = candidates.mapIndexed { i, (label, _) -> "Số ${i + 1}. $label" }.joinToString("\n")
         val options = candidates.mapIndexed { i, (_, value) -> (i + 1).toString() to value }.toMap()
-        return "$prompt\n$listText" to options
+        // ✅ MỚI (nút bấm chọn nhanh trong chat): trước đây label chỉ tồn tại bên trong chuỗi
+        // "listText" (text thô "Số 1. Đèn phòng khách..."), "options" trả ra chỉ có index→value —
+        // đủ để PendingIntentResolver parse khi người dùng GÕ số, nhưng KHÔNG đủ để UI vẽ nút bấm
+        // (nút cần label riêng, tách khỏi value thật gửi đi). Trả thêm "displayOptions" =
+        // (label, value) đúng thứ tự candidates, không đánh số — UI tự quyết định hiển thị số hay
+        // không, còn logic parse-khi-gõ-tay ở PendingIntentResolver giữ nguyên, dùng "options".
+        return Triple(listText.let { "$prompt\n$it" }, options, candidates)
     }
+
 }

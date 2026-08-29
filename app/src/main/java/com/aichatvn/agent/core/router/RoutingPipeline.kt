@@ -493,7 +493,7 @@ class RoutingPipeline @Inject constructor(
                                 pluginName,
                                 actionDesc
                             )
-                            PluginResult.NeedMoreInfo(r.missingParams, banner, r.options)
+                            PluginResult.NeedMoreInfo(r.missingParams, banner, r.options, r.displayOptions)
                         }
                         is PluginResult.Failure -> {
                             chatHistoryManager.removePendingIntent(username, pendings.first().pluginId, pendings.first().action)
@@ -727,7 +727,7 @@ class RoutingPipeline @Inject constructor(
 
                         PipelineResult(
                             routerOutcome = RouterOutcome.Matched(
-                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.options))
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.options, firstPendingRes.displayOptions))
                             ),
                             matchResult = matchResult
                         )
@@ -873,7 +873,7 @@ class RoutingPipeline @Inject constructor(
 
                         PipelineResult(
                             routerOutcome = RouterOutcome.Matched(
-                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.options))
+                                DeviceCommandResult(firstPlugin.manifest.id, PluginResult.NeedMoreInfo(firstPendingRes.missingParams, combinedMsg, firstPendingRes.options, firstPendingRes.displayOptions))
                             ),
                             matchResult = matchResult
                         )
