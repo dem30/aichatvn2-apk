@@ -546,6 +546,18 @@ class ChatSkill @Inject constructor(
                     )
                 }
 
+                // ✅ MỚI (nút bấm chọn nhanh trong chat): serialize response.quickReplies (List
+                // (label,value) — xem AgentKernel.ChatResponse) thành JSON array-of-array để lưu
+                // vào ChatMessageEntity.quickRepliesJson. null khi response không phải đang hỏi
+                // chọn (đa số trường hợp) — ChatBubble chỉ vẽ nút khi field này khác null/rỗng.
+                val quickRepliesJson = response.quickReplies?.takeIf { it.isNotEmpty() }?.let { replies ->
+                    org.json.JSONArray().apply {
+                        replies.forEach { (label, value) ->
+                            put(org.json.JSONArray().apply { put(label); put(value) })
+                        }
+                    }.toString()
+                }
+
                 val assistantMessage = ChatMessageEntity(
                     id = assistantMessageId,
                     sessionToken = "session_$username",
@@ -555,7 +567,8 @@ class ChatSkill @Inject constructor(
                     type = "text",
                     fileUrl = null,
                     timestamp = System.currentTimeMillis(),
-                    sourcePlugin = response.usedPluginId
+                    sourcePlugin = response.usedPluginId,
+                    quickRepliesJson = quickRepliesJson
                 )
 
                 val imageMessages = validImagePaths.mapIndexed { index, path ->

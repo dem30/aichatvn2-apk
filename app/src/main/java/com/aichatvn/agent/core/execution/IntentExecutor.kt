@@ -151,7 +151,12 @@ class IntentExecutor @Inject constructor(
                     action = normalizedIntent.action,
                     knownParams = normalizedIntent.params + mapOf(
                         "_noProgressCount" to 0,
-                        "_options" to executionResult.options
+                        "_options" to executionResult.options,
+                        // ✅ MỚI (nút bấm chọn nhanh — nhánh "nhiều pending xếp hàng"): cache label
+                        // ngay từ lần hỏi ĐẦU TIÊN, không chỉ ở các lượt resume sau (PendingIntentResolver),
+                        // vì RoutingPipeline.kt đọc "_displayOptions" của CHÍNH pending này khi có
+                        // pending khác cần xử lý tiếp theo trong hàng đợi.
+                        "_displayOptions" to executionResult.displayOptions
                     ),
                     missingParams = executionResult.missingParams,
                     askedQuestion = executionResult.question,

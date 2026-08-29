@@ -477,7 +477,13 @@ class RoutingPipeline @Inject constructor(
                                 
                                 @Suppress("UNCHECKED_CAST")
                                 val nextOptions = nextPending.knownParams["_options"] as? Map<String, String> ?: emptyMap()
-                                PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg, nextOptions)
+                                // ✅ MỚI (nút bấm chọn nhanh — hoàn thiện nhánh "nhiều pending xếp
+                                // hàng"): trước đây chỉ có nextOptions (index→value), thiếu label nên
+                                // banner tiếp theo không vẽ được nút. Đọc thêm "_displayOptions" đã
+                                // cache sẵn (xem IntentExecutor.kt / PendingIntentResolver.kt).
+                                @Suppress("UNCHECKED_CAST")
+                                val nextDisplayOptions = nextPending.knownParams["_displayOptions"] as? List<Pair<String, String>> ?: emptyList()
+                                PluginResult.NeedMoreInfo(nextPending.missingParams, combinedMsg, nextOptions, nextDisplayOptions)
                             } else {
                                 r
                             }

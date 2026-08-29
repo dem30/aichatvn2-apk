@@ -267,7 +267,17 @@ class PendingIntentResolver @Inject constructor(
         )
 
         if (stillMissing.isNotEmpty()) {
-            val madeProgress = stillMissing.size < pending.missingParams.size
+            // ✅ SỬA (Bug thật, không chỉ lý thuyết): trước đây dùng
+            // "stillMissing.size < pending.missingParams.size" làm thước đo tiến triển — sai khi
+            // pluginId+action VỪA được biết đủ ở lượt này, khiến nhánh đào params lồng "mở khoá"
+            // và phát hiện thêm params.device/params.state MỚI cùng lúc: tổng số thiếu có thể TĂNG
+            // (vd 2 -> 3) dù người dùng vừa trả lời đúng câu được hỏi — bị tính oan là "không tiến
+            // triển", cộng dồn đủ 2 lần sẽ huỷ nhầm 1 pending đang trả lời bình thường. Đổi sang đo
+            // đúng bản chất: câu hỏi VỪA ĐẶT RA (missingParams.first(), tương ứng askedQuestion) có
+            // còn nằm trong danh sách thiếu hay không — không quan tâm tổng số tăng/giảm do phát
+            // hiện thêm việc mới.
+            val askedParam = pending.missingParams.firstOrNull()
+            val madeProgress = askedParam == null || askedParam !in stillMissing
             val newNoProgressCount = if (madeProgress) 0 else noProgressCount + 1
             // 🌟 SỬA: truyền thêm normalizedMergedParams làm "knownParams" — cần thiết để
             // getQuestionForMissingParam giải quyết đúng các case phân tầng (vd hỏi "action"
@@ -282,7 +292,12 @@ class PendingIntentResolver @Inject constructor(
                 pending.copy(
                     knownParams = normalizedMergedParams + mapOf(
                         "_noProgressCount" to newNoProgressCount,
-                        "_options" to options
+                        "_options" to options,
+                        // ✅ MỚI (nút bấm chọn nhanh trong chat — hoàn thiện nốt nhánh "nhiều pending
+                        // xếp hàng" ở RoutingPipeline.kt): cache thêm label song song với "_options"
+                        // (chỉ có value) — trước đây banner của pending KẾ TIẾP trong hàng đợi không
+                        // có cách nào lấy lại label để vẽ nút, phải rớt về hỏi bằng text.
+                        "_displayOptions" to displayOptions
                     ),
                     missingParams = stillMissing,
                     askedQuestion = question,
