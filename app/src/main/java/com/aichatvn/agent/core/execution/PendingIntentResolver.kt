@@ -106,14 +106,28 @@ class PendingIntentResolver @Inject constructor(
 
             when (paramMeta.semanticType.lowercase()) {
                 "plugin_id" -> {
+                    // ✅ SỬA (Bug: bấm nút chọn pluginId xong thì action biến mất): trước đây nhánh
+                    // này tự điền luôn CẢ "action" từ cùng 1 secondaryIntentQA — nếu user gõ/bấm
+                    // "camera", fuzzy match trả về intent camera.scan, nhánh này đọc cả plugin="camera"
+                    // VÀ action="scan" rồi nhét vào heuristicFilled trong cùng 1 lượt, khiến bước
+                    // hỏi action biến mất hoàn toàn. Tách ra: nhánh plugin_id CHỈ điền pluginId, để
+                    // nhánh action_id tự xử lý ở lượt sau (khi người dùng thật sự chọn action).
+                    // params (nested) vẫn giữ lại vì chúng không bị hỏi ở lượt này.
                     val matchedIntent = matchResult.intentMatches
                         .filter { it.first.type == "intent" }
                         .map { it.first }
-                        .firstOrNull()
+                        .filterNot { it.category == "auto_init_incomplete" }
+                        .firstOrNull { candidate ->
+                            // Không mượn từ QA của chính schedule để tránh action="add" nhầm
+                            try { JSONObject(candidate.answer).optString("plugin", "") != "schedule" }
+                            catch (_: Exception) { true }
+                        }
                     if (matchedIntent != null) {
                         try {
                             val secJson = JSONObject(matchedIntent.answer)
                             heuristicFilled[param] = secJson.optString("plugin", "")
+                            // Chỉ pre-fill params lồng, KHÔNG pre-fill action — action phải được
+                            // hỏi riêng để người dùng xác nhận, không tự suy
                             val secParams = secJson.optJSONObject("params")?.toMap() ?: emptyMap()
                             if (secParams.isNotEmpty()) {
                                 heuristicFilled["params"] = secParams
@@ -122,10 +136,16 @@ class PendingIntentResolver @Inject constructor(
                     }
                 }
                 "action_id" -> {
+                    // ✅ SỬA: cùng bộ lọc với nhánh plugin_id — không mượn từ QA auto_init_incomplete
+                    // hoặc QA của chính schedule (tránh action="add" nhầm khi đang hỏi action đích)
                     val matchedIntent = matchResult.intentMatches
                         .filter { it.first.type == "intent" }
                         .map { it.first }
-                        .firstOrNull()
+                        .filterNot { it.category == "auto_init_incomplete" }
+                        .firstOrNull { candidate ->
+                            try { JSONObject(candidate.answer).optString("plugin", "") != "schedule" }
+                            catch (_: Exception) { true }
+                        }
                     if (matchedIntent != null) {
                         try {
                             val secJson = JSONObject(matchedIntent.answer)

@@ -73,6 +73,16 @@ class Tier2SlotResolverStage @Inject constructor() : RouterStage<Layer2Result?> 
             inputParams = rootParams,
             context = context,
             excludeIntentId = bestIntentQA.id,
+            // ✅ SỬA (Bug thật, xác nhận qua log — "action" của schedule.add bị tự điền = "add"
+            // ngay từ câu "lên lịch" trơn, không bao giờ được hỏi): Tier4MetadataStage đã có
+            // excludePluginId = "schedule" cho đúng lý do ghi ở comment của
+            // resolveParametersWithMeta() (dòng khai báo hàm) — nhưng nhánh Tầng 2 này (khớp QA
+            // tự sinh của CHÍNH schedule.add, vd "lên lịch"/"đặt lịch") lại thiếu, nên
+            // resolverTable["action_id"]/["plugin_id"] mượn nhầm field "action"/"plugin" cấp
+            // NGOÀI CÙNG của 1 QA schedule.add KHÁC đang khớp fuzzy — field đó luôn là "add" (tên
+            // action của chính schedule, không phải action đích người dùng chọn) — khiến "action"
+            // bị coi là đã biết, biến mất khỏi missingParams, không bao giờ được hỏi lại.
+            excludePluginId = "schedule",
             depth = 0
         )
 
